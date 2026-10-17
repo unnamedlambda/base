@@ -58,11 +58,11 @@ theorem region_entry (p : Array SInstr) (S : List Nat) (e : Nat)
     only edge into it from outside is `123 → 124`. -/
 def tokRegion : List Nat := (List.range 75).map (· + 124)
 
-theorem tokRegion_entry_lt : ∀ q, q < 274 → q ∉ tokRegion →
+at_both theorem tokRegion_entry_lt : ∀ q, q < 274 → q ∉ tokRegion →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ tokRegion → q' = 124 :=
   ivEntry_at K 124 75 124 shipped32_size (by decide)
 
-theorem tokRegion_entry : ∀ q, q ∉ tokRegion →
+at_both theorem tokRegion_entry : ∀ q, q ∉ tokRegion →
     ∀ q', q' ∈ AlgorithmLib.LZ4Simt.succsOf K q → q' ∈ tokRegion → q' = 124 := by
   intro q hq q' hq' hin
   rcases Nat.lt_or_ge q 274 with h | h
@@ -79,7 +79,7 @@ theorem tokRegion_entry : ∀ q, q ∉ tokRegion →
     All ten store sites lie inside it. -/
 def bodyRegion : List Nat := (List.range 232).map (· + 40)
 
-theorem bodyRegion_exit : ∀ q ∈ bodyRegion,
+at_both theorem bodyRegion_exit : ∀ q ∈ bodyRegion,
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ bodyRegion ∨ 272 ≤ q' :=
   ivExit_at K 40 232 272 shipped32_size (by omega) (by decide)
 
@@ -87,14 +87,14 @@ theorem bodyRegion_exit : ∀ q ∈ bodyRegion,
 def cursorUpB (p : Array SInstr) : Bool :=
   upClosedB p 208 && upClosedB p 217 && upClosedB p 235 && upClosedB p 272
 
-theorem cursorUp_true : cursorUpB K = true := by decide
+at_both theorem cursorUp_true : cursorUpB K = true := by decide
 
-theorem beyond_step_lt : ∀ q, q < 274 → 272 ≤ q →
+at_both theorem beyond_step_lt : ∀ q, q < 274 → 272 ≤ q →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, 272 ≤ q' :=
   upClosed_at K 272 shipped32_size (by
     have h := cursorUp_true; simp only [cursorUpB, Bool.and_eq_true] at h; exact h.2)
 
-/-- Past the length-store tail there is no way back: `272` is a label, `273` a
+at_both /-- Past the length-store tail there is no way back: `272` is a label, `273` a
     `ret`, and beyond the array every pc is its own successor. -/
 theorem stays_beyond (ss : SState) (a : Nat) (h : 272 ≤ (siter K a ss).pc) :
     ∀ b, a ≤ b → 272 ≤ (siter K b ss).pc := by
@@ -117,7 +117,7 @@ theorem stays_beyond (ss : SState) (a : Nat) (h : 272 ≤ (siter K a ss).pc) :
             List.mem_singleton] at hs
           omega
 
-/-- Once inside the body region the machine is inside it or past it, forever. -/
+at_both /-- Once inside the body region the machine is inside it or past it, forever. -/
 theorem region_or_beyond (ss : SState) (a : Nat) (h : (siter K a ss).pc ∈ bodyRegion) :
     ∀ b, a ≤ b → (siter K b ss).pc ∈ bodyRegion ∨ 272 ≤ (siter K b ss).pc := by
   intro b
@@ -134,7 +134,7 @@ theorem region_or_beyond (ss : SState) (a : Nat) (h : (siter K a ss).pc ∈ body
         · exact bodyRegion_exit _ hin _ hs
         · exact Or.inr (stays_beyond ss m hbe (m + 1) (by omega))
 
-/-- **The body region is entered exactly once, at the step after the prologue.**
+at_both /-- **The body region is entered exactly once, at the step after the prologue.**
 
     No trajectory argument for the prologue is needed: `39` is not a successor of
     anything in the region and the region is never re-entered once left, so a
@@ -167,7 +167,7 @@ theorem body_entry_at (ss : SState) (P : Nat) (hP : (siter K P ss).pc = 39)
     have := hle _ hk
     omega
 
-/-- From the `loopC` exit onward the pc never drops below 208: the tail's only
+at_both /-- From the `loopC` exit onward the pc never drops below 208: the tail's only
     back edge is the LSIC loop's `230 → 222`.  This is what says a step past the
     loop's step count cannot be at the match-sequence entry. -/
 theorem tail_step_lt : ∀ q, q < 274 → 208 ≤ q →
@@ -175,7 +175,7 @@ theorem tail_step_lt : ∀ q, q < 274 → 208 ≤ q →
   upClosed_at K 208 shipped32_size (by
     have h := cursorUp_true; simp only [cursorUpB, Bool.and_eq_true] at h; exact h.1.1.1)
 
-theorem stays_from_208 (ss : SState) (a : Nat) (h : 208 ≤ (siter K a ss).pc) :
+at_both theorem stays_from_208 (ss : SState) (a : Nat) (h : 208 ≤ (siter K a ss).pc) :
     ∀ b, a ≤ b → 208 ≤ (siter K b ss).pc := by
   intro b
   induction b with
@@ -219,7 +219,7 @@ theorem preSteps_eq : preSteps = 25 + 8 * AlgorithmLib.LZ4Simt.clearIters wHashL
 -- Nothing downstream needs its value.
 attribute [irreducible] preSteps
 
-/-- **The prologue, in `siter` form.**  `prologue_couple` is stated with `snsteps`
+at_both /-- **The prologue, in `siter` form.**  `prologue_couple` is stated with `snsteps`
     and a spelled-out step count; converting it is one rewrite of the whole
     conjunction (nine separate `rw ... at` calls make the term large enough to
     overflow the olean writer). -/
@@ -228,30 +228,30 @@ theorem tail_pc_bin (st : SState) (q : Nat) (o : SOp) (d a : String) (b : SArg) 
   rw [sstep, show K[st.pc]? = some (.bin o d a b) from by rw [hq]; exact hi]
   show st.pc + 1 = q + 1; rw [hq]
 
-theorem tail_pc_mov (st : SState) (q : Nat) (d : String) (a : SArg) (hq : st.pc = q)
+at_both theorem tail_pc_mov (st : SState) (q : Nat) (d : String) (a : SArg) (hq : st.pc = q)
     (hi : K[q]? = some (.mov d a)) : (sstep K st).pc = q + 1 := by
   rw [sstep, show K[st.pc]? = some (.mov d a) from by rw [hq]; exact hi]
   show st.pc + 1 = q + 1; rw [hq]
 
-theorem tail_pc_setp (st : SState) (q : Nat) (c : SCmp) (d a : String) (b : SArg) (hq : st.pc = q)
+at_both theorem tail_pc_setp (st : SState) (q : Nat) (c : SCmp) (d a : String) (b : SArg) (hq : st.pc = q)
     (hi : K[q]? = some (.setp c d a b)) : (sstep K st).pc = q + 1 := by
   rw [sstep, show K[st.pc]? = some (.setp c d a b) from by rw [hq]; exact hi]
   show st.pc + 1 = q + 1; rw [hq]
 
-theorem tail_pc_stg (st : SState) (q : Nat) (d a : String) (hq : st.pc = q)
+at_both theorem tail_pc_stg (st : SState) (q : Nat) (d a : String) (hq : st.pc = q)
     (hi : K[q]? = some (.stg d a)) : (sstep K st).pc = q + 1 := by
   rw [sstep, show K[st.pc]? = some (.stg d a) from by rw [hq]; exact hi]
   show st.pc + 1 = q + 1; rw [hq]
 
 
-theorem tail_frame (st : SState) (q : Nat) (i : SInstr) (r : String) (hq : st.pc = q)
+at_both theorem tail_frame (st : SState) (q : Nat) (i : SInstr) (r : String) (hq : st.pc = q)
     (hi : K[q]? = some i) (hne : AlgorithmLib.LZ4WarpDSL.wtgt i ≠ some r) :
     (sstep K st).regs r = st.regs r :=
   AlgorithmLib.LZ4WarpDSL.sstep_regs_ne K st r (fun i' hi' => by
     rw [show K[st.pc]? = some i from by rw [hq]; exact hi] at hi'
     cases hi'; exact hne)
 
-/-- **The tail's token store.**  Seven straight steps from the loop exit reach the
+at_both /-- **The tail's token store.**  Seven straight steps from the loop exit reach the
     final token store at pc 216, and none of them writes the cursor — so the store
     happens at exactly the cursor the loop left. -/
 theorem tail_to_216 (E : SState) (h209 : E.pc = 209) :
@@ -301,20 +301,20 @@ theorem tail_to_216 (E : SState) (h209 : E.pc = 209) :
       (by decide) (by decide)
   rw [f7, f6, f5, f4, f3, f2, f1]
 
-/-- Value read-off for the tail chain: what a step writes into its target. -/
+at_both /-- Value read-off for the tail chain: what a step writes into its target. -/
 theorem tail_val_bin (st : SState) (q : Nat) (o : SOp) (d a : String) (b : SArg) (hq : st.pc = q)
     (hi : K[q]? = some (.bin o d a b)) (l : Lane) :
     (sstep K st).regs d l = o.run (st.regs a l) (st.get l b) := by
   rw [sstep, show K[st.pc]? = some (.bin o d a b) from by rw [hq]; exact hi]
   simp only [sstepInstr, SState.setPc, SState.setReg, eq_self_iff_true, if_true]
 
-theorem tail_val_mov (st : SState) (q : Nat) (d : String) (a : SArg) (hq : st.pc = q)
+at_both theorem tail_val_mov (st : SState) (q : Nat) (d : String) (a : SArg) (hq : st.pc = q)
     (hi : K[q]? = some (.mov d a)) (l : Lane) :
     (sstep K st).regs d l = st.get l a := by
   rw [sstep, show K[st.pc]? = some (.mov d a) from by rw [hq]; exact hi]
   simp only [sstepInstr, SState.setPc, SState.setReg, eq_self_iff_true, if_true]
 
-theorem tail_val_setp (st : SState) (q : Nat) (c : SCmp) (d a : String) (b : SArg) (hq : st.pc = q)
+at_both theorem tail_val_setp (st : SState) (q : Nat) (c : SCmp) (d a : String) (b : SArg) (hq : st.pc = q)
     (hi : K[q]? = some (.setp c d a b)) (l : Lane) :
     (sstep K st).regs d l = (if c.run (st.regs a l) (st.get l b) then 1 else 0) := by
   rw [sstep, show K[st.pc]? = some (.setp c d a b) from by rw [hq]; exact hi]
@@ -322,7 +322,7 @@ theorem tail_val_setp (st : SState) (q : Nat) (c : SCmp) (d a : String) (b : SAr
 
 -- ── Forward confinement in the tail, by interval ─────────────────────────────
 
-/-- One forward-confinement induction, parameterized by the floor.  Instantiated
+at_both /-- One forward-confinement induction, parameterized by the floor.  Instantiated
     at 210 (inside the tail nothing goes back to the loop), 217 (the token store
     happens once) and 235 (the LSIC run is never re-entered). -/
 theorem stays_ge (b : Nat) (hb : ∀ q, q < 274 → b ≤ q → ∀ q' ∈ succsOf K q, b ≤ q')
@@ -345,11 +345,11 @@ theorem stays_ge (b : Nat) (hb : ∀ q, q < 274 → b ≤ q → ∀ q' ∈ succs
             List.mem_singleton] at hs
           omega
 
-theorem stays_from_210 (ss : SState) (a : Nat) (h : 210 ≤ (siter K a ss).pc) :
+at_both theorem stays_from_210 (ss : SState) (a : Nat) (h : 210 ≤ (siter K a ss).pc) :
     ∀ b, a ≤ b → 210 ≤ (siter K b ss).pc :=
   stays_ge 210 (by decide) ss a h
 
-/-- From pc 217 on, the pc never drops below 217: the only back edge in the tail
+at_both /-- From pc 217 on, the pc never drops below 217: the only back edge in the tail
     is the LSIC loop's `230 → 222`. -/
 theorem stays_from_217 (ss : SState) (a : Nat) (h : 217 ≤ (siter K a ss).pc) :
     ∀ b, a ≤ b → 217 ≤ (siter K b ss).pc := by
@@ -373,7 +373,7 @@ theorem stays_from_217 (ss : SState) (a : Nat) (h : 217 ≤ (siter K a ss).pc) :
             List.mem_singleton] at hs
           omega
 
-/-- Likewise from 235 on — past the tail's LSIC run there is no way back into it. -/
+at_both /-- Likewise from 235 on — past the tail's LSIC run there is no way back into it. -/
 theorem stays_from_235 (ss : SState) (a : Nat) (h : 235 ≤ (siter K a ss).pc) :
     ∀ b, a ≤ b → 235 ≤ (siter K b ss).pc := by
   have hstep : ∀ q, q < 274 → 235 ≤ q → ∀ q' ∈ succsOf K q, 235 ≤ q' :=
@@ -396,7 +396,7 @@ theorem stays_from_235 (ss : SState) (a : Nat) (h : 235 ≤ (siter K a ss).pc) :
             List.mem_singleton] at hs
           omega
 
-theorem tail_run (E : SState) (h209 : E.pc = 209)
+at_both theorem tail_run (E : SState) (h209 : E.pc = 209)
     (hlaN : (E.regs "litAnchor" 0).toNat ≤ 32768)
     (hlau : ∀ j : Lane, E.regs "litAnchor" j = E.regs "litAnchor" 0) :
     (∀ i, i ≤ 10 → (siter K i E).pc = 209 + i)
@@ -626,7 +626,7 @@ theorem lsicInv_mk (l : Lane) (B : Nat) (st : SState)
     (h4 : 224 ≤ st.pc → st.pc ≤ 228 → 255 ≤ (st.regs "litExtraF" l).toNat) :
     LsicInv l B st := ⟨h1, h2, h3, h4⟩
 
-set_option maxHeartbeats 1000000 in
+at_both set_option maxHeartbeats 1000000 in
 /-- **The tail's three `sbAddr` stores are confined.**  Given the tight budget at
     the loop exit — `op + fl + fl/255 + 2 ≤ LO` for `fl` the final literal run —
     every visit to pc 216, 226 or 233 has `op ≤ LO`.
@@ -717,17 +717,17 @@ theorem tail_sites_bounded (LO : Nat) (hLO : LO < 2 ^ 64) (E : SState) (h209 : E
 
 -- ── The tail copy's budget: `op + fLen ≤ lenOff` where the copy is set up ────
 
-/-- Past pc 211 the machine never returns to the two instructions that write
+at_both /-- Past pc 211 the machine never returns to the two instructions that write
     `fLen`, and past 238 it never returns to the copy's setup. -/
 theorem stays_from_211 (ss : SState) (a : Nat) (h : 211 ≤ (siter K a ss).pc) :
     ∀ b, a ≤ b → 211 ≤ (siter K b ss).pc :=
   stays_ge 211 (by decide) ss a h
 
-theorem stays_from_239 (ss : SState) (a : Nat) (h : 239 ≤ (siter K a ss).pc) :
+at_both theorem stays_from_239 (ss : SState) (a : Nat) (h : 239 ≤ (siter K a ss).pc) :
     ∀ b, a ≤ b → 239 ≤ (siter K b ss).pc :=
   stays_ge 239 (by decide) ss a h
 
-/-- A register is constant along any stretch whose instructions do not write it.
+at_both /-- A register is constant along any stretch whose instructions do not write it.
     The trace form of `regs_const_on`, with the pc side condition supplied per
     step instead of by a region closure — which is what the tail needs, since the
     stretch it cares about spans three regions. -/
@@ -742,7 +742,7 @@ theorem const_along (r : String) (E : SState) : ∀ (n : Nat),
       rw [siter_succ, sstep_regs_frame K (siter K m E) r (h m (by omega)),
         ih (fun i hi => h i (by omega))]
 
-/-- `fLen` is written only by the two instructions at 209 and 210. -/
+at_both /-- `fLen` is written only by the two instructions at 209 and 210. -/
 theorem fLen_no_write : ∀ q, 211 ≤ q → ∀ ins, K[q]? = some ins → destOf ins ≠ some "fLen" := by
   have hd : ∀ q, q < 274 → 211 ≤ q → (K[q]?.map (fun i => destOf i != some "fLen")) = some true := by
     decide
@@ -754,7 +754,7 @@ theorem fLen_no_write : ∀ q, 211 ≤ q → ∀ ins, K[q]? = some ins → destO
   · rw [Array.getElem?_eq_none_iff.mpr (by rw [shipped32_size]; omega)] at hins
     exact absurd hins (by simp)
 
-/-- …so from step `a` on, with the pc already past them, it never changes. -/
+at_both /-- …so from step `a` on, with the pc already past them, it never changes. -/
 theorem fLen_const (ss : SState) (a : Nat) (ha : 211 ≤ (siter K a ss).pc) (b : Nat) (hab : a ≤ b) :
     (siter K b ss).regs "fLen" = (siter K a ss).regs "fLen" := by
   have hkey : ∀ i, 211 ≤ (siter K i (siter K a ss)).pc := by
@@ -771,7 +771,7 @@ theorem fLen_const (ss : SState) (a : Nat) (ha : 211 ≤ (siter K a ss).pc) (b :
     short and long paths join at) and `238` itself. -/
 def tailFS : List Nat := (List.range 17).map (· + 222)
 
-theorem tailFS_closed : PcClosed K tailFS [238] := by decide
+at_both theorem tailFS_closed : PcClosed K tailFS [238] := by decide
 
 /-- **What the tail carries from its LSIC head to the copy's setup.**  Inside the
     LSIC run it is that loop's own invariant; past it the potential is spent and
@@ -783,7 +783,7 @@ def TailFQ (l : Lane) (B : Nat) (v : UInt64) (st : SState) : Prop :=
   ∧ (235 ≤ st.pc → (st.regs "op" l).toNat ≤ B)
   ∧ st.regs "fLen" l = v
 
-theorem tailFQ_step (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (v : UInt64) (st : SState)
+at_both theorem tailFQ_step (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (v : UInt64) (st : SState)
     (hs : st.pc ∈ tailFS) (hex : st.pc ∉ [238]) (h : TailFQ l B v st) :
     TailFQ l B v (sstep K st) := by
   have dLo : ∀ q ∈ tailFS, q ≤ 233 → ∀ q' ∈ succsOf K q, q' ≤ 234 := by decide
@@ -832,7 +832,7 @@ theorem tailFQ_step (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (v : UInt64) (st : SS
         rw [hop]
         exact h2 h235
 
-/-- From any entry into the region, the cursor bound survives to the copy's
+at_both /-- From any entry into the region, the cursor bound survives to the copy's
     setup — 238 is visited at most once, since everything past it is above it. -/
 theorem tail_from_entry (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (v : UInt64) (E : SState)
     (m : Nat) (hmem : (siter K m E).pc ∈ tailFS) (hQ : TailFQ l B v (siter K m E))
@@ -852,7 +852,7 @@ theorem tail_from_entry (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (v : UInt64) (E :
   rw [← siter_add K m (k - m) E, show m + (k - m) = k from by omega] at hfin
   exact ⟨hfin.2.1 (by rw [hq]; omega), hfin.2.2⟩
 
-set_option maxHeartbeats 1000000 in
+at_both set_option maxHeartbeats 1000000 in
 /-- **The final literal copy fits in what is left of the block.**  Same budget as
     `tail_sites_bounded`, carried past the LSIC run to the copy's setup at 238:
     the token byte, the `fLen/255` continuation bytes and the final length byte
@@ -931,14 +931,14 @@ theorem tail_copy_budget (LO : Nat) (hLO : LO < 2 ^ 64) (E : SState) (h209 : E.p
 
 -- ── From the match-sequence entry to the token region ────────────────────────
 
-/-- `lsicLen` and `encNib`'s length are the same function. -/
+at_both /-- `lsicLen` and `encNib`'s length are the same function. -/
 theorem lsicLen_eq_encNib (n : Nat) : lsicLen n = (AlgorithmLib.LZ4.encNib n).length := by
   rw [AlgorithmLib.LZ4Imp.encNib_length, lsicLen]
   by_cases h : 15 ≤ n
   · rw [if_pos h, if_neg (by omega)]
   · rw [if_neg h, if_pos (by omega)]
 
-/-- The five instructions of `wEmitMatchSeq`'s prologue, pcs 124–128:
+at_both /-- The five instructions of `wEmitMatchSeq`'s prologue, pcs 124–128:
     `124 mlm := ml - 4; 125 tokLo := min mlm 15; 126 tokHi := min litLen 15;
      127 tok := tokHi << 4; 128 tok := tok ||| tokLo` — read off the emitted array.
 
@@ -946,18 +946,18 @@ theorem lsicLen_eq_encNib (n : Nat) : lsicLen n = (AlgorithmLib.LZ4.encNib n).le
     hypothesis type makes the olean writer overflow its stack, which is a build
     failure with no line number and no relation to the proof. -/
 theorem me_pc0 (st : SState) (he : st.pc = 124) : (siter K 0 st).pc = 124 := he
-theorem me_pc1 (st : SState) (he : st.pc = 124) : (siter K 1 st).pc = 125 := by
+at_both theorem me_pc1 (st : SState) (he : st.pc = 124) : (siter K 1 st).pc = 125 := by
   rw [siter_succ]; exact tail_pc_bin _ 124 (.sub) "mlm" "ml" (SArg.imm 4) (me_pc0 st he) (by decide)
-theorem me_pc2 (st : SState) (he : st.pc = 124) : (siter K 2 st).pc = 126 := by
+at_both theorem me_pc2 (st : SState) (he : st.pc = 124) : (siter K 2 st).pc = 126 := by
   rw [siter_succ]; exact tail_pc_bin _ 125 (.min) "tokLo" "mlm" (SArg.imm 15) (me_pc1 st he) (by decide)
-theorem me_pc3 (st : SState) (he : st.pc = 124) : (siter K 3 st).pc = 127 := by
+at_both theorem me_pc3 (st : SState) (he : st.pc = 124) : (siter K 3 st).pc = 127 := by
   rw [siter_succ]; exact tail_pc_bin _ 126 (.min) "tokHi" "litLen" (SArg.imm 15) (me_pc2 st he) (by decide)
-theorem me_pc4 (st : SState) (he : st.pc = 124) : (siter K 4 st).pc = 128 := by
+at_both theorem me_pc4 (st : SState) (he : st.pc = 124) : (siter K 4 st).pc = 128 := by
   rw [siter_succ]; exact tail_pc_bin _ 127 (.shl) "tok" "tokHi" (SArg.imm 4) (me_pc3 st he) (by decide)
-theorem me_pc5 (st : SState) (he : st.pc = 124) : (siter K 5 st).pc = 129 := by
+at_both theorem me_pc5 (st : SState) (he : st.pc = 124) : (siter K 5 st).pc = 129 := by
   rw [siter_succ]; exact tail_pc_bin _ 128 (.bor) "tok" "tok" (SArg.reg "tokLo") (me_pc4 st he) (by decide)
 
-/-- Everything the token region reads at its entry is untouched by those five. -/
+at_both /-- Everything the token region reads at its entry is untouched by those five. -/
 theorem me_frame (st : SState) (he : st.pc = 124) (r : String)
     (h1 : r ≠ "mlm") (h2 : r ≠ "tokLo") (h3 : r ≠ "tokHi") (h4 : r ≠ "tok") :
     (siter K 5 st).regs r = st.regs r := by
@@ -984,7 +984,7 @@ theorem me_frame (st : SState) (he : st.pc = 124) (r : String)
   rw [f5, f4, f3, f2, f1]
   rfl
 
-/-- …and `mlm` is `ml - 4`, written once at 124 and not again. -/
+at_both /-- …and `mlm` is `ml - 4`, written once at 124 and not again. -/
 theorem me_mlm (st : SState) (he : st.pc = 124) (l : Lane) :
     (siter K 5 st).regs "mlm" l = st.regs "ml" l - 4 := by
   have f1 : (siter K 1 st).regs "mlm" l = st.regs "ml" l - 4 := by
@@ -1004,7 +1004,7 @@ theorem me_mlm (st : SState) (he : st.pc = 124) (l : Lane) :
     exact tail_frame _ 128 (.bin (.bor) "tok" "tok" (SArg.reg "tokLo")) "mlm" (me_pc4 st he) (by decide) (by decide)
   rw [show (siter K 5 st).regs "mlm" l = (siter K 5 st).regs "mlm" l from rfl, f5, f4, f3, f2, f1]
 
-/-- **The token invariant holds at the emit entry.**  From the checkpoint at the
+at_both /-- **The token invariant holds at the emit entry.**  From the checkpoint at the
     match-sequence entry (pc 124) — one coupled eval state carrying the tight
     bound `op + |encodeSeq| ≤ LO` — five straight-line steps reach pc 129 with
     `TokInv`.
@@ -1066,10 +1066,10 @@ theorem tokInv_at_entry (l : Lane) (LO : Nat) (st : SState) (he : st.pc = 124)
   all_goals (rw [hpc]; intro hq; first | omega | (exfalso; omega) | (rcases hq with e | e | e <;> omega))
 
 
-theorem tok_exits : AlgorithmLib.LZ4Simt.succsOf K 197 = [199]
+at_both theorem tok_exits : AlgorithmLib.LZ4Simt.succsOf K 197 = [199]
     ∧ AlgorithmLib.LZ4Simt.succsOf K 198 = [199] := by decide
 
-/-- **The seven token stores are bounded, for the whole run.**  Given only that the
+at_both /-- **The seven token stores are bounded, for the whole run.**  Given only that the
     machine reports a coupled eval state with the tight bound whenever it stands at
     the match-sequence entry, every visit to any of the seven `sbAddr` stores of the
     token emit has `op ≤ LO`.

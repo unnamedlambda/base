@@ -14,7 +14,7 @@ namespace Lz4Sites
 open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
-/-- **The output cursor is below `lenOff` at every one of the ten `sbAddr`
+at_both /-- **The output cursor is below `lenOff` at every one of the ten `sbAddr`
     stores, for the whole run of every warp.** -/
 theorem cursorAtSites_shipped (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hderive : outPtr = inPtr + ((WP.mk 15).numBlk * (WP.mk 15).inStride + AlgorithmLib.LZ4Simt.copySlack))

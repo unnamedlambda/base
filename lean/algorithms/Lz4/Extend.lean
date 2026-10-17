@@ -888,7 +888,7 @@ end Generic
 
 -- ── `RegConfined`'s load half ───────────────────────────────────────────────
 
-/-- **Every global read is below the output allocation.**
+at_both /-- **Every global read is below the output allocation.**
 
     Twelve sites, five address registers, one shape: each is `inBase + X` with
     `X` bounded by the block geometry.  The worst case is the tail copy's
@@ -988,7 +988,7 @@ theorem loads_confined (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UIn
 
 -- ── `RegConfined`, assembled ─────────────────────────────────────────────────
 
-/-- **Every address the kernel uses is where it should be.**
+at_both /-- **Every address the kernel uses is where it should be.**
 
     The load half is `loads_confined`: all twelve `ldgo` sites, under the
     placement the host actually produces.  The store half is
@@ -1036,7 +1036,7 @@ theorem regConfined_shipped (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : Lis
     · exact stores_except_copy inPtr outPtr gm smemB hderive hib40 htop32 hbuf hdisj w k l r
         hsite hc
 
-/-- …and hence `KernelConfined`, with no assumption left about what any address
+at_both /-- …and hence `KernelConfined`, with no assumption left about what any address
     register holds. -/
 theorem kernelConfined_shipped (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hderive : outPtr = inPtr + ((WP.mk 15).numBlk * (WP.mk 15).inStride + AlgorithmLib.LZ4Simt.copySlack))

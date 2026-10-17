@@ -19,7 +19,7 @@ namespace Lz4Sites
 open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
-theorem prologue_at_shipped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
+at_both theorem prologue_at_shipped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hw : w < (WP.mk 15).numBlk) (hw64 : w * 32 + 32 < 2 ^ 64)
     (hderive : outPtr = inPtr + ((WP.mk 15).numBlk * (WP.mk 15).inStride + AlgorithmLib.LZ4Simt.copySlack)) :
     (siter K preSteps (initSt w inPtr outPtr gm smemB)).pc = 39
@@ -68,7 +68,7 @@ theorem head_mk (S S' : SState) (ws1 : AlgorithmLib.LZ4WarpDSL.WState) (ib iS LO
       ∧ (w.regs "searchPos").toNat = 0 ∧ (w.regs "litAnchor").toNat = 0 :=
   ⟨h1, ws1, h2, h3, h4, h5, h6, h7, h8⟩
 
-set_option maxRecDepth 100000 in
+at_both set_option maxRecDepth 100000 in
 set_option maxHeartbeats 1000000 in
 /-- **Prologue, then the `setp loopC`.** -/
 theorem shipped_loop_head (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)

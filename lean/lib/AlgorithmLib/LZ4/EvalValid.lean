@@ -1,8 +1,8 @@
 module
 public import AlgorithmLib.LZ4.OuterByteLayer
 meta import AlgorithmLib.LZ4.OuterByteLayer
-public import AlgorithmLib.LZ4.SimSLAssembly
-meta import AlgorithmLib.LZ4.SimSLAssembly
+public import AlgorithmLib.LZ4.StepDescent
+meta import AlgorithmLib.LZ4.StepDescent
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

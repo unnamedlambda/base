@@ -25,7 +25,7 @@ namespace Lz4Sites
 open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
-/-- The four length stores are at `outBase + lenOff + i`, and the region runs to
+at_both /-- The four length stores are at `outBase + lenOff + i`, and the region runs to
     `outBase + lenOff + 4`. -/
 theorem stores_la (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hderive : outPtr = inPtr + ((WP.mk 15).numBlk * (WP.mk 15).inStride + AlgorithmLib.LZ4Simt.copySlack))
@@ -66,24 +66,24 @@ theorem stores_la (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           Nat.mod_eq_of_lt (by omega)]
-        omega
+        have hprod : (WP.mk 15).numBlk * (WP.mk 15).inStride = 209715200 := (by decide); omega
       · rw [q1 (e1 rfl), hob, UInt64.toNat_add,
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           Nat.mod_eq_of_lt (by omega)]
-        omega
+        have hprod : (WP.mk 15).numBlk * (WP.mk 15).inStride = 209715200 := (by decide); omega
       · rw [q2 (e2 rfl), hob, UInt64.toNat_add,
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           Nat.mod_eq_of_lt (by omega)]
-        omega
+        have hprod : (WP.mk 15).numBlk * (WP.mk 15).inStride = 209715200 := (by decide); omega
       · rw [q3 (e3 rfl), hob, UInt64.toNat_add,
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega),
           Nat.mod_eq_of_lt (by omega)]
-        omega
+        have hprod : (WP.mk 15).numBlk * (WP.mk 15).inStride = 209715200 := (by decide); omega
 
-/-- The ten `sbAddr` stores, from `cursorAtSites_shipped`. -/
+at_both /-- The ten `sbAddr` stores, from `cursorAtSites_shipped`. -/
 theorem stores_sbAddr (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hderive : outPtr = inPtr + ((WP.mk 15).numBlk * (WP.mk 15).inStride + AlgorithmLib.LZ4Simt.copySlack))
     (hib40 : ∀ w, w < (WP.mk 15).numBlk → inPtr + w * (WP.mk 15).inStride < 2 ^ 40)
@@ -118,7 +118,7 @@ theorem stores_sbAddr (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt
             have hi : (WP.mk 15).inStride = 32768 := rfl
             omega)
 
-/-- **Fourteen of the sixteen store sites are confined** — every store except the
+at_both /-- **Fourteen of the sixteen store sites are confined** — every store except the
     cooperative copy's two.
 
     What is left for `RegConfined.stores` is exactly `cpDo` at pcs 165 and 251.
@@ -161,7 +161,7 @@ theorem stores_except_copy (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List
 
 -- ── The literal copy loop, pcs 152–168 ───────────────────────────────────────
 
-/-- `152 cpDst := outBase + op; 153 cpSrc := inBase + litAnchor; 154 cpI := 0;
+at_both /-- `152 cpDst := outBase + op; 153 cpSrc := inBase + litAnchor; 154 cpI := 0;
      155 setp cpCont; 156 lbl; 157 braifnot cpCont → 169; 158 cpDo := cpDst + cpI;
      159 cpDo += lane; 160 cpSo := cpSrc + cpI; 161 cpSo += lane;
      162 cpJ := cpI + lane; 163 setp cpP (cpJ < litLen); 164 ldgo; 165 stgp;
@@ -172,11 +172,11 @@ theorem stores_except_copy (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List
     on `cpI` itself is needed. -/
 def copyS : List Nat := (List.range 18).map (· + 152)
 
-theorem copyS_entry_lt : ∀ q, q < 274 → q ∉ copyS →
+at_both theorem copyS_entry_lt : ∀ q, q < 274 → q ∉ copyS →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ copyS → q' = 152 :=
   ivEntry_at K 152 18 152 shipped32_size (by decide)
 
-theorem copyS_entry : ∀ q, q ∉ copyS →
+at_both theorem copyS_entry : ∀ q, q ∉ copyS →
     ∀ q', q' ∈ AlgorithmLib.LZ4Simt.succsOf K q → q' ∈ copyS → q' = 152 := by
   intro q hq q' hq' hin
   rcases Nat.lt_or_ge q 274 with h | h
@@ -187,17 +187,17 @@ theorem copyS_entry : ∀ q, q ∉ copyS →
     rw [List.mem_singleton] at hq'
     exact absurd (hq' ▸ hin) hq
 
-/-- The four registers the bound needs are untouched inside the loop: the cursor,
+at_both /-- The four registers the bound needs are untouched inside the loop: the cursor,
     the output base, the literal length and the copy destination. -/
 theorem copy_no_dest : ∀ r ∈ ["op", "outBase", "litLen", "cpDst", "lane"],
     ∀ q ∈ ((List.range 14).map (· + 156)),
       (K[q]?.map (fun i => destOf i != some r)) = some true := by decide
 
-/-- …and the loop proper, `156–168`, is closed with the same exit. -/
+at_both /-- …and the loop proper, `156–168`, is closed with the same exit. -/
 theorem copyLoop_closed : PcClosed K ((List.range 14).map (· + 156)) [169] :=
   ivClosed_at K 156 14 [169] shipped32_size (by omega) (by decide)
 
-/-- **The copy loop's head**: four straight steps from 152 set `cpDst` to the
+at_both /-- **The copy loop's head**: four straight steps from 152 set `cpDst` to the
     cursor and leave the cursor, base and literal length alone. -/
 theorem copy_head (E : SState) (h152 : E.pc = 152) :
     (∀ i, i ≤ 4 → (siter K i E).pc = 152 + i)
@@ -264,19 +264,19 @@ theorem copy_head (E : SState) (h152 : E.pc = 152) :
           Ne.symm hne.2.2.2)
     rw [f4, f3, f2, f1]
 
-/-- The `binr` value helper (register-register), for `cpJ := cpI + lane`. -/
+at_both /-- The `binr` value helper (register-register), for `cpJ := cpI + lane`. -/
 theorem tail_val_binr (st : SState) (q : Nat) (o : SOp) (d a b : String) (hq : st.pc = q)
     (hi : K[q]? = some (.binr o d a b)) (l : Lane) :
     (sstep K st).regs d l = o.run (st.regs a l) (st.regs b l) := by
   rw [sstep, show K[st.pc]? = some (.binr o d a b) from by rw [hq]; exact hi]
   simp only [sstepInstr, SState.setPc, SState.setReg, eq_self_iff_true, if_true]
 
-theorem tail_pc_binr (st : SState) (q : Nat) (o : SOp) (d a b : String) (hq : st.pc = q)
+at_both theorem tail_pc_binr (st : SState) (q : Nat) (o : SOp) (d a b : String) (hq : st.pc = q)
     (hi : K[q]? = some (.binr o d a b)) : (sstep K st).pc = q + 1 := by
   rw [sstep, show K[st.pc]? = some (.binr o d a b) from by rw [hq]; exact hi]
   show st.pc + 1 = q + 1; rw [hq]
 
-/-- **The copy store's predicate is the bound.**  Three steps from 162:
+at_both /-- **The copy store's predicate is the bound.**  Three steps from 162:
     `cpJ := cpI + lane`, `cpP := cpJ < litLen`, the load — so at the store an
     active lane satisfies `cpI + lane < litLen`, and no bound on `cpI` is needed. -/
 theorem copy_pred (E : SState) (h162 : E.pc = 162) :
@@ -355,16 +355,16 @@ theorem copy_pred (E : SState) (h162 : E.pc = 162) :
     rw [fJ, siter_succ, e0, tail_val_binr E 162 (.add) "cpJ" "cpI" "lane" h162 (by decide) l]
     rfl
 
-/-- The straight stretch that ends at the copy store: `162 … 165`.  Its only
+at_both /-- The straight stretch that ends at the copy store: `162 … 165`.  Its only
     in-edge is `161 → 162`, so a visit to the store descends from a visit to 162
     and `copy_pred` applies there. -/
 def preStoreS : List Nat := (List.range 4).map (· + 162)
 
-theorem preStoreS_entry_lt : ∀ q, q < 274 → q ∉ preStoreS →
+at_both theorem preStoreS_entry_lt : ∀ q, q < 274 → q ∉ preStoreS →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ preStoreS → q' = 162 :=
   ivEntry_at K 162 4 162 shipped32_size (by decide)
 
-theorem preStoreS_entry : ∀ q, q ∉ preStoreS →
+at_both theorem preStoreS_entry : ∀ q, q ∉ preStoreS →
     ∀ q', q' ∈ AlgorithmLib.LZ4Simt.succsOf K q → q' ∈ preStoreS → q' = 162 := by
   intro q hq q' hq' hin
   rcases Nat.lt_or_ge q 274 with h | h
@@ -375,11 +375,11 @@ theorem preStoreS_entry : ∀ q, q ∉ preStoreS →
     rw [List.mem_singleton] at hq'
     exact absurd (hq' ▸ hin) hq
 
-/-- 165 leaves the stretch, so a visit to the store is exactly three steps past
+at_both /-- 165 leaves the stretch, so a visit to the store is exactly three steps past
     its entry. -/
 theorem preStore_succ : AlgorithmLib.LZ4Simt.succsOf K 165 = [166] := by decide
 
-theorem tokInv_at (LO : Nat) (hLO : LO < 2 ^ 64) (ss : SState)
+at_both theorem tokInv_at (LO : Nat) (hLO : LO < 2 ^ 64) (ss : SState)
     (h0 : ss.pc ∉ tokRegion)
     (l : Lane) (k : Nat)
     (hck : ∀ j, j ≤ k → (siter K j ss).pc = 124 →
@@ -442,7 +442,7 @@ theorem tokInv_at (LO : Nat) (hLO : LO < 2 ^ 64) (ss : SState)
   exact hinv
 
 
-/-- **The copy store's address, in `Nat`.**  `cpDo = (cpDst + cpJ)` with
+at_both /-- **The copy store's address, in `Nat`.**  `cpDo = (cpDst + cpJ)` with
     `cpDst = outBase + op`, so the address is `outBase + op + cpJ` provided the sum
     does not wrap — which the geometry gives, since `op + cpJ < op + litLen ≤ lenOff`
     and `outBase + lenOff + 4 < 2 ^ 64`.
@@ -458,14 +458,14 @@ theorem cpDo_toNat (ob opv cj : UInt64) (base : Nat) (hob : ob = UInt64.ofNat ba
     rw [UInt64.toNat_add, hb, Nat.mod_eq_of_lt (by omega)]
   rw [UInt64.toNat_add, h1, Nat.mod_eq_of_lt (by omega)]
 
-/-- …and the region membership that follows. -/
+at_both /-- …and the region membership that follows. -/
 theorem cpDo_region (base LO : Nat) (ob opv cj : UInt64) (hob : ob = UInt64.ofNat base)
     (hbud : opv.toNat + cj.toNat < LO) (htop : base + LO + 4 < 2 ^ 64) :
     base ≤ ((ob + opv) + cj).toNat ∧ ((ob + opv) + cj).toNat < base + LO + 4 := by
   rw [cpDo_toNat ob opv cj base hob (by omega)]
   omega
 
-/-- **Step 1 of the copy-store assembly**: a visit to the store at 165 is exactly
+at_both /-- **Step 1 of the copy-store assembly**: a visit to the store at 165 is exactly
     three steps past a visit to 162.  Earlier indices sit at 162–164, and a later
     one would step to 166, which is outside the stretch. -/
 theorem preStore_pin (ss : SState) (h0p : ss.pc ∉ preStoreS) (k : Nat)
@@ -497,7 +497,7 @@ theorem preStore_pin (ss : SState) (h0p : ss.pc ∉ preStoreS) (k : Nat)
       exact absurd hin (by decide)
     · omega
 
-/-- **Step 2 of the copy-store assembly**: a visit to the store descends from the
+at_both /-- **Step 2 of the copy-store assembly**: a visit to the store descends from the
     loop's setup at 152, at least four steps earlier, and the whole stretch stays
     inside the copy region. -/
 theorem copy_head_pin (ss : SState) (h0c : ss.pc ∉ copyS) (k : Nat)
@@ -516,9 +516,9 @@ theorem copy_head_pin (ss : SState) (h0c : ss.pc ∉ copyS) (k : Nat)
     rw [hpc] at hh; omega
   · exact hge
 
-theorem copyLoop_exit_succ : AlgorithmLib.LZ4Simt.succsOf K 169 = [170] := by decide
+at_both theorem copyLoop_exit_succ : AlgorithmLib.LZ4Simt.succsOf K 169 = [170] := by decide
 
-/-- **Step 3**: the four registers the bound needs are carried unchanged from the
+at_both /-- **Step 3**: the four registers the bound needs are carried unchanged from the
     loop head to the visit.  The loop's exit at 169 cannot have been passed —
     it steps to 170, outside `copyS`, which the confinement forbids. -/
 theorem copy_const (ss : SState) (j k : Nat) (hjk : j ≤ k)
@@ -543,7 +543,7 @@ theorem copy_const (ss : SState) (j k : Nat) (hjk : j ≤ k)
   rw [← siter_add K j (k - j) ss, show j + (k - j) = k from by omega] at hconst
   exact hconst
 
-/-- **Step 4**: the budget the copy needs, read out of `TokInv` at the loop setup.
+at_both /-- **Step 4**: the budget the copy needs, read out of `TokInv` at the loop setup.
     `tokRem q = litLen + 2 + lsicLen mlm` for `149 ≤ q ≤ 170`, so the invariant at
     pc 152 already says the cursor plus the whole literal run fits. -/
 theorem copy_budget (l : Lane) (LO : Nat) (st : SState) (h : TokInv l LO st)
@@ -557,7 +557,7 @@ theorem copy_budget (l : Lane) (LO : Nat) (st : SState) (h : TokInv l LO st)
   rw [hr] at h1
   omega
 
-/-- **The cooperative copy's store is confined.**  The composition of the four
+at_both /-- **The cooperative copy's store is confined.**  The composition of the four
     steps: the visit descends from 162 (predicate) and from 152 (setup), the four
     registers are carried across the loop, and `TokInv` at 152 pays for the whole
     literal run.  `cpDo = cpDst + cpJ` with `cpJ < litLen`, so no bound on `cpI`
@@ -627,7 +627,7 @@ theorem cpDo_confined (LO : Nat) (hLO : LO < 2 ^ 64) (base : Nat) (ss : SState)
     ((siter K k ss).regs "cpI" l + (siter K k ss).regs "lane" l) (by rw [← hobk]; exact hob)
     (by omega) htop
 
-/-- **The checkpoint, on the launch trace, at every index.**  `shipped_loop_ckpt`
+at_both /-- **The checkpoint, on the launch trace, at every index.**  `shipped_loop_ckpt`
     states it relative to the loop head; before that the prologue keeps the pc at
     most 39, so `pc_j = 124` forces `j` past the anchor. -/
 theorem matchEntry_anywhere (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
@@ -658,7 +658,7 @@ theorem matchEntry_anywhere (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : Lis
   rw [hidx] at hres
   exact hres
 
-/-- **The body copy's store site, on the launch trace** — the fifteenth of the
+at_both /-- **The body copy's store site, on the launch trace** — the fifteenth of the
     sixteen. -/
 theorem stores_cpDo165 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hderive : outPtr = inPtr + ((WP.mk 15).numBlk * (WP.mk 15).inStride + AlgorithmLib.LZ4Simt.copySlack))
@@ -690,13 +690,13 @@ theorem stores_cpDo165 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UIn
     (by have h := htop32 w.val w.isLt; omega)
 
 -- ── The tail copy, pcs 238–254 (same shape, shifted by 86) ──────────────────
-def copyS2 : List Nat := (List.range 18).map (· + 238)
+at_both def copyS2 : List Nat := (List.range 18).map (· + 238)
 
-theorem copyS2_entryLt : ∀ q, q < 274 → q ∉ copyS2 →
+at_both theorem copyS2_entryLt : ∀ q, q < 274 → q ∉ copyS2 →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ copyS2 → q' = 238 :=
   ivEntry_at K 238 18 238 shipped32_size (by decide)
 
-theorem copyS2_entry : ∀ q, q ∉ copyS2 →
+at_both theorem copyS2_entry : ∀ q, q ∉ copyS2 →
     ∀ q', q' ∈ AlgorithmLib.LZ4Simt.succsOf K q → q' ∈ copyS2 → q' = 238 := by
   intro q hq q' hq' hin
   rcases Nat.lt_or_ge q 274 with h | h
@@ -708,16 +708,16 @@ theorem copyS2_entry : ∀ q, q ∉ copyS2 →
     exact absurd (hq' ▸ hin) hq
 
 
-theorem copy_no_dest2 : ∀ r ∈ ["op", "outBase", "fLen", "cpDstF", "lane"],
+at_both theorem copy_no_dest2 : ∀ r ∈ ["op", "outBase", "fLen", "cpDstF", "lane"],
     ∀ q ∈ ((List.range 14).map (· + 242)),
       (K[q]?.map (fun i => destOf i != some r)) = some true := by decide
 
-/-- …and the loop proper, `242–254`, is closed with the same exit. -/
+at_both /-- …and the loop proper, `242–254`, is closed with the same exit. -/
 theorem copyLoop_closed2 : PcClosed K ((List.range 14).map (· + 242)) [255] :=
   ivClosed_at K 242 14 [255] shipped32_size (by omega) (by decide)
 
 
-theorem copy_head2 (E : SState) (h238 : E.pc = 238) :
+at_both theorem copy_head2 (E : SState) (h238 : E.pc = 238) :
     (∀ i, i ≤ 4 → (siter K i E).pc = 238 + i)
     ∧ (siter K 4 E).pc = 242
     ∧ (∀ l : Lane, (siter K 4 E).regs "cpDstF" l = E.regs "outBase" l + E.regs "op" l)
@@ -783,7 +783,7 @@ theorem copy_head2 (E : SState) (h238 : E.pc = 238) :
     rw [f4, f3, f2, f1]
 
 
-/-- **The copy store's predicate is the bound.**  Three steps from 248:
+at_both /-- **The copy store's predicate is the bound.**  Three steps from 248:
     `cpJ := cpI + lane`, `cpP := cpJ < litLen`, the load — so at the store an
     active lane satisfies `cpI + lane < litLen`, and no bound on `cpI` is needed. -/
 theorem copy_pred2 (E : SState) (h248 : E.pc = 248) :
@@ -862,16 +862,16 @@ theorem copy_pred2 (E : SState) (h248 : E.pc = 248) :
     rw [fJ, siter_succ, e0, tail_val_binr E 248 (.add) "cpJ" "cpI" "lane" h248 (by decide) l]
     rfl
 
-/-- The straight stretch that ends at the copy store: `248 … 251`.  Its only
+at_both /-- The straight stretch that ends at the copy store: `248 … 251`.  Its only
     in-edge is `247 → 248`, so a visit to the store descends from a visit to 248
     and `copy_pred2` applies there. -/
 def preStoreS2 : List Nat := (List.range 4).map (· + 248)
 
-theorem preStoreS2_entry_lt : ∀ q, q < 274 → q ∉ preStoreS2 →
+at_both theorem preStoreS2_entry_lt : ∀ q, q < 274 → q ∉ preStoreS2 →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ preStoreS2 → q' = 248 :=
   ivEntry_at K 248 4 248 shipped32_size (by decide)
 
-theorem preStoreS2_entry : ∀ q, q ∉ preStoreS2 →
+at_both theorem preStoreS2_entry : ∀ q, q ∉ preStoreS2 →
     ∀ q', q' ∈ AlgorithmLib.LZ4Simt.succsOf K q → q' ∈ preStoreS2 → q' = 248 := by
   intro q hq q' hq' hin
   rcases Nat.lt_or_ge q 274 with h | h
@@ -882,10 +882,10 @@ theorem preStoreS2_entry : ∀ q, q ∉ preStoreS2 →
     rw [List.mem_singleton] at hq'
     exact absurd (hq' ▸ hin) hq
 
-/-- 251 leaves the stretch, so a visit to the store is exactly three steps past
+at_both /-- 251 leaves the stretch, so a visit to the store is exactly three steps past
     its entry. -/
 theorem preStore_succ2 : AlgorithmLib.LZ4Simt.succsOf K 251 = [252] := by decide
-theorem preStore_pin2 (ss : SState) (h0p : ss.pc ∉ preStoreS2) (k : Nat)
+at_both theorem preStore_pin2 (ss : SState) (h0p : ss.pc ∉ preStoreS2) (k : Nat)
     (hpc : (siter K k ss).pc = 251) :
     ∃ j, k = j + 3 ∧ (siter K j ss).pc = 248 := by
   have hmem : (siter K k ss).pc ∈ preStoreS2 := by rw [hpc]; decide
@@ -914,7 +914,7 @@ theorem preStore_pin2 (ss : SState) (h0p : ss.pc ∉ preStoreS2) (k : Nat)
       exact absurd hin (by decide)
     · omega
 
-theorem copy_head2_pin2 (ss : SState) (h0c : ss.pc ∉ copyS2) (k : Nat)
+at_both theorem copy_head2_pin2 (ss : SState) (h0c : ss.pc ∉ copyS2) (k : Nat)
     (hpc : (siter K k ss).pc = 251) :
     ∃ j, j + 4 ≤ k ∧ (siter K j ss).pc = 238
       ∧ ∀ i, j ≤ i → i ≤ k → (siter K i ss).pc ∈ copyS2 := by
@@ -930,8 +930,8 @@ theorem copy_head2_pin2 (ss : SState) (h0c : ss.pc ∉ copyS2) (k : Nat)
     rw [hpc] at hh; omega
   · exact hge
 
-theorem copyLoop_exit_succ2 : AlgorithmLib.LZ4Simt.succsOf K 255 = [256] := by decide
-theorem copy_const2 (ss : SState) (j k : Nat) (hjk : j ≤ k)
+at_both theorem copyLoop_exit_succ2 : AlgorithmLib.LZ4Simt.succsOf K 255 = [256] := by decide
+at_both theorem copy_const2 (ss : SState) (j k : Nat) (hjk : j ≤ k)
     (h242 : (siter K j ss).pc = 242)
     (hall : ∀ i, j ≤ i → i ≤ k → (siter K i ss).pc ∈ copyS2)
     (r : String) (hr : r ∈ ["op", "outBase", "fLen", "cpDstF", "lane"]) :
@@ -953,7 +953,7 @@ theorem copy_const2 (ss : SState) (j k : Nat) (hjk : j ≤ k)
   rw [← siter_add K j (k - j) ss, show j + (k - j) = k from by omega] at hconst
   exact hconst
 
-/-- **The tail copy's store is confined.**  The same four steps as
+at_both /-- **The tail copy's store is confined.**  The same four steps as
     `cpDo_confined`, on the final literal run: the visit descends from 248 (the
     predicate) and from 238 (the setup), the five registers are carried across
     the loop, and `tail_copy_budget` pays for the whole run.  `cpDstF = outBase +
@@ -1021,9 +1021,9 @@ theorem cpDo_confined2 (LO : Nat) (hLO : LO < 2 ^ 64) (base : Nat) (E : SState)
   rw [hfinal]
   refine cpDo_region base LO ((siter K j1 E).regs "outBase" l) ((siter K j1 E).regs "op" l)
     ((siter K k E).regs "cpI" l + (siter K k E).regs "lane" l) (by rw [← hobk]; exact hob)
-    (by omega) htop
+    (by have hprod : (WP.mk 15).numBlk * (WP.mk 15).inStride = 209715200 := (by decide); omega) htop
 
-set_option maxHeartbeats 1000000 in
+at_both set_option maxHeartbeats 1000000 in
 /-- **The tail copy's store site, on the launch trace** — the sixteenth and last.
     Same entry as `cursorAtSites_shipped`'s tail branch: the checkpoint at the
     loop exit carries the budget, lane-uniformity of `op`/`litAnchor` and the
@@ -1091,7 +1091,7 @@ theorem stores_cpDo251 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UIn
 
 -- ── The load half: the kernel clamps its own search addresses ────────────────
 
-/-- The seven checks, unpacked.  No `decide` here — `p` is a variable. -/
+at_both /-- The seven checks, unpacked.  No `decide` here — `p` is a variable. -/
 theorem win_shapeG (p : Array SInstr) (S : Nat) (h : winShapeB p S = true) :
     (∀ q ∈ (List.range 51).map (· + 42), (p[q]?.map fallthroughOnlyB) = some true)
     ∧ (∀ q ∈ (List.range 47).map (· + 45),
@@ -1107,11 +1107,11 @@ theorem win_shapeG (p : Array SInstr) (S : Nat) (h : winShapeB p S = true) :
   obtain ⟨⟨⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩, h6⟩, h7⟩ := h
   exact ⟨h1, h2, h3, h4, h5, h6, h7⟩
 
-theorem win_ftG (p : Array SInstr) (S : Nat) (h : winShapeB p S = true) :
+at_both theorem win_ftG (p : Array SInstr) (S : Nat) (h : winShapeB p S = true) :
     ∀ q, 42 ≤ q → q ≤ 92 → (p[q]?.map fallthroughOnlyB) = some true := by
   intro q h1 h2; exact forall_window 42 51 (win_shapeG p S h).1 q h1 (by omega)
 
-/-- **`cap4 = S - 4` throughout the window**, pcs 45–92. -/
+at_both /-- **`cap4 = S - 4` throughout the window**, pcs 45–92. -/
 theorem cap4_in_windowG (p : Array SInstr) (S : Nat) (h : winShapeB p S = true)
     (ss : SState) (h0 : ss.pc < 45) :
     ∀ k : Nat, 45 ≤ (siter p k ss).pc → (siter p k ss).pc ≤ 92 →
@@ -1121,7 +1121,7 @@ theorem cap4_in_windowG (p : Array SInstr) (S : Nat) (h : winShapeB p S = true)
     (fun q h1 h2 => forall_window 45 47 (win_shapeG p S h).2.1 q h1 (by omega))
     ss h0
 
-/-- **Both search clamps hold at every state of the window**, at any geometry:
+at_both /-- **Both search clamps hold at every state of the window**, at any geometry:
     `45 rp := min posP cap4` and `64 rc := min cand cap4`, so the kernel clamps
     its own read pointer and no loop invariant has to be threaded to reach it. -/
 theorem rp_clampedG (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winShapeB p S = true)
@@ -1141,7 +1141,7 @@ theorem rp_clampedG (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winShape
       rw [cap4_in_windowG p S h ss h0 k (by omega) (by omega) l]
       exact Nat.le_of_eq (AlgorithmLib.LZ4Ptx.toNat_ofNat_lt _ (by omega)))
 
-theorem rc_clampedG (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winShapeB p S = true)
+at_both theorem rc_clampedG (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winShapeB p S = true)
     (ss : SState) (h0 : ss.pc < 45) :
     ∀ k : Nat, 65 ≤ (siter p k ss).pc → (siter p k ss).pc ≤ 92 →
       ∀ l : Lane, ((siter p k ss).regs "rc" l).toNat ≤ S - 4 :=
@@ -1163,14 +1163,14 @@ theorem rc_clampedG (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winShape
 theorem winShapeB_32 : winShapeB K 32768 = true := by decide
 
 
-theorem rp_clamped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
+at_both theorem rp_clamped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     ∀ k : Nat, 46 ≤ (siter K k (initSt w inPtr outPtr gm smemB)).pc →
       (siter K k (initSt w inPtr outPtr gm smemB)).pc ≤ 92 →
       ∀ l : Lane, ((siter K k (initSt w inPtr outPtr gm smemB)).regs "rp" l).toNat ≤ 32764 :=
   rp_clampedG K 32768 (by decide) winShapeB_32 (initSt w inPtr outPtr gm smemB)
     (by show (0:Nat) < 45; decide)
 
-theorem rc_clamped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
+at_both theorem rc_clamped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     ∀ k : Nat, 65 ≤ (siter K k (initSt w inPtr outPtr gm smemB)).pc →
       (siter K k (initSt w inPtr outPtr gm smemB)).pc ≤ 92 →
       ∀ l : Lane, ((siter K k (initSt w inPtr outPtr gm smemB)).regs "rc" l).toNat ≤ 32764 :=

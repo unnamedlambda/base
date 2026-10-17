@@ -1,4 +1,6 @@
 module
+public import Lz4.Both
+meta import Lz4.Both
 public import Lz4.Geo
 meta import Lz4.Geo
 public import Lz4.Interleave
@@ -146,9 +148,9 @@ theorem writes_at_site (p : Array SInstr) (st : SState) (j : Nat) (h : Writes p 
 -- uses it: the kernel is an `Array SInstr` of 274 entries built by the DSL, and
 -- kernel reduction over it is not viable.
 
-theorem numBlk32 : (WP.mk 15).numBlk = 6400 := by decide
+at_both theorem numBlk32 : (WP.mk 15).numBlk = 6400 := by decide
 
-theorem shipped32_size : (WP.mk 15).kernel.size = 274 := by decide
+at_both theorem shipped32_size : (WP.mk 15).kernel.size = 274 := by decide
 
 /-- **Twelve `ldgo` sites, five distinct address registers.**  `rpA`/`rcA` read
     the four bytes of a match candidate, `aP`/`aC` a single byte each during the
@@ -189,7 +191,7 @@ def loadRegs : List String := ["rpA", "rcA", "aP", "aC", "cpSo"]
 /-- The six that ever hold a global store address. -/
 def storeRegs : List String := ["sbAddr", "cpDo", "la0", "la1", "la2", "la3"]
 
-theorem load_regs32 :
+at_both theorem load_regs32 :
     ∀ s ∈ loadSites (WP.mk 15).kernel, s.2.1 ∈ loadRegs ∧ s.2.2 ≤ 3 := by
   rw [shipped32_load_sites]; decide
 
@@ -285,7 +287,7 @@ theorem unconditioned_form_is_false (gm : Array UInt8) (smemB : List UInt8) :
 /-- The ten store sites that use `sbAddr`.  Read off `shipped32_store_sites`. -/
 def sbAddrSites : List Nat := [130, 140, 147, 173, 178, 188, 195, 216, 226, 233]
 
-/-- **At every one of them, `sbAddr` holds `outBase + op`.**
+at_both /-- **At every one of them, `sbAddr` holds `outBase + op`.**
 
     Each is one instruction below a `bin add sbAddr outBase op`, and none of them
     is a label or `ret`, so `add_above_holds_at'` says the machine can only have
@@ -313,7 +315,7 @@ theorem sbAddr_is_outBase_add_op (w inPtr outPtr : Nat) (gm : Array UInt8)
 
 -- ── The tail's four length-field stores ──────────────────────────────────────
 
-/-- **The four length-field stores are confined for structural reasons.**
+at_both /-- **The four length-field stores are confined for structural reasons.**
 
     The tail is straight-line code:
 
@@ -379,7 +381,7 @@ theorem la_at_store (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt
 
 -- ── The two literal-copy stores ──────────────────────────────────────────────
 
-/-- **At both `cpDo` store sites, the address is `cpDst + cpI + lane`.**
+at_both /-- **At both `cpDo` store sites, the address is `cpDst + cpI + lane`.**
 
     `cpDo` is the one address register that is not set in a single instruction.
     It accumulates — `cpDst + cpI`, then `+ lane` — and the accumulating step
@@ -617,7 +619,7 @@ class Loads (p : Array AlgorithmLib.LZ4Simt.SInstr) : Prop where
      (66, "rcA", 0), (67, "rcA", 1), (68, "rcA", 2), (69, "rcA", 3),
      (110, "aP", 0), (111, "aC", 0), (164, "cpSo", 0), (250, "cpSo", 0)]
 
-/-- The shipped 32 KiB kernel's load and store sites. -/
+at_both /-- The shipped 32 KiB kernel's load and store sites. -/
 instance loads32 : Loads (WP.mk 15).kernel where
   loadAt := load_at_site
   storeCpDo := by rw [shipped32_store_sites]; decide
@@ -660,10 +662,10 @@ structure CursorAtSites (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8)
 
 -- ── The prologue never stands at a store site ───────────────────────────────
 
-/-- Every branch below pc 25 targets the `OOB` label at 272 — decided. -/
+at_both /-- Every branch below pc 25 targets the `OOB` label at 272 — decided. -/
 theorem shape_lo : ∀ t, t < 25 → stepShapeB (WP.mk 15).kernel 272 t = true := by decide
 
-/-- …and from 272 on there are no branches at all (272 is a label, 273 a `ret`,
+at_both /-- …and from 272 on there are no branches at all (272 is a label, 273 a `ret`,
     and the program ends). -/
 theorem shape_hi : ∀ q, 272 ≤ q → stepShapeB (WP.mk 15).kernel 272 q = true := by
   intro q hq
@@ -672,7 +674,7 @@ theorem shape_hi : ∀ q, 272 ≤ q → stepShapeB (WP.mk 15).kernel 272 q = tru
     rcases this with rfl | rfl <;> decide
   · rw [stepShapeB, Array.getElem?_eq_none_iff.mpr (by rw [shipped32_size]; omega)]
 
-/-- **For the first 25 steps the machine is below pc 25 or past 272** — so it is
+at_both /-- **For the first 25 steps the machine is below pc 25 or past 272** — so it is
     never at a store site, all of which lie in `[130, 272)`.
 
     This is the prologue bridge, and it needs no simulation of the prologue: the
@@ -727,14 +729,14 @@ theorem siter_eq_snsteps (p : Array SInstr) :
   | zero => intro st; rfl
   | succ m ih => intro st; simp only [siter, snsteps]; exact ih _
 
-theorem noDest20 : noDestFrom (WP.mk 15).kernel "outBase" 20 = true := by
+at_both theorem noDest20 : noDestFrom (WP.mk 15).kernel "outBase" 20 = true := by
   rw [noDestFrom_eq _ _ _ (by rw [shipped32_size]; omega)]; decide
-theorem noExit20 : noExitBelow (WP.mk 15).kernel 20 = true := by
+at_both theorem noExit20 : noExitBelow (WP.mk 15).kernel 20 = true := by
   rw [noExitBelow_eq _ _ (by rw [shipped32_size]; omega)]; decide
-theorem nbpos : 0 < (WP.mk 15).numBlk := by decide
-theorem nb64 : (WP.mk 15).numBlk < 2 ^ 64 := by decide
+at_both theorem nbpos : 0 < (WP.mk 15).numBlk := by decide
+at_both theorem nb64 : (WP.mk 15).numBlk < 2 ^ 64 := by decide
 
-set_option maxHeartbeats 2000000 in
+at_both set_option maxHeartbeats 2000000 in
 /-- **The second field of `CursorAtSites` is not an obligation.**
 
     At every `sbAddr` store site the output base is exactly the one the launch
@@ -813,6 +815,40 @@ theorem sbAddr_confined_of_cursor (inPtr outPtr : Nat) (gm : Array UInt8)
       (initSt w.val inPtr outPtr gm smemB)).regs "op" l).toNat < 2 ^ 64 := by
     rw [hob]; omega
   rw [hadd, toNat_add_of_lt _ _ hnw, hob]
+  exact ⟨by omega, by omega⟩
+
+at64 theorem sbAddr_confined_of_cursor64 (inPtr outPtr : Nat) (gm : Array UInt8)
+    (smemB : List UInt8) (h : CursorAtSites 16 inPtr outPtr gm smemB)
+    (hderive : outPtr = inPtr + ((WP.mk 16).numBlk * (WP.mk 16).inStride + AlgorithmLib.LZ4Simt.copySlack))
+    (w : Fin (WP.mk 16).numBlk) (k : Nat) (l : Lane)
+    (hpc : (siter (WP.mk 16).kernel (k + 1) (initSt w.val inPtr outPtr gm smemB)).pc
+      ∈ sbAddrSites)
+    (htop : outPtr + w.val * (WP.mk 16).outStride + (WP.mk 16).lenOff + 4 < 2 ^ 64) :
+    Lz4Interleave.outRegion 16 outPtr w.val
+      (((siter (WP.mk 16).kernel (k + 1)
+        (initSt w.val inPtr outPtr gm smemB)).regs "sbAddr" l).toNat) := by
+  obtain ⟨q, hq, hpcq⟩ : ∃ q, q ∈ sbAddrSites ∧
+      (siter (WP.mk 16).kernel (k + 1) (initSt w.val inPtr outPtr gm smemB)).pc = q :=
+    ⟨_, hpc, rfl⟩
+  have hadd := sbAddr_is_outBase_add_op64 w.val inPtr outPtr gm smemB k q hq hpcq l
+  have hob : ((siter (WP.mk 16).kernel (k + 1)
+      (initSt w.val inPtr outPtr gm smemB)).regs "outBase" l).toNat
+      = outPtr + w.val * (WP.mk 16).outStride := by
+    have hr : ∀ q ∈ sbAddrSites, 130 ≤ q ∧ q < 272 := by decide
+    rw [outBase_at_store_site64 w.val inPtr outPtr gm smemB w.isLt
+      (by have h := w.isLt; have hn := numBlk3264; omega) hderive (k + 1) l
+      (hr _ hpc).1 (hr _ hpc).2]
+    exact UInt64.toNat_ofNat_of_lt' (by have hs : UInt64.size = 2 ^ 64 := rfl; omega)
+  have hop := h.opLe w k l hpc
+  have hnw : ((siter (WP.mk 16).kernel (k + 1)
+      (initSt w.val inPtr outPtr gm smemB)).regs "outBase" l).toNat
+    + ((siter (WP.mk 16).kernel (k + 1)
+      (initSt w.val inPtr outPtr gm smemB)).regs "op" l).toNat < 2 ^ 64 := by
+    rw [hob]; omega
+  rw [hadd, toNat_add_of_lt _ _ hnw, hob]
+  have hprod : (WP.mk 16).numBlk * (WP.mk 16).inStride = 209715200 := by decide
+  have hls : (WP.mk 16).lenOff = 69888 := by decide
+  have hos : (WP.mk 16).outStride = 69896 := by decide
   exact ⟨by omega, by omega⟩
 
 -- ── `outBase` survives the whole body ────────────────────────────────────────
@@ -935,7 +971,7 @@ def lsicFS : List Nat := [222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232,
 
 theorem lsicFS_iv : lsicFS = (List.range 13).map (· + 222) := rfl
 
-theorem lsicFS_closed : PcClosed (WP.mk 15).kernel lsicFS [234] :=
+at_both theorem lsicFS_closed : PcClosed (WP.mk 15).kernel lsicFS [234] :=
   lsicFS_iv ▸ ivClosed_at (WP.mk 15).kernel 222 13 [234] shipped32_size (by omega) (by decide)
 
 /-- **Bytes the tail's LSIC still owes at each program point.**  `op + lsicRem`
@@ -992,14 +1028,14 @@ abbrev K := (WP.mk 15).kernel
 def noWide (o : Option SInstr) : Bool :=
   match o with | some (SInstr.stg32p _ _ _) => false | _ => true
 
-theorem shipped32_no_stg32p_lt : ∀ q : Nat, q < 274 → noWide K[q]? = true := by
+at_both theorem shipped32_no_stg32p_lt : ∀ q : Nat, q < 274 → noWide K[q]? = true := by
   have h : K.toList.all (fun i => noWide (some i)) = true := by decide
   intro q hq
   have hlt : q < K.size := by rw [shipped32_size]; exact hq
   rw [getElem?_pos K q hlt]
   exact List.all_eq_true.mp h K[q] (by simpa using Array.getElem_mem hlt)
 
-/-- **No 4-byte store in the shipped kernel** — all sixteen store sites are 1-byte
+at_both /-- **No 4-byte store in the shipped kernel** — all sixteen store sites are 1-byte
     `stg`.  Decided against the emitted array. -/
 theorem shipped32_no_stg32p : ∀ q : Nat, noWide K[q]? = true := by
   intro q
@@ -1007,7 +1043,7 @@ theorem shipped32_no_stg32p : ∀ q : Nat, noWide K[q]? = true := by
   · exact shipped32_no_stg32p_lt q h
   · rw [Array.getElem?_eq_none_iff.mpr (by rw [shipped32_size]; omega)]; rfl
 
-/-- **A write lands on the address register of an ACTIVE lane.**  `writes_at_site`
+at_both /-- **A write lands on the address register of an ACTIVE lane.**  `writes_at_site`
     flattens every store into a four-byte disjunction and ignores predicates,
     which is right for a frame and wrong for confinement: it would demand that the
     three bytes above each store, and the addresses of masked lanes, be in region
@@ -1041,7 +1077,7 @@ theorem writes_at_site32 (st : SState) (j : Nat) (h : WritesAct K st j) :
       | stg32p q addr s => rw [noWide] at hno; exact absurd hno (by decide)
       | _ => exact absurd h not_false
 
-/-- **`RegConfined` discharges `KernelConfined`** at the shipped 32 KiB geometry.
+at_both /-- **`RegConfined` discharges `KernelConfined`** at the shipped 32 KiB geometry.
     Everything about *where* the kernel touches memory is proven; what is assumed
     is only *what the address registers hold when they are used*. -/
 theorem kernelConfined_of_regConfined32 (inPtr outPtr : Nat) (gm : Array UInt8)
@@ -1065,7 +1101,7 @@ theorem kernelConfined_of_regConfined32 (inPtr outPtr : Nat) (gm : Array UInt8)
 
 
 
-theorem lsic_frame (l : Lane) (B : Nat) (st : SState) (q' : Nat)
+at_both theorem lsic_frame (l : Lane) (B : Nat) (st : SState) (q' : Nat)
     (hpc' : (sstep K st).pc = q')
     (hfr : ∀ (r : String) (j : Lane), r = "op" ∨ r = "litExtraF" ∨ r = "lsicC" →
       (sstep K st).regs r j = st.regs r j)
@@ -1086,7 +1122,7 @@ theorem lsic_frame (l : Lane) (B : Nat) (st : SState) (q' : Nat)
     rw [hfr "litExtraF" l (Or.inr (Or.inl rfl))]
     exact h4 (h4' ha hb).1 (h4' ha hb).2
 
-theorem lsic_at222 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 222)
+at_both theorem lsic_at222 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 222)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Lh18") := by rw [he]; decide
   have hstep : sstep K st = st.setPc (st.pc + 1) := by rw [sstep, hp]; rfl
@@ -1094,7 +1130,7 @@ theorem lsic_at222 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 222)
     (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem lsic_at224 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 224)
+at_both theorem lsic_at224 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 224)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.mov "c255" (SArg.imm 255)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "c255" (fun l => st.get l (SArg.imm 255))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
@@ -1102,7 +1138,7 @@ theorem lsic_at224 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 224)
     (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem lsic_at225 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 225)
+at_both theorem lsic_at225 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 225)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin .add "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "sbAddr" (fun l => SOp.add.run (st.regs "outBase" l) (st.get l (SArg.reg "op")))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
@@ -1110,7 +1146,7 @@ theorem lsic_at225 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 225)
     (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem lsic_at226 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 226)
+at_both theorem lsic_at226 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 226)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "c255") := by rw [he]; decide
   have hstep : sstep K st = { st with gmem := storeBytes st.gmem (fun _ => true) (st.regs "sbAddr") (st.regs "c255"), pc := st.pc + 1 } := by rw [sstep, hp]; rfl
@@ -1118,7 +1154,7 @@ theorem lsic_at226 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 226)
     (fun r j _ => by rw [hstep])
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem lsic_at231 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 231)
+at_both theorem lsic_at231 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 231)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Lx19") := by rw [he]; decide
   have hstep : sstep K st = st.setPc (st.pc + 1) := by rw [sstep, hp]; rfl
@@ -1126,7 +1162,7 @@ theorem lsic_at231 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 231)
     (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem lsic_at232 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 232)
+at_both theorem lsic_at232 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 232)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin .add "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "sbAddr" (fun l => SOp.add.run (st.regs "outBase" l) (st.get l (SArg.reg "op")))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
@@ -1134,7 +1170,7 @@ theorem lsic_at232 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 232)
     (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem lsic_at233 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 233)
+at_both theorem lsic_at233 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 233)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "litExtraF") := by rw [he]; decide
   have hstep : sstep K st = { st with gmem := storeBytes st.gmem (fun _ => true) (st.regs "sbAddr") (st.regs "litExtraF"), pc := st.pc + 1 } := by rw [sstep, hp]; rfl
@@ -1142,7 +1178,7 @@ theorem lsic_at233 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 233)
     (fun r j _ => by rw [hstep])
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem lsic_at230 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 230)
+at_both theorem lsic_at230 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 230)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bra "Lh18") := by rw [he]; decide
   have hstep : sstep K st = st.setPc (sfindLabel K "Lh18") := by rw [sstep, hp]; rfl
@@ -1151,7 +1187,7 @@ theorem lsic_at230 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 230)
     (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
 
-theorem lsic_at223 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 223)
+at_both theorem lsic_at223 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 223)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.braifnot "lsicC" "Lx19") := by rw [he]; decide
   have hstep : sstep K st
@@ -1185,7 +1221,7 @@ theorem lsic_at223 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 223)
     · rw [hpc']; intro hq; exact absurd hq (by omega)
     · rw [hpc']; intro _ hb; omega
 
-theorem lsic_at227 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 227)
+at_both theorem lsic_at227 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 227)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin .add "op" "op" (SArg.imm 1)) := by rw [he]; decide
   obtain ⟨h1, h2, h3, h4⟩ := h
@@ -1217,7 +1253,7 @@ theorem lsic_at227 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc', hlx' l]; intro _ _; exact hlx
 
-theorem lsic_at228 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 228)
+at_both theorem lsic_at228 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 228)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin .sub "litExtraF" "litExtraF" (SArg.imm 255)) := by
     rw [he]; decide
@@ -1252,7 +1288,7 @@ theorem lsic_at228 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 228)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro _ hb; omega
 
-theorem lsic_at229 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 229)
+at_both theorem lsic_at229 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 229)
     (h : LsicInv l B st) : LsicInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp .ge "lsicC" "litExtraF" (SArg.imm 255)) := by rw [he]; decide
   obtain ⟨h1, h2, h3, h4⟩ := h
@@ -1291,7 +1327,7 @@ theorem lsic_at229 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 229)
       · intro hn; exact absurd (hiff.mpr hn) hc
   · rw [hpc']; intro _ hb; omega
 
-/-- **The tail's LSIC loop preserves its invariant, at every one of its pcs.** -/
+at_both /-- **The tail's LSIC loop preserves its invariant, at every one of its pcs.** -/
 theorem lsicFS_hstep (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
     (hs : st.pc ∈ lsicFS) (hex : st.pc ∉ [234]) (h : LsicInv l B st) :
     LsicInv l B (sstep K st) := by
@@ -1311,7 +1347,7 @@ theorem lsicFS_hstep (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
   · exact lsic_at233 l B st e h
   · exact absurd (by simp [e]) hex
 
-/-- **Sites 226 and 233 are confined.**  From a state at the loop head (pc 222)
+at_both /-- **Sites 226 and 233 are confined.**  From a state at the loop head (pc 222)
     satisfying the invariant, the output cursor is below `B` at every visit to
     either `sbAddr` store, for the whole run of the loop. -/
 theorem lsic_op_lt (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
@@ -2042,7 +2078,7 @@ def tokS : List Nat := [129,130,131,132,133,134,135,136,137,138,139,140,141,142,
 
 theorem tokS_iv : tokS = (List.range 70).map (· + 129) := rfl
 
-theorem tokS_closed : PcClosed (WP.mk 15).kernel tokS [197, 198] :=
+at_both theorem tokS_closed : PcClosed (WP.mk 15).kernel tokS [197, 198] :=
   tokS_iv ▸ ivClosed_at (WP.mk 15).kernel 129 70 [197, 198] shipped32_size (by omega) (by decide)
 
 /-- **The invariant carried through the whole token emit.**  One potential plus
@@ -2086,7 +2122,7 @@ theorem tokInv_op_lt (l : Lane) (B : Nat) (st : SState) (h : TokInv l B st)
 -- rest either move the cursor, shrink a length field, or establish a guard
 -- for their successor, and are proven individually below.
 
-theorem tok_frame (l : Lane) (B : Nat) (st : SState) (q' : Nat)
+at_both theorem tok_frame (l : Lane) (B : Nat) (st : SState) (q' : Nat)
     (hpc' : (sstep K st).pc = q')
     (hfr : ∀ (r : String) (j : Lane), r = "op" ∨ r = "litLen" ∨ r = "litExtra" ∨ r = "mlm"
         ∨ r = "matExtra" ∨ r = "lsicC" ∨ r = "pLitBig" ∨ r = "pMatBig" →
@@ -2128,7 +2164,7 @@ theorem tok_frame (l : Lane) (B : Nat) (st : SState) (q' : Nat)
   · rw [hpc']; intro hq
     rw [hfr "pMatBig" 0 (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (rfl)))))))), hfr "mlm" 0 (Or.inr (Or.inr (Or.inr (Or.inl rfl))))]; exact c10 (h10 hq)
 
-theorem tok_at129 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 129)
+at_both theorem tok_at129 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 129)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 130 (by rw [sstep, hp]; show st.pc + 1 = 130; omega)
@@ -2137,7 +2173,7 @@ theorem tok_at129 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 129)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at130 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 130)
+at_both theorem tok_at130 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 130)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "tok") := by rw [he]; decide
   refine tok_frame l B st 131 (by rw [sstep, hp]; show st.pc + 1 = 131; omega)
@@ -2146,7 +2182,7 @@ theorem tok_at130 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 130)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at136 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 136)
+at_both theorem tok_at136 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 136)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Lh8") := by rw [he]; decide
   refine tok_frame l B st 137 (by rw [sstep, hp]; show st.pc + 1 = 137; omega)
@@ -2155,7 +2191,7 @@ theorem tok_at136 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 136)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at138 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 138)
+at_both theorem tok_at138 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 138)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.mov "c255" (SArg.imm 255)) := by rw [he]; decide
   refine tok_frame l B st 139 (by rw [sstep, hp]; show st.pc + 1 = 139; omega)
@@ -2164,7 +2200,7 @@ theorem tok_at138 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 138)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at139 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 139)
+at_both theorem tok_at139 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 139)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 140 (by rw [sstep, hp]; show st.pc + 1 = 140; omega)
@@ -2173,7 +2209,7 @@ theorem tok_at139 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 139)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at140 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 140)
+at_both theorem tok_at140 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 140)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "c255") := by rw [he]; decide
   refine tok_frame l B st 141 (by rw [sstep, hp]; show st.pc + 1 = 141; omega)
@@ -2182,7 +2218,7 @@ theorem tok_at140 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 140)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at144 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 144)
+at_both theorem tok_at144 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 144)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bra "Lh8") := by rw [he]; decide
   refine tok_frame l B st 136 (by rw [sstep, hp]; show sfindLabel K "Lh8" = 136; decide)
@@ -2191,7 +2227,7 @@ theorem tok_at144 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 144)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at145 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 145)
+at_both theorem tok_at145 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 145)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Lx9") := by rw [he]; decide
   refine tok_frame l B st 146 (by rw [sstep, hp]; show st.pc + 1 = 146; omega)
@@ -2200,7 +2236,7 @@ theorem tok_at145 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 145)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at146 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 146)
+at_both theorem tok_at146 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 146)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 147 (by rw [sstep, hp]; show st.pc + 1 = 147; omega)
@@ -2209,7 +2245,7 @@ theorem tok_at146 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 146)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at147 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 147)
+at_both theorem tok_at147 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 147)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "litExtra") := by rw [he]; decide
   refine tok_frame l B st 148 (by rw [sstep, hp]; show st.pc + 1 = 148; omega)
@@ -2218,7 +2254,7 @@ theorem tok_at147 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 147)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at149 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 149)
+at_both theorem tok_at149 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 149)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bra "Ln7") := by rw [he]; decide
   refine tok_frame l B st 151 (by rw [sstep, hp]; show sfindLabel K "Ln7" = 151; decide)
@@ -2227,7 +2263,7 @@ theorem tok_at149 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 149)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at150 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 150)
+at_both theorem tok_at150 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 150)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Le6") := by rw [he]; decide
   refine tok_frame l B st 151 (by rw [sstep, hp]; show st.pc + 1 = 151; omega)
@@ -2236,7 +2272,7 @@ theorem tok_at150 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 150)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at151 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 151)
+at_both theorem tok_at151 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 151)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Ln7") := by rw [he]; decide
   refine tok_frame l B st 152 (by rw [sstep, hp]; show st.pc + 1 = 152; omega)
@@ -2245,7 +2281,7 @@ theorem tok_at151 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 151)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at152 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 152)
+at_both theorem tok_at152 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 152)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "cpDst" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 153 (by rw [sstep, hp]; show st.pc + 1 = 153; omega)
@@ -2254,7 +2290,7 @@ theorem tok_at152 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 152)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at153 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 153)
+at_both theorem tok_at153 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 153)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "cpSrc" "inBase" (SArg.reg "litAnchor")) := by rw [he]; decide
   refine tok_frame l B st 154 (by rw [sstep, hp]; show st.pc + 1 = 154; omega)
@@ -2263,7 +2299,7 @@ theorem tok_at153 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 153)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at154 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 154)
+at_both theorem tok_at154 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 154)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.mov "cpI" (SArg.imm 0)) := by rw [he]; decide
   refine tok_frame l B st 155 (by rw [sstep, hp]; show st.pc + 1 = 155; omega)
@@ -2272,7 +2308,7 @@ theorem tok_at154 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 154)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at155 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 155)
+at_both theorem tok_at155 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 155)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.lt) "cpCont" "cpI" (SArg.reg "litLen")) := by rw [he]; decide
   refine tok_frame l B st 156 (by rw [sstep, hp]; show st.pc + 1 = 156; omega)
@@ -2281,7 +2317,7 @@ theorem tok_at155 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 155)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at156 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 156)
+at_both theorem tok_at156 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 156)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Ch10") := by rw [he]; decide
   refine tok_frame l B st 157 (by rw [sstep, hp]; show st.pc + 1 = 157; omega)
@@ -2290,7 +2326,7 @@ theorem tok_at156 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 156)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at158 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 158)
+at_both theorem tok_at158 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 158)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.binr (.add) "cpDo" "cpDst" "cpI") := by rw [he]; decide
   refine tok_frame l B st 159 (by rw [sstep, hp]; show st.pc + 1 = 159; omega)
@@ -2299,7 +2335,7 @@ theorem tok_at158 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 158)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at159 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 159)
+at_both theorem tok_at159 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 159)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.binr (.add) "cpDo" "cpDo" "lane") := by rw [he]; decide
   refine tok_frame l B st 160 (by rw [sstep, hp]; show st.pc + 1 = 160; omega)
@@ -2308,7 +2344,7 @@ theorem tok_at159 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 159)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at160 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 160)
+at_both theorem tok_at160 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 160)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.binr (.add) "cpSo" "cpSrc" "cpI") := by rw [he]; decide
   refine tok_frame l B st 161 (by rw [sstep, hp]; show st.pc + 1 = 161; omega)
@@ -2317,7 +2353,7 @@ theorem tok_at160 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 160)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at161 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 161)
+at_both theorem tok_at161 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 161)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.binr (.add) "cpSo" "cpSo" "lane") := by rw [he]; decide
   refine tok_frame l B st 162 (by rw [sstep, hp]; show st.pc + 1 = 162; omega)
@@ -2326,7 +2362,7 @@ theorem tok_at161 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 161)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at162 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 162)
+at_both theorem tok_at162 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 162)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.binr (.add) "cpJ" "cpI" "lane") := by rw [he]; decide
   refine tok_frame l B st 163 (by rw [sstep, hp]; show st.pc + 1 = 163; omega)
@@ -2335,7 +2371,7 @@ theorem tok_at162 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 162)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at163 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 163)
+at_both theorem tok_at163 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 163)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.lt) "cpP" "cpJ" (SArg.reg "litLen")) := by rw [he]; decide
   refine tok_frame l B st 164 (by rw [sstep, hp]; show st.pc + 1 = 164; omega)
@@ -2344,7 +2380,7 @@ theorem tok_at163 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 163)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at164 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 164)
+at_both theorem tok_at164 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 164)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.ldgo "cpB" "cpSo" 0) := by rw [he]; decide
   refine tok_frame l B st 165 (by rw [sstep, hp]; show st.pc + 1 = 165; omega)
@@ -2353,7 +2389,7 @@ theorem tok_at164 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 164)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at165 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 165)
+at_both theorem tok_at165 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 165)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stgp "cpP" "cpDo" "cpB") := by rw [he]; decide
   refine tok_frame l B st 166 (by rw [sstep, hp]; show st.pc + 1 = 166; omega)
@@ -2362,7 +2398,7 @@ theorem tok_at165 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 165)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at166 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 166)
+at_both theorem tok_at166 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 166)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "cpI" "cpI" (SArg.imm 32)) := by rw [he]; decide
   refine tok_frame l B st 167 (by rw [sstep, hp]; show st.pc + 1 = 167; omega)
@@ -2371,7 +2407,7 @@ theorem tok_at166 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 166)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at167 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 167)
+at_both theorem tok_at167 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 167)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.lt) "cpCont" "cpI" (SArg.reg "litLen")) := by rw [he]; decide
   refine tok_frame l B st 168 (by rw [sstep, hp]; show st.pc + 1 = 168; omega)
@@ -2380,7 +2416,7 @@ theorem tok_at167 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 167)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at168 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 168)
+at_both theorem tok_at168 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 168)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bra "Ch10") := by rw [he]; decide
   refine tok_frame l B st 156 (by rw [sstep, hp]; show sfindLabel K "Ch10" = 156; decide)
@@ -2389,7 +2425,7 @@ theorem tok_at168 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 168)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at169 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 169)
+at_both theorem tok_at169 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 169)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Cx11") := by rw [he]; decide
   refine tok_frame l B st 170 (by rw [sstep, hp]; show st.pc + 1 = 170; omega)
@@ -2398,7 +2434,7 @@ theorem tok_at169 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 169)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at171 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 171)
+at_both theorem tok_at171 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 171)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.band) "offLo" "off0" (SArg.imm 255)) := by rw [he]; decide
   refine tok_frame l B st 172 (by rw [sstep, hp]; show st.pc + 1 = 172; omega)
@@ -2407,7 +2443,7 @@ theorem tok_at171 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 171)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at172 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 172)
+at_both theorem tok_at172 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 172)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 173 (by rw [sstep, hp]; show st.pc + 1 = 173; omega)
@@ -2416,7 +2452,7 @@ theorem tok_at172 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 172)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at173 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 173)
+at_both theorem tok_at173 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 173)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "offLo") := by rw [he]; decide
   refine tok_frame l B st 174 (by rw [sstep, hp]; show st.pc + 1 = 174; omega)
@@ -2425,7 +2461,7 @@ theorem tok_at173 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 173)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at175 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 175)
+at_both theorem tok_at175 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 175)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.shr) "offHi" "off0" (SArg.imm 8)) := by rw [he]; decide
   refine tok_frame l B st 176 (by rw [sstep, hp]; show st.pc + 1 = 176; omega)
@@ -2434,7 +2470,7 @@ theorem tok_at175 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 175)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at176 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 176)
+at_both theorem tok_at176 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 176)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.band) "offHi" "offHi" (SArg.imm 255)) := by rw [he]; decide
   refine tok_frame l B st 177 (by rw [sstep, hp]; show st.pc + 1 = 177; omega)
@@ -2443,7 +2479,7 @@ theorem tok_at176 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 176)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at177 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 177)
+at_both theorem tok_at177 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 177)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 178 (by rw [sstep, hp]; show st.pc + 1 = 178; omega)
@@ -2452,7 +2488,7 @@ theorem tok_at177 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 177)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at178 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 178)
+at_both theorem tok_at178 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 178)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "offHi") := by rw [he]; decide
   refine tok_frame l B st 179 (by rw [sstep, hp]; show st.pc + 1 = 179; omega)
@@ -2461,7 +2497,7 @@ theorem tok_at178 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 178)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at184 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 184)
+at_both theorem tok_at184 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 184)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Lh14") := by rw [he]; decide
   refine tok_frame l B st 185 (by rw [sstep, hp]; show st.pc + 1 = 185; omega)
@@ -2470,7 +2506,7 @@ theorem tok_at184 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 184)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at186 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 186)
+at_both theorem tok_at186 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 186)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.mov "c255" (SArg.imm 255)) := by rw [he]; decide
   refine tok_frame l B st 187 (by rw [sstep, hp]; show st.pc + 1 = 187; omega)
@@ -2479,7 +2515,7 @@ theorem tok_at186 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 186)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at187 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 187)
+at_both theorem tok_at187 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 187)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 188 (by rw [sstep, hp]; show st.pc + 1 = 188; omega)
@@ -2488,7 +2524,7 @@ theorem tok_at187 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 187)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at188 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 188)
+at_both theorem tok_at188 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 188)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "c255") := by rw [he]; decide
   refine tok_frame l B st 189 (by rw [sstep, hp]; show st.pc + 1 = 189; omega)
@@ -2497,7 +2533,7 @@ theorem tok_at188 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 188)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at192 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 192)
+at_both theorem tok_at192 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 192)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bra "Lh14") := by rw [he]; decide
   refine tok_frame l B st 184 (by rw [sstep, hp]; show sfindLabel K "Lh14" = 184; decide)
@@ -2506,7 +2542,7 @@ theorem tok_at192 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 192)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at193 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 193)
+at_both theorem tok_at193 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 193)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.lbl "Lx15") := by rw [he]; decide
   refine tok_frame l B st 194 (by rw [sstep, hp]; show st.pc + 1 = 194; omega)
@@ -2515,7 +2551,7 @@ theorem tok_at193 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 193)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at194 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 194)
+at_both theorem tok_at194 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 194)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
   refine tok_frame l B st 195 (by rw [sstep, hp]; show st.pc + 1 = 195; omega)
@@ -2524,7 +2560,7 @@ theorem tok_at194 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 194)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at195 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 195)
+at_both theorem tok_at195 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 195)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.stg "sbAddr" "matExtra") := by rw [he]; decide
   refine tok_frame l B st 196 (by rw [sstep, hp]; show st.pc + 1 = 196; omega)
@@ -2533,7 +2569,7 @@ theorem tok_at195 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 195)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) h
 
-/-- The seven `op += 1` steps of the emit.  Each is paid for by a drop of one in
+at_both /-- The seven `op += 1` steps of the emit.  Each is paid for by a drop of one in
     `tokRem`, so the potential is unchanged; the no-wrap side condition comes
     free from the potential itself (`op + rem ≤ B < 2 ^ 64` and `rem ≥ 1`). -/
 theorem tok_op1 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (q' : Nat)
@@ -2652,7 +2688,7 @@ theorem tokRem_drop196 : ∀ a b c d : Nat,
   have e2 : tokRem 197 a b c d = 0 := rfl
   omega
 
-theorem tok_at131 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 131)
+at_both theorem tok_at131 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 131)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "op" "op" (SArg.imm 1)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "op"
@@ -2665,7 +2701,7 @@ theorem tok_at131 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at141 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 141)
+at_both theorem tok_at141 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 141)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "op" "op" (SArg.imm 1)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "op"
@@ -2678,7 +2714,7 @@ theorem tok_at141 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at148 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 148)
+at_both theorem tok_at148 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 148)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "op" "op" (SArg.imm 1)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "op"
@@ -2691,7 +2727,7 @@ theorem tok_at148 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at174 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 174)
+at_both theorem tok_at174 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 174)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "op" "op" (SArg.imm 1)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "op"
@@ -2704,7 +2740,7 @@ theorem tok_at174 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at179 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 179)
+at_both theorem tok_at179 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 179)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "op" "op" (SArg.imm 1)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "op"
@@ -2717,7 +2753,7 @@ theorem tok_at179 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at189 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 189)
+at_both theorem tok_at189 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 189)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "op" "op" (SArg.imm 1)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "op"
@@ -2730,7 +2766,7 @@ theorem tok_at189 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
     (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at196 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 196)
+at_both theorem tok_at196 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 196)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.add) "op" "op" (SArg.imm 1)) := by rw [he]; decide
   have hstep : sstep K st = (st.setReg "op"
@@ -2762,7 +2798,7 @@ theorem setp_ge_iff (a : UInt64) (V : Nat) (hV : (UInt64.ofNat V).toNat = V) :
       simp only [SCmp.run, decide_eq_true_eq, UInt64.le_iff_toNat_le, hV]
       exact hn
 
-/-- pc 135: `setp.ge lsicC, litExtra, 255` — establishes the literal-LSIC guard
+at_both /-- pc 135: `setp.ge lsicC, litExtra, 255` — establishes the literal-LSIC guard
     that pc 142's wrap-free subtraction will need, seven steps later. -/
 theorem tok_at135 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 135)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
@@ -2816,7 +2852,7 @@ theorem tok_at135 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 135)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at143 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 143)
+at_both theorem tok_at143 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 143)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.ge) "lsicC" "litExtra" (SArg.imm 255)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -2860,7 +2896,7 @@ theorem tok_at143 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 143)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at183 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 183)
+at_both theorem tok_at183 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 183)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.ge) "lsicC" "matExtra" (SArg.imm 255)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -2904,7 +2940,7 @@ theorem tok_at183 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 183)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at191 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 191)
+at_both theorem tok_at191 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 191)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.ge) "lsicC" "matExtra" (SArg.imm 255)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -2948,7 +2984,7 @@ theorem tok_at191 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 191)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at132 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 132)
+at_both theorem tok_at132 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 132)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.ge) "pLitBig" "litLen" (SArg.imm 15)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -2993,7 +3029,7 @@ theorem tok_at132 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 132)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at180 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 180)
+at_both theorem tok_at180 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 180)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.setp (.ge) "pMatBig" "mlm" (SArg.imm 15)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -3074,7 +3110,7 @@ theorem tokRem_sub182 (a b c d : Nat) (h : 15 ≤ c) :
   have e3 : lsicLen c = (c - 15) / 255 + 1 := by simp only [lsicLen, if_pos h]
   omega
 
-theorem tok_at134 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 134)
+at_both theorem tok_at134 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 134)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.sub) "litExtra" "litLen" (SArg.imm 15)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -3117,7 +3153,7 @@ theorem tok_at134 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 134)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at142 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 142)
+at_both theorem tok_at142 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 142)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.sub) "litExtra" "litExtra" (SArg.imm 255)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -3160,7 +3196,7 @@ theorem tok_at142 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 142)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at182 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 182)
+at_both theorem tok_at182 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 182)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.sub) "matExtra" "mlm" (SArg.imm 15)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -3203,7 +3239,7 @@ theorem tok_at182 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 182)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-theorem tok_at190 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 190)
+at_both theorem tok_at190 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 190)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.bin (.sub) "matExtra" "matExtra" (SArg.imm 255)) := by rw [he]; decide
   obtain ⟨c1, c2, c3, c4, c5, c6, c7, c8, c9, c10⟩ := h
@@ -3246,7 +3282,7 @@ theorem tok_at190 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 190)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-/-- pc 170: `op += litLen`, the literal run the copy loop has just written.  The
+at_both /-- pc 170: `op += litLen`, the literal run the copy loop has just written.  The
     only cursor move that is not by one; no-wrap still comes from the potential,
     since `op + litLen + 2 + |encNib mlm| ≤ B < 2 ^ 64`. -/
 theorem tok_at170 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 170)
@@ -3302,7 +3338,7 @@ theorem tok_at170 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.
   · rw [hpc']; intro hq; exact absurd hq (by omega)
   · rw [hpc']; intro hq; exact absurd hq (by omega)
 
-/-- pc 157: the literal copy loop's guard.  Both targets are inside the copy
+at_both /-- pc 157: the literal copy loop's guard.  Both targets are inside the copy
     region, where the potential is constant, so both sides are frame steps. -/
 theorem tok_at157 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 157)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
@@ -3337,7 +3373,7 @@ theorem tokRem_le198 (a b c d : Nat) : tokRem 198 a b c d ≤ tokRem 181 a b c d
   omega
 
 
-theorem tok_at133 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 133)
+at_both theorem tok_at133 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 133)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.braifnot "pLitBig" "Le6") := by rw [he]; decide
   have hstep : sstep K st
@@ -3386,7 +3422,7 @@ theorem tok_at133 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 133)
       (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
       (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at137 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 137)
+at_both theorem tok_at137 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 137)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.braifnot "lsicC" "Lx9") := by rw [he]; decide
   have hstep : sstep K st
@@ -3435,7 +3471,7 @@ theorem tok_at137 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 137)
       (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
       (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at181 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 181)
+at_both theorem tok_at181 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 181)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.braifnot "pMatBig" "Le12") := by rw [he]; decide
   have hstep : sstep K st
@@ -3484,7 +3520,7 @@ theorem tok_at181 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 181)
       (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega) (by rw [he]; omega)
       (by rw [he]; omega) (by rw [he]; omega) h
 
-theorem tok_at185 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 185)
+at_both theorem tok_at185 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 185)
     (h : TokInv l B st) : TokInv l B (sstep K st) := by
   have hp : K[st.pc]? = some (.braifnot "lsicC" "Lx15") := by rw [he]; decide
   have hstep : sstep K st
@@ -3534,7 +3570,7 @@ theorem tok_at185 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 185)
       (by rw [he]; omega) (by rw [he]; omega) h
 
 
-/-- **The token emit preserves its invariant, at every one of its sixty-eight
+at_both /-- **The token emit preserves its invariant, at every one of its sixty-eight
     program points.**  Forty-five are frame steps, seven move the cursor by one,
     four shrink a length field, six establish a guard for their successor, five
     are branches, and one is the literal-run cursor jump. -/
@@ -3614,7 +3650,7 @@ theorem tokS_hstep (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
   · exact absurd (by simp [e]) hex
   · exact absurd (by simp [e]) hex
 
-/-- **All seven `sbAddr` stores of the token emit are confined.**  From a state
+at_both /-- **All seven `sbAddr` stores of the token emit are confined.**  From a state
     at the emit entry (pc 129) satisfying the invariant, the output cursor stays
     below `B` at every visit to any of them, for the whole run. -/
 theorem tok_op_lt (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
@@ -3647,14 +3683,14 @@ theorem head_not_in_loopBodyS : (40 ∈ loopBodyS) = False := by decide
 
 -- ── The token-emit entry, at the shipped kernel ──────────────────────────────
 
-theorem mb_top : ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K 124, 124 < q' := by decide
+at_both theorem mb_top : ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K 124, 124 < q' := by decide
 
-/-- `hMBno` at the shipped kernel, in the decidable bounded form: nothing in the
+at_both /-- `hMBno` at the shipped kernel, in the decidable bounded form: nothing in the
     match-sequence range steps back to its own entry. -/
 theorem mb_noentry_lt : ∀ q', q' < 203 → 124 ≤ q' →
     124 ∉ AlgorithmLib.LZ4Simt.succsOf K q' := by decide
 
-/-- …and the hypothesis shape the simulation chain asks for. -/
+at_both /-- …and the hypothesis shape the simulation chain asks for. -/
 theorem mb_noentry (hi : Nat) (hhi : hi ≤ 202) :
     ∀ q', 124 ≤ q' → q' ≤ hi → 124 ∉ AlgorithmLib.LZ4Simt.succsOf K q' :=
   fun q' h1 h2 => mb_noentry_lt q' (by omega) h1

@@ -16,9 +16,12 @@ import all Init.Data.List.Sort.Basic
   down its whole trace — and `AllSteps` is the predicate that carries an
   obligation across a segment boundary.
 
-  This file is the descent itself: for each combinator the LZ4 body is assembled
-  from, a variant whose conclusion also discharges `AllSteps`.  Nothing in
-  `SimSLAssembly` changes; these sit alongside.
+  This file is the descent itself: each combinator the LZ4 body is assembled
+  from, with a conclusion that also discharges `AllSteps`.  A combinator that
+  takes no simulation as a premise is proven here once, in that form, and its
+  `SimSL'` form is the same statement with the obligation forgotten
+  (`SimSLQ.toSimSL'`, `drop_last`); the three that take one (`simSL'_seq`,
+  `simSL'_uwhile`, `simSL'_uwhileBodyInv`) are in `SimSLAssembly`.
 
   ## Why the obligation is a machine predicate
 
@@ -250,6 +253,30 @@ theorem SimSLQ.toSimSL' {ib R QQ stmt emit} (h : SimSLQ ib R QQ stmt emit) :
   obtain ⟨n, ss', hr, hpc', hc', hmi', -⟩ := h prog base ss ws fuel hpc hseg hlr hc hmi
   exact ⟨n, ss', hr, hpc', hc', hmi'⟩
 
+/-- Close `A₁ ∧ … ∧ Aₖ` from `h : A₁ ∧ … ∧ Aₖ ∧ B`. -/
+syntax "and_init " ident : tactic
+macro_rules
+  | `(tactic| and_init $h:ident) => `(tactic| first
+      | exact And.left $h
+      | (refine ⟨And.left $h, ?_⟩; have h' := And.right $h; and_init h'))
+
+open Lean Elab Tactic Meta in
+/-- Close a goal `∀ xs, ∃ n s, A₁ ∧ … ∧ Aₖ` from `h : ∀ xs, ∃ n s, A₁ ∧ … ∧ Aₖ ∧ B`:
+    the same simulation, without what it says of every step. -/
+elab "drop_last " h:term : tactic => do
+  let g ← getMainGoal
+  let (fvars, g) ← g.intros
+  let g ← g.withContext do
+    let he ← elabTerm h none
+    let app := mkAppN he (fvars.map mkFVar)
+    let g ← g.assert `hstrong (← inferType app) app
+    let (_, g) ← g.intro1P
+    pure g
+  replaceMainGoal [g]
+  let hs := mkIdent `hstrong
+  evalTactic (← `(tactic| (obtain ⟨n, ss', hh⟩ := $hs:ident; exact ⟨n, ss', by and_init hh⟩)))
+
+
 /-- Sequencing, with the obligation composed by `allSteps_seq`.  Note the second
     segment's start state is *determined* by the first's — `SReaches` is
     iteration — so no coupling is needed at the seam. -/
@@ -424,6 +451,17 @@ theorem simSLQ_single_pcIn (ib : Nat) (R : List String)
       have h := (f prog ss ws hpci hc).2
       exact ⟨by simp only [PcIn]; omega, by simp only [PcIn]; omega⟩)
 
+/-- `SimSL'` for a one-instruction leaf, mirroring `simSL_single` but also carrying
+    `MachInv` (which survives the single `sstep` since `i0` is write-safe). -/
+theorem simSL'_single (R : List String) (stmt : WStmt) (i0 : SInstr) (T : WState → WState)
+    (f : ∀ (prog : Array SInstr) (ss : SState) (ws : WState),
+      prog[ss.pc]? = some i0 → Couple R ss ws →
+      Couple R (sstep prog ss) (T ws) ∧ (sstep prog ss).pc = ss.pc + 1)
+    (heval : ∀ (ws : WState) (fuel : Nat), stmt.eval fuel ws = T ws)
+    (hsafe : wtgt i0 ≠ some "lane" ∧ wtgt i0 ≠ some "inBase" ∧ wtgt i0 ≠ some "tbl") :
+    SimSL' ib R stmt [i0] :=
+  (simSLQ_single_pcIn ib R stmt i0 T f heval hsafe).toSimSL'
+
 /-- **A `uwhile`'s scaffolding is inside its own emit range.**  This is `hscaf`
     for the pc-confinement predicate, and it is pure arithmetic: the five
     scaffolding points span `base` to `base + bodyEmit.length + 3`, and
@@ -450,6 +488,13 @@ theorem simSLQ_mov_pcIn (ib : Nat) (R : List String) (d : String) (a : WArg)
     (fun ws fuel => by simp [WStmt.eval])
     (by simp only [wtgt, ne_eq, Option.some.injEq]; exact ⟨hd.1, hd.2.1, hd.2.2⟩)
 
+/-- `SimSL'` mov leaf. -/
+theorem simSL'_mov (R : List String) (d : String) (a : WArg)
+    (ha : ∀ n, a = .reg n → n ∈ R)
+    (hd : d ≠ "lane" ∧ d ≠ "inBase" ∧ d ≠ "tbl") :
+    SimSL' ib R (.mov d a) [.mov d a.toS] :=
+  (simSLQ_mov_pcIn ib R d a ha hd).toSimSL'
+
 /-- `SimSLQ … PcIn` bin leaf. -/
 theorem simSLQ_bin_pcIn (ib : Nat) (R : List String) (o : WOp) (d a : String) (b : WArg)
     (ha : a ∈ R) (hb : ∀ n, b = .reg n → n ∈ R)
@@ -461,7 +506,14 @@ theorem simSLQ_bin_pcIn (ib : Nat) (R : List String) (o : WOp) (d a : String) (b
     (fun ws fuel => by simp [WStmt.eval])
     (by simp only [wtgt, ne_eq, Option.some.injEq]; exact ⟨hd.1, hd.2.1, hd.2.2⟩)
 
-/-- `SimSLQ … PcIn` setp leaf — transcribed from `simSL'_setp`. -/
+/-- `SimSL'` bin leaf. -/
+theorem simSL'_bin (R : List String) (o : WOp) (d a : String) (b : WArg)
+    (ha : a ∈ R) (hb : ∀ n, b = .reg n → n ∈ R)
+    (hd : d ≠ "lane" ∧ d ≠ "inBase" ∧ d ≠ "tbl") :
+    SimSL' ib R (.bin o d a b) [.bin o.toS d a b.toS] :=
+  (simSLQ_bin_pcIn ib R o d a b ha hb hd).toSimSL'
+
+/-- `SimSLQ … PcIn` setp leaf — `simSL'_setp`, with every step's pc inside the segment. -/
 theorem simSLQ_setp_pcIn (ib : Nat) (R : List String) (c : SCmp) (d a : String) (b : WArg)
     (ha : a ∈ R) (hb : ∀ n, b = .reg n → n ∈ R)
     (hd : d ≠ "lane" ∧ d ≠ "inBase" ∧ d ≠ "tbl") :
@@ -472,7 +524,14 @@ theorem simSLQ_setp_pcIn (ib : Nat) (R : List String) (c : SCmp) (d a : String) 
     (fun ws fuel => by simp [WStmt.eval])
     (by simp only [wtgt, ne_eq, Option.some.injEq]; exact ⟨hd.1, hd.2.1, hd.2.2⟩)
 
-/-- Transcribed from `simSL'_stgB`. -/
+/-- `SimSL'` setp leaf. -/
+theorem simSL'_setp (R : List String) (c : SCmp) (d a : String) (b : WArg)
+    (ha : a ∈ R) (hb : ∀ n, b = .reg n → n ∈ R)
+    (hd : d ≠ "lane" ∧ d ≠ "inBase" ∧ d ≠ "tbl") :
+    SimSL' ib R (.setp c d a b) [.setp c d a b.toS] :=
+  (simSLQ_setp_pcIn ib R c d a b ha hb hd).toSimSL'
+
+/-- `simSL'_stgB`, with every step's pc inside the segment. -/
 theorem simSLQ_stgB_pcIn (ib : Nat) (R : List String) (addr s : String) (haddr : addr ∈ R) (hs : s ∈ R) :
     SimSLQ ib R PcIn (.stgB addr s) [.stg addr s] :=
   simSLQ_single_pcIn ib R (.stgB addr s) (.stg addr s)
@@ -481,7 +540,12 @@ theorem simSLQ_stgB_pcIn (ib : Nat) (R : List String) (addr s : String) (haddr :
     (fun ws fuel => by simp [WStmt.eval])
     (by simp only [wtgt, ne_eq]; exact ⟨by simp, by simp, by simp⟩)
 
-/-- Transcribed from `simSL'_wStoreByte`. -/
+/-- `SimSL'` stgB leaf (writes gmem, not a register — trivially `MachSafe`). -/
+theorem simSL'_stgB (R : List String) (addr s : String) (haddr : addr ∈ R) (hs : s ∈ R) :
+    SimSL' ib R (.stgB addr s) [.stg addr s] :=
+  (simSLQ_stgB_pcIn ib R addr s haddr hs).toSimSL'
+
+/-- `simSL'_wStoreByte`, with every step's pc inside the segment. -/
 theorem simSLQ_wStoreByte_pcIn (ib : Nat) (R : List String) (val : String)
     (hval : val ∈ R) (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R) :
     SimSLQ ib R PcIn (wStoreByte val)
@@ -494,7 +558,16 @@ theorem simSLQ_wStoreByte_pcIn (ib : Nat) (R : List String) (val : String)
     · exact simSLQ_stgB_pcIn ib R "sbAddr" val hsb hval
     · exact simSLQ_bin_pcIn ib R .add "op" "op" (.imm 1) hop (fun n h => by cases h) (by decide)
 
-/-- Transcribed from `simSL'_wEmitToken`. -/
+/-- `SimSL'` for `wStoreByte val` — the `MachInv`-carrying analogue of
+    `simSL_wStoreByte`, composed from the `bin`/`stgB` leaves. -/
+theorem simSL'_wStoreByte (R : List String) (val : String)
+    (hval : val ∈ R) (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R) :
+    SimSL' ib R (wStoreByte val)
+      ([.bin .add "sbAddr" "outBase" (.reg "op")]
+        ++ ([.stg "sbAddr" val] ++ [.bin .add "op" "op" (.imm 1)])) :=
+  (simSLQ_wStoreByte_pcIn ib R val hval hout hop hsb).toSimSL'
+
+/-- `simSL'_wEmitToken`, with every step's pc inside the segment. -/
 theorem simSLQ_wEmitToken_pcIn (ib : Nat) (R : List String) (litLen tokLo : String)
     (hll : litLen ∈ R) (htl : tokLo ∈ R)
     (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
@@ -514,7 +587,20 @@ theorem simSLQ_wEmitToken_pcIn (ib : Nat) (R : List String) (litLen tokLo : Stri
       (by decide)
   · exact simSLQ_wStoreByte_pcIn ib R "tok" htok hout hop hsb
 
-/-- Transcribed from `simSL'_wEmitLSIC_body`. -/
+/-- `SimSL'` for `wEmitToken litLen tokLo`. -/
+theorem simSL'_wEmitToken (R : List String) (litLen tokLo : String)
+    (hll : litLen ∈ R) (htl : tokLo ∈ R)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
+    (htokHi : "tokHi" ∈ R) (htok : "tok" ∈ R) :
+    SimSL' ib R (wEmitToken litLen tokLo)
+      ([.bin .min "tokHi" litLen (.imm 15)]
+        ++ ([.bin .shl "tok" "tokHi" (.imm 4)]
+          ++ ([.bin .bor "tok" "tok" (.reg tokLo)]
+            ++ ([.bin .add "sbAddr" "outBase" (.reg "op")]
+              ++ ([.stg "sbAddr" "tok"] ++ [.bin .add "op" "op" (.imm 1)]))))) :=
+  (simSLQ_wEmitToken_pcIn ib R litLen tokLo hll htl hout hop hsb htokHi htok).toSimSL'
+
+/-- `simSL'_wEmitLSIC_body`, with every step's pc inside the segment. -/
 theorem simSLQ_wEmitLSIC_body_pcIn (ib : Nat) (R : List String) (n : String) (hn : n ∈ R)
     (hnW : n ≠ "lane" ∧ n ≠ "inBase" ∧ n ≠ "tbl")
     (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
@@ -534,7 +620,22 @@ theorem simSLQ_wEmitLSIC_body_pcIn (ib : Nat) (R : List String) (n : String) (hn
   · exact simSLQ_bin_pcIn ib R .sub n n (.imm 255) hn (fun m h => by cases h) hnW
   · exact simSLQ_setp_pcIn ib R .ge "lsicC" n (.imm 255) hn (fun m h => by cases h) (by decide)
 
-/-- Transcribed from `simSL'_foundMovs`. -/
+/-- `SimSL'` for the LSIC extend loop body (one iteration): `mov c255; wStoreByte
+    c255; bin sub n; setp ge lsicC`. -/
+theorem simSL'_wEmitLSIC_body (R : List String) (n : String) (hn : n ∈ R)
+    (hnW : n ≠ "lane" ∧ n ≠ "inBase" ∧ n ≠ "tbl")
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
+    (hc255 : "c255" ∈ R) (hlsicC : "lsicC" ∈ R) :
+    SimSL' ib R
+      (wseq [ .mov "c255" (.imm 255), wStoreByte "c255", .bin .sub n n (.imm 255),
+              .setp .ge "lsicC" n (.imm 255) ])
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub n n (.imm 255)] ++ [.setp .ge "lsicC" n (.imm 255)]))) :=
+  (simSLQ_wEmitLSIC_body_pcIn ib R n hn hnW hout hop hsb hc255 hlsicC).toSimSL'
+
+/-- `simSL'_foundMovs`, with every step's pc inside the segment. -/
 theorem simSLQ_foundMovs_pcIn (ib : Nat) (R : List String) (endCap : Nat)
     (hecR : "ecR" ∈ R) (hec1 : "ec1" ∈ R) (hml : "ml" ∈ R) (hextC : "extC" ∈ R) :
     SimSLQ ib R PcIn
@@ -551,7 +652,18 @@ theorem simSLQ_foundMovs_pcIn (ib : Nat) (R : List String) (endCap : Nat)
   · exact simSLQ_mov_pcIn ib R "ml" (.imm 4) (fun n h => by cases h) (by decide)
   · exact simSLQ_setp_pcIn ib R .ge "extC" "ml" (.imm 0) hml (fun n h => by cases h) (by decide)
 
-/-- Transcribed from `simSL'_foundSubs`. -/
+/-- The four found-branch setup statements as one `SimSL'` (straight-line leaves). -/
+theorem simSL'_foundMovs (R : List String) (endCap : Nat)
+    (hecR : "ecR" ∈ R) (hec1 : "ec1" ∈ R) (hml : "ml" ∈ R) (hextC : "extC" ∈ R) :
+    SimSL' ib R
+      (wseq [ .mov "ecR" (.imm endCap), .mov "ec1" (.imm (endCap - 1)),
+              .mov "ml" (.imm 4), .setp .ge "extC" "ml" (.imm 0) ])
+      (([.mov "ecR" (SArg.imm endCap)] : List SInstr)
+        ++ ([.mov "ec1" (.imm (endCap - 1))]
+          ++ ([.mov "ml" (.imm 4)] ++ [.setp .ge "extC" "ml" (.imm 0)]))) :=
+  (simSLQ_foundMovs_pcIn ib R endCap hecR hec1 hml hextC).toSimSL'
+
+/-- `simSL'_foundSubs`, with every step's pc inside the segment. -/
 theorem simSLQ_foundSubs_pcIn (ib : Nat) (R : List String) (litStart : String)
     (hp0 : "p0" ∈ R) (hcand0 : "cand0" ∈ R) (hls : litStart ∈ R)
     (hoff0 : "off0" ∈ R) (hlitLen : "litLen" ∈ R) :
@@ -566,7 +678,19 @@ theorem simSLQ_foundSubs_pcIn (ib : Nat) (R : List String) (litStart : String)
   · exact simSLQ_bin_pcIn ib R .sub "litLen" "p0" (.reg litStart) hp0 (fun n h => by cases h; exact hls)
       (by decide)
 
-/-- Transcribed from `simSL'_matchPre`. -/
+/-- `off0 := p0 - cand0 ; litLen := p0 - litAnchor` (the two computes before the
+    match-sequence emit) as one `SimSL'`. -/
+theorem simSL'_foundSubs (R : List String) (litStart : String)
+    (hp0 : "p0" ∈ R) (hcand0 : "cand0" ∈ R) (hls : litStart ∈ R)
+    (hoff0 : "off0" ∈ R) (hlitLen : "litLen" ∈ R) :
+    SimSL' ib R
+      (wseq [ .bin .sub "off0" "p0" (.reg "cand0"),
+              .bin .sub "litLen" "p0" (.reg litStart) ])
+      (([.bin .sub "off0" "p0" (.reg "cand0")] : List SInstr)
+        ++ [.bin .sub "litLen" "p0" (.reg litStart)]) :=
+  (simSLQ_foundSubs_pcIn ib R litStart hp0 hcand0 hls hoff0 hlitLen).toSimSL'
+
+/-- `simSL'_matchPre`, with every step's pc inside the segment. -/
 theorem simSLQ_matchPre_pcIn (ib : Nat) (R : List String) (litLen ml : String)
     (hll : litLen ∈ R) (hml : ml ∈ R) (hmlm : "mlm" ∈ R) (htokLo : "tokLo" ∈ R)
     (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
@@ -584,7 +708,19 @@ theorem simSLQ_matchPre_pcIn (ib : Nat) (R : List String) (litLen ml : String)
   · exact simSLQ_wEmitToken_pcIn ib R litLen "tokLo" hll htokLo hout hop hsb htokHi htok
   · exact simSLQ_setp_pcIn ib R .ge "pLitBig" litLen (.imm 15) hll (fun n h => by cases h) (by decide)
 
-/-- Transcribed from `simSL'_matchMid`. -/
+/-- Prefix of `wEmitMatchSeq` up to the `pLitBig` guard: `sub mlm; min tokLo;
+    wEmitToken; setp pLitBig`.  A single `SimSL'`. -/
+theorem simSL'_matchPre (R : List String) (litLen ml : String)
+    (hll : litLen ∈ R) (hml : ml ∈ R) (hmlm : "mlm" ∈ R) (htokLo : "tokLo" ∈ R)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
+    (htokHi : "tokHi" ∈ R) (htok : "tok" ∈ R) (hpb : "pLitBig" ∈ R) :
+    SimSL' ib R
+      (wseq [ .bin .sub "mlm" ml (.imm 4), .bin .min "tokLo" "mlm" (.imm 15),
+              wEmitToken litLen "tokLo", .setp .ge "pLitBig" litLen (.imm 15) ])
+      (matchPreEmit litLen ml) :=
+  (simSLQ_matchPre_pcIn ib R litLen ml hll hml hmlm htokLo hout hop hsb htokHi htok hpb).toSimSL'
+
+/-- `simSL'_matchMid`, with every step's pc inside the segment. -/
 theorem simSLQ_matchMid_pcIn (ib : Nat) (R : List String) (litStart : String)
     (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hib : "inBase" ∈ R) (hls : litStart ∈ R)
     (hcd : "cpDst" ∈ R) (hcs : "cpSrc" ∈ R) :
@@ -599,7 +735,18 @@ theorem simSLQ_matchMid_pcIn (ib : Nat) (R : List String) (litStart : String)
   · exact simSLQ_bin_pcIn ib R .add "cpSrc" "inBase" (.reg litStart) hib
       (fun n h => by cases h; exact hls) (by decide)
 
-/-- Transcribed from `simSL'_matchOff`. -/
+/-- The two copy-address computes for the match literal: `cpDst := outBase+op`,
+    `cpSrc := inBase+litStart`. -/
+theorem simSL'_matchMid (R : List String) (litStart : String)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hib : "inBase" ∈ R) (hls : litStart ∈ R)
+    (hcd : "cpDst" ∈ R) (hcs : "cpSrc" ∈ R) :
+    SimSL' ib R
+      (wseq [ .bin .add "cpDst" "outBase" (.reg "op"),
+              .bin .add "cpSrc" "inBase" (.reg litStart) ])
+      (matchMidEmit litStart) :=
+  (simSLQ_matchMid_pcIn ib R litStart hout hop hib hls hcd hcs).toSimSL'
+
+/-- `simSL'_matchOff`, with every step's pc inside the segment. -/
 theorem simSLQ_matchOff_pcIn (ib : Nat) (R : List String) (litLen off : String)
     (hll : litLen ∈ R) (hoff : off ∈ R) (hmlm : "mlm" ∈ R)
     (hoffLo : "offLo" ∈ R) (hoffHi : "offHi" ∈ R)
@@ -625,7 +772,21 @@ theorem simSLQ_matchOff_pcIn (ib : Nat) (R : List String) (litLen off : String)
   · exact simSLQ_wStoreByte_pcIn ib R "offHi" hoffHi hout hop hsb
   · exact simSLQ_setp_pcIn ib R .ge "pMatBig" "mlm" (.imm 15) hmlm (fun n h => by cases h) (by decide)
 
-/-- Transcribed from `simSL'_finalPrefix`. -/
+/-- The offset-store + `pMatBig` guard block: `bin op += litLen; band offLo;
+    wStoreByte offLo; shr offHi; band offHi; wStoreByte offHi; setp pMatBig`. -/
+theorem simSL'_matchOff (R : List String) (litLen off : String)
+    (hll : litLen ∈ R) (hoff : off ∈ R) (hmlm : "mlm" ∈ R)
+    (hoffLo : "offLo" ∈ R) (hoffHi : "offHi" ∈ R)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R) (hpm : "pMatBig" ∈ R) :
+    SimSL' ib R
+      (wseq [ .bin .add "op" "op" (.reg litLen),
+              .bin .band "offLo" off (.imm 255), wStoreByte "offLo",
+              .bin .shr "offHi" off (.imm 8), .bin .band "offHi" "offHi" (.imm 255),
+              wStoreByte "offHi", .setp .ge "pMatBig" "mlm" (.imm 15) ])
+      (matchOffEmit litLen off) :=
+  (simSLQ_matchOff_pcIn ib R litLen off hll hoff hmlm hoffLo hoffHi hout hop hsb hpm).toSimSL'
+
+/-- `simSL'_finalPrefix`, with every step's pc inside the segment. -/
 theorem simSLQ_finalPrefix_pcIn (ib : Nat) (R : List String) (litStart litLen : String)
     (hll : litLen ∈ R) (hzero : "zero" ∈ R) (hout : "outBase" ∈ R) (hop : "op" ∈ R)
     (hsb : "sbAddr" ∈ R) (htokHi : "tokHi" ∈ R) (htok : "tok" ∈ R) (hpb : "pLitBigF" ∈ R) :
@@ -645,7 +806,24 @@ theorem simSLQ_finalPrefix_pcIn (ib : Nat) (R : List String) (litStart litLen : 
   · exact simSLQ_wEmitToken_pcIn ib R litLen "zero" hll hzero hout hop hsb htokHi htok
   · exact simSLQ_setp_pcIn ib R .ge "pLitBigF" litLen (.imm 15) hll (fun n h => by cases h) (by decide)
 
-/-- Transcribed from `simSL'_finalMid`. -/
+/-- The prefix of `wEmitFinalSeq` up to (and including) the `pLitBigF` guard, as a
+    single `SimSL'` (all straight-line leaves): `mov zero; wEmitToken; setp`. -/
+theorem simSL'_finalPrefix (R : List String) (litStart litLen : String)
+    (hll : litLen ∈ R) (hzero : "zero" ∈ R) (hout : "outBase" ∈ R) (hop : "op" ∈ R)
+    (hsb : "sbAddr" ∈ R) (htokHi : "tokHi" ∈ R) (htok : "tok" ∈ R) (hpb : "pLitBigF" ∈ R) :
+    SimSL' ib R
+      (wseq [ .mov "zero" (.imm 0), wEmitToken litLen "zero",
+              .setp .ge "pLitBigF" litLen (.imm 15) ])
+      (([.mov "zero" (SArg.imm 0)] : List SInstr)
+        ++ (([.bin .min "tokHi" litLen (.imm 15)]
+          ++ ([.bin .shl "tok" "tokHi" (.imm 4)]
+            ++ ([.bin .bor "tok" "tok" (.reg "zero")]
+              ++ ([.bin .add "sbAddr" "outBase" (.reg "op")]
+                ++ ([.stg "sbAddr" "tok"] ++ [.bin .add "op" "op" (.imm 1)])))))
+          ++ [.setp .ge "pLitBigF" litLen (.imm 15)])) :=
+  (simSLQ_finalPrefix_pcIn ib R litStart litLen hll hzero hout hop hsb htokHi htok hpb).toSimSL'
+
+/-- `simSL'_finalMid`, with every step's pc inside the segment. -/
 theorem simSLQ_finalMid_pcIn (ib : Nat) (R : List String) (litStart : String)
     (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hib : "inBase" ∈ R) (hls : litStart ∈ R)
     (hcd : "cpDstF" ∈ R) (hcs : "cpSrcF" ∈ R) :
@@ -660,7 +838,19 @@ theorem simSLQ_finalMid_pcIn (ib : Nat) (R : List String) (litStart : String)
   · exact simSLQ_bin_pcIn ib R .add "cpSrcF" "inBase" (.reg litStart) hib
       (fun n h => by cases h; exact hls) (by decide)
 
-/-- Transcribed from `simSL'_uwhile`, with the pc-confinement obligation. -/
+/-- The two address computes before the literal copy: `cpDstF := outBase+op`,
+    `cpSrcF := inBase+litStart`.  A single `SimSL'`. -/
+theorem simSL'_finalMid (R : List String) (litStart : String)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hib : "inBase" ∈ R) (hls : litStart ∈ R)
+    (hcd : "cpDstF" ∈ R) (hcs : "cpSrcF" ∈ R) :
+    SimSL' ib R
+      (wseq [ .bin .add "cpDstF" "outBase" (.reg "op"),
+              .bin .add "cpSrcF" "inBase" (.reg litStart) ])
+      (([.bin .add "cpDstF" "outBase" (.reg "op")] : List SInstr)
+        ++ [.bin .add "cpSrcF" "inBase" (.reg litStart)]) :=
+  (simSLQ_finalMid_pcIn ib R litStart hout hop hib hls hcd hcs).toSimSL'
+
+/-- `simSL'_uwhile`, with the pc-confinement obligation. -/
 theorem simSLQ_uwhile_pcIn (ib : Nat) (R : List String) (cond lHead lEnd : String) (body : WStmt)
     (ebody : List SInstr) (prog : Array SInstr) (base : Nat)
     (hcond : cond ∈ R) (sb : SimSLQ ib R PcIn body ebody)
@@ -781,7 +971,7 @@ def BodySimInvQ (ib : Nat) (R : List String) (QQ : Nat → Nat → SState → Pr
       AllSteps prog (QQ base (base + bodyEmit.length)) m ss)
     ∧ P (bodyStmt.eval fuel ws)
 
-/-- Transcribed from `simSL'_uwhileBodyInv`, with pc-confinement.  Closes the
+/-- `simSL'_uwhileBodyInv`, with pc-confinement.  Closes the
     descent gate together with `simSLQ_uwhile_pcIn`. -/
 theorem simSLQ_uwhileBodyInv_pcIn (ib : Nat) (R : List String) (cond lHead lEnd : String) (P : WState → Prop)
     (bodyStmt : WStmt) (bodyEmit : List SInstr) (prog : Array SInstr) (base : Nat)
@@ -888,7 +1078,7 @@ theorem simSLQ_uwhileBodyInv_pcIn (ib : Nat) (R : List String) (cond lHead lEnd 
           simp [WStmt.eval, hb]
         rw [heval]; exact couple_setPc hc _
 
-/-- Transcribed from `simSL'_wEmitLSIC`. -/
+/-- `simSL'_wEmitLSIC`, with every step's pc inside the segment. -/
 theorem simSLQ_wEmitLSIC_pcIn (ib : Nat) (R : List String) (n lH lX : String)
     (hn : n ∈ R) (hnW : n ≠ "lane" ∧ n ≠ "inBase" ∧ n ≠ "tbl")
     (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
@@ -1003,7 +1193,47 @@ theorem simSLQ_wEmitLSIC_pcIn (ib : Nat) (R : List String) (n lH lX : String)
            simp only [List.length_append, List.length_cons, List.length_nil] at *
            omega⟩) hst3))
 
-/-- Transcribed from `simSL'_foundUpdates`. -/
+/-- `SimSL'` for `wEmitLSIC n`.  Manually glues the `lsicC` loop (via `simSL'_uwhile`,
+    which needs a `WhileHalts` witness) between the `setp` guard and trailing store —
+    loops can't chain through `simSL'_seq`, so this is done by hand. -/
+theorem simSL'_wEmitLSIC (R : List String) (n lH lX : String)
+    (hn : n ∈ R) (hnW : n ≠ "lane" ∧ n ≠ "inBase" ∧ n ≠ "tbl")
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
+    (hc255 : "c255" ∈ R) (hlsicC : "lsicC" ∈ R)
+    (lsicBody : List SInstr)
+    (hbodyDef : lsicBody =
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub n n (.imm 255)] ++ [.setp .ge "lsicC" n (.imm 255)])))) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (ws : WState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base
+        (([.setp .ge "lsicC" n (.imm 255)] : List SInstr)
+          ++ (uwhileEmit "lsicC" lH lX lsicBody
+            ++ ([.bin .add "sbAddr" "outBase" (.reg "op")]
+              ++ ([.stg "sbAddr" n] ++ [.bin .add "op" "op" (.imm 1)])))) →
+      LabelsResolve prog base
+        (([.setp .ge "lsicC" n (.imm 255)] : List SInstr)
+          ++ (uwhileEmit "lsicC" lH lX lsicBody
+            ++ ([.bin .add "sbAddr" "outBase" (.reg "op")]
+              ++ ([.stg "sbAddr" n] ++ [.bin .add "op" "op" (.imm 1)])))) →
+      Couple R ss ws → MachInv ib ss →
+      WhileHalts "lsicC"
+        (wseq [ .mov "c255" (.imm 255), wStoreByte "c255", .bin .sub n n (.imm 255),
+                .setp .ge "lsicC" n (.imm 255) ]) fuel
+        ((WStmt.setp SCmp.ge "lsicC" n (WArg.imm 255)).eval fuel ws) →
+      ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
+        ss'.pc = base +
+          (([.setp .ge "lsicC" n (.imm 255)] : List SInstr)
+            ++ (uwhileEmit "lsicC" lH lX lsicBody
+              ++ (([.bin .add "sbAddr" "outBase" (.reg "op")] : List SInstr)
+                ++ (([.stg "sbAddr" n] : List SInstr)
+                  ++ ([.bin .add "op" "op" (.imm 1)] : List SInstr))))).length ∧
+        Couple R ss' ((wEmitLSIC n).eval fuel ws) ∧ MachInv ib ss' := by
+  drop_last simSLQ_wEmitLSIC_pcIn ib R n lH lX hn hnW hout hop hsb hc255 hlsicC lsicBody hbodyDef
+
+/-- `simSL'_foundUpdates`, with every step's pc inside the segment. -/
 theorem simSLQ_foundUpdates_pcIn (ib : Nat) (R : List String)
     (hp0 : "p0" ∈ R) (hml : "ml" ∈ R) (hla : "litAnchor" ∈ R) (hsp : "searchPos" ∈ R) :
     SimSLQ ib R PcIn
@@ -1015,11 +1245,21 @@ theorem simSLQ_foundUpdates_pcIn (ib : Nat) (R : List String)
       (by decide)
   · exact simSLQ_mov_pcIn ib R "searchPos" (.reg "litAnchor") (fun n h => by cases h; exact hla) (by decide)
 
+/-- `litAnchor := p0 + ml ; searchPos := litAnchor` (the two updates after the
+    match-sequence emit) as one `SimSL'`. -/
+theorem simSL'_foundUpdates (R : List String)
+    (hp0 : "p0" ∈ R) (hml : "ml" ∈ R) (hla : "litAnchor" ∈ R) (hsp : "searchPos" ∈ R) :
+    SimSL' ib R
+      (wseq [ .bin .add "litAnchor" "p0" (.reg "ml"), .mov "searchPos" (.reg "litAnchor") ])
+      (([.bin .add "litAnchor" "p0" (.reg "ml")] : List SInstr)
+        ++ [.mov "searchPos" (.reg "litAnchor")]) :=
+  (simSLQ_foundUpdates_pcIn ib R hp0 hml hla hsp).toSimSL'
 
-/-- **Transcribed from `simSL'_lsicUif`, carrying pc-confinement.**
+
+/-- **`simSL'_lsicUif`, carrying pc-confinement.**
 
     The `uif` is not a plain `SimSL'` (it carries the LSIC fuel bound), so this is
-    a full transcription rather than a combinator instance.  The two arms are
+    proven outright rather than as a combinator instance.  The two arms are
     handled separately: each is a `SReaches` chain whose `AllSteps` is the same
     chain reassembled with `allSteps_seq`, with `allSteps_one` for the branch,
     the `bra` and the two `lbl` steps. -/
@@ -1252,6 +1492,39 @@ theorem simSLQ_lsicUif_pcIn (ib : Nat) (R : List String)
           (by rw [s2]; simp only [PcIn, SState.setPc, uifEmit_length, lsicThen, lsicEmit,
                 uwhileEmit_length, List.length_append, List.length_cons, List.length_nil]; omega)
 
+/-- The LSIC-conditional block `.uif pcond (wseq [bin sub eReg srcReg 15; wEmitLSIC eReg]) .skip`
+    simulates.  When the guard is live the extra-length `eReg = srcReg - 15` feeds a
+    terminating LSIC loop (fuel bound `srcReg.toNat < 255*fuel + 15`); otherwise it's a
+    no-op.  Bespoke (carries `ws` + the LSIC fuel bound) since `wEmitLSIC` isn't a plain
+    `SimSL'`.  Used for both litLen/mlm big-length extensions. -/
+theorem simSL'_lsicUif (R : List String) (pcond srcReg eReg lElse lEnd lH lX : String)
+    (hpcR : pcond ∈ R) (heReg : eReg ∈ R) (hsrc : srcReg ∈ R)
+    (heRegW : eReg ≠ "lane" ∧ eReg ≠ "inBase" ∧ eReg ≠ "tbl")
+    (heC : eReg ≠ "c255") (heO : eReg ≠ "op") (heS : eReg ≠ "sbAddr") (heL : eReg ≠ "lsicC")
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
+    (hc255 : "c255" ∈ R) (hlsicC : "lsicC" ∈ R)
+    (lsicBody : List SInstr)
+    (hbodyDef : lsicBody =
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub eReg eReg (.imm 255)] ++ [.setp .ge "lsicC" eReg (.imm 255)])))) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (ws : WState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base (uifEmit pcond lElse lEnd (lsicThen srcReg eReg lH lX lsicBody) []) →
+      LabelsResolve prog base (uifEmit pcond lElse lEnd (lsicThen srcReg eReg lH lX lsicBody) []) →
+      Couple R ss ws → MachInv ib ss →
+      (ws.regs pcond = 1 → 15 ≤ (ws.regs srcReg).toNat) →
+      (ws.regs pcond = 1 → (ws.regs srcReg).toNat < 255 * fuel + 15) →
+      ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
+        ss'.pc = base +
+          (uifEmit pcond lElse lEnd (lsicThen srcReg eReg lH lX lsicBody) []).length ∧
+        Couple R ss'
+          ((WStmt.uif pcond
+            (wseq [ .bin .sub eReg srcReg (.imm 15), wEmitLSIC eReg ]) .skip).eval fuel ws)
+          ∧ MachInv ib ss' := by
+  drop_last simSLQ_lsicUif_pcIn ib R pcond srcReg eReg lElse lEnd lH lX hpcR heReg hsrc heRegW heC heO heS heL hout hop hsb hc255 hlsicC lsicBody hbodyDef
+
 
 /-- The `AllSteps` corollary: a branch-free segment is pc-confined to its own range. -/
 theorem allSteps_pcIn_straight {p : Array SInstr} {emit : List SInstr} {base : Nat}
@@ -1263,7 +1536,7 @@ theorem allSteps_pcIn_straight {p : Array SInstr} {emit : List SInstr} {base : N
   exact ⟨by omega, by omega⟩
 
 
-/-- **Transcribed from `simSL_coopExtendStep`, carrying pc-confinement.**  The
+/-- **`simSL_coopExtendStep`, carrying pc-confinement.**  The
     extend step's emit is eighteen branch-free instructions, so `allSteps_pcIn_straight`
     discharges the obligation from `SegAt` alone. -/
 theorem simSLQ_coopExtendStep_pcIn (R : List String) (inStride endCap : Nat)
@@ -1386,8 +1659,51 @@ theorem simSLQ_coopExtendStep_pcIn (R : List String) (inStride endCap : Nat)
     rw [heval]; exact hcpl
   · exact allSteps_pcIn_straight hseg hpc (by decide) 18 (by decide)
 
+/-- `SimSL'` for the extend step.  The added coupling-side value hypotheses
+    (`hecRv`/`hec1v` — `ecR`/`ec1` hold `endCap`/`endCap-1`) and no-overflow bounds
+    (`hp64`/`hml64`) are what the body establishes just before the step; they let the
+    per-lane `hbound`/`hbytes` reduce to the `Nat`-level extend semantics. -/
+theorem simSL_coopExtendStep (R : List String) (inStride endCap : Nat)
+    (hctx : ExtCtx R)
+    (hendCap : endCap = inStride - 5)
+    (hRdisj : ∀ r ∈ R, r ∉ ["idx", "pe", "pIn", "peC", "dfe", "caC", "peD", "aP", "caD", "aC",
+               "bP", "bC", "pEqB", "pOk", "balOk", "mis", "revM"])
+    -- Coupling-side (`ws`) restatements of the leaf's per-lane conditions, which the
+    -- body assembly discharges from the loop invariant (`p < searchLim`, `ml` bounds,
+    -- `ecR = endCap`, `ec1 = endCap-1`, `inBase = 0`).  Given here so the machine
+    -- (`ss`) versions follow by `Couple`/`MachInv` substitution.
+    (ws : WState)
+    (hboundW : ∀ l : Fin 32,
+        ((ws.regs "p0") + ((ws.regs "ml") + UInt64.ofNat l.val) < ws.regs "ecR")
+          ↔ (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap)
+    (hbytesW : ∀ l : Fin 32,
+        (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap →
+        (UInt64.ofNat (ws.gmem.getD
+            (SOp.run .add (ws.regs "inBase")
+              (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val))
+                (ws.regs "ec1"))).toNat 0).toNat
+         == UInt64.ofNat (ws.gmem.getD
+            (SOp.run .add (ws.regs "inBase")
+              (ws.regs "cand0" + (SOp.run .sub
+                (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val)) (ws.regs "ec1"))
+                (ws.regs "p0")))).toNat 0).toNat)
+          = (byte (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+                ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val))
+             == byte (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+                ((ws.regs "cand0").toNat + ((ws.regs "ml").toNat + l.val)))) :
+    -- (`ws` is now an explicit arg; `SimSL'` is instantiated at exactly this `ws`.)
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (fuel : Nat),
+      ss.pc = base → SegAt prog base (coopExtendEmit "adv") →
+      LabelsResolve prog base (coopExtendEmit "adv") →
+      Couple R ss ws → MachInv ib ss →
+      ∃ (n : Nat) (ss' : SState),
+        SReaches prog n ss ss' ∧ ss'.pc = base + (coopExtendEmit "adv").length ∧
+        Couple R ss' ((WStmt.coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap).eval fuel ws)
+          ∧ MachInv ib ss' := by
+  drop_last simSLQ_coopExtendStep_pcIn R inStride endCap hctx hendCap hRdisj ws hboundW hbytesW
 
-/-- **Transcribed from `simSL_coopWindow`, carrying pc-confinement.**  Fifty-one
+
+/-- **`simSL_coopWindow`, carrying pc-confinement.**  Fifty-one
     branch-free instructions, so `allSteps_pcIn_straight` closes it from `SegAt`. -/
 theorem simSLQ_coopWindow_pcIn (R : List String) (inStride searchLim hashLog s : Nat)
     (hsp0 : "searchPos" ∈ R) (hfound : "found" ∈ R) (hinbR : "inBase" ∈ R)
@@ -1505,7 +1821,39 @@ theorem simSLQ_coopWindow_pcIn (R : List String) (inStride searchLim hashLog s :
       simp only [WStmt.eval]
     rw [heval]; exact hcpl
 
-/-- **Transcribed from `coopWindow_couple_found`, carrying pc-confinement.** -/
+/-- `SimSL'`-shaped simulation for the window step.  Threads `MachInv` (giving the
+    leaf's `inBase=0`/`tbl=0`/`lane=l`) and takes the remaining loop-invariant facts
+    (`searchPos` uniform `= s`, bounds) at `ws`/`s` level — discharged by the body. -/
+theorem simSL_coopWindow (R : List String) (inStride searchLim hashLog s : Nat)
+    (hsp0 : "searchPos" ∈ R) (hfound : "found" ∈ R) (hinbR : "inBase" ∈ R)
+    (hib40 : ib < 2 ^ 40)
+    (hsl : searchLim ≤ inStride - 4) (hcapb : inStride - 4 < 2 ^ 64)
+    (hhl : hashLog ≤ 32) (hlen : inStride < 2 ^ 40)
+    (hp64 : s + 32 < 2 ^ 64)
+    (hp0R : "p0" ∉ R) (hcand0R : "cand0" ∉ R)
+    (hRdisj : ∀ r ∈ R, r ∉ ["posP", "pValid", "cap4", "rp", "rpA", "b0", "b1", "b2", "b3", "v32",
+        "hh", "addr", "candRaw", "cand", "rc", "rcA", "c0", "c1", "c2", "c3", "vc",
+        "pNE", "pCO", "pEq", "pH1", "pH2", "pHit", "bal", "rev", "fl", "pLe",
+        "pIns", "pp1"])
+    (ws : WState) (hsval : (ws.regs "searchPos").toNat = s)
+    (hspU : ∀ l : Fin 32, (∀ ss : SState, Couple R ss ws → ss.regs "searchPos" l = UInt64.ofNat s)) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base (coopWindowEmit "found" "p0" "cand0" "searchPos" inStride searchLim hashLog) →
+      LabelsResolve prog base
+        (coopWindowEmit "found" "p0" "cand0" "searchPos" inStride searchLim hashLog) →
+      Couple R ss ws → MachInv ib ss →
+      ∃ (n : Nat) (ss' : SState),
+        SReaches prog n ss ss' ∧
+        ss'.pc = base +
+          (coopWindowEmit "found" "p0" "cand0" "searchPos" inStride searchLim hashLog).length ∧
+        Couple R ss'
+          ((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride searchLim hashLog 0).eval
+            fuel ws)
+          ∧ MachInv ib ss' := by
+  drop_last simSLQ_coopWindow_pcIn R inStride searchLim hashLog s hsp0 hfound hinbR hib40 hsl hcapb hhl hlen hp64 hp0R hcand0R hRdisj ws hsval hspU
+
+/-- **`coopWindow_couple_found`, carrying pc-confinement.** -/
 theorem coopWindow_couple_found_pcIn (R0 : List String) (inStride searchLim hashLog s p c : Nat)
     (hsp0 : "searchPos" ∈ R0) (hfound : "found" ∈ R0) (hinbR : "inBase" ∈ R0)
     (hib40 : ib < 2 ^ 40)
@@ -1632,7 +1980,7 @@ theorem coopWindow_couple_found_pcIn (R0 : List String) (inStride searchLim hash
 -- ── `simSL_coopCopy`: lift `coopCopy_couple` (with its exposed frame) ────────────
 
 
-/-- **Transcribed from `CoopCopyModel.coopCopy_loop`, carrying pc-confinement.** -/
+/-- **`CoopCopyModel.coopCopy_loop`, carrying pc-confinement.** -/
 theorem coopCopy_loop_pcIn (prog : Array SInstr) (base : Nat) (lH lX dst src len : String)
     (dst0 src0 len0 : Nat)
     (hseg : SegAt prog base (uwhileEmit "cpCont" lH lX (coopCopyBody dst src len)))
@@ -1913,7 +2261,7 @@ theorem coopCopy_loop_pcIn (prog : Array SInstr) (base : Nat) (lH lX dst src len
 
 
 
-/-- **Transcribed from `coopCopy_couple`, carrying pc-confinement.** -/
+/-- **`coopCopy_couple`, carrying pc-confinement.** -/
 theorem coopCopy_couple_pcIn (R : List String) (dst src len lH lX : String)
     (prog : Array SInstr) (base : Nat) (ss : SState) (ws : WState) (fuel : Nat)
     (hpc : ss.pc = base)
@@ -2076,7 +2424,7 @@ theorem coopCopy_couple_pcIn (R : List String) (dst src len lH lX : String)
     exact hfin j (by omega)
 
 
-/-- **Transcribed from `simSL_coopCopy`, carrying pc-confinement.** -/
+/-- **`simSL_coopCopy`, carrying pc-confinement.** -/
 theorem simSLQ_coopCopy_pcIn (R : List String) (dst src len lH lX : String)
     (hdst : dst ∈ R) (hsrc : src ∈ R) (hlenR : len ∈ R)
     (hRdisj : ∀ r ∈ R, r ∉ coopCopyScratch)
@@ -2113,8 +2461,36 @@ theorem simSLQ_coopCopy_pcIn (R : List String) (dst src len lH lX : String)
   · rw [hframeE "inBase" (by simp [coopCopyScratch]) l]; exact hmi.2.1 l
   · rw [hframeE "tbl" (by simp [coopCopyScratch]) l]; exact hmi.2.2 l
 
+/-- `SimSL'`-shaped simulation for a `.coopCopy dst src len` step, whose emit is
+    `[mov cpI; setp cpCont] ++ uwhileEmit "cpCont" lH lX (coopCopyBody ...)`.  Uses
+    the frame `coopCopy_couple` now exposes to preserve `MachInv`. -/
+theorem simSL_coopCopy (R : List String) (dst src len lH lX : String)
+    (hdst : dst ∈ R) (hsrc : src ∈ R) (hlenR : len ∈ R)
+    (hRdisj : ∀ r ∈ R, r ∉ coopCopyScratch)
+    (ws : WState)
+    (hb1 : (ws.regs dst).toNat < 2 ^ 32) (hb2 : (ws.regs src).toNat < 2 ^ 32)
+    (hb3 : (ws.regs len).toNat < 2 ^ 32)
+    (hdisjW : (ws.regs dst).toNat + (ws.regs len).toNat ≤ (ws.regs src).toNat
+      ∨ (ws.regs src).toNat + (ws.regs len).toNat ≤ (ws.regs dst).toNat)
+    (hsizeW : (ws.regs dst).toNat + (ws.regs len).toNat ≤ ws.gmem.size) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base
+        (([.mov "cpI" (.imm 0), .setp .lt "cpCont" "cpI" (.reg len)] : List SInstr)
+          ++ uwhileEmit "cpCont" lH lX (coopCopyBody dst src len)) →
+      LabelsResolve prog base
+        (([.mov "cpI" (.imm 0), .setp .lt "cpCont" "cpI" (.reg len)] : List SInstr)
+          ++ uwhileEmit "cpCont" lH lX (coopCopyBody dst src len)) →
+      Couple R ss ws → MachInv ib ss →
+      ∃ (n : Nat) (ss' : SState), SReaches prog n ss ss' ∧
+        ss'.pc = base +
+          (([.mov "cpI" (.imm 0), .setp .lt "cpCont" "cpI" (.reg len)] : List SInstr)
+            ++ uwhileEmit "cpCont" lH lX (coopCopyBody dst src len)).length ∧
+        Couple R ss' ((WStmt.coopCopy dst src len).eval fuel ws) ∧ MachInv ib ss' := by
+  drop_last simSLQ_coopCopy_pcIn R dst src len lH lX hdst hsrc hlenR hRdisj ws hb1 hb2 hb3 hdisjW hsizeW
 
-/-- **Transcribed from `simSL'_extCBody`, carrying pc-confinement.** -/
+
+/-- **`simSL'_extCBody`, carrying pc-confinement.** -/
 theorem simSLQ_extCBody_pcIn (R : List String) (inStride endCap : Nat)
     (hctx : ExtCtx R) (hendCap : endCap = inStride - 5)
     (hml : "ml" ∈ R) (hadv : "adv" ∈ R) (hextC : "extC" ∈ R)
@@ -2211,9 +2587,263 @@ theorem simSLQ_extCBody_pcIn (R : List String) (inStride endCap : Nat)
       simp only [List.length_append, List.length_cons, List.length_nil] at *
       omega
 
+/-- `SimSL'` for one iteration of the `extC` extend loop body.  Glues the
+    `coopExtendStep` wrapper (bespoke — carries `ws`/side-conditions) with the
+    `bin`/`setp` leaves by hand (coop isn't a plain `SimSL'`). -/
+theorem simSL'_extCBody (R : List String) (inStride endCap : Nat)
+    (hctx : ExtCtx R) (hendCap : endCap = inStride - 5)
+    (hml : "ml" ∈ R) (hadv : "adv" ∈ R) (hextC : "extC" ∈ R)
+    (hRdisj : ∀ r ∈ R, r ∉ ["idx", "pe", "pIn", "peC", "dfe", "caC", "peD", "aP", "caD", "aC",
+               "bP", "bC", "pEqB", "pOk", "balOk", "mis", "revM"])
+    (ws : WState)
+    (hboundW : ∀ l : Fin 32,
+        ((ws.regs "p0") + ((ws.regs "ml") + UInt64.ofNat l.val) < ws.regs "ecR")
+          ↔ (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap)
+    (hbytesW : ∀ l : Fin 32,
+        (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap →
+        (UInt64.ofNat (ws.gmem.getD
+            (SOp.run .add (ws.regs "inBase")
+              (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val))
+                (ws.regs "ec1"))).toNat 0).toNat
+         == UInt64.ofNat (ws.gmem.getD
+            (SOp.run .add (ws.regs "inBase")
+              (ws.regs "cand0" + (SOp.run .sub
+                (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val)) (ws.regs "ec1"))
+                (ws.regs "p0")))).toNat 0).toNat)
+          = (byte (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+                ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val))
+             == byte (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+                ((ws.regs "cand0").toNat + ((ws.regs "ml").toNat + l.val)))) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base
+        (coopExtendEmit "adv"
+          ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+            ++ [.setp .eq "extC" "adv" (.imm 32)])) →
+      LabelsResolve prog base
+        (coopExtendEmit "adv"
+          ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+            ++ [.setp .eq "extC" "adv" (.imm 32)])) →
+      Couple R ss ws → MachInv ib ss →
+      ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
+        ss'.pc = base +
+          (coopExtendEmit "adv"
+            ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+              ++ ([.setp .eq "extC" "adv" (.imm 32)] : List SInstr))).length ∧
+        Couple R ss'
+          ((wseq [ .coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap,
+                   .bin .add "ml" "ml" (.reg "adv"),
+                   .setp .eq "extC" "adv" (.imm 32) ]).eval fuel ws)
+          ∧ MachInv ib ss' := by
+  drop_last simSLQ_extCBody_pcIn R inStride endCap hctx hendCap hml hadv hextC hRdisj ws hboundW hbytesW
+
+/-- `BodySimInv` for one iteration of the `extC` extend-loop body, under `extInv`.
+    Wraps `simSL'_extCBody`, discharging its per-lane `hboundW`/`hbytesW` side
+    conditions from `extInv` (bounds ⇒ no UInt64 overflow; the machine's clamped
+    load address `min(p0+ml+l, ec1)` collapses to `p0+ml+l` in-range, matching the
+    DSL byte), and proving `extInv` is preserved by the body. -/
+theorem bodySimInv_extCBody (R : List String) (inStride endCap : Nat)
+    (hctx : ExtCtx R) (hendCap : endCap = inStride - 5) (hlen : inStride < 2 ^ 40)
+    (hib40 : ib < 2 ^ 40)
+    (hml : "ml" ∈ R) (hadv : "adv" ∈ R) (hextC : "extC" ∈ R)
+    (hRdisj : ∀ r ∈ R, r ∉ ["idx", "pe", "pIn", "peC", "dfe", "caC", "peD", "aP", "caD", "aC",
+               "bP", "bC", "pEqB", "pOk", "balOk", "mis", "revM"]) :
+    BodySimInv ib R (extInv inStride endCap)
+      (wseq [ .coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap,
+              .bin .add "ml" "ml" (.reg "adv"),
+              .setp .eq "extC" "adv" (.imm 32) ])
+      (coopExtendEmit "adv"
+        ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+          ++ [.setp .eq "extC" "adv" (.imm 32)])) := by
+  intro prog base ss ws fuel hpc hseg hlr hc hmi hP
+  obtain ⟨hecR, hec1, hcandlt, hpml⟩ := hP
+  have hend40 : endCap < 2 ^ 40 := by omega
+  -- The extend body's `wseq` unfolds to the `.seq`-shape `simSL'_extCBody` proves.
+  have hbodyEq : (wseq [ .coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap,
+        .bin .add "ml" "ml" (.reg "adv"), .setp .eq "extC" "adv" (.imm 32) ])
+      = (WStmt.seq (.coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap)
+          (WStmt.seq (.bin .add "ml" "ml" (.reg "adv"))
+            (.setp .eq "extC" "adv" (.imm 32)))) := by rfl
+  -- Machine sum `p0 + (ml + l)` as a Nat, no overflow (bounded by `endCap < 2^40`).
+  have hsumN : ∀ l : Fin 32,
+      (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap →
+      ((ws.regs "p0") + ((ws.regs "ml") + UInt64.ofNat l.val)).toNat
+        = (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) := by
+    intro l hlt
+    have hl32 : l.val < 32 := l.isLt
+    rw [UInt64.toNat_add, UInt64.toNat_add, toNat_ofNat_lt l.val (by omega),
+      Nat.mod_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega)]
+  -- ── `hboundW`: `p0 + (ml + l) < ecR ↔ p0.toNat + (ml.toNat + l) < endCap`. ──
+  have hboundW : ∀ l : Fin 32,
+      ((ws.regs "p0") + ((ws.regs "ml") + UInt64.ofNat l.val) < ws.regs "ecR")
+        ↔ (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap := by
+    intro l
+    have hl32 : l.val < 32 := l.isLt
+    rw [hecR, UInt64.lt_iff_toNat_lt, toNat_ofNat_lt endCap (by omega)]
+    constructor
+    · intro h
+      by_cases hlt : (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap
+      · exact hlt
+      · rw [UInt64.toNat_add, UInt64.toNat_add, toNat_ofNat_lt l.val (by omega)] at h
+        omega
+    · intro hlt; rw [hsumN l hlt]; exact hlt
+  -- ── `hbytesW`: the machine's clamped loads match the DSL bytes, in-range. ──
+  have hwsibN : (ws.regs "inBase").toNat = ib := by
+    rw [← hc.reg hctx.ib 0, hmi.2.1 0]
+    exact AlgorithmLib.LZ4Ptx.toNat_ofNat_lt ib (by omega)
+  have hgi : ∀ j, j < inStride →
+      (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride).getD j 0
+        = ws.gmem.getD ((ws.regs "inBase").toNat + j) 0 := by
+    intro j hj
+    simp only [gmemInpAt, List.getD_eq_getElem?_getD, List.getElem?_map, List.getElem?_range, hj,
+      Option.map_some, Option.getD_some]
+  have hbytesW : ∀ l : Fin 32,
+      (ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val) < endCap →
+      (UInt64.ofNat (ws.gmem.getD
+          (SOp.run .add (ws.regs "inBase")
+            (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val))
+              (ws.regs "ec1"))).toNat 0).toNat
+       == UInt64.ofNat (ws.gmem.getD
+          (SOp.run .add (ws.regs "inBase")
+            (ws.regs "cand0" + (SOp.run .sub
+              (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val)) (ws.regs "ec1"))
+              (ws.regs "p0")))).toNat 0).toNat)
+        = (byte (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+              ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val))
+           == byte (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+              ((ws.regs "cand0").toNat + ((ws.regs "ml").toNat + l.val))) := by
+    intro l hlt
+    have hl32 : l.val < 32 := l.isLt
+    -- the machine sum as a UInt64.ofNat.
+    have hsum : (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val))
+        = UInt64.ofNat ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val)) := by
+      rw [← UInt64.toNat_inj, hsumN l hlt, toNat_ofNat_lt _ (by omega)]
+    -- `min(sum, ec1) = sum` since `sum ≤ endCap-1 = ec1`.
+    have hminNoClamp : SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val))
+        (ws.regs "ec1")
+        = UInt64.ofNat ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val)) := by
+      rw [hsum, hec1]
+      show (if UInt64.ofNat _ ≤ UInt64.ofNat (endCap - 1) then _ else _) = _
+      rw [if_pos (by rw [UInt64.le_iff_toNat_le, toNat_ofNat_lt _ (by omega),
+        toNat_ofNat_lt _ (by omega)]; omega)]
+    -- first machine position = p0+ml+l.
+    have hpos1 : (SOp.run .add (ws.regs "inBase")
+        (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val))
+          (ws.regs "ec1"))).toNat
+        = (ws.regs "inBase").toNat + ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val)) := by
+      show (ws.regs "inBase" + _).toNat = _
+      rw [hminNoClamp, UInt64.toNat_add, hwsibN, toNat_ofNat_lt _ (by omega),
+        Nat.mod_eq_of_lt (by omega)]
+    -- `min(sum,ec1) - p0 = ml + l`.
+    have hsub : (SOp.run .sub
+        (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val)) (ws.regs "ec1"))
+        (ws.regs "p0"))
+        = UInt64.ofNat ((ws.regs "ml").toNat + l.val) := by
+      rw [hminNoClamp]
+      show (UInt64.ofNat ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val))
+        - ws.regs "p0") = _
+      rw [← UInt64.toNat_inj, UInt64.toNat_sub, toNat_ofNat_lt _ (by omega),
+        toNat_ofNat_lt _ (by omega)]
+      rw [show 2 ^ 64 - (ws.regs "p0").toNat + ((ws.regs "p0").toNat + ((ws.regs "ml").toNat + l.val))
+            = 2 ^ 64 + ((ws.regs "ml").toNat + l.val) from by omega,
+        Nat.add_mod_left, Nat.mod_eq_of_lt (by omega)]
+    -- second machine position = cand0+ml+l.
+    have hpos2 : (SOp.run .add (ws.regs "inBase")
+        (ws.regs "cand0" + (SOp.run .sub
+          (SOp.run .min (ws.regs "p0" + (ws.regs "ml" + UInt64.ofNat l.val)) (ws.regs "ec1"))
+          (ws.regs "p0")))).toNat
+        = (ws.regs "inBase").toNat + ((ws.regs "cand0").toNat + ((ws.regs "ml").toNat + l.val)) := by
+      show (ws.regs "inBase" + _).toNat = _
+      rw [hsub, UInt64.toNat_add, UInt64.toNat_add, hwsibN, toNat_ofNat_lt _ (by omega),
+        Nat.mod_eq_of_lt (by omega), Nat.mod_eq_of_lt (by omega)]
+    rw [hpos1, hpos2]
+    -- DSL bytes: `byte = getD`, and gmemInp = gmem in-range; the `UInt64.ofNat _.toNat`
+    -- wrapper is injective on bytes, so `==` matches on both sides.
+    show (UInt64.ofNat (ws.gmem.getD _ 0).toNat == UInt64.ofNat (ws.gmem.getD _ 0).toNat)
+      = ((gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride).getD _ 0 == (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride).getD _ 0)
+    rw [hgi _ (by omega), hgi _ (by omega)]
+    exact byteEqBridge _ _
+  -- ── simulation half, via `simSL'_extCBody`. ──
+  have hsim := simSL'_extCBody R inStride endCap hctx hendCap hml hadv hextC hRdisj ws
+    hboundW hbytesW prog base ss fuel hpc hseg hlr hc hmi
+  refine ⟨hsim, ?_⟩
+  -- ── `extInv` preserved: only `adv`/`ml`/`extC` change; `ml' = ml + leadingGood`. ──
+  -- Register readout of the body's `eval`: `adv := ofNat LG`, `ml += adv`, `extC := …`.
+  have hbodyReg : ∀ r, r ≠ "adv" → r ≠ "ml" → r ≠ "extC" →
+      ((wseq [ .coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap,
+        .bin .add "ml" "ml" (.reg "adv"), .setp .eq "extC" "adv" (.imm 32) ]).eval fuel ws).regs r
+        = ws.regs r := by
+    intro r hadvr hmlr hextr
+    simp only [wseq, WStmt.eval, evalCoopExtendStep, WState.setReg, WOp.run, SCmp.run, WArg.eval,
+      if_neg hextr, if_neg hmlr, if_neg hadvr]
+  have hmlReg : ((wseq [ .coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap,
+        .bin .add "ml" "ml" (.reg "adv"), .setp .eq "extC" "adv" (.imm 32) ]).eval fuel ws).regs "ml"
+        = ws.regs "ml" + UInt64.ofNat
+          (AlgorithmLib.LZ4WarpSched.leadingGood (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+            (ws.regs "p0").toNat (ws.regs "cand0").toNat endCap (ws.regs "ml").toNat 32) := by
+    simp [wseq, WStmt.eval, evalCoopExtendStep, WState.setReg, WOp.run, SCmp.run, WArg.eval]
+  -- `p0 + (ml + LG) ≤ endCap`, so the invariant survives (`leadingGood_pos_le`).
+  have hpres : (ws.regs "p0").toNat + ((ws.regs "ml").toNat
+        + AlgorithmLib.LZ4WarpSched.leadingGood (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+            (ws.regs "p0").toNat (ws.regs "cand0").toNat endCap (ws.regs "ml").toNat 32) ≤ endCap := by
+    have := AlgorithmLib.LZ4WarpSched.leadingGood_pos_le (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+      (ws.regs "p0").toNat (ws.regs "cand0").toNat endCap 32 (ws.regs "ml").toNat hpml
+    omega
+  -- `ml' = ml + LG` as a Nat (no overflow: bounded by `endCap < 2^40`).
+  have hmlN : (ws.regs "ml" + UInt64.ofNat
+        (AlgorithmLib.LZ4WarpSched.leadingGood (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+          (ws.regs "p0").toNat (ws.regs "cand0").toNat endCap (ws.regs "ml").toNat 32)).toNat
+      = (ws.regs "ml").toNat + AlgorithmLib.LZ4WarpSched.leadingGood (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
+          (ws.regs "p0").toNat (ws.regs "cand0").toNat endCap (ws.regs "ml").toNat 32 := by
+    rw [UInt64.toNat_add, toNat_ofNat_lt _ (by omega), Nat.mod_eq_of_lt (by omega)]
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · rw [hbodyReg "ecR" (by decide) (by decide) (by decide)]; exact hecR
+  · rw [hbodyReg "ec1" (by decide) (by decide) (by decide)]; exact hec1
+  · rw [hbodyReg "cand0" (by decide) (by decide) (by decide),
+      hbodyReg "p0" (by decide) (by decide) (by decide)]; exact hcandlt
+  · rw [hbodyReg "p0" (by decide) (by decide) (by decide), hmlReg, hmlN]; exact hpres
+
+/-- The whole extC `.uwhile` loop simulates: from an `extInv` state with adequate
+    `fuel` (the loop halts, `extLoop_halts`), the emitted loop reaches the exit
+    coupled to `eval`.  Composes `bodySimInv_extCBody` (body sim) with the
+    invariant-threading loop engine `simSL'_uwhileBodyInv`, discharging `WhileHalts`
+    from `extLoop_halts`. -/
+theorem extLoop_sim (R : List String) (inStride endCap : Nat)
+    (hctx : ExtCtx R) (hendCap : endCap = inStride - 5) (hlen : inStride < 2 ^ 40)
+    (hib40 : ib < 2 ^ 40)
+    (hml : "ml" ∈ R) (hadv : "adv" ∈ R) (hextC : "extC" ∈ R)
+    (hRdisj : ∀ r ∈ R, r ∉ ["idx", "pe", "pIn", "peC", "dfe", "caC", "peD", "aP", "caD", "aC",
+               "bP", "bC", "pEqB", "pOk", "balOk", "mis", "revM"])
+    (lHead lEnd : String) (prog : Array SInstr) (base : Nat)
+    (hseg : SegAt prog base (uwhileEmit "extC" lHead lEnd
+      (coopExtendEmit "adv" ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+        ++ [.setp .eq "extC" "adv" (.imm 32)]))))
+    (hlr : LabelsResolve prog base (uwhileEmit "extC" lHead lEnd
+      (coopExtendEmit "adv" ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+        ++ [.setp .eq "extC" "adv" (.imm 32)])))) :
+    ∀ (fuel : Nat) (ss : SState) (ws : WState),
+      ss.pc = base → Couple R ss ws → MachInv ib ss → extInv inStride endCap ws →
+      endCap + 32 < 32 * fuel + ((ws.regs "p0").toNat + (ws.regs "ml").toNat) →
+      ∃ (n : Nat) (ss' : SState), SReaches prog n ss ss' ∧
+        ss'.pc = base + (uwhileEmit "extC" lHead lEnd
+          (coopExtendEmit "adv" ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+            ++ [.setp .eq "extC" "adv" (.imm 32)]))).length ∧
+        Couple R ss' (WStmt.eval fuel (.uwhile "extC" (extBodyStmt inStride endCap)) ws)
+          ∧ MachInv ib ss' := by
+  intro fuel ss ws hpc hc hmi hInv hfuel
+  exact simSL'_uwhileBodyInv R "extC" lHead lEnd (extInv inStride endCap)
+    (extBodyStmt inStride endCap)
+    (coopExtendEmit "adv" ++ (([.bin .add "ml" "ml" (.reg "adv")] : List SInstr)
+      ++ [.setp .eq "extC" "adv" (.imm 32)]))
+    prog base hextC
+    (by unfold extBodyStmt
+        exact bodySimInv_extCBody R inStride endCap hctx hendCap hlen hib40 hml hadv hextC hRdisj)
+    hseg hlr fuel ss ws hpc hc hmi hInv
+    (extLoop_halts inStride endCap hendCap hlen fuel ws hInv hfuel)
 
 
-/-- **Transcribed from `simSL'_notFoundBranch`, carrying pc-confinement.** -/
+
+/-- **`simSL'_notFoundBranch`, carrying pc-confinement.** -/
 theorem simSLQ_notFoundBranch_pcIn (ib : Nat) (R : List String) (hsp : "searchPos" ∈ R) :
     SimSLQ ib R PcIn (wseq [ .bin .add "searchPos" "searchPos" (.imm 32) ])
       ([.bin .add "searchPos" "searchPos" (.imm 32)] : List SInstr) := by
@@ -2221,8 +2851,14 @@ theorem simSLQ_notFoundBranch_pcIn (ib : Nat) (R : List String) (hsp : "searchPo
     (fun n h => by cases h) (by decide)
   simpa [wseq] using h
 
+/-- The not-found branch (`searchPos += 32`) as a `SimSL'`. -/
+theorem simSL'_notFoundBranch (R : List String) (hsp : "searchPos" ∈ R) :
+    SimSL' ib R (wseq [ .bin .add "searchPos" "searchPos" (.imm 32) ])
+      ([.bin .add "searchPos" "searchPos" (.imm 32)] : List SInstr) :=
+  (simSLQ_notFoundBranch_pcIn ib R hsp).toSimSL'
 
-/-- **Transcribed from `simSL'_wEmitFinalSeq`, carrying pc-confinement.** -/
+
+/-- **`simSL'_wEmitFinalSeq`, carrying pc-confinement.** -/
 theorem simSLQ_wEmitFinalSeq_pcIn (ib : Nat) (R : List String) (litStart litLen : String)
     (lElseF lEndF lHF lXF cpH cpX : String)
     (hll : litLen ∈ R) (hls : litStart ∈ R) (hzero : "zero" ∈ R)
@@ -2384,9 +3020,57 @@ theorem simSLQ_wEmitFinalSeq_pcIn (ib : Nat) (R : List String) (litStart litLen 
          List.length_append, List.length_cons, List.length_nil] at hA hB ⊢
        exact ⟨by omega, by omega⟩)
 
+/-- The final literal-run `wEmitFinalSeq litStart litLen` simulates.  Bespoke glue of
+    the straight-line prefix/mid/suffix (`SimSL'`), the `pLitBigF` LSIC block
+    (`simSL'_lsicUif`), and the literal `coopCopy` (`simSL_coopCopy`).  The caller
+    discharges the LSIC guard/fuel side-conditions on `finalAfterSetp` and the copy
+    layout on `finalCpEntry`. -/
+theorem simSL'_wEmitFinalSeq (R : List String) (litStart litLen : String)
+    (lElseF lEndF lHF lXF cpH cpX : String)
+    (hll : litLen ∈ R) (hls : litStart ∈ R) (hzero : "zero" ∈ R)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hib : "inBase" ∈ R) (hsb : "sbAddr" ∈ R)
+    (htokHi : "tokHi" ∈ R) (htok : "tok" ∈ R) (hpb : "pLitBigF" ∈ R)
+    (hle : "litExtraF" ∈ R) (hc255 : "c255" ∈ R) (hlsicC : "lsicC" ∈ R)
+    (hcd : "cpDstF" ∈ R) (hcs : "cpSrcF" ∈ R)
+    (hRcp : ∀ r ∈ R, r ∉ coopCopyScratch)
+    (lsicBody : List SInstr)
+    (hbodyDef : lsicBody =
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub "litExtraF" "litExtraF" (.imm 255)]
+            ++ [.setp .ge "lsicC" "litExtraF" (.imm 255)])))) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (ws : WState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base (wEmitFinalSeqEmit litStart litLen lElseF lEndF lHF lXF cpH cpX lsicBody) →
+      LabelsResolve prog base
+        (wEmitFinalSeqEmit litStart litLen lElseF lEndF lHF lXF cpH cpX lsicBody) →
+      Couple R ss ws → MachInv ib ss →
+      ((finalAfterSetp litLen fuel ws).regs "pLitBigF" = 1 →
+          15 ≤ ((finalAfterSetp litLen fuel ws).regs litLen).toNat) →
+      ((finalAfterSetp litLen fuel ws).regs "pLitBigF" = 1 →
+          ((finalAfterSetp litLen fuel ws).regs litLen).toNat < 255 * fuel + 15) →
+      ((finalCpEntry litStart litLen fuel ws).regs "cpDstF").toNat < 2 ^ 32 →
+      ((finalCpEntry litStart litLen fuel ws).regs "cpSrcF").toNat < 2 ^ 32 →
+      ((finalCpEntry litStart litLen fuel ws).regs litLen).toNat < 2 ^ 32 →
+      (((finalCpEntry litStart litLen fuel ws).regs "cpDstF").toNat
+          + ((finalCpEntry litStart litLen fuel ws).regs litLen).toNat
+          ≤ ((finalCpEntry litStart litLen fuel ws).regs "cpSrcF").toNat
+        ∨ ((finalCpEntry litStart litLen fuel ws).regs "cpSrcF").toNat
+          + ((finalCpEntry litStart litLen fuel ws).regs litLen).toNat
+          ≤ ((finalCpEntry litStart litLen fuel ws).regs "cpDstF").toNat) →
+      (((finalCpEntry litStart litLen fuel ws).regs "cpDstF").toNat
+          + ((finalCpEntry litStart litLen fuel ws).regs litLen).toNat
+          ≤ (finalCpEntry litStart litLen fuel ws).gmem.size) →
+      ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
+        ss'.pc = base +
+          (wEmitFinalSeqEmit litStart litLen lElseF lEndF lHF lXF cpH cpX lsicBody).length ∧
+        Couple R ss' ((wEmitFinalSeq litStart litLen).eval fuel ws) ∧ MachInv ib ss' := by
+  drop_last simSLQ_wEmitFinalSeq_pcIn ib R litStart litLen lElseF lEndF lHF lXF cpH cpX hll hls hzero hout hop hib hsb htokHi htok hpb hle hc255 hlsicC hcd hcs hRcp lsicBody hbodyDef
 
 
-/-- **Transcribed from `simSL'_wEmitMatchSeq`, carrying pc-confinement.** -/
+
+/-- **`simSL'_wEmitMatchSeq`, carrying pc-confinement.** -/
 theorem simSLQ_wEmitMatchSeq_pcIn (ib : Nat) (R : List String) (litStart litLen off ml : String)
     (lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
     (hll : litLen ∈ R) (hls : litStart ∈ R) (hoff : off ∈ R) (hml : ml ∈ R)
@@ -2570,10 +3254,78 @@ theorem simSLQ_wEmitMatchSeq_pcIn (ib : Nat) (R : List String) (litStart litLen 
          List.length_append, List.length_cons, List.length_nil] at hA hB ⊢
        exact ⟨by omega, by omega⟩)
 
+/-- The match-sequence emit `wEmitMatchSeq litStart litLen off ml` simulates.
+    Bespoke glue of the straight-line prefix/mid/off segments (`SimSL'`), the two
+    LSIC blocks (`simSL'_lsicUif`, for `pLitBig`/`pMatBig`), and the literal
+    `coopCopy` (`simSL_coopCopy`).  The caller discharges the LSIC guard/fuel
+    side-conditions on `matchAfterSetp`/`matchAfterMatSetp` and the copy layout on
+    `matchCpEntry`. -/
+theorem simSL'_wEmitMatchSeq (R : List String) (litStart litLen off ml : String)
+    (lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
+    (hll : litLen ∈ R) (hls : litStart ∈ R) (hoff : off ∈ R) (hml : ml ∈ R)
+    (hmlm : "mlm" ∈ R) (htokLo : "tokLo" ∈ R) (htokHi : "tokHi" ∈ R) (htok : "tok" ∈ R)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hib : "inBase" ∈ R) (hsb : "sbAddr" ∈ R)
+    (hpb : "pLitBig" ∈ R) (hpm : "pMatBig" ∈ R)
+    (hle : "litExtra" ∈ R) (hme : "matExtra" ∈ R) (hc255 : "c255" ∈ R) (hlsicC : "lsicC" ∈ R)
+    (hoffLo : "offLo" ∈ R) (hoffHi : "offHi" ∈ R)
+    (hcd : "cpDst" ∈ R) (hcs : "cpSrc" ∈ R)
+    (hRcp : ∀ r ∈ R, r ∉ coopCopyScratch)
+    (lsicL lsicM : List SInstr)
+    (hLdef : lsicL =
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub "litExtra" "litExtra" (.imm 255)]
+            ++ [.setp .ge "lsicC" "litExtra" (.imm 255)]))))
+    (hMdef : lsicM =
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub "matExtra" "matExtra" (.imm 255)]
+            ++ [.setp .ge "lsicC" "matExtra" (.imm 255)])))) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (ws : WState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base
+        (wEmitMatchSeqEmit litStart litLen off ml lElseL lEndL lHL lXL cpH cpX
+          lElseM lEndM lHM lXM lsicL lsicM) →
+      LabelsResolve prog base
+        (wEmitMatchSeqEmit litStart litLen off ml lElseL lEndL lHL lXL cpH cpX
+          lElseM lEndM lHM lXM lsicL lsicM) →
+      Couple R ss ws → MachInv ib ss →
+      -- 1st LSIC (pLitBig on litLen):
+      ((matchAfterSetp litLen ml fuel ws).regs "pLitBig" = 1 →
+          15 ≤ ((matchAfterSetp litLen ml fuel ws).regs litLen).toNat) →
+      ((matchAfterSetp litLen ml fuel ws).regs "pLitBig" = 1 →
+          ((matchAfterSetp litLen ml fuel ws).regs litLen).toNat < 255 * fuel + 15) →
+      -- coopCopy layout on `matchCpEntry`:
+      ((matchCpEntry litStart litLen ml fuel ws).regs "cpDst").toNat < 2 ^ 32 →
+      ((matchCpEntry litStart litLen ml fuel ws).regs "cpSrc").toNat < 2 ^ 32 →
+      ((matchCpEntry litStart litLen ml fuel ws).regs litLen).toNat < 2 ^ 32 →
+      (((matchCpEntry litStart litLen ml fuel ws).regs "cpDst").toNat
+          + ((matchCpEntry litStart litLen ml fuel ws).regs litLen).toNat
+          ≤ ((matchCpEntry litStart litLen ml fuel ws).regs "cpSrc").toNat
+        ∨ ((matchCpEntry litStart litLen ml fuel ws).regs "cpSrc").toNat
+          + ((matchCpEntry litStart litLen ml fuel ws).regs litLen).toNat
+          ≤ ((matchCpEntry litStart litLen ml fuel ws).regs "cpDst").toNat) →
+      (((matchCpEntry litStart litLen ml fuel ws).regs "cpDst").toNat
+          + ((matchCpEntry litStart litLen ml fuel ws).regs litLen).toNat
+          ≤ (matchCpEntry litStart litLen ml fuel ws).gmem.size) →
+      -- 2nd LSIC (pMatBig on mlm):
+      ((matchAfterMatSetp litStart litLen off ml fuel ws).regs "pMatBig" = 1 →
+          15 ≤ ((matchAfterMatSetp litStart litLen off ml fuel ws).regs "mlm").toNat) →
+      ((matchAfterMatSetp litStart litLen off ml fuel ws).regs "pMatBig" = 1 →
+          ((matchAfterMatSetp litStart litLen off ml fuel ws).regs "mlm").toNat < 255 * fuel + 15) →
+      ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
+        ss'.pc = base +
+          (wEmitMatchSeqEmit litStart litLen off ml lElseL lEndL lHL lXL cpH cpX
+            lElseM lEndM lHM lXM lsicL lsicM).length ∧
+        Couple R ss' ((wEmitMatchSeq litStart litLen off ml).eval fuel ws) ∧ MachInv ib ss' := by
+  drop_last simSLQ_wEmitMatchSeq_pcIn ib R litStart litLen off ml lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM hll hls hoff hml hmlm htokLo htokHi htok hout hop hib hsb hpb hpm hle hme hc255 hlsicC hoffLo hoffHi hcd hcs hRcp lsicL lsicM hLdef hMdef
 
 
 
-/-- **Transcribed from `bodySimInv_extCBody` / `extLoop_sim`, carrying pc-confinement.** -/
+
+/-- **`bodySimInv_extCBody` / `extLoop_sim`, carrying pc-confinement.** -/
 theorem bodySimInvQ_extCBody_pcIn (ib : Nat) (R : List String) (inStride endCap : Nat)
     (hctx : ExtCtx R) (hendCap : endCap = inStride - 5) (hlen : inStride < 2 ^ 40)
     (hib40 : ib < 2 ^ 40)
@@ -2772,7 +3524,7 @@ theorem extLoop_sim_pcIn (ib : Nat) (R : List String) (inStride endCap : Nat)
     (extLoop_halts inStride endCap hendCap hlen fuel ws hInv hfuel)
 
 
-/-- **Transcribed from `simSL'_foundBranch`, carrying pc-confinement.** -/
+/-- **`simSL'_foundBranch`, carrying pc-confinement.** -/
 theorem simSLQ_foundBranch_pcIn (ib : Nat) (R : List String) (inStride endCap : Nat)
     (lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
     (hctx : ExtCtx R) (hendCap : endCap = inStride - 5) (hlen : inStride < 2 ^ 40)
@@ -2950,6 +3702,97 @@ theorem simSLQ_foundBranch_pcIn (ib : Nat) (R : List String) (inStride endCap : 
          matchOffEmit, uifEmit, lsicThen, lsicEmit, uwhileEmit_length,
          List.length_append, List.length_cons, List.length_nil] at hA hB ⊢
        exact ⟨by omega, by omega⟩)
+
+/-- **The found-branch simulates.**  Bespoke five-segment glue: found-setup movs
+    (`simSL'_foundMovs`, establishing `extInv` via `extInv_of_foundMovs`), the extend
+    `uwhile` (`extLoop_sim`), the two address subs (`simSL'_foundSubs`), the
+    match-sequence emit (`simSL'_wEmitMatchSeq`), and the two updates
+    (`simSL'_foundUpdates`).  The caller discharges the `extInv`/extend-fuel bounds and
+    the `wEmitMatchSeq` copy-layout / LSIC-fuel side-conditions. -/
+theorem simSL'_foundBranch (R : List String) (inStride endCap : Nat)
+    (lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
+    (hctx : ExtCtx R) (hendCap : endCap = inStride - 5) (hlen : inStride < 2 ^ 40)
+    (hib40 : ib < 2 ^ 40)
+    (hextC : "extC" ∈ R)
+    (hRdisj : ∀ r ∈ R, r ∉ ["idx", "pe", "pIn", "peC", "dfe", "caC", "peD", "aP", "caD", "aC",
+               "bP", "bC", "pEqB", "pOk", "balOk", "mis", "revM"])
+    (hoff0 : "off0" ∈ R) (hlitLen : "litLen" ∈ R) (hla : "litAnchor" ∈ R) (hsp : "searchPos" ∈ R)
+    (hmlm : "mlm" ∈ R) (htokLo : "tokLo" ∈ R) (htokHi : "tokHi" ∈ R) (htok : "tok" ∈ R)
+    (hout : "outBase" ∈ R) (hop : "op" ∈ R) (hsb : "sbAddr" ∈ R)
+    (hpb : "pLitBig" ∈ R) (hpm : "pMatBig" ∈ R)
+    (hle : "litExtra" ∈ R) (hme : "matExtra" ∈ R) (hc255 : "c255" ∈ R) (hlsicC : "lsicC" ∈ R)
+    (hoffLo : "offLo" ∈ R) (hoffHi : "offHi" ∈ R)
+    (hcd : "cpDst" ∈ R) (hcs : "cpSrc" ∈ R)
+    (hRcp : ∀ r ∈ R, r ∉ coopCopyScratch)
+    (lsicL lsicM : List SInstr)
+    (hLdef : lsicL =
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub "litExtra" "litExtra" (.imm 255)]
+            ++ [.setp .ge "lsicC" "litExtra" (.imm 255)]))))
+    (hMdef : lsicM =
+      ([.mov "c255" (SArg.imm 255)]
+        ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
+            ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
+          ++ ([.bin .sub "matExtra" "matExtra" (.imm 255)]
+            ++ [.setp .ge "lsicC" "matExtra" (.imm 255)])))) :
+    ∀ (prog : Array SInstr) (base : Nat) (ss : SState) (ws : WState) (fuel : Nat),
+      ss.pc = base →
+      SegAt prog base (foundBranchEmit endCap lHE lEE lElseL lEndL lHL lXL cpH cpX
+        lElseM lEndM lHM lXM lsicL lsicM) →
+      LabelsResolve prog base (foundBranchEmit endCap lHE lEE lElseL lEndL lHL lXL cpH cpX
+        lElseM lEndM lHM lXM lsicL lsicM) →
+      Couple R ss ws → MachInv ib ss →
+      (ws.regs "cand0").toNat < (ws.regs "p0").toNat →
+      (ws.regs "p0").toNat + 4 ≤ endCap →
+      endCap + 32 < 32 * fuel + ((ws.regs "p0").toNat + 4) →
+      -- 1st LSIC (pLitBig on litLen), on `foundMatchEntry`:
+      ((matchAfterSetp "litLen" "ml" fuel (foundMatchEntry inStride endCap fuel ws)).regs "pLitBig"
+          = 1 → 15 ≤ ((matchAfterSetp "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "litLen").toNat) →
+      ((matchAfterSetp "litLen" "ml" fuel (foundMatchEntry inStride endCap fuel ws)).regs "pLitBig"
+          = 1 → ((matchAfterSetp "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "litLen").toNat < 255 * fuel + 15) →
+      -- coopCopy layout, on `matchCpEntry`:
+      ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+          (foundMatchEntry inStride endCap fuel ws)).regs "cpDst").toNat < 2 ^ 32 →
+      ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+          (foundMatchEntry inStride endCap fuel ws)).regs "cpSrc").toNat < 2 ^ 32 →
+      ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+          (foundMatchEntry inStride endCap fuel ws)).regs "litLen").toNat < 2 ^ 32 →
+      (((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "cpDst").toNat
+          + ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "litLen").toNat
+          ≤ ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "cpSrc").toNat
+        ∨ ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "cpSrc").toNat
+          + ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "litLen").toNat
+          ≤ ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "cpDst").toNat) →
+      (((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "cpDst").toNat
+          + ((matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "litLen").toNat
+          ≤ (matchCpEntry "litAnchor" "litLen" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).gmem.size) →
+      -- 2nd LSIC (pMatBig on mlm), on `matchAfterMatSetp`:
+      ((matchAfterMatSetp "litAnchor" "litLen" "off0" "ml" fuel
+          (foundMatchEntry inStride endCap fuel ws)).regs "pMatBig" = 1 →
+          15 ≤ ((matchAfterMatSetp "litAnchor" "litLen" "off0" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "mlm").toNat) →
+      ((matchAfterMatSetp "litAnchor" "litLen" "off0" "ml" fuel
+          (foundMatchEntry inStride endCap fuel ws)).regs "pMatBig" = 1 →
+          ((matchAfterMatSetp "litAnchor" "litLen" "off0" "ml" fuel
+            (foundMatchEntry inStride endCap fuel ws)).regs "mlm").toNat < 255 * fuel + 15) →
+      ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
+        ss'.pc = base + (foundBranchEmit endCap lHE lEE lElseL lEndL lHL lXL cpH cpX
+          lElseM lEndM lHM lXM lsicL lsicM).length ∧
+        Couple R ss' ((foundBranchStmt inStride endCap).eval fuel ws) ∧ MachInv ib ss' := by
+  drop_last simSLQ_foundBranch_pcIn ib R inStride endCap lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM hctx hendCap hlen hib40 hextC hRdisj hoff0 hlitLen hla hsp hmlm htokLo htokHi htok hout hop hsb hpb hpm hle hme hc255 hlsicC hoffLo hoffHi hcd hcs hRcp lsicL lsicM hLdef hMdef
 
 
 /-- **The found branch, additionally exporting the coupling at the token-emit entry.**

@@ -21,7 +21,7 @@ namespace Lz4Sites
 open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
-set_option maxHeartbeats 1000000 in
+at_both set_option maxHeartbeats 1000000 in
 /-- **The checkpoint, spliced onto the real trace.**  From the launch state, after
     the prologue and the `setp loopC`, the machine stands at the loop head, and at
     EVERY later step at which it stands at the match-sequence entry there is a
