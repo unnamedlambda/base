@@ -106,6 +106,33 @@ bytes, the sum answered and stored over the value's first eight bytes
 (`bumped`, `LibSpec.stored_bytes`). `increment_null` and `increment_model`
 are the call handed no context and the model's side.
 
+`lookup_null` and `getEntry_null` are those calls handed no context: the
+answer for no table, and nothing changed.
+
+The `_calls` theorems say the same of a linked program's calls: where the
+program's function table has one of these functions, a call to it at any call
+depth neither misuses a call nor faults and answers and leaves what the
+function's statement says (`LibSpec.Ans.calls`, `LibSpec.Does.calls`).
+
+`HtAt w slot s T` is what a program that uses the table keeps from call to
+call: its slot, outside the heap, holds the address `s` of a context that
+holds `T` with its index. A write outside the heap that leaves the slot
+leaves it (`HtAt.wrote`), as does one clear of the table that misses the slot
+(`HtAt.wroteClear`, `Misses`), and each entry point's statement is a step on
+it: `HtAt.of_init`, `HtAt.of_create` by `create_tab`, `HtAt.of_set`,
+`HtAt.of_insert`, `HtAt.of_increment`, and, the table unchanged,
+`HtAt.of_lookup` and `HtAt.of_getEntry`, whose copies out are writes
+(`LookQ`, `GetQ`). `HtAt.rep` and `HtAt.owned` are what `htCount` and
+`htCleanup` ask of the slot.
+
+The `_at` theorems are a linked program's calls with the table at its slot
+and its buffers outside the heap (`Out`): each leaves at the slot the table
+the entry point's model leaves (`incOf` for `htIncrement`), or, where an
+allocation failed, the table as it was. Noting a call leaves the table
+(`HtAt.obs`). Each says too what the program keeps of its own memory
+(`LibSpec.Outside`): everything outside the heap, but for the slot `htInit`
+and `htCleanup` write and the runs `htLookup` and `htGetEntry` copy to.
+
 Every statement here is of partial correctness: a function that returns has
 done what its statement says, and no step of it misuses a call or faults; that
 a probe ends is not shown.
@@ -332,19 +359,21 @@ theorem open_of_stays {w w' : World} {r : Region} (h : Stays w w') (hc : Calm w)
 theorem cleanup_fine : Fine (emitGo cleanup ⟨1, 0, [], [], [], none⟩).2 := ⟨rfl, by decide⟩
 
 /-- **`htCleanup`** frees the context its slot holds, with its arrays, and
-    leaves null in the slot. -/
+    leaves null in the slot, and outside the heap changes the slot alone. -/
 theorem cleanup_spec (cfg : Cfg) (w : World) (slot s : UInt64) (r : Region) (off : Nat) (hc : Calm w)
     (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hl : w.mem.load slot 8 = some s)
     (hs : s = 0 ∨ ∃ e i a, Owned w s e i a) :
-    Does cfg [.sc .i64 slot] w cleanup [.i64] (fun w' => w'.mem.load slot 8 = some 0) := by
+    Does cfg [.sc .i64 slot] w cleanup [.i64] (fun w' =>
+      w'.mem.load slot 8 = some 0 ∧ Outside w w' (Misses slot)) := by
   refine does_of_wp ?_ cleanup_fine rfl
   simp only [cleanup, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 slot] : Env)[0]? = some (.sc .i64 slot) := rfl
   have hroom := (load_some hd hl).1
   refine wp_load64 (by slot) hl ?_
   apply wp_iconst64
-  refine wp_when (fun w' => w'.mem.frozen = false ∧ (w'.mem.region r).size = (w.mem.region r).size)
-    (x := s) (y := c64 0) (by slot) (by slot) ?_ (fun _ => ⟨hc.1, rfl⟩) ?_
+  refine wp_when (fun w' => w'.mem.frozen = false ∧ (w'.mem.region r).size = (w.mem.region r).size ∧
+      Outside w w' fun _ _ => True)
+    (x := s) (y := c64 0) (by slot) (by slot) ?_ (fun _ => ⟨hc.1, rfl, Outside.refl _ _⟩) ?_
   · intro hne
     obtain ⟨e, i, a, ho⟩ := hs.resolve_left (by simpa [cmpInt, show c64 0 = 0 from by decide] using hne)
     obtain ⟨hes, his, has, hie, hae, hai⟩ := ho.apart
@@ -378,10 +407,13 @@ theorem cleanup_spec (cfg : Cfg) (w : World) (slot s : UInt64) (r : Region) (off
     refine wp_free (by slot) (Or.inr b3) ?_
     intro w4 f4
     exact ⟨by ext_env, by rw [f4.frozen, f3.frozen, f2.frozen, f1.frozen]; exact hc.1,
-      by rw [f4.size r hr, f3.size r hr, f2.size r hr, f1.size r hr]⟩
-  · intro Γ' w' hext ⟨hz, hsz⟩
+      by rw [f4.size r hr, f3.size r hr, f2.size r hr, f1.size r hr],
+      (((f1.outside _).trans (f2.outside _)).trans (f3.outside _)).trans (f4.outside _)⟩
+  · intro Γ' w' hext ⟨hz, hsz, hO⟩
     obtain ⟨m, hm⟩ := store_room (x := c64 0) hd hr (by rw [hsz]; exact hroom) hz
+    have hW := wrote_stored hm
     refine wp_storeI64 (by slot) (by slot) hm ?_
+    refine ⟨?_, (hO.mono fun _ _ _ => trivial).trans hW.outsideBut⟩
     rw [show c64 0 = 0 from by decide] at hm
     exact load_store8 hm
 
@@ -528,13 +560,15 @@ theorem getEntry_fine : Fine (emitGo getEntry ⟨4, 0, [], [], [], none⟩).2 :=
 
 /-- What `htGetEntry` answers and leaves: `-1` and the world where there is
     no table or no such entry; else the key's length, and memory with the key
-    copied to `kout` and then the value to `vout`, the table as it was. -/
+    copied to `kout` and then the value to `vout`, two writes of those runs,
+    the table as it was. -/
 def GetQ (w : World) (s : UInt64) (T : Ht) (L : Lay) (index kout vout : UInt64) (x : UInt64) (w' : World) : Prop :=
   if T.hasTable then
     match T.entries[index.toNat]? with
     | none => x = c64 (-1) ∧ w' = w
     | some (k, v) => x = UInt64.ofNat k.size ∧ Tab w' s T L ∧
-        ∃ m1, copyIn w.mem kout k = some m1 ∧ copyIn m1 vout v = some w'.mem
+        (∃ m1, copyIn w.mem kout k = some m1 ∧ copyIn m1 vout v = some w'.mem) ∧
+        ∃ w1, Wrote w w1 kout k.size ∧ Wrote w1 w' vout v.size
   else x = c64 (-1) ∧ w' = w
 
 /-- **`htGetEntry`**, handed room for the entry's key and value clear of the
@@ -648,7 +682,7 @@ theorem getEntry_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h
       rw [ek] at hc1 hc2
       unfold GetQ
       rw [if_pos (by simp [h.rep.hasTable, hl]), hget]
-      exact ⟨rfl, t1.wrote hw2 cv, _, hc1, hc2⟩
+      exact ⟨rfl, t1.wrote hw2 cv, ⟨_, hc1, hc2⟩, w1, hw1, hw2⟩
 
 /-- The hash after `i` words of `bs`. -/
 def hashW (bs : List UInt8) : Nat → UInt64
@@ -1285,14 +1319,15 @@ theorem lookup_fine : Fine (emitGo lookup ⟨4, 0, [], [], [], none⟩).2 := ⟨
 
 /-- What `htLookup` answers and leaves: `0xFFFFFFFF` and the world where
     there is no table or no entry with the key; else the value's length, and
-    memory with the value copied to `out`, the table as it was. -/
+    memory with the value copied to `out`, a write of that run, the table as
+    it was. -/
 def LookQ (w : World) (s : UInt64) (T : Ht) (L : Lay) (kb : List UInt8) (out : UInt64) (x : UInt64)
     (w' : World) : Prop :=
   if T.hasTable then
     (kb ∉ keysOf T ∧ x = c64 0xFFFFFFFF ∧ w' = w) ∨
     ∃ p, ∃ hp : p < T.entries.length, (T.entries[p]'hp).1.data.toList = kb ∧
       x = UInt64.ofNat (T.entries[p]'hp).2.size ∧ copyIn w.mem out (T.entries[p]'hp).2 = some w'.mem ∧
-      Tab w' s T L ∧ Idx w' L (keysOf T)
+      Tab w' s T L ∧ Idx w' L (keysOf T) ∧ Wrote w w' out (T.entries[p]'hp).2.size
   else x = c64 0xFFFFFFFF ∧ w' = w
 
 set_option maxHeartbeats 1600000 in
@@ -1404,7 +1439,7 @@ theorem lookup_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h :
       rw [ek] at hc1
       unfold LookQ
       rw [if_pos hT]
-      exact Or.inr ⟨p, hp', hkey', rfl, hc1, h.wrote hw1 cv, hI.wrote h.bi hw1 (cv _ _ (by simp [blocks]))⟩
+      exact Or.inr ⟨p, hp', hkey', rfl, hc1, h.wrote hw1 cv, hI.wrote h.bi hw1 (cv _ _ (by simp [blocks])), hw1⟩
 
 /-- The model finds no value for a key none of the entries has. -/
 theorem get_none {T : Ht} {kb : List UInt8} (h : kb ∉ keysOf T) : T.get (ByteArray.mk kb.toArray) = none := by
@@ -1465,6 +1500,7 @@ theorem Tab.owned {w : World} {s : UInt64} {T : Ht} {L : Lay} (h : Tab w s T L) 
     and null or a context holding the empty table with its index. -/
 abbrev InitT (w : World) (r : Region) (slot : UInt64) : Vals Slot [.i64] → Env → World → Prop :=
   fun jv Γ' w' => Γ'[0]? = some (.sc .i64 slot) ∧ ∃ x, Γ'[jv.head]? = some (.sc .i64 x) ∧ Open w r w' ∧
+    (Outside w w' fun _ _ => True) ∧
     (x = 0 ∨ ∃ L, Tab w' x {} L ∧ Idx w' L [])
 
 theorem initT_join {w : World} {r : Region} {slot : UInt64} {nJ : Nat} {Γ' : Env} {jv : Vals Slot [.i64]}
@@ -1478,11 +1514,12 @@ theorem initT_join {w : World} {r : Region} {slot : UInt64} {nJ : Nat} {Γ' : En
 set_option maxHeartbeats 1600000 in
 /-- **`htInit`** leaves in its slot a context holding the empty table, with
     its arrays and its index, or null where the context or an array could not
-    be allocated. -/
+    be allocated, and outside the heap changes the slot alone. -/
 theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Nat) (hc : Calm w)
     (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hroom : off + 8 ≤ (w.mem.region r).size) :
     Does cfg [.sc .i64 slot] w init [.i64] (fun w' =>
-      ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ ∃ L, Tab w' s {} L ∧ Idx w' L [])) := by
+      ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ ∃ L, Tab w' s {} L ∧ Idx w' L []) ∧
+        Outside w w' (Misses slot)) := by
   refine does_of_wp ?_ init_fine rfl
   simp only [init, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 slot] : Env)[0]? = some (.sc .i64 slot) := rfl
@@ -1494,12 +1531,13 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
   refine wp_ifte (InitT w r slot) (x := s) (y := c64 0) (by slot) (by slot) ?_ ?_ ?_
   · intro _
     wp_seq
-    refine ⟨?_, c64 0, ?_, open_of_stays g1.stays hc hr, Or.inl z0⟩ <;> slot
+    refine ⟨?_, c64 0, ?_, open_of_stays g1.stays hc hr, g1.outside _, Or.inl z0⟩ <;> slot
   · intro hne1 ne1 hn1
     have fs := hs.resolve_left (by simpa [cmpInt, z0] using hne1)
     have hrep : Rep w1 s {} := Rep.fresh (g1.calm hc) fs.blk (fs.zero hc)
     have hU : fld w1 s AUSED = some 0 := fs.zero hc AUSED (by decide)
     have hst : Stays w w1 := g1.stays
+    have ho : Outside w w1 fun _ _ => True := g1.outside _
     wp_seq
     apply wp_iconst64
     refine wp_calloc (by slot) (by decide) ?_
@@ -1509,13 +1547,14 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
     replace hrep := hrep.grows g2
     replace hU := g2.fld hU
     replace hst := hst.trans g2.stays
+    replace ho := ho.trans (g2.outside _)
     refine wp_ifte (InitT w r slot) (x := e) (y := c64 0) (by slot) (by slot) ?_ ?_
       (fun nJ Γ' jv vs w' hle hvs hq => initT_join hle hvs hq)
     · intro _
       wp_seq
       refine wp_free (by slot) (Or.inr hrep.blk) ?_
       intro v1 f1
-      refine ⟨?_, c64 0, ?_, (open_of_stays hst hc hr).freed f1 hr, Or.inl z0⟩ <;> slot
+      refine ⟨?_, c64 0, ?_, (open_of_stays hst hc hr).freed f1 hr, ho.trans (f1.outside _), Or.inl z0⟩ <;> slot
     · intro hne2 ne2 hn2
       have fe := he.resolve_left (by simpa [cmpInt, z0] using hne2)
       have be : Blk w2 e (64 * ENTRY) := fe.blk
@@ -1537,6 +1576,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
       replace hrep := hrep.grows g3
       replace hU := g3.fld hU
       replace hst := hst.trans g3.stays
+      replace ho := ho.trans (g3.outside _)
       refine wp_ifte (InitT w r slot) (x := ix) (y := c64 0) (by slot) (by slot) ?_ ?_
         (fun nJ Γ' jv vs w' hle hvs hq => initT_join hle hvs hq)
       · intro _
@@ -1545,7 +1585,8 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
         intro v1 f1
         refine wp_free (by slot) (Or.inr (f1.blk _ _ hes.symm hrep.blk)) ?_
         intro v2 f2
-        refine ⟨?_, c64 0, ?_, ((open_of_stays hst hc hr).freed f1 hr).freed f2 hr, Or.inl z0⟩ <;> slot
+        refine ⟨?_, c64 0, ?_, ((open_of_stays hst hc hr).freed f1 hr).freed f2 hr,
+          (ho.trans (f1.outside _)).trans (f2.outside _), Or.inl z0⟩ <;> slot
       · intro hne3 ne3 hn3
         have fi := hi.resolve_left (by simpa [cmpInt, z0] using hne3)
         have bi : Blk w3 ix (128 * 8) := fi.blk
@@ -1571,6 +1612,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
         replace hrep := hrep.grows g4
         replace hU := g4.fld hU
         replace hst := hst.trans g4.stays
+        replace ho := ho.trans (g4.outside _)
         refine wp_ifte (InitT w r slot) (x := ar) (y := c64 0) (by slot) (by slot) ?_ ?_
           (fun nJ Γ' jv vs w' hle hvs hq => initT_join hle hvs hq)
         · intro _
@@ -1581,7 +1623,8 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           intro v2 f2
           refine wp_free (by slot) (Or.inr (f2.blk _ _ hes.symm (f1.blk _ _ his.symm hrep.blk))) ?_
           intro v3 f3
-          refine ⟨?_, c64 0, ?_, (((open_of_stays hst hc hr).freed f1 hr).freed f2 hr).freed f3 hr, Or.inl z0⟩ <;> slot
+          refine ⟨?_, c64 0, ?_, (((open_of_stays hst hc hr).freed f1 hr).freed f2 hr).freed f3 hr,
+            ((ho.trans (f1.outside _)).trans (f2.outside _)).trans (f3.outside _), Or.inl z0⟩ <;> slot
         · intro hne4 ne4 hn4
           have fa := ha.resolve_left (by simpa [cmpInt, z0] using hne4)
           have ba : Blk w4 ar 4096 := fa.blk
@@ -1601,6 +1644,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           replace wi := (wrote_stored hm1).whole wi
           replace wa := (wrote_stored hm1).whole wa
           replace hst := hst.trans (stays_stored hm1)
+          replace ho := ho.trans (Outside.setFld hrep.blk (by decide) hm1 _)
           replace hrep := hrep.setFld (by decide) (by decide) hm1
           apply wp_iconst64
           refine wp_at (by slot) ?_
@@ -1615,6 +1659,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           replace wi := (wrote_stored hm2).whole wi
           replace wa := (wrote_stored hm2).whole wa
           replace hst := hst.trans (stays_stored hm2)
+          replace ho := ho.trans (Outside.setFld hrep.blk (by decide) hm2 _)
           replace hrep := hrep.setFld (by decide) (by decide) hm2
           refine wp_at (by slot) ?_
           refine wp_setFld (j := INDEX) (by slot) (by slot) hrep.blk hrep.calm (by decide) ?_
@@ -1629,6 +1674,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           replace wi := (wrote_stored hm3).whole wi
           replace wa := (wrote_stored hm3).whole wa
           replace hst := hst.trans (stays_stored hm3)
+          replace ho := ho.trans (Outside.setFld hrep.blk (by decide) hm3 _)
           replace hrep := hrep.setFld (by decide) (by decide) hm3
           apply wp_iconst64
           refine wp_at (by slot) ?_
@@ -1645,6 +1691,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           replace wi := (wrote_stored hm4).whole wi
           replace wa := (wrote_stored hm4).whole wa
           replace hst := hst.trans (stays_stored hm4)
+          replace ho := ho.trans (Outside.setFld hrep.blk (by decide) hm4 _)
           replace hrep := hrep.setFld (by decide) (by decide) hm4
           refine wp_at (by slot) ?_
           refine wp_setFld (j := ARENA) (by slot) (by slot) hrep.blk hrep.calm (by decide) ?_
@@ -1661,6 +1708,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           replace wi := (wrote_stored hm5).whole wi
           replace wa := (wrote_stored hm5).whole wa
           replace hst := hst.trans (stays_stored hm5)
+          replace ho := ho.trans (Outside.setFld hrep.blk (by decide) hm5 _)
           replace hrep := hrep.setFld (by decide) (by decide) hm5
           apply wp_iconst64
           refine wp_at (by slot) ?_
@@ -1679,8 +1727,9 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           replace wi := (wrote_stored hm6).whole wi
           replace wa := (wrote_stored hm6).whole wa
           replace hst := hst.trans (stays_stored hm6)
+          replace ho := ho.trans (Outside.setFld hrep.blk (by decide) hm6 _)
           replace hrep := hrep.setFld (by decide) (by decide) hm6
-          refine ⟨?_, s, ?_, open_of_stays hst hc hr, Or.inr ⟨⟨e, 64, ix, 128, ar, 0, 4096, []⟩, ?_, ?_⟩⟩
+          refine ⟨?_, s, ?_, open_of_stays hst hc hr, ho, Or.inr ⟨⟨e, 64, ix, 128, ar, 0, 4096, []⟩, ?_, ?_⟩⟩
           · slot
           · slot
           · exact {
@@ -1704,12 +1753,13 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
           · exact ⟨⟨show 0 < 128 from by decide, show 128 ≤ 2 ^ 33 from by decide⟩, by decide, List.nodup_nil,
               fun j hj => ⟨0, zi (8 * j) (by have : j < 128 := hj; omega), Or.inl rfl⟩,
               fun p hp => absurd hp (Nat.not_lt_zero p)⟩
-  · intro nJ Γ' jv vs w' hle hvs ⟨hslot, x, hx, hop, hq⟩
+  · intro nJ Γ' jv vs w' hle hvs ⟨hslot, x, hx, hop, hO, hq⟩
     have hj := join1 hvs hx
     subst hj
     obtain ⟨m, hm⟩ := store_room (x := x) hd hr (by rw [hop.2]; exact hroom) hop.1
     refine wp_storeI64 (AlgorithmLib.Proof.bindAt_last _ _ _ hle) (get_bindAt hle hslot) hm ?_
-    refine ⟨x, load_store8 hm, hq.imp id fun ⟨L, ht, hi⟩ => ⟨L, ?_, ?_⟩⟩
+    refine ⟨x, load_store8 hm, hq.imp id fun ⟨L, ht, hi⟩ => ⟨L, ?_, ?_⟩,
+      (hO.mono fun _ _ _ => trivial).trans (wrote_stored hm).outsideBut⟩
     · exact ht.wrote (wrote_stored hm) fun y k _ r' off' oy hd' _ => Or.inl (by rw [hd] at hd'; cases hd'; exact hr)
     · exact hi.wrote ht.bi (wrote_stored hm) fun r' off' oy hd' _ => Or.inl (by rw [hd] at hd'; cases hd'; exact hr)
 
@@ -3936,6 +3986,506 @@ theorem increment_model (w : World) (key klen addend : UInt64) (kb : List UInt8)
   simp only [ffiHtIncrement, readBytes, hl, copyOut_bytes hkb, Option.bind_eq_bind, Option.bind_some]
   cases w.ht.hasTable <;> rfl
 
+-- ---------------------------------------------------------------------------
+-- The table's functions, called from a program
+-- ---------------------------------------------------------------------------
+
+section calls
+variable {fns : Nat → Option Fn} {env : FnEnv} {steps i : Nat}
+
+/-- **A linked program's calls to the table's functions** are as the
+    statements above say, at every call depth. -/
+theorem init_calls (hf : fns i = some (implFn [.i64] (.void init))) (w : World) (slot : UInt64) (r : Region)
+    (off : Nat) (hc : Calm w) (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
+    (hroom : off + 8 ≤ (w.mem.region r).size) (k : Nat) :
+    CallsD (termLocals fns env steps k) i [.sc .i64 slot] w (fun w' =>
+      ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ ∃ L, Tab w' s {} L ∧ Idx w' L []) ∧
+        Outside w w' (Misses slot)) :=
+  Does.calls hf (fun cfg => init_spec cfg w slot r off hc hd hr hroom) k
+
+theorem count_calls (hf : fns i = some (implFn [.i64] (.status count))) (w : World) (s : UInt64) (T : Ht)
+    (h : Rep w s T) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s] w (fun x w' =>
+      x = (if T.hasTable then UInt64.ofNat T.entries.length else 0) ∧ w' = w) :=
+  Ans.calls hf (fun cfg => count_spec cfg w s T h) k
+
+theorem getEntry_calls (hf : fns i = some (implFn [.i64, .i32, .i64, .i64] (.status getEntry))) (w : World)
+    (s : UInt64) (T : Ht) (L : Lay) (h : Tab w s T L) (index kout vout : UInt64) (hix : index.toNat < 2 ^ 32)
+    (hroom : ∀ k v, T.entries[index.toNat]? = some (k, v) →
+      Room w kout k.size ∧ Room w vout v.size ∧ Clear s L kout k.size ∧ Clear s L vout v.size) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] w
+      (GetQ w s T L index kout vout) :=
+  Ans.calls hf (fun cfg => getEntry_spec cfg w s T L h index kout vout hix hroom) k
+
+theorem create_calls (hf : fns i = some (implFn [.i64] (.status create))) (w : World) (s : UInt64) (T : Ht)
+    (h : Rep w s T) (hn : T.handles.length + 1 < 2 ^ 64) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s] w (fun x w' => x = UInt64.ofNat T.handles.length ∧
+      Rep w' s { T with handles := T.handles ++ [T.handles.length] } ∧
+      ∀ e i a, Owned w s e i a → Owned w' s e i a) :=
+  Ans.calls hf (fun cfg => create_spec cfg w s T h hn) k
+
+theorem cleanup_calls (hf : fns i = some (implFn [.i64] (.void cleanup))) (w : World) (slot s : UInt64)
+    (r : Region) (off : Nat) (hc : Calm w) (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
+    (hl : w.mem.load slot 8 = some s) (hs : s = 0 ∨ ∃ e i a, Owned w s e i a) (k : Nat) :
+    CallsD (termLocals fns env steps k) i [.sc .i64 slot] w (fun w' =>
+      w'.mem.load slot 8 = some 0 ∧ Outside w w' (Misses slot)) :=
+  Does.calls hf (fun cfg => cleanup_spec cfg w slot s r off hc hd hr hl hs) k
+
+theorem lookup_calls (hf : fns i = some (implFn [.i64, .i64, .i32, .i64] (.status lookup))) (w : World)
+    (s : UInt64) (T : Ht) (L : Lay) (h : Tab w s T L) (hI : Idx w L (keysOf T)) (key klen out : UInt64)
+    (kb : List UInt8) (hB : Bytes w key kb) (hkl : klen = UInt64.ofNat kb.length) (hk32 : kb.length < 2 ^ 32)
+    (hroom : ∀ p (hp : p < T.entries.length), (T.entries[p]'hp).1.data.toList = kb →
+      Room w out (T.entries[p]'hp).2.size ∧ Clear s L out (T.entries[p]'hp).2.size) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 out] w
+      (LookQ w s T L kb out) :=
+  Ans.calls hf (fun cfg => lookup_spec cfg w s T L h hI key klen out kb hB hkl hk32 hroom) k
+
+theorem insert_calls (hf : fns i = some (implFn [.i64, .i64, .i32, .i64, .i32] (.void LibHt.insert))) (w : World)
+    (s : UInt64) (T : Ht) (L : Lay) (h : Tab w s T L) (hI : Idx w L (keysOf T)) (key klen val vlen : UInt64)
+    (kb vb : List UInt8) (hkb : Bytes w key kb) (hvb : Bytes w val vb) (hkl : klen = UInt64.ofNat kb.length)
+    (hk32 : kb.length < 2 ^ 32) (hvl : vlen = UInt64.ofNat vb.length) (hv32 : vb.length < 2 ^ 32)
+    (ck : kb ≠ [] → Clear s L key kb.length) (cv : vb ≠ [] → Clear s L val vb.length) (k : Nat) :
+    CallsD (termLocals fns env steps k) i
+      [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 val, .sc .i32 vlen] w (InsertQ w s T L kb vb) :=
+  Does.calls hf (fun cfg => insert_spec cfg w s T L h hI key klen val vlen kb vb hkb hvb hkl hk32 hvl hv32 ck cv) k
+
+theorem increment_calls (hf : fns i = some (implFn [.i64, .i64, .i32, .i64] (.status increment))) (w : World)
+    (s : UInt64) (T : Ht) (L : Lay) (h : Tab w s T L) (hI : Idx w L (keysOf T)) (key klen addend : UInt64)
+    (kb : List UInt8) (hkb : Bytes w key kb) (hkl : klen = UInt64.ofNat kb.length) (hk32 : kb.length < 2 ^ 32)
+    (ck : kb ≠ [] → Clear s L key kb.length)
+    (h8 : ∀ ex, T.get (ByteArray.mk kb.toArray) = some ex → 8 ≤ ex.size) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] w
+      (IncQ w s T L kb addend) :=
+  Ans.calls hf (fun cfg => increment_spec cfg w s T L h hI key klen addend kb hkb hkl hk32 ck h8) k
+
+end calls
+
+-- ---------------------------------------------------------------------------
+-- The table at a program's slot
+-- ---------------------------------------------------------------------------
+
+/-- A handle made: the table with one more handle, its entries as they were. -/
+theorem Tab.created {w : World} {s x : UInt64} {T : Ht} {L : Lay} {hs : List Nat} {m : Mem} (h : Tab w s T L)
+    (hm : w.mem.store (s + UInt64.ofNat CREATED) 8 x = some m)
+    (hrep : Rep (stored w (s + UInt64.ofNat CREATED) x m) s { T with handles := hs }) :
+    Tab (stored w (s + UInt64.ofNat CREATED) x m) s { T with handles := hs } L := by
+  have W := wrote_stored hm
+  have hr := h.room
+  have ce := h.apart.1.clear h.rep.blk (j := CREATED) (n := 8) (by decide)
+  have ca := h.apart.2.2.1.clear h.rep.blk (j := CREATED) (n := 8) (by decide)
+  have hf : ∀ j, j + 8 ≤ SIZE → CREATED + 8 ≤ j →
+      fld (stored w (s + UInt64.ofNat CREATED) x m) s j = fld w s j :=
+    fun j hj hd => fld_kept h.rep.blk hj (by decide) (Or.inr hd) hm
+  refine {
+    rep := hrep
+    fe := (hf _ (by decide) (by decide)).trans h.fe
+    fecap := (hf _ (by decide) (by decide)).trans h.fecap
+    fix := (hf _ (by decide) (by decide)).trans h.fix
+    ficap := (hf _ (by decide) (by decide)).trans h.ficap
+    far := (hf _ (by decide) (by decide)).trans h.far
+    fused := (hf _ (by decide) (by decide)).trans h.fused
+    facap := (hf _ (by decide) (by decide)).trans h.facap
+    we := W.whole h.we
+    wi := W.whole h.wi
+    wa := W.whole h.wa
+    room := hr
+    pos := h.pos
+    apart := h.apart
+    olen := h.olen
+    sep := h.sep
+    ento := fun i hi ho => ?_ }
+  obtain ⟨h0, h8, h16, h24, hk, hv, bk, bv⟩ := h.ento i hi ho
+  have hi' : i < L.ecap := Nat.lt_of_lt_of_le hi hr.1
+  have he : ∀ j, j + 8 ≤ ENTRY → fld (stored w (s + UInt64.ofNat CREATED) x m) L.e (i * ENTRY + j) =
+      fld w L.e (i * ENTRY + j) := fun j hj => W.fld_blk h.be (by simp only [ENTRY] at hj ⊢; omega) ce
+  exact ⟨(he 0 (by decide)).trans h0, (he 8 (by decide)).trans h8, (he 16 (by decide)).trans h16,
+    (he 24 (by decide)).trans h24, hk, hv,
+    W.bytes_blk h.ba (by rw [size_toList]; exact Nat.le_trans hk hr.2) bk ca,
+    W.bytes_blk h.ba (by rw [size_toList]; exact Nat.le_trans hv hr.2) bv ca⟩
+
+/-- **`htCreate`** over a whole table: the handle answered, the table with it
+    and its index, and nothing else changed. -/
+theorem create_tab (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h : Tab w s T L)
+    (hI : Idx w L (keysOf T)) (hn : T.handles.length + 1 < 2 ^ 64) :
+    Ans cfg [.sc .i64 s] w create [.i64] (fun x w' => x = UInt64.ofNat T.handles.length ∧
+      Tab w' s { T with handles := T.handles ++ [T.handles.length] } L ∧ Idx w' L (keysOf T) ∧
+      Kept w w' s L L) := by
+  refine ans_of_wp ?_ create_fine rfl
+  simp only [create, entryParams, wp_bind, wp_params, carriesFrom, wp_ret, wp_pure]
+  have h0 : (#[V.sc .i64 s] : Env)[0]? = some (.sc .i64 s) := rfl
+  apply wp_iconst64
+  refine wp_ifte (AnsJ fun x w' => x = UInt64.ofNat T.handles.length ∧
+      Tab w' s { T with handles := T.handles ++ [T.handles.length] } L ∧ Idx w' L (keysOf T) ∧ Kept w w' s L L)
+    (x := s) (y := c64 0) (by slot) (by slot) ?_ ?_ (by join_ans)
+  · intro he
+    exact absurd (by simpa [cmpInt, show c64 0 = 0 from by decide] using he) (Blk.ne_zero h.rep.blk)
+  · intro _ ne hne
+    wp_seq
+    refine wp_at (x := s) (by slot) ?_
+    refine wp_load64 (by slot) h.rep.created ?_
+    refine wp_iaddImm (by slot) ?_
+    obtain ⟨m, hm⟩ := Blk.fld_store h.rep.blk h.rep.calm (j := CREATED) (by decide)
+      (UInt64.ofNat T.handles.length + c64 1)
+    refine wp_storeI64 (by slot) (by slot) hm ?_
+    have W := wrote_stored hm
+    refine ⟨_, by slot, rfl, h.created hm ?_, hI.wrote h.bi W (h.apart.2.1.clear h.rep.blk (by decide)),
+      Kept.wrote (y := s) (k := SIZE) (by simp [blocks]) h.rep.blk W (by decide)⟩
+    exact {
+      blk := Blk.keep h.rep.blk hm
+      calm := h.rep.calm.stored hm
+      created := by
+        rw [fld_stored hm]
+        simp [show c64 1 = 1 from by decide, UInt64.ofNat_add]
+      count := (fld_kept h.rep.blk (by decide) (by decide) (by decide) hm).trans h.rep.count
+      handles := by
+        show T.handles ++ [T.handles.length] = List.range (T.handles ++ [T.handles.length]).length
+        rw [List.length_append, List.length_singleton, List.range_succ, ← h.rep.handles]
+      small := ⟨by simpa using hn, h.rep.small.2⟩ }
+
+/-- **`htLookup`** handed no context answers `0xFFFFFFFF` and changes
+    nothing. -/
+theorem lookup_null (cfg : Cfg) (w : World) (key klen out : UInt64) :
+    Ans cfg [.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 out] w lookup [.i64, .i64, .i32, .i64]
+      (fun x w' => x = c64 0xFFFFFFFF ∧ w' = w) := by
+  refine ans_of_wp ?_ lookup_fine rfl
+  simp only [lookup, entryOf, valAt, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
+  have h0 : (#[V.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 out] : Env)[0]? = some (.sc .i64 0) := rfl
+  refine wp_withTable (x := 0) (c := 0) (by slot) (fun h => absurd rfl h) ?_ (fun h => absurd rfl h)
+  intro _ Γ' hext
+  apply wp_iconst64
+  exact ⟨_, get_push_size, rfl, rfl⟩
+
+/-- **`htGetEntry`** handed no context answers `-1` and changes nothing. -/
+theorem getEntry_null (cfg : Cfg) (w : World) (index kout vout : UInt64) :
+    Ans cfg [.sc .i64 0, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] w getEntry [.i64, .i32, .i64, .i64]
+      (fun x w' => x = c64 (-1) ∧ w' = w) := by
+  refine ans_of_wp ?_ getEntry_fine rfl
+  simp only [getEntry, entryOf, keyAt, valAt, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
+  have h0 : (#[V.sc .i64 0, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] : Env)[0]? = some (.sc .i64 0) := rfl
+  refine wp_withTable (x := 0) (c := 0) (by slot) (fun h => absurd rfl h) ?_ (fun h => absurd rfl h)
+  intro _ Γ' hext
+  apply wp_iconst64
+  exact ⟨_, get_push_size, rfl, rfl⟩
+
+/-- **A program's slot holds the context `s`, which holds the table `T`**:
+    the slot is outside the heap and holds `s`, and `s` is a context holding
+    `T` with its index. What a program that uses the table keeps from call to
+    call. -/
+def HtAt (w : World) (slot s : UInt64) (T : Ht) : Prop :=
+  ∃ r off L, decodeAddr slot = some (r, off) ∧ r ≠ .pinned ∧ w.mem.load slot 8 = some s ∧ Tab w s T L ∧
+    Idx w L (keysOf T)
+
+theorem HtAt.load {w : World} {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) : w.mem.load slot 8 = some s := by
+  obtain ⟨_, _, _, _, _, hl, _, _⟩ := h
+  exact hl
+
+/-- A run outside the heap is clear of every table. -/
+theorem clear_out {s p : UInt64} {L : Lay} {n : Nat} {r : Region} {off : Nat} (hd : decodeAddr p = some (r, off))
+    (hr : r ≠ .pinned) : Clear s L p n := fun _ _ _ r' off' _ hp _ => by
+  rw [hd] at hp
+  cases hp
+  exact Or.inl hr
+
+/-- What a change to the table keeps, it keeps of the slot. -/
+theorem HtAt.kept {w w' : World} {slot s : UInt64} {T' : Ht} {L L' : Lay} {r : Region} {off : Nat}
+    (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hl : w.mem.load slot 8 = some s)
+    (K : Kept w w' s L L') (hT : Tab w' s T' L') (hI : Idx w' L' (keysOf T')) : HtAt w' slot s T' :=
+  ⟨r, off, L', hd, hr, K.keeps.load slot 8 s (by decide) ⟨load_inW hl, clear_out hd hr⟩ hl, hT, hI⟩
+
+/-- A write outside the heap that leaves the slot leaves the table at it. -/
+theorem HtAt.wrote {w w' : World} {slot s p : UInt64} {T : Ht} {n : Nat} {r : Region} {off : Nat}
+    (h : HtAt w slot s T) (W : Wrote w w' p n) (hd : decodeAddr p = some (r, off)) (hr : r ≠ .pinned)
+    (hl : w'.mem.load slot 8 = w.mem.load slot 8) : HtAt w' slot s T := by
+  obtain ⟨r0, off0, L, hd0, hr0, hl0, hT, hI⟩ := h
+  exact ⟨r0, off0, L, hd0, hr0, hl.trans hl0, hT.wrote W (clear_out hd hr),
+    hI.wrote hT.bi W (clear_out (s := s) (L := L) hd hr L.ix (L.icap * 8) (by simp [blocks]))⟩
+
+/-- `htInit` leaves in its slot null, or a context holding the empty table. -/
+theorem HtAt.of_init {w w' : World} {slot : UInt64} {r : Region} {off : Nat}
+    (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
+    (h : ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ ∃ L, Tab w' s {} L ∧ Idx w' L []) ∧
+      Outside w w' (Misses slot)) :
+    ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ HtAt w' slot s {}) := by
+  obtain ⟨s, hl, h, -⟩ := h
+  exact ⟨s, hl, h.imp id fun ⟨L, hT, hI⟩ => ⟨r, off, L, hd, hr, hl, hT, hI⟩⟩
+
+/-- `set` leaves at the slot the table the model's `set` leaves, or the table
+    as it was. -/
+theorem HtAt.of_set {w w' : World} {slot s : UInt64} {T : Ht} {L : Lay} {kb vb : List UInt8} {r : Region}
+    {off : Nat} (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hl : w.mem.load slot 8 = some s)
+    (h : SetQ w s T L kb vb w') :
+    HtAt w' slot s (T.set (ByteArray.mk kb.toArray) (ByteArray.mk vb.toArray)) ∨ HtAt w' slot s T := by
+  obtain ⟨L', K, ⟨hT, hI⟩ | ⟨hT, hI⟩⟩ := h
+  · exact Or.inl (HtAt.kept hd hr hl K hT hI)
+  · exact Or.inr (HtAt.kept hd hr hl K hT hI)
+
+/-- `htInsert` leaves at the slot the table the model leaves, or the table as
+    it was. -/
+theorem HtAt.of_insert {w w' : World} {slot s : UInt64} {T : Ht} {L : Lay} {kb vb : List UInt8} {r : Region}
+    {off : Nat} (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hl : w.mem.load slot 8 = some s)
+    (hT : Tab w s T L) (hI : Idx w L (keysOf T)) (h : InsertQ w s T L kb vb w') :
+    HtAt w' slot s (if T.hasTable then T.set (ByteArray.mk kb.toArray) (ByteArray.mk vb.toArray) else T) ∨
+      HtAt w' slot s T := by
+  unfold InsertQ at h
+  by_cases c : T.hasTable = true
+  · rw [if_pos c] at h ⊢
+    exact HtAt.of_set hd hr hl h
+  · rw [if_neg c] at h
+    subst h
+    exact Or.inr ⟨r, off, L, hd, hr, hl, hT, hI⟩
+
+/-- `htCreate` leaves at the slot the table with one more handle. -/
+theorem HtAt.of_create {w w' : World} {slot s : UInt64} {T : Ht} {L : Lay} {r : Region} {off : Nat}
+    (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hl : w.mem.load slot 8 = some s)
+    (h : Tab w' s { T with handles := T.handles ++ [T.handles.length] } L ∧ Idx w' L (keysOf T) ∧ Kept w w' s L L) :
+    HtAt w' slot s { T with handles := T.handles ++ [T.handles.length] } :=
+  HtAt.kept hd hr hl h.2.2 h.1 h.2.1
+
+/-- A write clear of the table that misses the slot leaves the table at it. -/
+theorem HtAt.wroteClear {w w' : World} {slot s p : UInt64} {T : Ht} {L : Lay} {n : Nat} {r : Region} {off : Nat}
+    (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hl : w.mem.load slot 8 = some s)
+    (hT : Tab w s T L) (hI : Idx w L (keysOf T)) (W : Wrote w w' p n) (hc : Clear s L p n)
+    (hm : Misses slot p n) : HtAt w' slot s T :=
+  ⟨r, off, L, hd, hr, (W.load hd fun hn r' off' hd' => hm hn r off r' off' hd hd').trans hl, hT.wrote W hc,
+    hI.wrote hT.bi W (hc L.ix (L.icap * 8) (by simp [blocks]))⟩
+
+/-- `htIncrement` leaves at the slot the table the model leaves, or the table
+    as it was. -/
+theorem HtAt.of_increment {w w' : World} {slot s x addend : UInt64} {T : Ht} {L : Lay} {kb : List UInt8}
+    {r : Region} {off : Nat} (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
+    (hl : w.mem.load slot 8 = some s) (hT : Tab w s T L) (hI : Idx w L (keysOf T))
+    (h : IncQ w s T L kb addend x w') :
+    HtAt w' slot s (if T.hasTable then
+        match T.get (ByteArray.mk kb.toArray) with
+        | none => T.set (ByteArray.mk kb.toArray) (ByteArray.mk (le8 addend).toArray)
+        | some ex => T.set (ByteArray.mk kb.toArray) (bumped ex addend)
+      else T) ∨ HtAt w' slot s T := by
+  unfold IncQ at h
+  by_cases c : T.hasTable = true
+  · rw [if_pos c] at h ⊢
+    cases hg : T.get (ByteArray.mk kb.toArray) with
+    | none =>
+      rw [hg] at h
+      exact HtAt.of_set hd hr hl h.2
+    | some ex =>
+      rw [hg] at h
+      obtain ⟨-, L', K, hT', hI'⟩ := h
+      exact Or.inl (HtAt.kept hd hr hl K hT' hI')
+  · rw [if_neg c] at h
+    obtain ⟨-, rfl⟩ := h
+    exact Or.inr ⟨r, off, L, hd, hr, hl, hT, hI⟩
+
+/-- `htLookup`, its value copied clear of the table and missing the slot,
+    leaves the table at the slot. -/
+theorem HtAt.of_lookup {w w' : World} {slot s out x : UInt64} {T : Ht} {L : Lay} {kb : List UInt8}
+    {r : Region} {off : Nat} (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
+    (hl : w.mem.load slot 8 = some s) (hT : Tab w s T L) (hI : Idx w L (keysOf T))
+    (hc : ∀ p (hp : p < T.entries.length), (T.entries[p]'hp).1.data.toList = kb →
+      Clear s L out (T.entries[p]'hp).2.size ∧ Misses slot out (T.entries[p]'hp).2.size)
+    (h : LookQ w s T L kb out x w') : HtAt w' slot s T := by
+  have same : HtAt w slot s T := ⟨r, off, L, hd, hr, hl, hT, hI⟩
+  unfold LookQ at h
+  by_cases c : T.hasTable = true
+  · rw [if_pos c] at h
+    rcases h with ⟨-, -, rfl⟩ | ⟨p, hp, hk, -, -, -, -, W⟩
+    · exact same
+    · exact HtAt.wroteClear hd hr hl hT hI W (hc p hp hk).1 (hc p hp hk).2
+  · rw [if_neg c] at h
+    obtain ⟨-, rfl⟩ := h
+    exact same
+
+/-- `htGetEntry`, its key and value copied clear of the table and missing the
+    slot, leaves the table at the slot. -/
+theorem HtAt.of_getEntry {w w' : World} {slot s index kout vout x : UInt64} {T : Ht} {L : Lay}
+    {r : Region} {off : Nat} (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
+    (hl : w.mem.load slot 8 = some s) (hT : Tab w s T L) (hI : Idx w L (keysOf T))
+    (hc : ∀ k v, T.entries[index.toNat]? = some (k, v) →
+      Clear s L kout k.size ∧ Clear s L vout v.size ∧ Misses slot kout k.size ∧ Misses slot vout v.size)
+    (h : GetQ w s T L index kout vout x w') : HtAt w' slot s T := by
+  have same : HtAt w slot s T := ⟨r, off, L, hd, hr, hl, hT, hI⟩
+  unfold GetQ at h
+  by_cases c : T.hasTable = true
+  · rw [if_pos c] at h
+    cases hg : T.entries[index.toNat]? with
+    | none =>
+      rw [hg] at h
+      obtain ⟨-, rfl⟩ := h
+      exact same
+    | some kv =>
+      obtain ⟨k, v⟩ := kv
+      rw [hg] at h
+      obtain ⟨-, -, -, w1, W1, W2⟩ := h
+      obtain ⟨ck, cv, mk, mv⟩ := hc k v hg
+      have hl1 : w1.mem.load slot 8 = some s :=
+        (W1.load hd fun hn r' off' hd' => mk hn r off r' off' hd hd').trans hl
+      exact HtAt.wroteClear hd hr hl1 (hT.wrote W1 ck)
+        (hI.wrote hT.bi W1 (ck L.ix (L.icap * 8) (by simp [blocks]))) W2 cv mv
+  · rw [if_neg c] at h
+    obtain ⟨-, rfl⟩ := h
+    exact same
+
+/-- The context at the slot holds the table, for `htCount`. -/
+theorem HtAt.rep {w : World} {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) : Rep w s T := by
+  obtain ⟨_, _, _, _, _, _, hT, _⟩ := h
+  exact hT.rep
+
+/-- The context at the slot is one `htCleanup` frees. -/
+theorem HtAt.owned {w : World} {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) : ∃ e i a, Owned w s e i a := by
+  obtain ⟨_, _, _, _, _, _, hT, _⟩ := h
+  exact ⟨_, _, _, hT.owned⟩
+
+/-- What a change to the table keeps, a program keeps of its own memory. -/
+theorem Kept.outside {w w' : World} {s : UInt64} {L L' : Lay} (K : Kept w w' s L L') (hc : Calm w') :
+    Outside w w' fun _ _ => True :=
+  ⟨K.keeps.mono fun _ _ hp => ⟨hp.1, fun _ _ _ r off _ hq _ => Or.inl (hp.2.1 r off hq)⟩, fun _ => hc, K.size⟩
+
+theorem SetQ.outside {w w' : World} {s : UInt64} {T : Ht} {L : Lay} {kb vb : List UInt8}
+    (h : SetQ w s T L kb vb w') : Outside w w' fun _ _ => True := by
+  obtain ⟨L', K, ⟨hT, -⟩ | ⟨hT, -⟩⟩ := h <;> exact K.outside hT.rep.calm
+
+theorem InsertQ.outside {w w' : World} {s : UInt64} {T : Ht} {L : Lay} {kb vb : List UInt8}
+    (h : InsertQ w s T L kb vb w') : Outside w w' fun _ _ => True := by
+  unfold InsertQ at h
+  by_cases c : T.hasTable = true
+  · rw [if_pos c] at h
+    exact SetQ.outside h
+  · rw [if_neg c] at h
+    subst h
+    exact Outside.refl _ _
+
+theorem IncQ.outside {w w' : World} {s x addend : UInt64} {T : Ht} {L : Lay} {kb : List UInt8}
+    (h : IncQ w s T L kb addend x w') : Outside w w' fun _ _ => True := by
+  unfold IncQ at h
+  by_cases c : T.hasTable = true
+  · rw [if_pos c] at h
+    cases hg : T.get (ByteArray.mk kb.toArray) with
+    | none => rw [hg] at h; exact SetQ.outside h.2
+    | some ex =>
+      rw [hg] at h
+      obtain ⟨-, L', K, hT', -⟩ := h
+      exact K.outside hT'.rep.calm
+  · rw [if_neg c] at h
+    obtain ⟨-, rfl⟩ := h
+    exact Outside.refl _ _
+
+theorem _root_.AlgorithmLib.LibSpec.Out.clear {p : UInt64} (h : Out p) (s : UInt64) (L : Lay) (n : Nat) :
+    Clear s L p n :=
+  fun _ _ _ r off _ hp _ => Or.inl (h r off hp)
+
+/-- Noting a call leaves the table at the slot. -/
+theorem HtAt.obs {w : World} {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) (c : Callee) (vs : List V) :
+    HtAt (obsCall w c vs) slot s T := by
+  obtain ⟨r, off, L, hd, hr, hl, hT, hI⟩ := h
+  exact HtAt.wrote ⟨r, off, L, hd, hr, hl, hT, hI⟩ (wrote_obs w c vs slot) hd hr rfl
+
+/-- The model's answer and table for `htIncrement`. -/
+def incOf (T : Ht) (kb : List UInt8) (addend : UInt64) : UInt64 × Ht :=
+  if T.hasTable then
+    match T.get (ByteArray.mk kb.toArray) with
+    | none => (addend, T.set (ByteArray.mk kb.toArray) (ByteArray.mk (le8 addend).toArray))
+    | some ex => (ofLe64 ex + addend, T.set (ByteArray.mk kb.toArray) (bumped ex addend))
+  else (addend, T)
+
+section at_slot
+variable {fns : Nat → Option Fn} {env : FnEnv} {steps i : Nat}
+
+/-- **A linked program's calls to the table's functions, the table at its
+    slot**: each leaves at the slot the table the entry point's model leaves,
+    or, where an allocation failed, the table as it was, and outside the heap
+    changes nothing but the slot or the runs it copies to. -/
+theorem create_at (hf : fns i = some (implFn [.i64] (.status create))) {w : World} {slot s : UInt64} {T : Ht}
+    (h : HtAt w slot s T) (hn : T.handles.length + 1 < 2 ^ 64) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s] w (fun x w' => x = UInt64.ofNat T.handles.length ∧
+      HtAt w' slot s { T with handles := T.handles ++ [T.handles.length] } ∧ Outside w w' fun _ _ => True) := by
+  obtain ⟨r, off, L, hd, hr, hl, hT, hI⟩ := h
+  exact (Ans.calls hf (fun cfg => create_tab cfg w s T L hT hI hn) k).mono
+    fun x w' ⟨hx, hq⟩ => ⟨hx, HtAt.of_create hd hr hl hq, hq.2.2.outside hq.1.rep.calm⟩
+
+theorem count_at (hf : fns i = some (implFn [.i64] (.status count))) {w : World} {slot s : UInt64} {T : Ht}
+    (h : HtAt w slot s T) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s] w (fun x w' =>
+      x = (if T.hasTable then UInt64.ofNat T.entries.length else 0) ∧ w' = w) :=
+  count_calls hf w s T h.rep k
+
+theorem insert_at (hf : fns i = some (implFn [.i64, .i64, .i32, .i64, .i32] (.void LibHt.insert))) {w : World}
+    {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) (key klen val vlen : UInt64)
+    (kb vb : List UInt8) (hkb : Bytes w key kb) (hvb : Bytes w val vb) (hkl : klen = UInt64.ofNat kb.length)
+    (hk32 : kb.length < 2 ^ 32) (hvl : vlen = UInt64.ofNat vb.length) (hv32 : vb.length < 2 ^ 32)
+    (ok : Out key) (ov : Out val) (k : Nat) :
+    CallsD (termLocals fns env steps k) i
+      [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 val, .sc .i32 vlen] w (fun w' =>
+        (HtAt w' slot s (if T.hasTable then T.set (ByteArray.mk kb.toArray) (ByteArray.mk vb.toArray) else T) ∨
+          HtAt w' slot s T) ∧ Outside w w' fun _ _ => True) := by
+  obtain ⟨r, off, L, hd, hr, hl, hT, hI⟩ := h
+  exact (insert_calls hf w s T L hT hI key klen val vlen kb vb hkb hvb hkl hk32 hvl hv32
+    (fun _ => ok.clear _ _ _) (fun _ => ov.clear _ _ _) k).mono fun w' hq =>
+      ⟨HtAt.of_insert hd hr hl hT hI hq, hq.outside⟩
+
+theorem increment_at (hf : fns i = some (implFn [.i64, .i64, .i32, .i64] (.status increment))) {w : World}
+    {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) (key klen addend : UInt64)
+    (kb : List UInt8) (hkb : Bytes w key kb) (hkl : klen = UInt64.ofNat kb.length) (hk32 : kb.length < 2 ^ 32)
+    (ok : Out key) (h8 : ∀ ex, T.get (ByteArray.mk kb.toArray) = some ex → 8 ≤ ex.size) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] w
+      (fun x w' => x = (incOf T kb addend).1 ∧ (HtAt w' slot s (incOf T kb addend).2 ∨ HtAt w' slot s T) ∧
+        Outside w w' fun _ _ => True) := by
+  obtain ⟨r, off, L, hd, hr, hl, hT, hI⟩ := h
+  refine (increment_calls hf w s T L hT hI key klen addend kb hkb hkl hk32 (fun _ => ok.clear _ _ _) h8 k).mono
+    fun x w' hq => ?_
+  have hs := HtAt.of_increment hd hr hl hT hI hq
+  have hO := hq.outside
+  unfold IncQ at hq
+  unfold incOf
+  by_cases c : T.hasTable = true
+  · rw [if_pos c] at hq hs ⊢
+    cases hg : T.get (ByteArray.mk kb.toArray) with
+    | none => rw [hg] at hq hs; exact ⟨hq.1, hs, hO⟩
+    | some ex => rw [hg] at hq hs; exact ⟨hq.1, hs, hO⟩
+  · rw [if_neg c] at hq hs ⊢
+    exact ⟨hq.1, hs, hO⟩
+
+theorem lookup_at (hf : fns i = some (implFn [.i64, .i64, .i32, .i64] (.status lookup))) {w : World}
+    {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) (key klen out : UInt64)
+    (kb : List UInt8) (hB : Bytes w key kb) (hkl : klen = UInt64.ofNat kb.length) (hk32 : kb.length < 2 ^ 32)
+    (oo : Out out)
+    (hroom : ∀ p (hp : p < T.entries.length), (T.entries[p]'hp).1.data.toList = kb →
+      Room w out (T.entries[p]'hp).2.size ∧ Misses slot out (T.entries[p]'hp).2.size) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 out] w
+      (fun x w' => HtAt w' slot s T ∧ ∃ L, LookQ w s T L kb out x w') := by
+  obtain ⟨r, off, L, hd, hr, hl, hT, hI⟩ := h
+  exact (lookup_calls hf w s T L hT hI key klen out kb hB hkl hk32
+    (fun p hp hk => ⟨(hroom p hp hk).1, oo.clear _ _ _⟩) k).mono fun x w' hq =>
+      ⟨HtAt.of_lookup hd hr hl hT hI (fun p hp hk => ⟨oo.clear _ _ _, (hroom p hp hk).2⟩) hq, L, hq⟩
+
+theorem getEntry_at (hf : fns i = some (implFn [.i64, .i32, .i64, .i64] (.status getEntry))) {w : World}
+    {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) (index kout vout : UInt64)
+    (hix : index.toNat < 2 ^ 32) (ok : Out kout) (ov : Out vout)
+    (hroom : ∀ k v, T.entries[index.toNat]? = some (k, v) →
+      Room w kout k.size ∧ Room w vout v.size ∧ Misses slot kout k.size ∧ Misses slot vout v.size) (k : Nat) :
+    CallsA (termLocals fns env steps k) i [.sc .i64 s, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] w
+      (fun x w' => HtAt w' slot s T ∧ ∃ L, GetQ w s T L index kout vout x w') := by
+  obtain ⟨r, off, L, hd, hr, hl, hT, hI⟩ := h
+  exact (getEntry_calls hf w s T L hT index kout vout hix
+    (fun k v hg => ⟨(hroom k v hg).1, (hroom k v hg).2.1, ok.clear _ _ _, ov.clear _ _ _⟩) k).mono fun x w' hq =>
+      ⟨HtAt.of_getEntry hd hr hl hT hI
+        (fun k v hg => ⟨ok.clear _ _ _, ov.clear _ _ _, (hroom k v hg).2.2.1, (hroom k v hg).2.2.2⟩) hq, L, hq⟩
+
+theorem init_at (hf : fns i = some (implFn [.i64] (.void init))) (w : World) (slot : UInt64) (r : Region)
+    (off : Nat) (hc : Calm w) (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
+    (hroom : off + 8 ≤ (w.mem.region r).size) (k : Nat) :
+    CallsD (termLocals fns env steps k) i [.sc .i64 slot] w (fun w' =>
+      (∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ HtAt w' slot s {})) ∧ Outside w w' (Misses slot)) :=
+  (init_calls hf w slot r off hc hd hr hroom k).mono fun _ hq => ⟨HtAt.of_init hd hr hq, hq.choose_spec.2.2⟩
+
+theorem cleanup_at (hf : fns i = some (implFn [.i64] (.void cleanup))) {w : World} {slot s : UInt64} {T : Ht}
+    (h : HtAt w slot s T) (k : Nat) :
+    CallsD (termLocals fns env steps k) i [.sc .i64 slot] w (fun w' =>
+      w'.mem.load slot 8 = some 0 ∧ Outside w w' (Misses slot)) := by
+  obtain ⟨e, i', a, ho⟩ := h.owned
+  obtain ⟨r, off, L, hd, hr, hl, hT, hI⟩ := h
+  exact cleanup_calls hf w slot s r off hT.rep.calm hd hr hl (Or.inr ⟨e, i', a, ho⟩) k
+
+end at_slot
+
 end HtSpec
 
 #print axioms HtSpec.init_spec
@@ -3955,3 +4505,9 @@ end HtSpec
 #print axioms HtSpec.wp_set
 #print axioms HtSpec.insert_spec
 #print axioms HtSpec.increment_spec
+#print axioms HtSpec.insert_calls
+#print axioms HtSpec.create_tab
+#print axioms HtSpec.HtAt.of_insert
+#print axioms HtSpec.HtAt.of_getEntry
+#print axioms HtSpec.getEntry_at
+#print axioms HtSpec.increment_at

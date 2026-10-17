@@ -7,6 +7,8 @@ public import AlgorithmLib.Host.ExtLife
 meta import AlgorithmLib.Host.ExtLife
 public import AlgorithmLib.Surface.LibBase
 meta import AlgorithmLib.Surface.LibBase
+public import AlgorithmLib.Host.Summary
+meta import AlgorithmLib.Host.Summary
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -85,6 +87,23 @@ had, so that everything inside that memory is off it (`Past.off`).
 `le8 x` is the eight bytes of a word, which make the word (`leN_le8`) and are
 the model's `le64` (`le64_eq`); an eight-byte store over bytes that can be
 read leaves them, then the rest (`stored_bytes`).
+
+A library function is one of a linked program's functions (`implFn`), and a
+call to it there is as its statement says at every call depth (`CallsA`,
+`CallsD`; `Ans.calls`, `Does.calls`). A program that makes such a call goes
+on from each answer and world the statement allows (`wp_callA`, `wp_callD`),
+the call noted first, which writes nothing (`wrote_obs`).
+
+A call to a library outside the program that answers a result code goes on
+from each answer the model gives (`wp_extRc`); `wp_status` turns the code into
+a library function's `0` or `-1`, and `wp_ifte32`, `wp_failIf32` branch on
+32-bit slots.
+
+`Outside w w' P` is what a program keeps of its own memory over a call into a
+library: `w'` is `w` outside the heap, where `P` holds. More heap, a free and
+a write into the heap leave everything outside it (`Grows.outside`,
+`Freed.outside`, `Wrote.outside`); a slot written leaves what misses it
+(`Wrote.outsideBut`, `Misses`).
 
 Up to eight bytes are told apart by the little-endian word they make
 (`leN_eq_iff`), which is what comparing two runs a word at a time needs.
@@ -839,6 +858,9 @@ theorem does_of_wp {cfg : Cfg} {p : Body} {params : List ClifTy} {args : List V}
 def freed (w : World) (off n : Nat) : World :=
   { w with mem := { w.mem with pinnedLive := w.mem.pinnedLive.erase (off, n) }, heap := w.heap.erase (off, n) }
 
+/-- **`p` is not an address of the heap.** -/
+def Out (p : UInt64) : Prop := ∀ r off, decodeAddr p = some (r, off) → r ≠ .pinned
+
 /-- **`w'` is `w` with the block at `x` freed**, or as it was: what was calm
     stays calm, every other block is there with its fields, and memory
     outside the heap is as it was. -/
@@ -854,10 +876,13 @@ structure Freed (w w' : World) (x : UInt64) : Prop where
   room : ∀ n, Whole w x n → ∀ p k, Room w p k → Off x n p k → Room w' p k
   load : ∀ n, Whole w x n → ∀ a k v, 0 < k → Off x n a k → w.mem.load a k = some v → w'.mem.load a k = some v
   psize : (w'.mem.region .pinned).size = (w.mem.region .pinned).size
+  outBytes : ∀ p bs, Out p → Bytes w p bs → Bytes w' p bs
+  outRoom : ∀ p k, Out p → Room w p k → Room w' p k
 
 theorem Freed.refl (w : World) (x : UInt64) : Freed w w x :=
   ⟨id, fun _ _ _ h => h, fun _ _ _ _ _ _ _ h => h, fun _ _ _ _ _ _ => rfl, fun _ _ => rfl, rfl,
-    fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl⟩
+    fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl,
+    fun _ _ _ h => h, fun _ _ _ h => h⟩
 
 theorem find?_erase_ne {l : List (Nat × Nat)} {a : Nat × Nat} {k : Nat} (h : a.1 ≠ k) :
     (l.erase a).find? (·.1 == k) = l.find? (·.1 == k) := by
@@ -894,8 +919,22 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
     simp only at hb
     omega
   have hxd := (heapAt_decode hx).1
+  have hreg : ∀ r, (freed w off n).mem.region r = w.mem.region r := fun r => by cases r <;> rfl
+  have hob : ∀ p bs, Out p → Bytes w p bs → Bytes (freed w off n) p bs := by
+    intro p bs ho hb
+    rcases hb with rfl | ⟨r, o, hd, hs, h36, hr, hg⟩
+    · exact Or.inl rfl
+    have e := ho r o hd
+    exact Or.inr ⟨r, o, hd, by rw [hreg]; exact hs, h36, by rw [readable_off_pinned e] at hr ⊢; exact hr,
+      fun i hi => by rw [hreg]; exact hg i hi⟩
+  have hor : ∀ p k, Out p → Room w p k → Room (freed w off n) p k := by
+    intro p k ho hrm
+    rcases hrm with h0 | ⟨r, o, hd, hs, h36, hr⟩
+    · exact Or.inl h0
+    have e := ho r o hd
+    exact Or.inr ⟨r, o, hd, by rw [hreg]; exact hs, h36, by cases r <;> first | exact hr | exact absurd rfl e⟩
   refine ⟨fun c => c, ?_, ?_, ?_, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, rfl, ?_, ?_, ?_, ?_,
-    rfl⟩
+    rfl, hob, hor⟩
   rotate_left 3
   · rintro y k hne ⟨hb, oy, hy⟩
     have ho := heapAt_off_ne hx hy hne
@@ -1013,7 +1052,8 @@ theorem wp_free {a : Slot .i64} {x : UInt64} {n : Nat} {Q : Unit → Env → Wor
     rintro r w' hrw
     cases hrw
     exact h _ ⟨id, fun _ _ _ h => h, fun _ _ _ _ _ _ _ h => h, fun _ _ _ _ _ _ => rfl, fun _ _ => rfl, rfl,
-      fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl⟩
+      fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl,
+      fun _ _ _ h => h, fun _ _ _ h => h⟩
   · have hx0 : (x == 0) = false := by simpa using Blk.ne_zero hb
     obtain ⟨off, m, hat, -⟩ := hb
     have hat' : (obsCall w (.ext (.c .free)) [.sc .i64 x]).heapAt? x = some (off, m) := hat
@@ -1022,7 +1062,8 @@ theorem wp_free {a : Slot .i64} {x : UInt64} {n : Nat} {Q : Unit → Env → Wor
     rintro r w' hrw
     cases hrw
     have f := freed_spec hat'
-    exact h _ ⟨f.calm, f.blk, f.fld, f.out, f.size, f.frozen, f.whole, f.bytes, f.room, f.load, f.psize⟩
+    exact h _ ⟨f.calm, f.blk, f.fld, f.out, f.size, f.frozen, f.whole, f.bytes, f.room, f.load, f.psize,
+      f.outBytes, f.outRoom⟩
 
 /-- A branch taken for effect: `R` holds of the world either way. -/
 theorem wp_when {cc : ICmpCond} {a b : Slot .i64} {x y : UInt64} {thn : Prog Slot Lvl Unit}
@@ -1187,6 +1228,10 @@ theorem wp_uextend64 {a : Slot .i32} {x : UInt64} {Q : Slot .i64 → Env → Wor
 
 theorem wp_iconst8 {k : Int} {Q : Slot .i8 → Env → World → Prop}
     (h : Q Γ.size (Γ.push (ofInt .i8 k)) w) : wp cfg d J (iconst .i8 k) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp] <;> op_fin) h
+
+theorem wp_iconst32 {k : Int} {Q : Slot .i32 → Env → World → Prop}
+    (h : Q Γ.size (Γ.push (ofInt .i32 k)) w) : wp cfg d J (iconst32 k) Q Γ w :=
   wp_val (by simp [Op'.erase, evalOp] <;> op_fin) h
 
 theorem wp_uload8 {a : Slot .i64} {p b : UInt64} {Q : Slot .i64 → Env → World → Prop}
@@ -2529,5 +2574,339 @@ theorem stored_bytes {w : World} {p x : UInt64} {m : Mem} {bs : List UInt8} (hb 
       cases hd0
       exact Or.inr (Or.inr (by omega))), hg i hi]
     simp [List.getD_eq_getElem?_getD, List.getElem?_append_right, le8_length, Nat.le_of_not_lt c]
+
+-- ---------------------------------------------------------------------------
+-- A library function, called
+-- ---------------------------------------------------------------------------
+
+/-- A library function as one of a program's functions. -/
+def implFn (params : List ClifTy) : Lib.Impl → Fn
+  | .void b => { params, code := emit b params, status := none }
+  | .status b => { params, code := (runAns b params).2.1, status := (runAns b params).1 }
+
+/-- **A call to function `i` on `args` from `w` answers as `Q` says**: it
+    neither misuses a call nor faults, and where it returns, its answer and
+    the world it leaves are `Q`'s. -/
+def CallsA (L : Sem.Locals) (i : Nat) (args : List V) (w : World) (Q : UInt64 → World → Prop) : Prop :=
+  match L i args w with
+  | .error f => FailOk (f.out : Outcome Env) false
+  | .ok (x, w') => ∃ v, x = some (.sc .i64 v) ∧ Q v w'
+
+/-- **A call to function `i` on `args` from `w` does as `Q` says.** -/
+def CallsD (L : Sem.Locals) (i : Nat) (args : List V) (w : World) (Q : World → Prop) : Prop :=
+  match L i args w with
+  | .error f => FailOk (f.out : Outcome Env) false
+  | .ok (_, w') => Q w'
+
+/-- A function with a statement, in a program's table, is called as the
+    statement says at every call depth. -/
+theorem Ans.calls {fns : Nat → Option Fn} {env : FnEnv} {steps i : Nat} {p : StatusBody} {params : List ClifTy}
+    {args : List V} {w : World} {Q : UInt64 → World → Prop} (hf : fns i = some (implFn params (.status p)))
+    (h : ∀ cfg, Ans cfg args w p params Q) : ∀ k, CallsA (termLocals fns env steps k) i args w Q
+  | 0 => by simp [CallsA, termLocals, Sem.noLocals, Sem.Fail.out, FailOk]
+  | k + 1 => by
+    unfold CallsA
+    simp only [termLocals, hf]
+    unfold Sem.callFn
+    by_cases hlen : (implFn params (.status p)).params.length ≠ args.length
+    · simp [hlen, Sem.Fail.out, FailOk]
+    · have hs := h { env, steps, locals := termLocals fns env steps k } steps args.toArray w ⟨rfl, rfl⟩
+      rw [if_neg hlen]
+      simp only [implFn] at hs ⊢
+      cases hr : runCode steps { env, steps, locals := termLocals fns env steps k } args.toArray w
+          (runAns p params).2.1 with
+      | ok Γ1 w1 =>
+        rw [hr] at hs
+        obtain ⟨a, x, ha, hx, hq⟩ := hs
+        refine ⟨x, ?_, hq⟩
+        rw [ha]
+        exact hx
+      | _ =>
+        rw [hr] at hs
+        simp_all [CodeRes.Sat, Sem.Fail.out, FailOk]
+
+theorem Does.calls {fns : Nat → Option Fn} {env : FnEnv} {steps i : Nat} {p : Body} {params : List ClifTy}
+    {args : List V} {w : World} {Q : World → Prop} (hf : fns i = some (implFn params (.void p)))
+    (h : ∀ cfg, Does cfg args w p params Q) : ∀ k, CallsD (termLocals fns env steps k) i args w Q
+  | 0 => by simp [CallsD, termLocals, Sem.noLocals, Sem.Fail.out, FailOk]
+  | k + 1 => by
+    unfold CallsD
+    simp only [termLocals, hf]
+    unfold Sem.callFn
+    by_cases hlen : (implFn params (.void p)).params.length ≠ args.length
+    · simp [hlen, Sem.Fail.out, FailOk]
+    · have hs := h { env, steps, locals := termLocals fns env steps k } steps args.toArray w ⟨rfl, rfl⟩
+      rw [if_neg hlen]
+      simp only [implFn] at hs ⊢
+      cases hr : runCode steps { env, steps, locals := termLocals fns env steps k } args.toArray w
+          (emit p params) <;> rw [hr] at hs <;> simp_all [CodeRes.Sat, Sem.Fail.out, FailOk]
+
+-- ---------------------------------------------------------------------------
+-- Calls out of the program, and their result codes
+-- ---------------------------------------------------------------------------
+
+section ext
+variable {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Γ : Env} {w : World}
+
+/-- A branch on two 32-bit slots, both arms ending in `Qj`. -/
+theorem wp_ifte32 {jTys : List ClifTy} {cc : ICmpCond} {a b : Slot .i32} {x y : UInt64}
+    {thn els : Prog Slot Lvl (Vals Slot jTys)} {Q : Vals Slot jTys → Env → World → Prop}
+    (Qj : Vals Slot jTys → Env → World → Prop)
+    (ha : Γ[a]? = some (.sc .i32 x)) (hb : Γ[b]? = some (.sc .i32 y))
+    (ht : cmpInt cc .i32 x y = true → wp cfg d J thn Qj (Γ.push (boolV true)) w)
+    (he : cmpInt cc .i32 x y = false → ∀ ne, (Γ.push (boolV false)).size ≤ ne →
+      wp cfg d J els Qj (bindAt (Γ.push (boolV false)) ne []) w)
+    (hk : ∀ nJ Γ' jv vs w', Γ'.size ≤ nJ → jv.slots.mapM (fun r => Γ'[r]?) = some vs → Qj jv Γ' w' →
+      Q (carriesFrom nJ jTys) (bindAt Γ' nJ vs) w') :
+    wp cfg d J (ifte cc a b thn els) Q Γ w := by
+  simp only [ifte, wp_ite, wp_ret]
+  have hev : evalOp w.mem Γ (.icmp cc a b) = some (boolV (cmpInt cc .i32 x y)) := by
+    simp [evalOp, Sem.get, ha, hb, zipIntCmp]
+    rfl
+  refine ⟨Qj, Qj, ⟨?_, ?_, ?_⟩, fun nJ Γ' jv vs w' hle hvs hq => hk nJ Γ' jv vs w' hle hvs (hq.elim id id)⟩
+  · intro t f hc hf
+    rw [hev] at hc
+    have hb' : V.sc t f = boolV (cmpInt cc .i32 x y) := (Option.some.inj hc).symm
+    cases hcmp : cmpInt cc .i32 x y
+    · rw [hcmp] at hb'; simp [boolV] at hb'; obtain ⟨rfl, rfl⟩ := hb'; simp at hf
+    · rw [hb', hcmp]; exact ht hcmp
+  · intro ne t f hne hc hf
+    rw [hev] at hc
+    have hb' : V.sc t f = boolV (cmpInt cc .i32 x y) := (Option.some.inj hc).symm
+    cases hcmp : cmpInt cc .i32 x y
+    · rw [hb', hcmp]; exact he hcmp ne (by simpa using hne)
+    · rw [hcmp] at hb'; simp [boolV] at hb'; obtain ⟨rfl, rfl⟩ := hb'; simp at hf
+  · rw [hev]; nofun
+
+/-- `-1` where the comparison of two 32-bit slots holds, what `k` answers
+    where it does not. -/
+theorem wp_failIf32 {cc : ICmpCond} {a b : Slot .i32} {x y : UInt64} {k : Prog Slot Lvl (Slot .i64)}
+    {R : UInt64 → World → Prop} (ha : Γ[a]? = some (.sc .i32 x)) (hb : Γ[b]? = some (.sc .i32 y))
+    (ht : cmpInt cc .i32 x y = true → R (c64 (-1)) w)
+    (he : cmpInt cc .i32 x y = false → ∀ Γ', Ext Γ Γ' → wp cfg d J k (AnsQ R) Γ' w) :
+    wp cfg d J (Lib.failIf cc a b k) (AnsQ R) Γ w := by
+  unfold Lib.failIf
+  wp_seq
+  refine wp_ifte32 (AnsJ R) ha hb ?_ ?_ (by join_ans)
+  · intro h
+    wp_seq
+    apply wp_iconst64
+    exact ⟨_, get_push_size, ht h⟩
+  · intro h ne hne
+    wp_seq
+    exact he h _ (by ext_env)
+
+/-- `0` after a result code of `0`, `-1` after any other. -/
+theorem wp_status {rc : Slot .i32} {x : UInt64} {R : UInt64 → World → Prop}
+    (ha : Γ[rc]? = some (.sc .i32 x)) (h : R (if x = 0 then 0 else c64 (-1)) w) :
+    wp cfg d J (Lib.status rc) (AnsQ R) Γ w := by
+  unfold Lib.status Lib.onOk
+  wp_seq
+  apply wp_iconst32
+  refine wp_failIf32 (x := x) (y := 0) (get_push ha) get_push_size ?_ ?_
+  · intro hc
+    have hx : x ≠ 0 := by simpa [cmpInt] using hc
+    rwa [if_neg hx] at h
+  · intro hc Γ' hext
+    have hx : x = 0 := by simpa [cmpInt] using hc
+    apply wp_iconst64
+    rw [if_pos hx] at h
+    exact ⟨_, get_push_size, h⟩
+
+/-- **A call to a library outside the program** that answers a result code:
+    where the model answers the call, the program goes on from each answer
+    and world it gives. -/
+theorem wp_extRc {ps : List ClifTy} {e : AlgorithmLib.IR.Ext} {args : Vals Slot ps} {k : ResV Slot (some .i32) → Prog Slot Lvl α}
+    {Q : α → Env → World → Prop} {cs : List V}
+    (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs)
+    (hdef : (extCall e cs (obsCall w (.ext e) cs)).isSome = true)
+    (hQ : ∀ v w', extCall e cs (obsCall w (.ext e) cs) = some (some v, w') →
+      wp cfg d J (k Γ.size) Q (Γ.push v) w') :
+    wp cfg d J (.callLocal (res := some .i32) ⟨.ext e⟩ args k) Q Γ w := by
+  rw [wp_callLocal]
+  intro vs hvs
+  rw [hcs] at hvs; cases hvs
+  simp only [callOf]
+  refine ⟨fun hn => ?_, fun x w' hx => ?_⟩
+  · rw [hn] at hdef; cases hdef
+  · simp only [Option.isSome_some, if_true]
+    rintro v rfl
+    exact hQ v w' hx
+
+end ext
+
+-- ---------------------------------------------------------------------------
+-- Only the heap changed
+-- ---------------------------------------------------------------------------
+
+/-- **A write of `n` bytes at `p` misses the eight at `slot`**. -/
+def Misses (slot p : UInt64) (n : Nat) : Prop :=
+  0 < n → ∀ r off r' off', decodeAddr slot = some (r, off) → decodeAddr p = some (r', off') →
+    r ≠ r' ∨ off + 8 ≤ off' ∨ off' + n ≤ off
+
+/-- **`w'` is `w` outside the heap, where `P` holds**: every run of the
+    memory there was that is not of the heap and that `P` holds of is kept,
+    what was calm is calm, and memory outside the heap is the size it was.
+    What a program keeps of its own memory over a call into a library. -/
+structure Outside (w w' : World) (P : UInt64 → Nat → Prop) : Prop where
+  keeps : Keeps w w' (fun q n => InW w q n ∧ Out q ∧ P q n)
+  calm : Calm w → Calm w'
+  size : ∀ r, r ≠ .pinned → (w'.mem.region r).size = (w.mem.region r).size
+
+theorem Outside.refl (w : World) (P : UInt64 → Nat → Prop) : Outside w w P := ⟨Keeps.refl _ _, id, fun _ _ => rfl⟩
+
+theorem Outside.trans {w w' w'' : World} {P : UInt64 → Nat → Prop} (h : Outside w w' P) (h' : Outside w' w'' P) :
+    Outside w w'' P :=
+  ⟨h.keeps.next h'.keeps fun _ _ _ hp hi' => ⟨hi', hp.2.1, hp.2.2⟩, fun c => h'.calm (h.calm c),
+    fun r hr => (h'.size r hr).trans (h.size r hr)⟩
+
+theorem Outside.mono {w w' : World} {P P' : UInt64 → Nat → Prop} (h : Outside w w' P)
+    (hP : ∀ q n, P' q n → P q n) : Outside w w' P' :=
+  ⟨h.keeps.mono fun q n hp => ⟨hp.1, hp.2.1, hP q n hp.2.2⟩, h.calm, h.size⟩
+
+/-- More heap changes only the heap. -/
+theorem Grows.outside {w w' : World} (g : Grows w w') (P : UInt64 → Nat → Prop) : Outside w w' P :=
+  ⟨g.keeps _, g.calm, g.size⟩
+
+/-- A free changes only the heap. -/
+theorem Freed.outside {w w' : World} {x : UInt64} (f : Freed w w' x) (P : UInt64 → Nat → Prop) : Outside w w' P := by
+  refine ⟨⟨fun q cs _ hp hb => f.outBytes q cs hp.2.1 hb, fun q k _ hp hr => f.outRoom q k hp.2.1 hr,
+    fun q k v _ hp hl => ?_⟩, f.calm, f.size⟩
+  cases hd : decodeAddr q with
+  | none => simp [Mem.load, hd] at hl
+  | some a =>
+    obtain ⟨r, off⟩ := a
+    exact (f.out q k r off hd (hp.2.1 r off hd)).trans hl
+
+/-- A write into the heap changes only the heap. -/
+theorem Wrote.outside {w w' : World} {d : UInt64} {n : Nat} (W : Wrote w w' d n)
+    (hd : ∀ r off, decodeAddr d = some (r, off) → r = .pinned) (P : UInt64 → Nat → Prop) : Outside w w' P :=
+  ⟨W.keeps _ fun _ _ _ hp r off r' off' hdd hq => Or.inl fun e => hp.2.1 r' off' hq (e.trans (hd r off hdd)),
+    W.stays.calm, W.stays.size⟩
+
+/-- A field of a block set changes only the heap. -/
+theorem Outside.setFld {w : World} {s x : UInt64} {n j : Nat} {m : Mem} (hb : Blk w s n) (hj : j < n)
+    (hm : w.mem.store (s + UInt64.ofNat j) 8 x = some m) (P : UInt64 → Nat → Prop) :
+    Outside w (stored w (s + UInt64.ofNat j) x m) P := by
+  obtain ⟨o, -, hdec⟩ := Blk.decode hb
+  exact (wrote_stored hm).outside (fun r off h => by rw [hdec j hj] at h; cases h; rfl) P
+
+/-- An address decoded outside the heap is not of the heap. -/
+theorem out_of {p : UInt64} {r : Region} {off : Nat} (hd : decodeAddr p = some (r, off)) (hr : r ≠ .pinned) :
+    Out p := fun r' off' h => by
+  rw [hd] at h
+  cases h
+  exact hr
+
+theorem misses_of {slot p : UInt64} {n : Nat} {r r' : Region} {off off' : Nat}
+    (hs : decodeAddr slot = some (r, off)) (hp : decodeAddr p = some (r', off'))
+    (h : r ≠ r' ∨ off + 8 ≤ off' ∨ off' + n ≤ off) : Misses slot p n := fun _ r1 o1 r2 o2 h1 h2 => by
+  rw [hs] at h1
+  rw [hp] at h2
+  cases h1
+  cases h2
+  exact h
+
+/-- Bytes with room outside the heap can be written where no worker is
+    running. -/
+theorem room_out {w : World} {p : UInt64} {n : Nat} {r : Region} {off : Nat} (hd : decodeAddr p = some (r, off))
+    (hr : r ≠ .pinned) (hs : off + n ≤ (w.mem.region r).size) (h36 : off + n ≤ 2 ^ 36)
+    (hz : w.mem.frozen = false) : Room w p n :=
+  Or.inr ⟨r, off, hd, hs, h36, by
+    simp only [Mem.reachable, hz, Bool.not_false, Bool.true_and, Bool.or_eq_true]
+    exact Or.inl (by cases r <;> first | rfl | exact absurd rfl hr)⟩
+
+/-- A slot written changes, outside the heap, at most the slot. -/
+theorem Wrote.outsideBut {w w' : World} {slot : UInt64} (W : Wrote w w' slot 8) : Outside w w' (Misses slot) :=
+  ⟨W.keeps _ fun q n hn hp r off r' off' hd hq => by
+      rcases hp.2.2 hn r off r' off' hd hq with h | h | h
+      · exact Or.inl (Ne.symm h)
+      · exact Or.inr (Or.inr h)
+      · exact Or.inr (Or.inl h),
+    W.stays.calm, W.stays.size⟩
+
+theorem CallsA.mono {L : Sem.Locals} {i : Nat} {args : List V} {w : World} {Q Q' : UInt64 → World → Prop}
+    (h : CallsA L i args w Q) (hq : ∀ x w', Q x w' → Q' x w') : CallsA L i args w Q' := by
+  unfold CallsA at h ⊢
+  cases hr : L i args w with
+  | error f => rw [hr] at h; exact h
+  | ok p =>
+    rw [hr] at h
+    obtain ⟨v, hv, hQ⟩ := h
+    exact ⟨v, hv, hq _ _ hQ⟩
+
+theorem CallsD.mono {L : Sem.Locals} {i : Nat} {args : List V} {w : World} {Q Q' : World → Prop}
+    (h : CallsD L i args w Q) (hq : ∀ w', Q w' → Q' w') : CallsD L i args w Q' := by
+  unfold CallsD at h ⊢
+  cases hr : L i args w with
+  | error f => rw [hr] at h; exact h
+  | ok p => rw [hr] at h; exact hq _ h
+
+/-- Noting a call writes nothing. -/
+theorem wrote_obs (w : World) (c : Callee) (vs : List V) (p : UInt64) : Wrote w (obsCall w c vs) p 0 :=
+  ⟨MemSame.refl _, rfl, fun _ _ _ => rfl⟩
+
+section fromProgram
+variable {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop} {Γ : Env} {w : World}
+
+/-- **A call to a function that answers**, from a program: where the call is
+    as `Q'` says from the world with the call noted, the program goes on from
+    each answer and world `Q'` allows. -/
+theorem wp_callA {ps : List ClifTy} {i : Nat} {args : Vals Slot ps} {k : ResV Slot (some .i64) → Prog Slot Lvl α}
+    {cs : List V} {Q' : UInt64 → World → Prop} (hfo : J.faultOk = false)
+    (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs)
+    (hc : CallsA cfg.locals i cs (obsCall w (.local i) cs) Q')
+    (hQ : ∀ x w', Q' x w' → wp cfg d J (k Γ.size) Q (Γ.push (.sc .i64 x)) w') :
+    wp cfg d J (.callLocal (res := some .i64) ⟨.local i⟩ args k) Q Γ w := by
+  rw [wp_callLocal]
+  intro vs hvs
+  rw [hcs] at hvs; cases hvs
+  simp only [callOf, failOf]
+  unfold CallsA at hc
+  revert hc
+  cases cfg.locals i cs (obsCall w (.local i) cs) with
+  | error f =>
+      intro h
+      simp only [Except.toOption]
+      rw [hfo]
+      exact ⟨fun _ => h, fun _ _ hc => by cases hc⟩
+  | ok p =>
+      obtain ⟨x, w'⟩ := p
+      intro h
+      obtain ⟨v, rfl, hv⟩ := h
+      simp only [Except.toOption, reduceCtorEq, false_implies, Option.some.injEq, Prod.mk.injEq, true_and]
+      rintro x' w'' ⟨rfl, rfl⟩
+      simp only [Option.isSome_some, if_true]
+      rintro v' ⟨rfl⟩
+      exact hQ _ _ hv
+
+/-- **A call to a function that answers nothing**, from a program. -/
+theorem wp_callD {ps : List ClifTy} {i : Nat} {args : Vals Slot ps} {k : ResV Slot none → Prog Slot Lvl α}
+    {cs : List V} {Q' : World → Prop} (hfo : J.faultOk = false)
+    (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs)
+    (hc : CallsD cfg.locals i cs (obsCall w (.local i) cs) Q')
+    (hQ : ∀ w', Q' w' → wp cfg d J (k ()) Q Γ w') :
+    wp cfg d J (.callLocal (res := none) ⟨.local i⟩ args k) Q Γ w := by
+  rw [wp_callLocal]
+  intro vs hvs
+  rw [hcs] at hvs; cases hvs
+  simp only [callOf, failOf]
+  unfold CallsD at hc
+  revert hc
+  cases cfg.locals i cs (obsCall w (.local i) cs) with
+  | error f =>
+      intro h
+      simp only [Except.toOption]
+      rw [hfo]
+      exact ⟨fun _ => h, fun _ _ hc => by cases hc⟩
+  | ok p =>
+      obtain ⟨x, w'⟩ := p
+      intro h
+      simp only [Except.toOption, reduceCtorEq, false_implies, Option.some.injEq, Prod.mk.injEq, true_and]
+      rintro x' w'' ⟨rfl, rfl⟩
+      simp only [Option.isSome_none, Bool.false_eq_true, if_false]
+      exact hQ _ h
+
+end fromProgram
 
 end AlgorithmLib.LibSpec

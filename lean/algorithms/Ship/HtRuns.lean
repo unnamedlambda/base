@@ -1,5 +1,6 @@
 import AlgorithmLib.Surface.Link
 import AlgorithmLib.Host.Program
+import AlgorithmLib.Proof.LibSpec
 
 /-!
 # The hash table, run both ways
@@ -57,10 +58,9 @@ def lib : Api V L where
   count c := do lo32 (← callLocal (⟨.local 7⟩ : LocalRef [.i64] (some .i64)) %[c])
   getEntry c i ko vo := do lo32 (← callLocal (⟨.local 8⟩ : LocalRef [.i64, .i32, .i64, .i64] (some .i64)) %[c, i, ko, vo])
 
-def fnOf (f : Ffi) : Option Fn :=
-  (LibHt.implOf f).map fun
-    | .void b => { params := f.params, code := emit b f.params, status := none }
-    | .status b => { params := f.params, code := (runAns b f.params).2.1, status := (runAns b f.params).1 }
+/-- The library's function for an entry point, as one of the program's: the
+    function `Ship.HtSpec`'s `_calls` theorems speak of. -/
+def fnOf (f : Ffi) : Option Fn := (LibHt.implOf f).map (LibSpec.implFn f.params)
 
 def fns : Nat → Option Fn
   | 1 => fnOf .htInit | 2 => fnOf .htCleanup | 3 => fnOf .htCreate | 4 => fnOf .htInsert

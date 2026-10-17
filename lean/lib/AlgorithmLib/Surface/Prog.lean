@@ -1144,16 +1144,6 @@ def forLoopAcc {t} (limit : V .i64) (acc0 : V t)
       return %[← iaddImm i 1, nextAcc])
   return e.head
 
-/-- A counted loop threading two accumulators. -/
-def forLoopAcc2 {t u} (limit : V .i64) (ia : V t) (ib : V u)
-    (body : V .i64 → V t → V u → Prog V L (V t × V u)) : Prog V L (V t × V u) := do
-  let e ← wloop %[← iconst64 0, ia, ib]
-    (head := fun c => return (contIfULt c.head limit, %[c.snd, c.thd], ()))
-    (body := fun c _ => do
-      let (nx, ny) ← body c.head c.snd c.thd
-      return %[← iaddImm c.head 1, nx, ny])
-  return (e.head, e.snd)
-
 /-- A while loop over two carries: the condition is computed at the head and
     both carries leave. -/
 def whileLoop2 {t u} (ia : V t) (ib : V u) (cond : V t → V u → Prog V L (V .i8))

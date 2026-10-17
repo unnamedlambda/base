@@ -100,14 +100,6 @@ def launchStep (kernel : Launch → List ByteArray → List ByteArray) (l : Laun
       · exact writeAll_written b _ m m' hw
       · rw [writeAll_other b _ m hw, writeAll_other b _ m' hw]; exact hr b hb
 
-/-- A kernel the World launches: its launch, and at each binding the step it
-    performs. -/
-def worldKernel (kernel : Launch → List ByteArray → List ByteArray) (l : Launch) :
-    KernelDef Launch where
-  name := l.entry
-  code := l
-  step := launchStep kernel l
-
 /-- **A vendor call, as a step**: its output gets the oracle's answer for its
     inputs, where that keeps the output's size. It reads its inputs and its
     output (a `beta` term reads the output) and writes the output. -/
