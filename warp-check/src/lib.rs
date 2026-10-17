@@ -1,17 +1,6 @@
-//! The host side of a proven-kernel demo: the committed fold order, the
-//! byte conversions, and the timing.
-//!
-//! Every demo in `applications/` that checks a warp kernel needs the same CPU
-//! reference — sequential within a lane, then a five-round butterfly across
-//! lanes. Written once here, because a demo that writes its own butterfly and
-//! gets it wrong reports "bit-exact" against the wrong thing, and that failure
-//! is invisible: the kernel and the reference agree on being wrong together
-//! only if the mistake is shared, so an independent copy per demo is not
-//! redundancy, it is three chances to disagree with Lean.
-//!
-//! The one authority is `lean/lib/AlgorithmLib/ML/`: `bflyFold` is
-//! [`butterfly`], `dotLane` is [`Walk::Vec4`], `dotStridedLane` is
-//! [`Walk::Strided`], and `Sched.idx` is [`Walk::idx`].
+//! The CPU reference every warp-kernel demo checks against, in the committed
+//! fold order (`lean/lib/AlgorithmLib/ML/`: `bflyFold`, `dotLane`,
+//! `dotStridedLane`, `Sched.idx`), with byte conversions and timing.
 
 use base::Driver;
 
@@ -19,11 +8,8 @@ use base::Driver;
 // The committed fold order
 // ---------------------------------------------------------------------------
 
-/// `bflyFold`: five xor rounds over 32 lanes, read out at lane 0.
-///
-/// Not a sum — a specific tree. Two orders that both "add 32 numbers" differ in
-/// the last bits at `f32`, which is why the Lean theorems are stated against
-/// this shape rather than against a mathematical sum.
+/// `bflyFold`: five xor rounds over 32 lanes, read at lane 0 — a specific
+/// tree, not a sum.
 pub fn butterfly(mut lane: [f32; 32]) -> f32 {
     for m in [16usize, 8, 4, 2, 1] {
         let prev = lane;
@@ -73,12 +59,8 @@ impl Walk {
     }
 }
 
-/// **The general committed fold**: `trips` trips of `width` products per lane,
-/// accumulated in load order, then the butterfly.
-///
-/// The two index functions take `(trip, lane)`, which is what lets a caller
-/// express a transposed walk — a column of a row-major matrix strides by the
-/// row length and no `Walk` describes it.
+/// The committed fold: `trips` trips of `width` products per lane in load
+/// order, then the butterfly, over any `(trip, lane)` index functions.
 pub fn dot_by(
     trips: usize,
     width: usize,
@@ -99,10 +81,7 @@ pub fn dot_by(
     butterfly(lane)
 }
 
-/// `Σ a[base_a + k]·b[base_b + k]` for `k < n`, folded the way `w` folds it.
-///
-/// With `a` and `b` the same slice and one base, this is the sum of squares
-/// RMSNorm needs — the same schema, which is why it costs no extra reference.
+/// `Σ a[base_a + k]·b[base_b + k]` for `k < n`, folded as `w` folds it.
 pub fn dot(w: Walk, a: &[f32], b: &[f32], base_a: usize, base_b: usize, n: usize) -> f32 {
     dot_by(
         w.trips(n),
@@ -142,14 +121,8 @@ pub struct Diff {
     pub worst: f32,
     /// Where `worst` occurred.
     pub worst_at: usize,
-    /// Largest *absolute* error, and the reference value there.
-    ///
-    /// Reported alongside the relative one because relative error is not
-    /// meaningful near a zero of the function under test: `silu'` has a root
-    /// near `z = -1.28`, and an element that lands on it shows a large relative
-    /// error for an absolute error of a few ulps. A relative-only report turns
-    /// that into a headline; a relative-only *assertion* turns it into a false
-    /// failure, which is worse.
+    /// Largest absolute error and the reference there; relative error means
+    /// nothing near a root.
     pub worst_abs: f32,
     /// The reference value at `worst_at` — what the relative error is against.
     pub ref_at_worst: f32,
@@ -200,10 +173,7 @@ pub fn compare(got: &[f32], want: impl Fn(usize) -> f32) -> Diff {
 // Measurement
 // ---------------------------------------------------------------------------
 
-/// Peak memory bandwidth of the card these demos report against — an RTX 3060
-/// (12 GB GDDR6, 192-bit at 15 Gbps: 24 B × 15 GT/s = 360 GB/s). Every
-/// "% of roofline" below is against this number, so it is stated once and
-/// named.
+/// Peak bandwidth of the RTX 3060 the demos report against.
 pub const ROOFLINE_GBS: f64 = 360.0;
 
 /// Seconds per launch, after one warm-up.

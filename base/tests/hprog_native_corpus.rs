@@ -1,12 +1,5 @@
-//! Runs the native-code corpus: what `Sem.callFfi` says the native entry
-//! points do, against what they do on an x86-64 host.
-//!
-//! The body loads nothing, then a few bytes of code, which it frees, and asks
-//! for the architecture and two CPU features, leaving each result code in the
-//! output buffer. The interpreter computed that buffer
-//! when the artifact was generated (`lean/algorithms/Host/NativeCorpus.lean`),
-//! with its oracles set to an x86-64 host; here the same artifact runs through
-//! the JIT, and the two must agree byte for byte.
+//! The native-code entry points on an x86-64 host, against the interpreter
+//! (`Host/NativeCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 

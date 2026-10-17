@@ -1,11 +1,5 @@
-//! The C library calls of the corpus, on a machine without the libraries.
-//!
-//! `lean/algorithms/Host/Corpus.lean` interprets `absentCases` in a world where
-//! no library loaded: every function answers `-1` and touches nothing, and each
-//! presence probe answers `0`. This makes that machine out of this one: each
-//! primitive's library is renamed to one the engine does not know, which binds
-//! as a library that is not installed does. Then it runs the artifact and
-//! compares.
+//! The corpus's library calls on a machine without the libraries: each
+//! primitive's library is renamed to one the engine does not know.
 
 use base_types::Artifact;
 use std::path::PathBuf;

@@ -1,9 +1,5 @@
-//! Thin wrapper around the Qwen2 Lean algorithm.
-//!
-//! Packs `weights_path\0tokenizer_path\0` into a single buffer and runs one
-//! `Driver::execute_into` — Lean does everything (parse args, load weights, load
-//! tokenizer, stdin/stdout chat loop). End-to-end behavior is covered by
-//! `tests/golden_cli.rs`.
+//! Qwen2 chat: passes the weights and tokenizer paths to the Lean program,
+//! which does everything else.
 
 use base::{Driver, Artifact};
 

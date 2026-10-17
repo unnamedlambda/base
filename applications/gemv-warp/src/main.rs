@@ -1,26 +1,6 @@
-//! Proven warp GEMV vs cuBLAS sgemv, across schedules and shapes.
-//!
-//! Three schedules run the same GEMV. `Sched.vec4` loads four contiguous
-//! elements per lane per trip; `Sched.strided` loads one, interleaved across
-//! the warp; `Sched.blocked` loads one from a contiguous per-lane segment, so
-//! the warp's 32 loads land in 32 different segments. The last shares its
-//! kernel and its fold with `.strided` and differs only in the walk — it exists
-//! to isolate what a walk costs when nothing else changes.
-//!
-//! Each is proven bit-exact against its own committed fold order, and
-//! `gemv_schedules_agree` proves any two answers equal under `Law.laneRegroup`
-//! — which is *not* a Float32 identity. So the columns below are expected to
-//! differ in the last bits while each is exact against its own spec.
-//!
-//! Two kernel families share the menu: the GEMV row `Σⱼ A[row,j]·x[j]`, and the
-//! sum of squares `Σⱼ A[row,j]²` that RMSNorm needs — the dot schema with both
-//! operands on one buffer. The second inherits all three schedules and their
-//! agreement from `schedules_agree_at` with no new proof, which is the point of
-//! stating that theorem over the walk rather than over the GEMV.
-//!
-//! Four shapes, because whether a schedule choice is *visible* depends on the
-//! shape: a 896-wide row is 3.5 KB and gets fetched whole however the warp
-//! walks it. Qwen2 decode is the shape where cuBLAS is beatable at all.
+//! Proven warp GEMV and sum-of-squares against cuBLAS, across the three
+//! schedules (vec4, strided, blocked) and four shapes. Each schedule is exact
+//! against its own fold order, so columns may differ in the last bits.
 
 use base::{Artifact, Driver};
 use warp_check::{floats, gbs, roofline, time, Walk};

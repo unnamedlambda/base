@@ -1,16 +1,6 @@
-//! Common workloads through Base against the same kernels in Rust.
-//!
-//! The Rust side (`kernels.rs`) is built with `-C target-cpu=native`. The Base
-//! side is the `cpu_bench` artifact run through `Driver::execute`: `<w>_clif`,
-//! and `<w>_asm` calling LLVM's code carried in the artifact. Every answer is
-//! checked against Rust's before anything is timed.
-//!
-//! Output, read by `report.py`, is one line per timing:
-//!
-//!     <workload> <column> <ns>
-//!
-//! with column `rust`, `clif` or `asm`; `execute noop` is the fixed
-//! cost of a call into an artifact. x86-64 only.
+//! Workloads through Base (`cpu_bench`: CLIF, and LLVM's code carried as
+//! `asm`) against the same kernels in Rust. Prints `<workload> <column> <ns>`
+//! lines for `report.py`. x86-64 only.
 
 #[cfg(target_arch = "x86_64")]
 mod bench;

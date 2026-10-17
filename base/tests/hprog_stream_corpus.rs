@@ -1,13 +1,5 @@
-//! Runs the stream corpus: what `Sem.callFfi` says created streams, events and
-//! captured graphs do, against what they do on the device.
-//!
-//! The interpreter computed the output buffer when the artifact was generated
-//! (`lean/algorithms/Host/StreamCorpus.lean`); here the same artifact runs
-//! through the JIT and the two must agree byte for byte. Two streams ordered by
-//! an event, then a graph captured across a fork into a second stream and a
-//! join back, launched twice. The model runs every operation when it is issued
-//! and refuses a conflict nothing orders, so agreeing here says both that the
-//! contracts are right and that the order the model chose is the device's.
+//! Streams, events and captured graphs on the device, against the
+//! interpreter (`Host/StreamCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 

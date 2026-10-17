@@ -1,11 +1,5 @@
-//! End-to-end golden tests: spawn each qwen2 binary, pipe a prompt on stdin,
-//! assert the response on stdout matches an inlined expected string.  The
-//! in-memory (`qwen2`) and on-disk (`qwen2_on_disk`) binaries should produce
-//! byte-identical output — only the storage strategy differs.
-//!
-//! Requires weights + tokenizer at the repo root. If missing, the tests SKIP
-//! with a message — generate them once via `tools/qwen2_convert.py`. The .bin
-//! files are gitignored.
+//! Each qwen2 program answers a prompt with the expected text. Skips without
+//! the weights (`tools/qwen2_convert.py`).
 
 use std::io::Write;
 use std::path::PathBuf;

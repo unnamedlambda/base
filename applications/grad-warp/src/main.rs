@@ -1,15 +1,8 @@
-//! A **gradient**, running on the GPU.
-//!
-//! The forward function is written once as an `Expr` with two bound
-//! intermediates; `gradProg` turns it into a program whose Γ outputs share one
-//! telescope, `compileVWKernel` emits that telescope *once*, and the proven
-//! lowering prints the PTX. No backward kernel was hand-written.
+//! A gradient on the GPU, from one `Expr`, with no hand-written backward:
 //!
 //!     v0  = x0 * x1
 //!     v1  = v0 * exp x2
 //!     out = v1 + x3 * v0
-//!
-//! `v0` is used twice — the case a naive `grad` duplicates and `gradProg` binds.
 
 use base::{Artifact, Driver};
 
@@ -86,12 +79,7 @@ pub fn main(_args: Vec<String>) {
     assert!(worst < 1e-3, "gradient mismatch: {worst}");
     println!("PASS         : the emitted gradient matches the analytic one");
 
-    // ---- the narrowed (linear-in-depth) gradient, same harness ------------
-    //
-    // `gradProgD` drops the adjoint terms that are semantically zero.  That is
-    // not a Float32 identity, so it carries two declared propositions
-    // (`ZeroTermFree`, `ZeroLaws`) rather than being applied silently — see
-    // `gradD_outputs_are_derivatives`.  This is the check that it *runs*.
+    // ---- the narrowed gradient `gradProgD`, under `ZeroTermFree`/`ZeroLaws` ----
     let mut out_d = vec![0u8; NIN * 4];
     unsafe { base.execute(run_d, b"", &mut []) }.expect("runD");
     let t1 = std::time::Instant::now();

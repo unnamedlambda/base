@@ -1,15 +1,5 @@
-//! Runs the device corpus: what `Sem.callFfi` says the CUDA entry points do,
-//! against what they do on the GPU.
-//!
-//! One body calls each contracted CUDA and cuBLAS entry point on its success and
-//! refusal paths and leaves every result code and every byte it copied back in
-//! the output buffer. The interpreter computed that buffer when the artifact
-//! was generated (`lean/algorithms/Host/CudaCorpus.lean`); here the same
-//! artifact runs through the JIT on the device, and the two must agree byte for
-//! byte. The one kernel it launches adds one to each byte, which is also the
-//! interpreter's kernel oracle, and the cuBLAS calls see small integers only,
-//! so their answer does not depend on summation order; a disagreement is the
-//! contract's, not the kernel's or the vendor's.
+//! Each CUDA and cuBLAS entry point on its success and refusal paths, on the
+//! device, against the interpreter (`Host/CudaCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 

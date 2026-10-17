@@ -1,13 +1,5 @@
-//! Runs the thread corpus: what the model says `cl_thread_*` do, against what
-//! they do.
-//!
-//! `main` spawns one of its own functions as a worker on a pointer into the
-//! output buffer, joins it, then records the handle, the join's answer, a
-//! second join of the same handle, and two refused spawns. The interpreter
-//! computed that buffer when the artifact was generated
-//! (`lean/algorithms/Host/ThreadCorpus.lean`), running the worker at the spawn;
-//! here the same artifact runs through the JIT with a real thread, and the two
-//! must agree byte for byte.
+//! The thread calls with a real thread, against the interpreter
+//! (`Host/ThreadCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 

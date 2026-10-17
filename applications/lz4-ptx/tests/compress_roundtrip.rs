@@ -13,10 +13,7 @@ const NUM_BLK: usize = 6400;
 const BLOCK64: usize = 65536;
 const NUM_BLK64: usize = 3200;
 
-/// Deterministic, LZ4-compressible corpus: literal runs interleaved with
-/// in-window back-references (matches), giving a realistic ~2:1 ratio that
-/// exercises the warp matchfinder. Matches stay within a 4 KiB window, so every
-/// independent 32 KiB block is self-compressible.
+/// An LZ4-compressible corpus (~2:1) whose matches stay within a 4 KiB window.
 fn gen_corpus(total: usize) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(total);
     let mut s: u32 = 0x9e37_79b9;

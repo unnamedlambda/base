@@ -1,17 +1,6 @@
-//! Correctness and timing for the CIFAR MLP's ten kernels, at batch `B`.
-//!
-//! Every kernel is checked against a CPU reference written in the **committed**
-//! fold order the Lean theorems are about — sequential within a lane, then a
-//! five-round butterfly across lanes, and for the gradients a sequential sum
-//! over the batch. Where that order is all there is, the comparison is
-//! bit-for-bit; the two kernels that evaluate `silu` are compared by error
-//! magnitude, because `ex2.approx` is the stack's one declared approximation.
-//! The activation backward is checked on *absolute* error: `silu'` has a root,
-//! and relative error at an element sitting on it measures the root, not the
-//! kernel.
-//!
-//! The training loop itself lives in `train.py`, which drives the same artifact
-//! against real CIFAR-10.
+//! The CIFAR MLP's ten kernels checked and timed at batch `B`, against CPU
+//! references in the committed fold order: bit-exact, except `silu`'s
+//! (`ex2.approx`) by error magnitude. Training is `train.py`.
 
 use base::{Artifact, Driver};
 use warp_check::{compare, dot, dot_by, floats, gbs, le, roofline, time, Lcg, Walk};
@@ -109,10 +98,7 @@ pub fn main(_args: Vec<String>) {
     println!("fwd2  logits = W2·h    {d}");
     assert!(d.is_exact(), "fwd2 must match its proven fold order bit-for-bit");
 
-    // ── softmax and the cross-entropy gradient, on the device ───────────────
-    // `C = 32` is a warp, so each row's max and sum are one butterfly. The
-    // padding classes are masked by `bias`: very negative there, so `exp`
-    // underflows to zero and they contribute nothing.
+    // ── softmax and the cross-entropy gradient; padding classes masked by `bias` ──
     let labels: Vec<usize> = (0..B).map(|s| (s * 3 + 1) % CLASSES).collect();
     let bias: Vec<f32> = (0..C).map(|c| if c < CLASSES { 0.0 } else { -1.0e30 }).collect();
     let mut onehot = vec![0f32; B * C];
@@ -209,14 +195,8 @@ pub fn main(_args: Vec<String>) {
     println!("sgd2  W2 ← W2 − lr·dW2 {d}");
     assert!(d.is_exact(), "the optimiser step must be bit-exact");
 
-    // ── the same five GEMMs through cuBLAS ──────────────────────────────────
-    // Identical arithmetic to what PyTorch runs, so this is not a race. What
-    // it has to be checked for is the transpose/leading-dimension convention:
-    // the buffers are row-major and cuBLAS is column-major, and getting that
-    // wrong yields plausible numbers rather than an error. The proven kernels
-    // are the oracle.
-    // The optimiser above has already stepped W1/W2, so reset to the weights
-    // the references were computed with before comparing.
+    // ── the same five GEMMs through cuBLAS, checking its column-major convention ──
+    // The optimiser has stepped W1/W2; reset them to the references' weights.
     let mut blas_ok = true;
     unsafe { base.execute("main", &blob, &mut []) }.expect("reload");
     go(&mut base, "uploadBias", &le(&bias), &mut []);

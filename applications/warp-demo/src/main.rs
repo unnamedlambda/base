@@ -1,7 +1,4 @@
-//! Runs the PROVEN warp reduction kernel on the GPU.
-//!
-//! The kernel body is `AlgorithmLib.ML.warpSumSqV4Store`, proven to compute
-//! `denote env spec` exactly. This binary checks the GPU agrees with the
+//! The proven warp reduction `warpSumSqV4Store` on the GPU, against the
 //! reference the proof predicts.
 
 use base::{Artifact, Driver};

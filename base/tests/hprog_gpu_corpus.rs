@@ -1,12 +1,5 @@
-//! Runs the wgpu corpus: what `Sem.callFfi` says the nine wgpu entry points do,
-//! against what `Lib.Wgpu` does on the device over wgpu.
-//!
-//! The interpreter computed the output buffer when the artifact was generated
-//! (`lean/algorithms/Host/GpuCorpus.lean`); here the same artifact runs through
-//! the JIT, and the two must agree byte for byte. The shader adds one to every
-//! `u32`, which is also the interpreter's shader oracle. One case checks the
-//! queue's order rather than a value: a dispatch sees an upload made after it
-//! and before the download that submits it.
+//! The wgpu entry points `Lib.Wgpu` uses, on the device, against the
+//! interpreter (`Host/GpuCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 

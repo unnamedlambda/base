@@ -1,15 +1,5 @@
-//! The `byte_scrub` artifact copies a fixed-size run, replacing every NUL with
-//! a space.
-//!
-//! `ByteScrub.icmp_masks_nuls` and `ByteScrub.bitselect_scrubs` cover what the
-//! compare and the blend compute for every sixteen bytes, under the CLIF
-//! semantics, on the two instructions `ByteScrub.blendInsts_ship` names as the
-//! ones block 2 carries. This checks the rest --- that the loop repeating them
-//! walks the whole run, and loads and stores where it should.
-//!
-//! The patterns are chosen so a loop with the wrong bound disagrees: `last
-//! only` and `final vector` catch one that stops early, `all` catches one that
-//! runs long, and `alternating` catches a blend that takes the wrong side.
+//! `byte_scrub` copies a fixed window with NULs replaced by spaces; the
+//! patterns catch a wrong loop bound or a blend taking the wrong side.
 
 use base::{Artifact, Driver};
 

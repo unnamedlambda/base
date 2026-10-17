@@ -1,9 +1,5 @@
-//! What the engine makes of an artifact: its functions as CLIF, and with
-//! `--disasm`, the machine code each compiles to on this host.
-//!
-//! ```text
-//! cargo run -p base --example inspect -- program.cbor [--disasm]
-//! ```
+//! An artifact's functions as CLIF, or with `--disasm`, as machine code:
+//! `cargo run -p base --example inspect -- program.cbor [--disasm]`
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

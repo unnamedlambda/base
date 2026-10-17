@@ -41,14 +41,8 @@ enum Col {
     Base(String),
 }
 
-/// Each column's fastest sample, the columns sampled in turn so that all see
-/// the machine in the same state: at least `SAMPLES` samples each, and as
-/// many as fill a fifth of a second per column. A sample is the mean over
-/// enough calls of `run` to fill about two milliseconds, after one call that
-/// is not timed, so it starts from what its own column leaves in the caches
-/// rather than the last one's (a copy after the CLIF's pays to write back the
-/// lines the CLIF's stores left dirty). Taking turns is what steadies a
-/// kernel bound by memory, whose speed drifts over seconds.
+/// Each column's fastest sample, columns taking turns so all see the machine
+/// alike; a sample is the mean over ~2 ms of calls after one untimed call.
 fn time(cols: &[Col], mut run: impl FnMut(&Col)) -> Vec<f64> {
     let reps: Vec<usize> = cols
         .iter()

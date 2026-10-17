@@ -77,10 +77,7 @@ pub fn main(_args: Vec<String>) {
     unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
     let gpu: Vec<f32> = floats(&out);
 
-    // Reference, in the *committed* order the kernel is proven against:
-    // each lane folds its own rows sequentially, then a five-round butterfly.
-    // The transposed walk: successive rows are `N` floats apart, so no `Walk`
-    // describes it and the index functions are given directly.
+    // Reference in the committed order: per-lane sequential folds, then the butterfly.
     let reference = |j: usize| -> f32 {
         dot_by(N / 32, 1, &adj, &w, |t, l| t * 32 + l, |t, l| (t * 32 + l) * N + j)
     };
@@ -209,12 +206,7 @@ pub fn main(_args: Vec<String>) {
     assert!(dxr.iter().any(|v| v.abs() > 1e-3), "reference must be non-degenerate");
     assert!(rms_worst < 1e-5, "rmsnorm backward must match its spec");
 
-    // ── The pipeline, in the order `bwd_chain` is about ──────────────────
-    // Everything above validates each kernel against its own spec, launching
-    // in whatever order was convenient. `bwd_chain` proves something else:
-    // that the activation backward *followed by* the transposed matvec gives
-    // dx = Wᵀ·(dy⊙silu'(z)). Running that exact order is what makes the demo
-    // demonstrate the theorem rather than a neighbour of it.
+    // ── The pipeline in `bwd_chain`'s order: activation backward, then Wᵀ·adj ──
     unsafe { base.execute(run_sb, b"", &mut []) }.expect("runSiluBwd");
     unsafe { base.execute(run, b"", &mut []) }.expect("run");
     let mut chain_out = vec![0u8; N * 4];
@@ -234,11 +226,7 @@ pub fn main(_args: Vec<String>) {
     println!("worst rel. err  : {pipe_worst:.3e}  vs the composed spec");
     assert!(pipe_worst < 1e-4, "the pipeline must match the composed spec");
 
-    // ── The same three stages as ONE emitted function ────────────────────
-    // `bwdAll_host_computes` recovers the launch sequence from `runBwdAll`'s
-    // own instructions and matches it against `bwdPipelineFull`. Three
-    // separate host calls never exhibited that order inside any one program,
-    // so the theorem would have been about a program nothing ran. This runs it.
+    // ── The same three stages as one function, as `bwdAll_host_computes` states ──
     unsafe { base.execute("runBwdAll", b"", &mut []) }.expect("runBwdAll");
     let mut fused_out = vec![0u8; N * 4];
     unsafe { base.execute(fetch, b"", &mut fused_out) }.expect("fetch");
@@ -260,16 +248,7 @@ pub fn main(_args: Vec<String>) {
     train(&mut base, &xa, &ystar);
 }
 
-/// **Training.** Everything above checks a gradient against a spec. This runs
-/// the loop that gradient exists for:
-///
-///     z = W·x    y = silu(z)    L = ½‖y − y*‖²    adj = dy⊙silu'(z)
-///     dW = adj⊗x                W ← W − lr·dW
-///
-/// Six launches per step, every one a schema instance proven against its own
-/// spec. The target `y*` is a fixed vector the model has to reach, so a falling
-/// loss is evidence the whole chain — forward, derivative-from-spec, outer
-/// product, optimiser — agrees on what it is differentiating.
+/// Trains `y = silu(W·x)` toward a fixed target, six proven launches a step.
 fn train(
     base: &mut Driver,
     xa: &[f32],
@@ -323,10 +302,7 @@ fn train(
              dt * 1e3, step.len());
     println!("loss            : {l0:.6} → {lf:.6}   ({:.1}x reduction)", l0 / lf);
 
-    // The gradient direction, checked against the loss it claims to be the
-    // gradient of: `dW` should be an outer product `adj ⊗ x`, so every row is
-    // parallel to `x`. That is a property of the *shape* of the gradient, not
-    // a restatement of how it was computed.
+    // `dW` is the outer product `adj ⊗ x`: every row is parallel to `x`.
     let mut dwbytes = vec![0u8; N * N * 4];
     unsafe { base.execute("fetchDw", b"", &mut dwbytes) }.unwrap();
     let dw: Vec<f32> = floats(&dwbytes);

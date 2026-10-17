@@ -1,14 +1,5 @@
-//! Producers and consumers on rayon, meeting in one driver's arena.
-//!
-//! `shared_sum`'s ring buffer lives in the program: `push` and `pop` take its
-//! lock and sleep, inside the program, while the ring is full or empty, and
-//! `close` ends it. The host side is ordinary rayon: a parallel iterator
-//! produces the items, and tasks spawned on the same pool consume them. Each
-//! entry point is found once, and every task calls it directly: a `Function` is
-//! the program's function, borrowing the one `Driver`.
-//!
-//! Each item is pushed once, and the consumers between them must pop every one
-//! exactly once, whatever the interleaving.
+//! `shared_sum`'s ring buffer between rayon producers and consumers: every
+//! item is popped exactly once.
 
 use std::sync::Mutex;
 

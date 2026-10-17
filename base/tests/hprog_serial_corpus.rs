@@ -1,10 +1,4 @@
-//! The serial library, called directly, checked against a terminal.
-//!
-//! `lean/algorithms/Host/SerialCorpus.lean` opens the port whose path it is
-//! handed, reads what is waiting, writes `ping` and takes the refusals,
-//! storing every answer. Here the port is a pseudo-terminal: its far end
-//! sends the corpus's greeting before the program runs, and what reaches it
-//! afterwards must be exactly what the model says was sent.
+//! The serial library against a pseudo-terminal (`Host/SerialCorpus.lean`).
 
 use base_types::Artifact;
 use std::path::PathBuf;

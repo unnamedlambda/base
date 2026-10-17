@@ -1,33 +1,8 @@
-//! Embed the artifacts a Lake package generates, from the build script of the
-//! crate that sits in that package's directory:
-//!
-//! ```no_run
-//! // build.rs, beside lakefile.lean
-//! fn main() {
-//!     base_build::lean();
-//! }
-//! ```
-//!
-//! ```ignore
-//! // src/lib.rs
-//! include!(concat!(env!("OUT_DIR"), "/artifacts.rs"));
-//! ```
-//!
-//! The crate then has a `pub static` per artifact, named after it in capitals,
-//! and whatever depends on it needs no build script of its own:
-//!
-//! ```ignore
-//! let artifact = Artifact::from_bytes(lean_artifacts::BYTE_SCRUB)?;
-//! ```
-//!
-//! Lake does the work. `lake query algorithmLib/artifacts` builds and runs the
-//! package's generators, rerunning only those whose executable changed, and
-//! names every file the artifacts depend on; those files are what cargo
-//! watches. Nothing here decides staleness.
-//!
-//! Set `BASE_ARTIFACTS_DIR` to a directory of prebuilt artifacts to embed those
-//! instead, without running Lake. A relative path is taken from the crate's
-//! directory, where cargo runs its build script.
+//! Embeds a Lake package's artifacts from the build script of the crate in its
+//! directory: `fn main() { base_build::lean(); }`, then
+//! `include!(concat!(env!("OUT_DIR"), "/artifacts.rs"))` gives a `pub static`
+//! per artifact. Lake decides what is stale; `BASE_ARTIFACTS_DIR` embeds
+//! prebuilt artifacts instead.
 
 use std::env;
 use std::fmt::Write;
@@ -138,11 +113,8 @@ fn prebuilt(dir: &Path) -> (String, Vec<String>) {
     (dir.display().to_string(), names)
 }
 
-/// The source of the generated module.
-///
-/// A `static` rather than a `const` or a function: a `const` would carry its
-/// bytes in the metadata every dependent loads, several times over, and a
-/// function could not initialise a dependent's own `const`.
+/// The generated module: a `static` per artifact, so its bytes are not copied
+/// into every dependent.
 fn module(dir: &str, names: &[String]) -> String {
     let mut src = String::new();
     writeln!(src, "/// Where the artifacts are, and an artifact's side data: `DIR/<name>/`.").unwrap();
@@ -218,11 +190,8 @@ mod tests {
     }
 }
 
-/// Lake's job count, when the caller has not set one: as many Lean processes as
-/// the memory this build may use holds, so a cap on the build (a cgroup's
-/// `memory.max`) or a machine short of memory gets a build that fits rather
-/// than one the kernel kills. `None` where neither can be read, which leaves
-/// Lake's default.
+/// Lake's job count when unset: as many Lean processes as the build's memory
+/// limit holds.
 fn lean_jobs() -> Option<u64> {
     if env::var_os(LEAN_JOBS).is_some() {
         return None;

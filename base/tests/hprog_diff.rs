@@ -1,18 +1,5 @@
-//! Port validation for the `HProg` pilots — **not** part of the trusted base.
-//!
-//! Each pilot is a generator rewritten as a first-order term. These tests run
-//! the original generator's artifact and the term's artifact through the JIT
-//! and check they produce the same bytes. The Lean interpreter is not involved
-//! anywhere here: this says the rewrite preserved behavior, nothing more.
-//!
-//! It is deliberately the *wrong* shape for grounding a semantics, and worth
-//! being explicit about why: the number of cases grows with every program
-//! ported, so it could never cover anything. What grounds the CLIF model is
-//! `hprog_corpus.rs`, whose cases are indexed by CLIF's vocabulary —
-//! instructions and control-flow constructs — and therefore stop growing.
-//!
-//! Each pair is one generator's artifact and the pilot's, both embedded by
-//! `lean-artifacts`.
+//! Each `HProg` pilot's artifact against its original generator's: the
+//! rewrite preserves behaviour. Not part of the trusted base.
 
 use base_types::Artifact;
 

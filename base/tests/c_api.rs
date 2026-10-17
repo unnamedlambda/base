@@ -89,10 +89,7 @@ fn a_null_driver_is_refused_everywhere() {
     unsafe { base_driver_free(std::ptr::null_mut()) };
 }
 
-/// An arena no host could hold is a failure with a message, not an abort
-/// inside the allocator: sizes are 64-bit on the wire whatever the host.
-/// An image past the arena the artifact states is refused the same way,
-/// even at an offset no address can reach.
+/// An arena no host holds, and segments past it or out of order, are errors.
 #[test]
 fn an_arena_too_large_to_hold_is_refused() {
     let huge = Artifact { primitives: vec![], functions: vec![], arena_size: u64::MAX, data: vec![] };

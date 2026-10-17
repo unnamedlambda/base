@@ -1,11 +1,4 @@
-//! wgpu, called directly, checked against wgpu.
-//!
-//! `lean/algorithms/Host/WgpuCorpus.lean` makes an instance, adapter, device
-//! and queue, writes a storage buffer, runs a compute pipeline made inside an
-//! error scope over it, copies it to a staging buffer and reads it back, and
-//! has a shader wgpu rejects caught by a scope, storing every answer and the
-//! bytes read. This runs the artifact and compares with what the interpreter
-//! computed.
+//! wgpu called directly, against the interpreter (`Host/WgpuCorpus.lean`).
 
 use base_types::Artifact;
 use std::path::PathBuf;

@@ -1,12 +1,5 @@
-//! Runs the local-call corpus: what `Sem` says a call to one of the program's
-//! own functions does, against what the JIT does.
-//!
-//! `main` calls a function that answers, twice, and a function that answers
-//! nothing and calls the first itself, storing every answer in the output
-//! buffer. The interpreter computed that buffer when the artifact was generated
-//! (`lean/algorithms/Host/LocalCorpus.lean`), each local call running its
-//! callee's term; here the same artifact runs through the JIT, and the two must
-//! agree byte for byte.
+//! Calls to a program's own functions, against the interpreter
+//! (`Host/LocalCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 

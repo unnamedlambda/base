@@ -1,18 +1,5 @@
-//! Decode and JIT timing for generated CLIF programs.
-//!
-//! Separate binary because it links `base` (and therefore Cranelift), which
-//! the harness itself has no reason to pull in. The `clif` suite invokes this if
-//! it has been built; otherwise it records the generation numbers and skips JIT.
-//!
-//!   cargo build --release -p bench-scaling --bin clifbench --features jit
-//!
-//! Takes generated `.cbor` artifact files. Prints one
-//! `file<TAB>bytes<TAB>decode_seconds<TAB>jit_seconds` line per input.
-//!
-//! The two halves are timed apart because they cover different things. Decode
-//! reads the whole artifact, data segments included; the JIT below is handed
-//! only the functions, against a fixed arena. For an artifact that is mostly
-//! weights the first number is the one that grows.
+//! Decode and JIT time per artifact, one `file\tbytes\tdecode_s\tjit_s` line each:
+//! `cargo build --release -p bench-scaling --bin clifbench --features jit`
 
 use base::{Artifact, Driver};
 

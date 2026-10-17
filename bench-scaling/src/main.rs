@@ -1,9 +1,5 @@
-//! Measures whether elaboration and proof cost stay bounded as a Lean-generated
-//! codebase grows: bigger programs, more DSL constructs, deeper abstraction
-//! stacks, and different ways of encoding a DSL.
-//!
-//!   cargo run --release -p bench-scaling
-//!   cargo run --release -p bench-scaling -- --only derive,frontends
+//! Whether elaboration and proof cost stay bounded as a generated codebase
+//! grows: `cargo run --release -p bench-scaling [-- --only derive,frontends]`
 
 mod channels;
 mod dslgen;

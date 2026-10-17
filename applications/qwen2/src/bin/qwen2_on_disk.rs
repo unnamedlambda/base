@@ -1,8 +1,5 @@
-//! On-disk Qwen2 CLI: weights are streamed layer-by-layer from disk into a
-//! single-layer GPU working set, and the KV cache is also backed by a file on
-//! disk.  Behaviorally identical to the in-memory `qwen2` binary; only the
-//! storage strategy differs.  Useful on systems where the model is larger than
-//! VRAM (e.g. point at a 32B weights file on NVMe).
+//! Qwen2 with weights streamed from disk layer by layer and the KV cache in a
+//! file, for models larger than VRAM. Otherwise the same as `qwen2`.
 
 use base::{Driver, Artifact};
 

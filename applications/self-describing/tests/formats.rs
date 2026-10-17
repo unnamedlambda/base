@@ -1,10 +1,5 @@
-//! A host reading the `self_describing` artifact with no copy of its formats.
-//!
-//! The artifact describes none of its outputs; its entries answer in formats
-//! the bytes carry. So these tests hold what a host would: a generic CBOR
-//! decoder, and for the raw output one format id. Each asserts the whole
-//! decoded value against a literal, which fails the same way whether the bytes
-//! did not decode, decoded to another shape, or held another number.
+//! Reading `self_describing`'s outputs with a generic CBOR decoder and no
+//! copy of its formats.
 
 use base::{Artifact, Driver};
 use ciborium::Value;

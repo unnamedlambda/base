@@ -1,10 +1,5 @@
-//! One `Driver` shared by many threads, each calling into it at once.
-//!
-//! `shared_sum` updates its total, call count and histogram with atomics, so
-//! every call's addition lands whatever the interleaving. The checks are the
-//! ones the C++ host in `../cpp` makes: the program's totals equal the host's,
-//! and the totals each call saw before its addition tile `[0, total)`, which is
-//! what each addition applied exactly once, in one order, leaves.
+//! One driver called from many threads at once: every addition lands exactly
+//! once, as the C++ host also checks.
 
 use std::sync::{Arc, Mutex};
 use std::thread;

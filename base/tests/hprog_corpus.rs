@@ -1,23 +1,5 @@
-//! Runs the differential corpus: what `Host.Sem` says each operation computes,
-//! against what the machine does with the instruction `clif_decode` emitted.
-//!
-//! Two independent things can fail here, and the test tells them apart by which
-//! case names disagree:
-//!
-//! * `base/src/clif_decode.rs` maps a term node to the wrong Cranelift builder
-//!   — the migration's own risk, and the reason `udiv`/`sdiv` and `ctz`/`popcnt`
-//!   appear here on operands that separate them.
-//! * `Sem.evalOp` states Cranelift's semantics wrongly — the assumption
-//!   that file names and cannot prove.
-//!
-//! The corpus is generated from `HProgCorpus.lean` into the build directory and
-//! cached against that file's contents, so what the machine is compared against
-//! is always what the model in the tree says. A corpus committed beside the test
-//! would agree with the model only until someone changed the model, and this is
-//! the comparison the migration rests on.
-//!
-//! Set `BASE_HPROG_DIR` to a directory holding `hprog_corpus.cbor` and
-//! `hprog_corpus/expected.json` to run a corpus generated elsewhere.
+//! The differential corpus: what `Host.Sem` says each operation computes,
+//! against the machine. `BASE_HPROG_DIR` runs a corpus generated elsewhere.
 
 use base_types::Artifact;
 
@@ -61,9 +43,6 @@ impl Corpus {
 }
 
 /// Where the build wrote the corpus.
-///
-/// `lean-artifacts` builds and runs every generator, so this test reads what
-/// that produced rather than driving `lake` a second time.
 fn generated_corpus() -> PathBuf {
     PathBuf::from(lean_artifacts::DIR)
 }

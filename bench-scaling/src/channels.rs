@@ -1,13 +1,5 @@
-//! Where per-declaration proof cost lands, and what makes it superlinear.
-//!
-//! Two axes the other suites do not reach:
-//!
-//! * `regimes` — three pairs, each proving the same thing twice.  One of each
-//!   pair is linear and the other is not, and the difference is a property of
-//!   how the obligation was written, not of what it guarantees.
-//! * `compose` — K separately-proven components chained in a user module.  The
-//!   row that matters is composite cost against component *internal* size: if
-//!   specs are opaque it is flat, and if they leak it is not.
+//! Where per-declaration proof cost lands: `regimes`, pairs proving one thing
+//! linearly and not; `compose`, K proven components chained.
 
 use std::fs;
 use std::io::Write;
@@ -162,11 +154,8 @@ pub fn regimes(n: usize, r: Regime, out: &Path) -> std::io::Result<()> {
 
 // ── compose ─────────────────────────────────────────────────────────────────
 
-/// A component: a body of `w` internal operations, and a spec.
-///
-/// `leaky = false` states the spec in the shared vocabulary (`.n` after the
-/// call), so the body is invisible to callers.  `leaky = true` states it as an
-/// equation on the body, so every caller inherits `w` nodes of it.
+/// A component of `w` operations; `leaky` states its spec as an equation on
+/// the body, so callers inherit it.
 pub fn component(k: usize, w: usize, leaky: bool, out: &Path) -> std::io::Result<()> {
     let mut body = String::from("s");
     for _ in 0..w {
@@ -188,11 +177,8 @@ pub fn component(k: usize, w: usize, leaky: bool, out: &Path) -> std::io::Result
     write(out, &s)
 }
 
-/// Chain `k` components and prove the composite, using only their statements.
-///
-/// `prove = false` emits the same imports and the same `pipe` and stops, so
-/// subtracting it leaves the cost of the composite proof alone -- importing K
-/// oleans is not free and grows with K.
+/// `k` components chained and proven from their statements; `prove = false`
+/// stops before the proof, to subtract the import cost.
 pub fn composite(k: usize, w: usize, leaky: bool, prove: bool, out: &Path) -> std::io::Result<()> {
     let (p, nm) = if leaky { ("CmpL", "g") } else { ("Cmp", "f") };
     let mut s = String::new();

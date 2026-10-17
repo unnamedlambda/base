@@ -1,13 +1,5 @@
-//! Runs the window corpus: what `Sem.callFfi` says the window entry points do
-//! without a display, against what `Lib.Window` does over the engine's window
-//! library.
-//!
-//! The display variables are removed before the run, so the window library's
-//! event loop does not start and `windowInit` stores null; the body then takes every refusal path and
-//! the argument checks in front of them, leaving each result code in the output
-//! buffer. The interpreter computed that buffer when the artifact was generated
-//! (`lean/algorithms/Host/WindowCorpus.lean`); here the same artifact runs
-//! through the JIT, and the two must agree byte for byte.
+//! The window entry points without a display, against the interpreter
+//! (`Host/WindowCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 
@@ -91,12 +83,8 @@ const DISPLAY_WHAT: [&str; 11] = [
     "an open with a shader that is not UTF-8 refused",
 ];
 
-/// With a display: a window opens and a buffer is presented three times.
-/// Every answer agrees with the interpreter's; and when `XVFB_FB` names the X
-/// server's framebuffer file (`Xvfb -fbdir <dir> -nocursor`: the pointer is
-/// drawn into the framebuffer, over wherever the window is placed), the
-/// window is found on the screen and every pixel of it is the buffer's. The body leaves the window
-/// open so it is still there to read.
+/// With a display, a window opens and presents; with `XVFB_FB` naming Xvfb's
+/// framebuffer, every pixel of the window is checked.
 #[test]
 #[ignore = "needs a display: run with DISPLAY set"]
 fn interpreter_and_runtime_agree_with_a_display() {

@@ -1,20 +1,5 @@
-//! The `byte_count` artifact counts several bytes in a fixed-size run.
-//!
-//! The generator ties the width of the output buffer to the length of the
-//! needle table, so a table and a buffer that disagree is a build error rather
-//! than a write past the end. `ByteCountProof.trip_counts` covers what one
-//! vector's trip computes, under the CLIF semantics. This checks the rest ---
-//! that the loops repeating it accumulate and store what they should.
-//!
-//! The patterns are chosen so a loop with the wrong bound disagrees: `last
-//! only` and `final vector` catch one that stops early, `all` catches one that
-//! runs long or double-counts. `mixed` additionally catches a scan that writes
-//! its counters in the wrong order, which the single-needle version could not.
-//!
-//! One limit worth naming: the artifact scans exactly `WINDOW` bytes, so a host
-//! passing fewer would have it read past the input. The extent the interface
-//! checks is the output buffer's, not the input's --- the input's length is not
-//! a generation-time fact.
+//! `byte_count` counts needles over a fixed window; the patterns catch a loop
+//! that stops early, runs long, or stores counters out of order.
 
 use base::{Artifact, Driver};
 

@@ -1,8 +1,4 @@
-//! The USB library, called directly, checked against the system.
-//!
-//! `lean/algorithms/Host/UsbCorpus.lean` lists the devices and asks what lies
-//! past them, storing every answer that holds on any machine. This runs the
-//! artifact and compares with what the interpreter computed.
+//! The USB library against the system (`Host/UsbCorpus.lean`).
 
 use base_types::Artifact;
 use std::path::PathBuf;

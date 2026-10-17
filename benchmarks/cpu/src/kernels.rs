@@ -1,7 +1,5 @@
-//! The Rust side: each workload's kernels, and the inputs they share with
-//! Base. Every kernel takes the inputs and answers a `u64`, which Base's
-//! entry for the same workload must match. No fast-math: neither compiler
-//! may reorder a float operation, so both compute the same bits.
+//! The Rust kernels for each workload, answering the `u64` Base's entries
+//! must match; no fast-math, so both compute the same bits.
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 
@@ -214,10 +212,7 @@ pub fn k_poly_idiom(i: &In) -> u64 {
     i.f32a.iter().fold(0u32, |h, &x| h ^ poly(x).to_bits()) as u64
 }
 
-/// The stream workload's buffers, `STREAM_N` u64s (32 MB) each: twice the
-/// last-level cache, so a store that first reads its line in costs a read of
-/// memory for every line it writes. The runner points them at the input and
-/// output it hands Base's entries.
+/// The stream workload's buffers, twice the last-level cache each.
 pub static STREAM_SRC: std::sync::atomic::AtomicPtr<u64> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 pub static STREAM_DST: std::sync::atomic::AtomicPtr<u64> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 pub const STREAM_N: usize = 4 << 20;
@@ -227,10 +222,7 @@ fn stream_bufs() -> (*const u64, *mut u64) {
     (STREAM_SRC.load(Relaxed), STREAM_DST.load(Relaxed))
 }
 
-/// Copies `n` u64s with non-temporal stores, 128 bytes a trip. Its arguments
-/// are Base's, so LLVM's code for it is the stream body in `CpuBenchAsm`.
-/// (`copy_from_slice` also streams at this size but swings 4x with the
-/// buffers' relative placement, so it is not the reference.)
+/// Copies `n` u64s with non-temporal stores, 128 bytes a trip.
 ///
 /// # Safety
 ///

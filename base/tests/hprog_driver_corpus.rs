@@ -1,12 +1,5 @@
-//! The CUDA driver, called directly, checked against the device.
-//!
-//! `lean/algorithms/Host/DriverCorpus.lean` makes the driver calls a program
-//! makes — context, allocation, copies, a fill, modules, launches on the default
-//! stream and a created one, events, page-locked memory, copies on a stream,
-//! cuBLAS, frees — storing every result code and every byte
-//! it copies back. This runs the artifact on the GPU and compares with what the
-//! interpreter computed. Handles and device pointers differ between the two and
-//! are never stored: codes and bytes are what a program can observe.
+//! The CUDA driver calls a program makes, on the device, against the
+//! interpreter (`Host/DriverCorpus.lean`): result codes and bytes.
 
 use base_types::Artifact;
 use std::path::PathBuf;
@@ -66,10 +59,8 @@ fn interpreter_and_driver_agree() {
     eprintln!("{} driver results and {} bytes agree", names.len(), out.len() - data);
 }
 
-/// The signatures the program calls the driver and cuBLAS with are the
-/// headers': the generator writes one `static_assert` per function, over the
-/// parameter and result widths `Ext.sig` gives, and this compiles it against
-/// `cuda.h` and `cublas_v2.h`.
+/// The driver and cuBLAS signatures the program calls at match `cuda.h` and
+/// `cublas_v2.h`.
 #[test]
 fn signatures_match_cuda_h() {
     let dir = match std::env::var("BASE_HPROG_DIR") {

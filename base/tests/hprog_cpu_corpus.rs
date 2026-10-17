@@ -1,9 +1,4 @@
-//! The CPU library, called directly, checked against the system.
-//!
-//! `lean/algorithms/Host/CpuCorpus.lean` asks for the CPUs, their cores and
-//! packages, and pins its thread and releases it, storing every answer that
-//! holds on any Linux or Windows machine. This runs the artifact and
-//! compares with what the interpreter computed.
+//! The CPU library against the system (`Host/CpuCorpus.lean`).
 
 use base_types::Artifact;
 use std::path::PathBuf;

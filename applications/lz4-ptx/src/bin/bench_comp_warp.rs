@@ -1,15 +1,6 @@
-// Throughput + byte-exact verification for the proven GPU LZ4 compressor: one warp
-// per block, 4096-entry shared-memory hash table, cooperative match extend + emit.
-// The kernels measured here are the artifacts `Lz4CompAlgorithm.warpArtifactDSL`
-// emits, which embed `serializeKernel (WP.kernel w)` — the same definition
-// `Algorithm.launch_correct` is proven about.
-//
-// The program prints its own methodology: what is inside each timed region on both
-// sides, why the launch count can be trusted, and the compression ratios alongside
-// the throughputs.
-//
-// Corpus: `baseline/setup.sh --corpus-only` (override with LZ4_CORPUS).
-// Baseline: `baseline/bench_nvcomp_compress.py`, which prints its own methodology.
+// Throughput and byte-exact check of the proven GPU LZ4 compressor against
+// nvCOMP (`baseline/bench_nvcomp_compress.py`). Corpus: `baseline/setup.sh
+// --corpus-only`, or LZ4_CORPUS.
 use base::{Artifact, Driver};
 use std::time::Instant;
 

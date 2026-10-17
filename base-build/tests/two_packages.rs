@@ -1,12 +1,5 @@
-//! That splitting the Lean bounds what an edit costs, run rather than argued.
-//!
-//! The fixture is two Lake packages requiring a third, an owner crate sitting in
-//! each, a consumer of one and a consumer of both. Neither consumer has a build
-//! script. The shared package is what makes two build scripts run at once and
-//! reach for the same `lake`.
-//!
-//! Needs `lake` on the path and builds its own cargo workspace, so it is slower
-//! than the rest of this crate's tests.
+//! Two Lake packages sharing a third, each with an owner crate, built
+//! together: an edit rebuilds only what depends on it. Needs `lake`.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -17,11 +10,7 @@ fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/two-packages")
 }
 
-/// Build the fixture and return the crates cargo compiled.
-///
-/// The inner cargo must not inherit this one's environment: a jobserver it
-/// cannot reach or an inherited target directory would make the result depend
-/// on how the outer test was invoked.
+/// Builds the fixture in a clean environment and answers the crates compiled.
 fn build() -> Vec<String> {
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     for (k, _) in std::env::vars() {

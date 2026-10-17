@@ -1,12 +1,5 @@
-//! Runs the LMDB corpus: what `Sem.callFfi` says the LMDB entry points do,
-//! against what they do on real directories.
-//!
-//! One body opens two environments, puts inside and outside write
-//! transactions, scans from the start and from a key, and reopens a directory
-//! from a fresh context; every result code and every scan's bytes land in the
-//! output buffer. The interpreter computed that buffer when the artifact was
-//! generated (`lean/algorithms/Host/LmdbCorpus.lean`); here the same artifact
-//! runs through the JIT, and the two must agree byte for byte.
+//! The LMDB entry points on real directories, against the interpreter
+//! (`Host/LmdbCorpus.lean`), byte for byte.
 
 use base_types::Artifact;
 

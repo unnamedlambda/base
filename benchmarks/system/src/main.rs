@@ -1,15 +1,5 @@
-//! The libraries a program links, at work, against the Rust crates a program
-//! would use instead.
-//!
-//! The Base side is the `system_bench` artifact (`Bench/System.lean`), whose
-//! entries call `Lib.Ht`, `Lib.Lmdb` and the file adapter; the Rust side is
-//! hashbrown with foldhash, LMDB through `liblmdb-sys`, and `std::fs::read`
-//! with memchr. Every answer is checked against Rust's before anything is
-//! timed.
-//!
-//! Output, read by `run.sh`, is one line per timing:
-//!
-//!     <workload> <column> <ns>
+//! Base's libraries (`system_bench`: hash table, LMDB, files) against the Rust
+//! crates a program would use instead. Prints `<workload> <column> <ns>` lines.
 
 use base::{Artifact, Driver};
 use std::ffi::CString;
