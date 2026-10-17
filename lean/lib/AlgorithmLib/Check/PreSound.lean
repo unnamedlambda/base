@@ -16,7 +16,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
-open AlgorithmLib.HProg.Contracts (Fact TState holds_of_mem Part)
+open AlgorithmLib.HProg.Contracts (Fact TState holds_of_mem Part readyIn streamsOf streamsOf_holds partyOf partyOf_eq evId evId_spec)
 
 theorem ArgBits.cons_inv {Γ : Env} {w : World} {a : AV} {as : List AV} {bits : List UInt64}
     (h : ArgBits Γ w (a :: as) bits) :
@@ -67,7 +67,7 @@ theorem readIds_of_fits {p : UInt64} {n : Nat} (hf : Fits w.mem p (4 * n)) : (re
   have hl : ((List.range n).mapM fun i => w.mem.load (p + UInt64.ofNat (4 * i)) 4).isSome = true := by
     refine Contracts.mapM_isSome_of fun i hi => ?_
     have hi := List.mem_range.mp hi
-    have hd' := Static.decodeAddr_add (i := 4 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
+    have hd' := Sem.decodeAddr_add (i := 4 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
     exact Contracts.load_isSome hd' hp (by omega) hz
   obtain ⟨raw, hraw⟩ := Option.isSome_iff_exists.mp hl
   unfold readIds
@@ -79,14 +79,14 @@ theorem readBinds_of_fits {p : UInt64} {n : Nat} (hf : Fits w.mem p (8 * n)) :
   unfold readBinds
   refine Contracts.mapM_isSome_of fun i hi => ?_
   have hi := List.mem_range.mp hi
-  have hd1 := Static.decodeAddr_add (i := 8 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  have hd2 := Static.decodeAddr_add (i := 8 * i + 4) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
+  have hd1 := Sem.decodeAddr_add (i := 8 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
+  have hd2 := Sem.decodeAddr_add (i := 8 * i + 4) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
   obtain ⟨a, ha⟩ := Option.isSome_iff_exists.mp (Contracts.load_isSome (n := 4) hd1 hp (by omega) hz)
   obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (Contracts.load_isSome (n := 4) hd2 hp (by omega) hz)
   rw [ha, hb]; rfl
 
-theorem bindsReady_of_fits {nBufs bindPtr : UInt64} (hS : S.holds w) (hq : S.contains .devSeq = true)
-    (hf : Fits w.mem bindPtr (4 * (asI32 nBufs).toNat)) : BindsReady w defaultParty nBufs bindPtr := by
+theorem bindsReady_of_fits {nBufs bindPtr : UInt64} {p : Nat} (hS : S.holds w) (hq : readyIn S p = true)
+    (hf : Fits w.mem bindPtr (4 * (asI32 nBufs).toNat)) : BindsReady w p nBufs bindPtr := by
   obtain ⟨ids, hids⟩ := Option.isSome_iff_exists.mp (readIds_of_fits hf)
   exact ⟨ids, hids, fun id _ _ => Contracts.ready_of_state hS hq _ _⟩
 
@@ -190,6 +190,56 @@ theorem pre_cudaLaunchNamed {c kp np nb bp gx gy gz bx by_ bz : AV} (hS : S.hold
     exact ⟨ctxB_sound hS hc hc', Contracts.keepsSize_of_state hS ho, Contracts.capture_of_state hS hcap,
       cstrB_sound hS hkp hk, cstrB_sound hS hnp hn, bindsReady_of_fits hS hq (memN_fits' hS hbp hm)⟩
   · cases hm
+
+theorem streamReady_sound {sid : AV} {x : UInt64} (hS : S.holds w) (hd : ∃ t, sid.Desc Γ w (.sc t x))
+    (h : streamReady S sid = true) : ∀ p, w.dev.party? (asI32 x) = some p → readyIn S p = true := by
+  unfold streamReady at h
+  split at h
+  · rename_i s l hs hl
+    have hx := known_bits hd hs
+    subst hx
+    intro p hp
+    rw [partyOf_eq (streamsOf_holds hS hl)] at hp
+    split at h
+    · rename_i p' hp'
+      rw [hp'] at hp; cases hp; exact h
+    · rename_i hp'
+      rw [hp'] at hp; cases hp
+  · cases h
+
+theorem pre_cudaLaunchOnStream {c kp nb bp gx gy gz bx by_ bz sid : AV} (hS : S.holds w)
+    (hb : ArgBits Γ w [c, kp, nb, bp, gx, gy, gz, bx, by_, bz, sid] bits)
+    (h : preB .cudaLaunchOnStream [c, kp, nb, bp, gx, gy, gz, bx, by_, bz, sid] S rb = true) :
+    Contracts.Pre .cudaLaunchOnStream bits w := by
+  dsimp only [preB, preCudaLaunchOnStream] at h; simp only [Bool.and_eq_true] at h
+  obtain ⟨⟨⟨⟨⟨hc', ho⟩, hcap⟩, hk⟩, hq⟩, hm⟩ := h
+  argbits hb [hc, hkp, hnb, hbp, h5, h6, h7, h8, h9, h10, hsid]
+  split at hm
+  · rename_i k hk'
+    have hx := known_bits hnb hk'
+    subst hx
+    exact ⟨ctxB_sound hS hc hc', Contracts.keepsSize_of_state hS ho, Contracts.capture_of_state hS hcap,
+      cstrB_sound hS hkp hk,
+      fun p hp => bindsReady_of_fits hS (streamReady_sound hS hsid hq p hp) (memN_fits' hS hbp hm)⟩
+  · cases hm
+
+theorem pre_cudaStreamWaitEvent {c s e : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, s, e] bits)
+    (h : preB .cudaStreamWaitEvent [c, s, e] S rb = true) : Contracts.Pre .cudaStreamWaitEvent bits w := by
+  dsimp only [preB, preCudaStreamWaitEvent] at h; simp only [Bool.and_eq_true] at h
+  obtain ⟨⟨hc', hcap⟩, he⟩ := h
+  argbits hb [hc, hs, hev]
+  split at he
+  · rename_i eid heid
+    have hx := known_bits hev heid
+    subst hx
+    split at he
+    · rename_i n hn
+      obtain ⟨clk, hclk, -⟩ := (holds_of_mem hS he : (Fact.evAll n).holds w)
+      refine ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, fun c' hc'' => ?_⟩
+      rw [← evId_spec hn, hclk] at hc''
+      simp at hc''
+    · cases he
+  · cases he
 
 theorem pre_gpuInit {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits) (h : preB .gpuInit [s] S rb = true) :
     Contracts.Pre .gpuInit bits w := by
@@ -587,6 +637,22 @@ theorem pre_cudaLaunchNamed' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w 
   unfold preCudaLaunchNamed at h
   split at h
   · exact pre_cudaLaunchNamed (rb := rb) hS hb h
+  · cases h
+
+theorem pre_cudaLaunchOnStream' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
+    (h : preB .cudaLaunchOnStream as S rb = true) : Contracts.Pre .cudaLaunchOnStream bits w := by
+  dsimp only [preB] at h
+  unfold preCudaLaunchOnStream at h
+  split at h
+  · exact pre_cudaLaunchOnStream (rb := rb) hS hb h
+  · cases h
+
+theorem pre_cudaStreamWaitEvent' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
+    (h : preB .cudaStreamWaitEvent as S rb = true) : Contracts.Pre .cudaStreamWaitEvent bits w := by
+  dsimp only [preB] at h
+  unfold preCudaStreamWaitEvent at h
+  split at h
+  · exact pre_cudaStreamWaitEvent (rb := rb) hS hb h
   · cases h
 
 theorem pre_gpuInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
@@ -1061,6 +1127,8 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case cudaDownloadOffset => exact pre_cudaDownloadOffset' hS hb h hrb
   case cudaLaunch => exact pre_cudaLaunch' hS hb h
   case cudaLaunchNamed => exact pre_cudaLaunchNamed' hS hb h
+  case cudaLaunchOnStream => exact pre_cudaLaunchOnStream' hS hb h
+  case cudaStreamWaitEvent => exact pre_cudaStreamWaitEvent' hS hb h
   case gpuInit => exact pre_gpuInit' hS hb h
   case gpuCleanup => exact pre_gpuCleanup' hS hb h
   case gpuCreateBuffer => exact pre_gpuCreateBuffer' hS hb h

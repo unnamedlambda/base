@@ -691,6 +691,7 @@ def extKeeps (e : Ext) (bits : List UInt64) : Fact → Bool
   | .devSeq | .oracles => e.aside
   | .cstrIn a n => e.aside && !(e.frame.touches bits a n)
   | .roomArg _ _ | .devBuf _ _ => e.aside
+  | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => e.aside
   | .pinnedUsed _ => false
   | .htVals _ | .cstr _ => false
 
@@ -751,12 +752,13 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       show Device.TrackOk w'.dev ∧ Device.DefaultOnly w'.dev.race
       rw [st.dev]; exact hx
   | oracles =>
-      show Static.KeepsSize w'.kernel ∧ VendorKeeps w'.vendor
+      show Sem.KeepsSize w'.kernel ∧ VendorKeeps w'.vendor
       rw [st.kernel, st.vendor]; exact hx
   | devBuf _ _ =>
       show Device.BufIs _ _ w'.dev
       rw [st.dev]; exact hx
   | pinnedUsed _ => simp [extKeeps] at hk
+  | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl st.dev hx
   | roomArg rg x =>
       show x.toNat ≤ w'.mem.sizes rg ∧ _
       refine ⟨?_, hx.2⟩

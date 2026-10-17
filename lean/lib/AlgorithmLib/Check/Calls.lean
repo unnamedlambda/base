@@ -20,7 +20,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
-open AlgorithmLib.HProg.Contracts (Fact TState after after_sound keeps keeps_sound roomAt roomAt_spec holds_of_mem
+open AlgorithmLib.HProg.Contracts (Fact TState after after_sound keeps keeps_sound devArgFree devAfter devAfter_free devAfter_sound readyIn streamsOf eventsOf partyOf evId roomAt roomAt_spec holds_of_mem
   Part)
 
 -- ---------------------------------------------------------------------------
@@ -347,7 +347,7 @@ def keepA (f : Ffi) (as : List AV) (x : Fact) : Bool :=
 def postA (f : Ffi) (as : List AV) (S : TState) : TState :=
   match allBits as with
   | some bits => after f bits S
-  | none => S.filter (keepA f as)
+  | none => S.filter (keepA f as) ++ (if devArgFree f then devAfter f [] S else [])
 
 theorem allBits_eq {Γ : Env} {w : World} : ∀ {as : List AV} {bits bs : List UInt64},
     ArgBits Γ w as bits → allBits as = some bs → bits = bs
@@ -392,9 +392,10 @@ theorem postA_sound {Γ : Env} {f : Ffi} {as : List AV} {S : TState} {bits : Lis
   unfold postA
   split
   · rename_i bs hbs; rw [← allBits_eq hb hbs]; exact after_sound hS h
-  · intro x hx
-    obtain ⟨hx, hk⟩ := List.mem_filter.mp hx
-    exact keepA_sound hb h hk (hS x hx)
+  · refine Contracts.TState.holds_app (fun x hx => ?_) (Contracts.TState.holds_if fun hf => ?_)
+    · obtain ⟨hx, hk⟩ := List.mem_filter.mp hx
+      exact keepA_sound hb h hk (hS x hx)
+    · rw [devAfter_free hf [] bits]; exact devAfter_sound hS h
 
 -- ---------------------------------------------------------------------------
 -- Entry points
@@ -492,29 +493,29 @@ def preCudaSync (S : TState) (as : List AV) : Bool :=
 
 def preCudaUpload (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, d, n] => cudaB S c && memBR S rb 2 3 d n && S.contains .devSeq
+  | [c, _, d, n] => cudaB S c && memBR S rb 2 3 d n && readyIn S defaultParty
   | _ => false
 
 def preCudaDownload (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, d, n] => cudaB S c && memBR S rb 2 3 d n && S.contains .devSeq
+  | [c, _, d, n] => cudaB S c && memBR S rb 2 3 d n && readyIn S defaultParty
   | _ => false
 
 def preCudaUploadOffset (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, _, d, n] => cudaB S c && memBR S rb 3 4 d n && S.contains .devSeq
+  | [c, _, _, d, n] => cudaB S c && memBR S rb 3 4 d n && readyIn S defaultParty
   | _ => false
 
 def preCudaDownloadOffset (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, _, d, n] => cudaB S c && memBR S rb 3 4 d n && S.contains .devSeq
+  | [c, _, _, d, n] => cudaB S c && memBR S rb 3 4 d n && readyIn S defaultParty
   | _ => false
 
 def preCudaLaunch (S : TState) (as : List AV) : Bool :=
   match as with
   | [c, kp, nb, bp, _, _, _, _, _, _] =>
       cudaB S c && S.contains .oracles && S.contains (.part .capturing false) && cstrB S kp &&
-        S.contains .devSeq &&
+        readyIn S defaultParty &&
         (match nb.bits with
          | some n => memN S bp (4 * (asI32 n).toNat)
          | none => false)
@@ -524,9 +525,40 @@ def preCudaLaunchNamed (S : TState) (as : List AV) : Bool :=
   match as with
   | [c, kp, np, nb, bp, _, _, _, _, _, _] =>
       cudaB S c && S.contains .oracles && S.contains (.part .capturing false) && cstrB S kp &&
-        cstrB S np && S.contains .devSeq &&
+        cstrB S np && readyIn S defaultParty &&
         (match nb.bits with
          | some n => memN S bp (4 * (asI32 n).toNat)
+         | none => false)
+  | _ => false
+
+/-- Whether the party a stream id names knows every access, by the streams
+    the typestate names; a stream id naming no party asks nothing. -/
+def streamReady (S : TState) (sid : AV) : Bool :=
+  match sid.bits, streamsOf S with
+  | some s, some l => match partyOf l s with
+    | some p => readyIn S p
+    | none => true
+  | _, _ => false
+
+def preCudaLaunchOnStream (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, kp, nb, bp, _, _, _, _, _, _, sid] =>
+      cudaB S c && S.contains .oracles && S.contains (.part .capturing false) && cstrB S kp &&
+        streamReady S sid &&
+        (match nb.bits with
+         | some n => memN S bp (4 * (asI32 n).toNat)
+         | none => false)
+  | _ => false
+
+/-- A wait on an event every access before whose record its stream knew. -/
+def preCudaStreamWaitEvent (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, _, e] =>
+      cudaB S c && S.contains (.part .capturing false) &&
+        (match e.bits with
+         | some eid => match evId eid with
+           | some n => S.contains (.evAll n)
+           | none => false
          | none => false)
   | _ => false
 
@@ -765,7 +797,8 @@ theorem htValsOf_mem : ∀ {S : TState} {n : Nat}, htValsOf S = some n → Fact.
   | .part .. :: S, _, h | .room .. :: S, _, h | .cell .. :: S, _, h | .held .. :: S, _, h
   | .opened .. :: S, _, h | .cstr .. :: S, _, h | .devSeq :: S, _, h | .oracles :: S, _, h
   | .cstrIn .. :: S, _, h | .roomArg .. :: S, _, h | .devBuf .. :: S, _, h
-  | .pinnedUsed .. :: S, _, h => List.mem_cons_of_mem _ (htValsOf_mem h)
+  | .pinnedUsed .. :: S, _, h | .streams .. :: S, _, h | .events .. :: S, _, h | .evLive .. :: S, _, h
+  | .readyAll .. :: S, _, h | .evAll .. :: S, _, h => List.mem_cons_of_mem _ (htValsOf_mem h)
 
 /-- A lookup into room for any value the table holds. -/
 def preHtLookup (S : TState) (as : List AV) : Bool :=
@@ -881,6 +914,8 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .cudaDownloadOffset => preCudaDownloadOffset S rb as
   | .cudaLaunch => preCudaLaunch S as
   | .cudaLaunchNamed => preCudaLaunchNamed S as
+  | .cudaLaunchOnStream => preCudaLaunchOnStream S as
+  | .cudaStreamWaitEvent => preCudaStreamWaitEvent S as
   | .gpuInit => preGpuInit S as
   | .gpuCleanup => preGpuCleanup S as
   | .gpuCreateBuffer => preGpuCreateBuffer S as
@@ -914,5 +949,18 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .htLookup => preHtLookup S as
   | .lmdbCursorScan => preLmdbCursorScan S as
   | _ => false
+
+/-- **What a device call answers, by the facts**: a stream's or an event's
+    creation, in a live CUDA context whose streams or events the typestate
+    counts, answers the next index. -/
+def devAnswer (f : Ffi) (as : List AV) (S : TState) : Option Nat :=
+  match f with
+  | .cudaStreamCreate => match as with
+    | [c] => if c.bits == some cudaCtx && S.contains (.part .cuda true) then (streamsOf S).map List.length else none
+    | _ => none
+  | .cudaEventCreate => match as with
+    | [c] => if c.bits == some cudaCtx && S.contains (.part .cuda true) then eventsOf S else none
+    | _ => none
+  | _ => none
 
 end AlgorithmLib.Check

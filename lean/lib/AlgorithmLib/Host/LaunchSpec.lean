@@ -27,7 +27,7 @@ buffers after it stand in `M` to what they held before. A kernel theorem about
 -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
-  AlgorithmLib.HProg.Static AlgorithmLib.Device
+  AlgorithmLib.Device
 
 namespace AlgorithmLib.HProg.Contracts
 

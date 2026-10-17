@@ -3,8 +3,8 @@ public import AlgorithmLib.Host.Hoare
 meta import AlgorithmLib.Host.Hoare
 public import AlgorithmLib.Host.RaceRefine
 meta import AlgorithmLib.Host.RaceRefine
-public import AlgorithmLib.Host.StaticCong
-meta import AlgorithmLib.Host.StaticCong
+public import AlgorithmLib.Host.MemLaws
+meta import AlgorithmLib.Host.MemLaws
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -49,7 +49,7 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sem
 open AlgorithmLib.Device (Clock.get_join Clock.get_bump Race.clock_setClock readsFold writesFold
   readsFold_other readsFold_mem writesFold_other writesFold_lastW writesFold_reads)
-open AlgorithmLib.HProg.Static (KeepsSize MemSame store_frame store_some decodeAddr_add decodeAddr_base)
+
 
 -- ---------------------------------------------------------------------------
 -- Clocks
@@ -745,7 +745,7 @@ theorem readIds_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) (hf : m.froze
     {p : UInt64} {off n : Nat} (hd : decodeAddr p = some (.arena, off))
     (hn : off + 4 * n < regionSpan.toNat) : readIds m p n = readIds (arenaMem A) p n := by
   unfold readIds
-  rw [Static.mapM_congr_mem _ _ _ fun i hi => load_arena hA hf
+  rw [Sem.mapM_congr_mem _ _ _ fun i hi => load_arena hA hf
     (decodeAddr_add hd (by have := List.mem_range.mp hi; omega)) 4]
 
 theorem copyOut_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) (hf : m.frozen = false)
@@ -802,7 +802,7 @@ theorem copyIn_isSome_of {m : Mem} {a : UInt64} {r : Region} {off : Nat} {src : 
     rw [h]; rfl
   intro k
   induction k with
-  | zero => intro _; exact ⟨m, rfl, Static.MemSame.refl m⟩
+  | zero => intro _; exact ⟨m, rfl, Sem.MemSame.refl m⟩
   | succ k ih =>
       intro hk
       obtain ⟨m1, h1, hs1⟩ := ih (by omega)
@@ -866,18 +866,6 @@ theorem readBytes_inArena {m : Mem} {a : UInt64} {off n : Nat}
   copyOut_arena rfl hf hd hn
 
 -- ---------------------------------------------------------------------------
--- Dispatch
--- ---------------------------------------------------------------------------
-
-/-- A supported call, made outside a worker's lifetime, is its contract on the
-    argument bits. -/
-theorem callOf_supported {f : IR.Ffi} (hf : Static.supported f = true) (lc : Locals) (vs : List V)
-    {w : World} (hz : w.mem.frozen = false) :
-    callOf lc (.ffi f) vs w = (vs.mapM asBits).bind (fun bits => callBits f bits w) := by
-  simp only [callOf, hz, Static.supported_ne_spawn f hf, Bool.false_and, Bool.false_eq_true,
-    if_false, callImport, Static.ofCname_supported f hf, bind, Option.bind, callFfi]
-
--- ---------------------------------------------------------------------------
 -- What the calls leave
 -- ---------------------------------------------------------------------------
 
@@ -885,7 +873,7 @@ theorem retire_nil {m : Mem} (h : m.busy = []) (c : Clock) : m.retire c = m := b
   cases m; simp_all [Mem.retire]
 
 theorem retire_same (m : Mem) (c : Clock) (h : m.busy = []) : MemSame m (m.retire c) := by
-  rw [retire_nil h]; exact Static.MemSame.refl m
+  rw [retire_nil h]; exact Sem.MemSame.refl m
 
 /-- A copy into memory changes bytes and nothing else. -/
 theorem copyIn_same {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m') :
@@ -893,7 +881,7 @@ theorem copyIn_same {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a 
   unfold copyIn at h
   suffices ∀ (l : List Nat) (m0 m1 : Mem), MemSame m m0 → l.foldlM
       (fun mm i => mm.store (a + UInt64.ofNat i) 1 (src.get! i).toUInt64) m0 = some m1 →
-      MemSame m m1 from this _ m m' (Static.MemSame.refl m) h
+      MemSame m m1 from this _ m m' (Sem.MemSame.refl m) h
   intro l
   induction l with
   | nil => intro m0 m1 hs h; cases h; exact hs
@@ -1090,14 +1078,14 @@ theorem download_mem {w w' : World} {ctx buf dst size : UInt64} {r : Option V}
   unfold ffiCudaDownload at h
   dsimp only at h
   split at h
-  · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Static.MemSame.refl _
+  · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Sem.MemSame.refl _
   · obtain ⟨ok, _, h⟩ := Option.bind_eq_some_iff.mp h
     split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Static.MemSame.refl _
+    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Sem.MemSame.refl _
     · split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Static.MemSame.refl _
+      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Sem.MemSame.refl _
       · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Static.MemSame.refl _
+        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; rw [← h.2]; exact Sem.MemSame.refl _
         · obtain ⟨d, _, h⟩ := Option.bind_eq_some_iff.mp h
           obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
           simp only [Option.some.injEq, Prod.mk.injEq] at h

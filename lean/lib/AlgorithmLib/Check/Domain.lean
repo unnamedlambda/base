@@ -1033,13 +1033,13 @@ theorem roomIn_spec {S : TState} {w : World} {r : Region} {n : Nat} (hS : S.hold
 
 theorem ptr_decode {r : Region} {off hi : Nat} (h1 : off ≤ hi) (h2 : hi < span) :
     decodeAddr (regionBase r + UInt64.ofNat off) = some (r, off) :=
-  Static.decodeAddr_base r off (by rw [Static.regionSpan_toNat]; unfold span at h2; omega)
+  Sem.decodeAddr_base r off (by rw [Sem.regionSpan_toNat]; unfold span at h2; omega)
 
 /-- An address in a region's span, or just past it, as a number. -/
 theorem addr_toNat (r : Region) {off : Nat} (h : off ≤ span) :
     (regionBase r + UInt64.ofNat off).toNat = (regionBase r).toNat + off := by
-  have hb := Static.regionBase_toNat r
-  rw [Static.regionSpan_toNat] at hb
+  have hb := Sem.regionBase_toNat r
+  rw [Sem.regionSpan_toNat] at hb
   unfold span at h
   rw [UInt64.toNat_add, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (a := off) (by omega), Nat.mod_eq_of_lt (by omega)]
 
@@ -1308,7 +1308,7 @@ theorem cellLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {
           have hload : w.mem.load x (tyBytes op.ty) = some (v >>> 32) := by
             rw [hty, ← hx]
             exact Contracts.TState.holds_cell_hi h.2.2 (List.contains_iff_mem.mpr (cellAt_mem hcell)) hdec
-              (by rw [Static.regionSpan_toNat]; exact hoff)
+              (by rw [Sem.regionSpan_toNat]; exact hoff)
           exact ⟨_, evalOp_load hk (by rw [hty]; rfl) hu hload, fun _ => by simp only [AV.Desc, hty]⟩
         · cases hl
       · cases hl
@@ -1765,7 +1765,7 @@ theorem AV.asPtr_desc {Γ : Env} {w : World} {a : AV} {v : V} (hd : a.Desc Γ w 
       split
       · rename_i hs
         refine ⟨off, ?_, ⟨Nat.le_refl _, Nat.le_refl _, Nat.dvd_refl _, trivial⟩, Nat.le_of_lt hs⟩
-        rw [(Static.decodeAddr_some hdec).1]
+        rw [(Sem.decodeAddr_some hdec).1]
       · rfl
     · rfl
   · exact hd

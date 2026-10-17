@@ -20,7 +20,7 @@ variable {vals : List UInt64}
 
 open AlgorithmLib.HProg.Contracts (Fact TState holds_of_mem Part afterStore afterStore_sound storeKeeps
   storeKeeps_sound storeKeeps_cell_of storeKeeps_cstrIn_of cellOk cellOk_spec nonCell_kept store_sizes_eq
-  store_frozen callBits_rooms after)
+  store_frozen callBits_rooms after streamsOf_holds eventsOf_holds readyIn)
 
 -- ---------------------------------------------------------------------------
 -- Addresses as numbers
@@ -29,9 +29,9 @@ open AlgorithmLib.HProg.Contracts (Fact TState holds_of_mem Part afterStore afte
 /-- An address a region decodes, as a number: its base plus the offset. -/
 theorem decode_toNat {a : UInt64} {r : Region} {off : Nat} (h : decodeAddr a = some (r, off)) :
     a.toNat = (regionBase r).toNat + off ∧ (regionBase r).toNat + off < 2 ^ 39 := by
-  obtain ⟨rfl, ho⟩ := Static.decodeAddr_some h
-  have hb := Static.regionBase_toNat r
-  rw [Static.regionSpan_toNat] at ho hb
+  obtain ⟨rfl, ho⟩ := Sem.decodeAddr_some h
+  have hb := Sem.regionBase_toNat r
+  rw [Sem.regionSpan_toNat] at ho hb
   refine ⟨?_, by omega⟩
   rw [UInt64.toNat_add, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (a := off) (by omega),
     Nat.mod_eq_of_lt (by omega)]
@@ -627,13 +627,53 @@ theorem ffiPre_pre {A : AS} {f : Ffi} {args : List R} {P : Par} (hP : ffiPre A f
       · rw [if_neg hc, hv.1] at hP
         cases hP
 
+/-- **The index a device call answers** is the one `devAnswer` reads from the
+    facts. -/
+theorem devAnswer_sound {S : TState} {Γ : Env} {w : World} {f : Ffi} {as : List AV} {bits : List UInt64}
+    {n : Nat} {v : V} {w' : World} (hS : S.holds w) (hab : ArgBits Γ w as bits) (hd : devAnswer f as S = some n)
+    (hc : callBits f bits w = some (some v, w')) : v = ofInt .i32 n := by
+  have arg1 : ∀ {c : AV}, ArgBits Γ w [c] bits → c.bits = some cudaCtx → bits = [cudaCtx] := fun hab hcb => by
+    obtain ⟨y, ys, rfl, hy, hys⟩ := ArgBits.cons_inv hab
+    rw [ArgBits.nil_inv hys, known_bits hy hcb]
+  unfold devAnswer at hd
+  split at hd
+  · split at hd
+    · rename_i c
+      split at hd
+      · rename_i hif
+        simp only [Bool.and_eq_true, beq_iff_eq] at hif
+        obtain ⟨l, hl, rfl⟩ := Option.map_eq_some_iff.mp hd
+        have hbits := arg1 hab hif.1
+        subst hbits
+        obtain ⟨hr, -⟩ := Device.streamCreate_dev (show ffiCudaStreamCreate [cudaCtx] w = _ from hc)
+          (holds_of_mem hS hif.2)
+        cases hr
+        rw [← streamsOf_holds hS hl, Array.length_toList]
+      · cases hd
+    · cases hd
+  · split at hd
+    · rename_i c
+      split at hd
+      · rename_i hif
+        simp only [Bool.and_eq_true, beq_iff_eq] at hif
+        have hbits := arg1 hab hif.1
+        subst hbits
+        obtain ⟨hr, -⟩ := Device.eventCreate_dev (show ffiCudaEventCreate [cudaCtx] w = _ from hc)
+          (holds_of_mem hS hif.2)
+        cases hr
+        rw [eventsOf_holds hS hd]
+      · cases hd
+    · cases hd
+  · cases hd
+
 /-- **A foreign call the checker accepts** answers, from every state the
     abstract one describes, and leaves a world the state after it describes. -/
 theorem ffiCall_core {cfg : Cfg} {A B : AS} {f : Ffi} {args : List R} (h : A.ffiCall f args = .ok B)
     {Γ : Env} {w : World} {vs : List V} (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
     ∃ r w' bits, callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
       ArgBits Γ (obsCall w (.ffi f) vs) (args.map A.get) bits ∧
-      ∀ v, r = some v → ∃ x, v = .sc (f.result.getD .i64) x ∧ answerOk f bits x := by
+      ∀ v, r = some v → ∃ x, v = .sc (f.result.getD .i64) x ∧ answerOk f bits x ∧
+        ∀ n, devAnswer f (args.map A.get) A.facts = some n → v = ofInt .i32 n := by
   obtain ⟨hf, hz, hsc, P, hP, rfl⟩ := ffiCall_ok h
   have hA1 := hA.obsCall (.ffi f) vs
   have hd := descAll_of hA1 hvs
@@ -649,7 +689,7 @@ theorem ffiCall_core {cfg : Cfg} {A B : AS} {f : Ffi} {args : List R} (h : A.ffi
       fun _ hk hx => keepA_sound hab hc hk hx), hab, fun v hv' => ?_⟩
   subst hv'
   obtain ⟨x, rfl⟩ := Contracts.callOf_ffi_scalar hf hcall
-  exact ⟨x, rfl, answerOk_sound hc⟩
+  exact ⟨x, rfl, answerOk_sound hc, fun n hn => devAnswer_sound hA1.2.2 hab hn hc⟩
 
 theorem mapM_bits_eq {Γ : Env} {w : World} :
     ∀ {as : List AV} {bs bits : List UInt64}, as.mapM AV.bits = some bs → ArgBits Γ w as bits → bs = bits
@@ -764,8 +804,12 @@ theorem call_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo fa :
         refine call_rule fun Γ w vs hA hvs => ?_
         obtain ⟨r, w', _bits, hcall, hA', -, hr⟩ := ffiCall_core hB hA hvs
         refine ⟨r, w', hcall, fun v hv => ?_⟩
-        obtain ⟨x, rfl, -⟩ := hr v hv
-        exact hA'.push (av := .sc (f.result.getD .i64)) (TyV.sc (ffi_result_lanes f))
+        obtain ⟨x, rfl, -, hdn⟩ := hr v hv
+        unfold ffiAnswer
+        split
+        · rename_i n hn
+          exact hA'.push (av := .known (ofInt .i32 n)) (hdn n hn)
+        · exact hA'.push (av := .sc (f.result.getD .i64)) (TyV.sc (ffi_result_lanes f))
       · cases h
   | ext e => exact extCall_sound h
   | _ => simp [absStmt] at h
@@ -802,7 +846,7 @@ theorem answerCases_sound {cfg : Cfg} {A A' B1 B2 : AS} {s : Stmt} {fo fa : Bool
           refine call_rule fun Γ w vs hA hvs => ?_
           obtain ⟨r, w', bits, hcall, hA', hab, hr⟩ := ffiCall_core hB hA hvs
           refine ⟨r, w', hcall, fun v hv => ?_⟩
-          obtain ⟨x, rfl, hans⟩ := hr v hv
+          obtain ⟨x, rfl, hans, -⟩ := hr v hv
           have hP := hA'.push (av := .sc (Ffi.fileRead.result.getD .i64))
             (v := .sc (Ffi.fileRead.result.getD .i64) x) (TyV.sc (ffi_result_lanes Ffi.fileRead))
           have hlen : Γ.size = A.len := hA.1.1
@@ -1111,39 +1155,59 @@ theorem AV.join_right {Γ : Env} {w : World} {a b : AV} {v : V} (hd : b.Desc Γ 
 theorem meetFact_left {S' : TState} {x y : Fact} {w : World} (h : meetFact S' x = some y)
     (hx : x.holds w) : y.holds w := by
   unfold meetFact at h
-  split at h
-  · cases h; exact hx
-  · cases x with
+  by_cases hc : S'.contains x = true
+  · rw [if_pos hc] at h; cases h; exact hx
+  · rw [if_neg hc] at h
+    cases x with
     | htVals n =>
         obtain ⟨m, -, rfl⟩ := Option.map_eq_some_iff.mp h
         intro k v hv
         exact Nat.le_trans (hx k v hv) (Nat.le_max_left _ _)
+    | readyAll p =>
+        by_cases hr : readyIn S' p = true
+        · simp only [hr, if_true, Option.some.injEq] at h; subst h; exact hx
+        · simp only [hr, Bool.false_eq_true, if_false, reduceCtorEq] at h
     | _ => simp at h
 
 theorem meetFact_right {S' : TState} {x y : Fact} {w : World} (h : meetFact S' x = some y)
     (hS : S'.holds w) : y.holds w := by
   unfold meetFact at h
-  split at h
-  · rename_i hc
-    cases h
-    exact hS _ (by simpa using hc)
-  · cases x with
+  by_cases hc : S'.contains x = true
+  · rw [if_pos hc] at h; cases h; exact hS _ (by simpa using hc)
+  · rw [if_neg hc] at h
+    cases x with
     | htVals n =>
         obtain ⟨m, hm, rfl⟩ := Option.map_eq_some_iff.mp h
         have hv := hS _ (htValsOf_mem hm)
         intro k v hg
         exact Nat.le_trans (hv k v hg) (Nat.le_max_right _ _)
+    | readyAll p =>
+        by_cases hr : readyIn S' p = true
+        · simp only [hr, if_true, Option.some.injEq] at h; subst h; exact Contracts.readyIn_sound hS hr
+        · simp only [hr, Bool.false_eq_true, if_false, reduceCtorEq] at h
     | _ => simp at h
+
+theorem meetReady_left {S : TState} {x : Fact} {w : World} (h : meetReady S x = true) (hS : S.holds w) :
+    x.holds w := by
+  unfold meetReady at h
+  split at h
+  · simp only [Bool.and_eq_true] at h
+    exact Contracts.readyIn_sound hS h.2
+  · cases h
 
 theorem factsMeet_left {S S' : TState} {w : World} (h : S.holds w) : (factsMeet S S').holds w := by
   intro y hy
-  obtain ⟨x, hx, hxy⟩ := List.mem_filterMap.mp hy
-  exact meetFact_left hxy (h x hx)
+  rcases List.mem_append.mp hy with hy | hy
+  · obtain ⟨x, hx, hxy⟩ := List.mem_filterMap.mp hy
+    exact meetFact_left hxy (h x hx)
+  · exact meetReady_left (List.mem_filter.mp hy).2 h
 
 theorem factsMeet_right {S S' : TState} {w : World} (h : S'.holds w) : (factsMeet S S').holds w := by
   intro y hy
-  obtain ⟨x, -, hxy⟩ := List.mem_filterMap.mp hy
-  exact meetFact_right hxy h
+  rcases List.mem_append.mp hy with hy | hy
+  · obtain ⟨x, -, hxy⟩ := List.mem_filterMap.mp hy
+    exact meetFact_right hxy h
+  · exact h y (List.mem_filter.mp hy).1
 
 theorem AS.join_holds {A B C : AS} (h : A.join B = .ok C) {Γ : Env} {w : World}
     (hAB : A.Holds vals Γ w ∨ B.Holds vals Γ w) : C.Holds vals Γ w := by

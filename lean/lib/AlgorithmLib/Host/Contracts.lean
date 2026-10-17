@@ -33,7 +33,7 @@ zero handle answer with an error code, and their preconditions ask nothing
 more of them then.
 -/
 
-open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec AlgorithmLib.HProg.Static
+open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
 
 namespace AlgorithmLib.HProg.Contracts
 

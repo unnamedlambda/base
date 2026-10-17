@@ -28,7 +28,7 @@ parameters point into.
 namespace AlgorithmLib.ML
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
-  AlgorithmLib.HProg.Static AlgorithmLib.HProg.Contracts AlgorithmLib.Device
+  AlgorithmLib.HProg.Contracts AlgorithmLib.Device
 
 /-- The device memory a launch's bound buffers make, by id; an unbound id reads
     empty. -/

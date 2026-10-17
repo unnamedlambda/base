@@ -220,8 +220,8 @@ theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : 
   have e4 := Ctx.prove_sound hC h4
   have hv : slotVal Γ a = x.toNat := by unfold slotVal; rw [hx]
   simp only [Lin.eval_scale, Lin.eval_add, Lin.eval_atom, Lin.eval_const, Atom.val, hv] at e0 e1 e2 e3 e4
-  have hb := Static.regionBase_toNat g
-  rw [Static.regionSpan_toNat] at hb
+  have hb := Sem.regionBase_toNat g
+  rw [Sem.regionSpan_toNat] at hb
   generalize len.eval Γ w = L at e0 e1 e3 ⊢
   obtain ⟨off, hoff⟩ : ∃ off, x.toNat = (regionBase g).toNat + off := ⟨x.toNat - (regionBase g).toNat, by omega⟩
   have hspan : off < span := by unfold span; omega

@@ -55,7 +55,8 @@ abbrev vSid : V := ofInt .i32 (-1)
 theorem sync_call (cfg : Cfg) (w : World) (h : Live w) :
     ∃ r w', callOf cfg.locals (.ffi .cudaStreamSync) [vCtx, vSid]
       (obsCall w (.ffi .cudaStreamSync) [vCtx, vSid]) = some (r, w') ∧ Live w' :=
-  (by prog_keeps : Keeps cfg Live .cudaStreamSync [vCtx, vSid]) w h
+  moves_state cfg _ _ (by decide) (by decide) rfl (by decide)
+    (fun w hS => Check.preB_sound (rb := fun _ _ => false) hS (Check.argBits_known _ ∅ w) (by decide +kernel) fun _ _ e => by cases e) w h
 
 theorem push_get {Γ : Env} {i : Nat} {v x : V} (h : Γ[i]? = some x) : (Γ.push v)[i]? = some x := by
   have hi : i < Γ.size := by

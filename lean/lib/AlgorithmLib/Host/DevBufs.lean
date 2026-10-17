@@ -256,7 +256,7 @@ theorem bufs_cudaUpload {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : Worl
             rename_i hc _ _ _ _ b hget hfit bytes hbytes _ _
             simp only [Bool.or_eq_true, decide_eq_true_eq, not_or] at hc
             have hid := Int.toNat_of_nonneg (Int.not_lt.mp hc.1.1)
-            have hbs := AlgorithmLib.HProg.Static.copyOut_size hbytes
+            have hbs := AlgorithmLib.HProg.Sem.copyOut_size hbytes
             have hb := hfit
             simp only [bne_iff_ne, ne_eq, Decidable.not_not] at hb
             exact syncWrite_bufs hsw (fun x hx => by rw [hid, hget] at hx; cases hx; omega)
@@ -284,7 +284,7 @@ theorem bufs_cudaUploadOffset {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w 
             rename_i hc _ _ _ _ b hget hfit bytes hbytes _ _
             simp only [Bool.or_eq_true, decide_eq_true_eq, not_or] at hc
             have hid := Int.toNat_of_nonneg (Int.not_lt.mp hc.1.1.1)
-            have hbs := AlgorithmLib.HProg.Static.copyOut_size hbytes
+            have hbs := AlgorithmLib.HProg.Sem.copyOut_size hbytes
             exact syncWrite_bufs hsw (fun x hx => by
                 rw [hid, hget] at hx; cases hx; rw [overwrite_size (by omega)])
               (by rw [hid, hget]; rfl) ht

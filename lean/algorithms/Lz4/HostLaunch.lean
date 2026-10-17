@@ -26,7 +26,7 @@ pointing into the allocation it decodes in.
 namespace Lz4Ship
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
-  AlgorithmLib.HProg.Static AlgorithmLib.HProg.Contracts AlgorithmLib.Device AlgorithmLib.LZ4WarpDSL
+  AlgorithmLib.HProg.Contracts AlgorithmLib.Device AlgorithmLib.LZ4WarpDSL
 
 /-- **What the kernel's machine leaves**, as a relation between the one buffer
     it is bound to before and after the launch. -/

@@ -58,7 +58,7 @@ lean_lib Vit where
 lean_lib Lz4 where
   globs := #[.submodules `Lz4]
 
--- Every shipped entry point never misuses a call, by the condition generator.
+-- Every shipped entry point never misuses a call, by the checker (`Check`).
 -- Plain files; a deep proof term needs the larger thread stack, and each check
 -- is held to 3.5 GB by Lean itself: one that would take more fails on its own
 -- rather than pressing the machine toward the cap that kills the session.

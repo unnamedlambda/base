@@ -19,7 +19,7 @@ kernel).
 -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
-  AlgorithmLib.HProg.Static AlgorithmLib.HProg.Contracts AlgorithmLib.HProg.ExtContracts AlgorithmLib.Device
+  AlgorithmLib.HProg.Contracts AlgorithmLib.HProg.ExtContracts AlgorithmLib.Device
 
 namespace AlgorithmLib.HProg.DrvLaunch
 

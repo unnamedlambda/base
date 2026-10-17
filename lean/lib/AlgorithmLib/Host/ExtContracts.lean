@@ -1,8 +1,8 @@
 module
 public import AlgorithmLib.Host.Contracts
 meta import AlgorithmLib.Host.Contracts
-public import AlgorithmLib.Host.StaticCong
-meta import AlgorithmLib.Host.StaticCong
+public import AlgorithmLib.Host.MemLaws
+meta import AlgorithmLib.Host.MemLaws
 public import AlgorithmLib.Host.Frames
 meta import AlgorithmLib.Host.Frames
 import all Init.Data.Repr
@@ -30,7 +30,7 @@ library does, and the tag says so (`Source.unmodelled`).
 -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
-open AlgorithmLib.HProg.DevSpec AlgorithmLib.HProg.Static AlgorithmLib.HProg.Contracts
+open AlgorithmLib.HProg.DevSpec AlgorithmLib.HProg.Contracts
 
 namespace AlgorithmLib.HProg.ExtContracts
 
@@ -764,9 +764,9 @@ theorem slot4_ne_none {m : Mem} {a v : UInt64} (h : Slot4 m a) (e : m.store a 4 
 /-- A store leaves every other slot storable. -/
 theorem slot8_after_store {m m' : Mem} {a b : UInt64} {n : Nat} {v : UInt64}
     (hs : m.store a n v = some m') (h : Slot8 m b) : Slot8 m' b := by
-  obtain ⟨_, _, _, hsame, _⟩ := store_left (K := []) (MemSame.refl m) (fun _ _ _ h => by cases h) hs
+  obtain ⟨_, _, _, hf⟩ := store_frame hs
   intro x
-  rw [store_isSome hsame b 8 x x]
+  rw [hf.same.symm.store_isSome b 8 x x]
   exact h x
 
 theorem op_isSome_rw {r : Race} {p s d : Nat} (hs : Ready r p s false) (hd : Ready r p d true) :

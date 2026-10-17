@@ -1,8 +1,8 @@
 module
 public import Host.CudaCorpus
 meta import Host.CudaCorpus
-public import AlgorithmLib.Host.Static
-meta import AlgorithmLib.Host.Static
+public import AlgorithmLib.Check.Entry
+meta import AlgorithmLib.Check.Entry
 public import AlgorithmLib.Surface.Handles
 meta import AlgorithmLib.Surface.Handles
 import all Init.Data.Repr
@@ -13,10 +13,11 @@ import all Init.Data.List.Sort.Basic
 /-!
 # Misuse ruled out before the program runs
 
-`Host.Static`'s checker on four bodies that drive the device through streams.
-Each accepted one gets a theorem that no run of it misuses a foreign call, on
-any input; each refused one is checked to really misuse on some input, so the
-refusal is not the checker being cautious.
+The checker (`Check`) on four bodies that drive the device through streams,
+from any world in the `Device0` typestate. Each accepted one gets a theorem
+that no run of it misuses a foreign call, on any input; each refused one is
+checked to really misuse on some input, so the refusal is not the checker
+being cautious.
 
 * `twoStreams true`: two streams write one buffer, ordered by an event.
   Accepted.
@@ -88,42 +89,50 @@ def onInput (synced : Bool) : Prog V L Unit := do
   cudaCleanup ptr
 
 -- ---------------------------------------------------------------------------
--- The world every run starts in, up to data
+-- The world every run starts in
 -- ---------------------------------------------------------------------------
 
 /-- The canonical world: the arena holds the image, the input is eight bytes
-    and the output sixty-four, the device is fresh. Nothing about the input's
-    bytes is assumed. -/
+    and the output sixty-four, the device is fresh. -/
 def canon : Sem.World :=
   { mem := { arena := ⟨image.toArray⟩, data := ByteArray.mk (Array.replicate 8 0),
              out := ByteArray.mk (Array.replicate 64 0) } }
-
-/-- What every run shares with the canonical world: the image. -/
-def imageKnown : Static.Known := [(.arena, 0, image.length)]
 
 def args : List Sem.V :=
   [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data), .sc .i64 8,
    .sc .i64 (Sem.regionBase .out), .sc .i64 64]
 
-/-- The checker at the entry, on a body. -/
+/-- Where the bodies may start: a device to open, memory not frozen, kernels
+    that keep their buffers' sizes, the arena holding the image's slots and
+    the kernel's text, and room in the output for the download. Nothing about
+    the input's bytes is asked. -/
+def device0 : Contracts.TState :=
+  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena MEM, .room .out 64,
+    .cstrIn (Sem.regionBase .arena + KERNEL.toUInt64) (0x300 - KERNEL)]
+
+abbrev Device0 : Sem.World → Prop := device0.holds
+
+/-- Whether the checker accepts a body from `device0`. -/
 def check (body : Body) : Bool :=
-  Static.effectsOk 1000 (Static.entry args canon imageKnown) (Prog.emit body)
+  match Check.certOrRefusal true (Check.entryKnown device0 args) (Prog.emit body) with
+  | .ok _ => true
+  | .error _ => false
 
-theorem twoStreams_ordered_ok : check (twoStreams true) = true := by native_decide
-theorem twoStreams_unordered_refused : check (twoStreams false) = false := by native_decide
-theorem onInput_synced_ok : check (onInput true) = true := by native_decide
-theorem onInput_unsynced_refused : check (onInput false) = false := by native_decide
+#guard check (twoStreams true)
+#guard !check (twoStreams false)
+#guard check (onInput true)
+#guard !check (onInput false)
 
-/-- **No run of the ordered program misuses a foreign call**, in any world that
-    agrees with the canonical one up to data. -/
-theorem twoStreams_no_misuse {w : Sem.World} (hw : Static.Same imageKnown w canon) (cfg : Sem.Cfg)
-    (m : String) : Sem.run cfg args w (Prog.emit (twoStreams true)) ≠ .misuse m :=
-  Static.run_progress twoStreams_ordered_ok hw cfg m
+/-- **No run of the ordered program misuses a foreign call**, from any world
+    in `Device0`. -/
+theorem twoStreams_no_misuse (cfg : Sem.Cfg) (w : Sem.World) (h : Device0 w) (m : String) :
+    Sem.run cfg args w (Prog.emit (twoStreams true)) ≠ .misuse m := by
+  check_body
 
 /-- **No input makes the synchronised program misuse a foreign call.** -/
-theorem onInput_no_misuse {w : Sem.World} (hw : Static.Same imageKnown w canon) (cfg : Sem.Cfg)
-    (m : String) : Sem.run cfg args w (Prog.emit (onInput true)) ≠ .misuse m :=
-  Static.run_progress onInput_synced_ok hw cfg m
+theorem onInput_no_misuse (cfg : Sem.Cfg) (w : Sem.World) (h : Device0 w) (m : String) :
+    Sem.run cfg args w (Prog.emit (onInput true)) ≠ .misuse m := by
+  check_body
 
 -- The refusals are real: each refused body misuses on some input.
 

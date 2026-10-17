@@ -18,7 +18,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
-open AlgorithmLib.HProg.Contracts (Fact TState after keeps roomAt afterStore storeKeeps cellOk)
+open AlgorithmLib.HProg.Contracts (Fact TState after keeps roomAt afterStore storeKeeps cellOk readyIn)
 
 -- ---------------------------------------------------------------------------
 -- Joins
@@ -67,15 +67,23 @@ def AV.join (a b : AV) : AV :=
 
 /-- A fact of one typestate that holds where the other does too: itself where
     the other names it, a bound on the hash table's values the larger of the
-    two bounds. -/
+    two bounds, a party knowing every access where the other says it does. -/
 def meetFact (S' : TState) (x : Fact) : Option Fact :=
   if S'.contains x then some x else
   match x with
   | .htVals n => (htValsOf S').map fun m => .htVals (max n m)
+  | .readyAll p => if readyIn S' p then some (.readyAll p) else none
   | _ => none
 
+/-- A party the second typestate says knows every access, which the first,
+    not naming it, says too. -/
+def meetReady (S : TState) (x : Fact) : Bool :=
+  match x with
+  | .readyAll p => !S.contains x && readyIn S p
+  | _ => false
+
 /-- Facts holding wherever either typestate does. -/
-def factsMeet (S S' : TState) : TState := S.filterMap (meetFact S')
+def factsMeet (S S' : TState) : TState := S.filterMap (meetFact S') ++ S'.filter (meetReady S)
 
 /-- The bound of `τ`'s with the same multiple and terms as `p`. -/
 def Sym.like (τ : Sym) (p : Nat × Lin) : Option (Nat × Lin) :=
@@ -402,6 +410,13 @@ def AS.ffiCall (A : AS) (f : Ffi) (args : List R) : Except String AS :=
     | none => .error s!"call {f.cname}: precondition not decided (args {repr as})"
   else .error s!"call {f.cname}: precondition not decided (args {repr as})"
 
+/-- What a foreign call answers: the index `devAnswer` gives, or any number of
+    its result type. -/
+def ffiAnswer (S : TState) (f : Ffi) (as : List AV) : AV :=
+  match devAnswer f as S with
+  | some n => .known (ofInt .i32 n)
+  | none => .sc (f.result.getD .i64)
+
 /-- What a library call answers: for an open, null or a handle held; any value
     otherwise. -/
 def extAnswer (e : Ext) : AV :=
@@ -427,7 +442,7 @@ def absStmt (fo : Bool) (A : AS) : Stmt → Except String AS
       | none => if fo then .ok (A.withFacts (A.facts.filter (!·.isCell))) else .error "istore8 of a non-scalar"
   | .call (.ffi f) args =>
       match A.ffiCall f args with
-      | .ok B => .ok (B.push (.sc (f.result.getD .i64)))
+      | .ok B => .ok (B.push (ffiAnswer A.facts f (args.map A.get)))
       | .error e => .error e
   | .callVoid (.ffi f) args => A.ffiCall f args
   | .call (.ext e) args =>
