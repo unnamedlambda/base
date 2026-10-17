@@ -177,8 +177,9 @@ rust_check() {
 # quiet to mean anything, and it proves nothing about correctness.
 rust_test() {
   cd "$ROOT"
+  # The application tests each run a program; four at once peak under 3 GB.
   "${GUARD[@]}" taskset -c 0-3 cargo test -j 2 --workspace \
-    --exclude bench-scaling
+    --exclude bench-scaling -- --test-threads=4
 }
 
 rust_test_fast() {
