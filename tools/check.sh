@@ -231,6 +231,21 @@ lean_host() {
   return $rc
 }
 
+# --- the C++ host ------------------------------------------------------------
+# One driver shared by threads that call it at once, through `base.hpp`. The
+# example checks the program's memory against its own record of every call,
+# so running it is the check. The Makefile builds `libbase.so` with the cargo
+# it is given, which here is the guarded one.
+
+cpp_host() {
+  local query dir
+  cd "$ROOT/lean"
+  query=$("${GUARD[@]}" lake query algorithmLib/artifacts) || return 1
+  dir=$(sed -n 's/^dir //p' <<<"$query")
+  make -C "$ROOT/applications/shared-sum/cpp" run \
+    CARGO="${GUARD[*]} taskset -c 0-3 cargo" CARGO_FLAGS=-j2 ARTIFACT="$dir/shared_sum.cbor"
+}
+
 # --- run ---------------------------------------------------------------------
 
 step "lean build"          lean_build
@@ -240,6 +255,7 @@ step "x86 against as"      x86_vs_as
 step "artifacts reproduce" artifacts_reproduce
 step "rust check"          rust_check
 step "lean host"           lean_host
+step "c++ host"            cpp_host
 if [ "$FAST" = 1 ]; then
   step "rust test (fast)"  rust_test_fast
 else

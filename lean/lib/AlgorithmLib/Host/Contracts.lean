@@ -25,7 +25,7 @@ The vocabulary is shared across subsystems:
   handle is either zero (the call answers with an error code) or the live one;
 * the device: `Ready` from `DevSpec` (the race vocabulary), `VendorKeeps`,
   `KeepsSize`, `SgemvOk`, `GemmOk`, `GraphRuns`, `ElapsedOk`, `PinnedRoom`;
-* the counts a call copies: `readCount`, `readCountPtr`, `scanRows`, and
+* the counts a call copies: `readCountPtr`, `scanRows`, and
   `batchedRun`, the batched GEMM's own walk over its pointer arrays.
 
 A precondition is weak where the entry point is forgiving: most calls given a
@@ -37,41 +37,8 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem Algo
 
 namespace AlgorithmLib.HProg.Contracts
 
-/-- The bytes at `a` up to the first zero can be read as a path. -/
+/-- The bytes at `a` are a C string: a zero ends them, and they are UTF-8. -/
 def CStr (m : Mem) (a : UInt64) : Prop := (readCStr m a).isSome = true
-
-/-- The bytes at `a` can be scanned for a path: a zero comes before the region
-    ends, or `pathMax` bytes are there to scan. -/
-def PathOk (m : Mem) (a : UInt64) : Prop := (readPath m a).isSome = true
-
-/-- A C string is a path the file shims can scan. -/
-theorem pathOk_of_cstr {m : Mem} {a : UInt64} (h : CStr m a) : PathOk m a := by
-  unfold CStr readCStr at h
-  unfold PathOk readPath
-  cases hd : decodeAddr a with
-  | none => rw [hd] at h; cases h
-  | some p =>
-    obtain ⟨r, off⟩ := p
-    rw [hd] at h
-    simp only [Option.bind_eq_bind, Option.bind_some] at h ⊢
-    split
-    · rfl
-    · next hn =>
-      split
-      · next hlt =>
-        rw [Nat.min_eq_left (Nat.le_of_lt hlt)] at hn
-        rw [hn] at h; cases h
-      · rfl
-
-/-- Room for `pathMax` bytes is room to scan a path, whatever they hold. -/
-theorem pathOk_of_room {m : Mem} {a : UInt64} {r : Region} {off : Nat} (hd : decodeAddr a = some (r, off))
-    (hs : off + pathMax ≤ (m.region r).size) : PathOk m a := by
-  unfold PathOk readPath
-  rw [hd]
-  simp only [Option.bind_eq_bind, Option.bind_some]
-  split
-  · rfl
-  · rw [if_neg (by omega)]; rfl
 
 /-- An eight-byte slot the program may write. -/
 def Slot8 (m : Mem) (a : UInt64) : Prop := ∀ v, (m.store a 8 v).isSome = true
@@ -107,98 +74,70 @@ theorem sinf_safe (x : UInt64) (w : World) : (ffiSinf [x] w).isSome = true := rf
 theorem cosf_safe (x : UInt64) (w : World) : (ffiCosf [x] w).isSome = true := rfl
 theorem powf_safe (b e : UInt64) (w : World) : (ffiPowf [b, e] w).isSome = true := rfl
 
-/-- How many bytes a file read copies out of `c`. -/
-def readCount (c : ByteArray) (fileOff size : UInt64) : Nat :=
-  min (if size == 0 then c.size - min fileOff.toNat c.size else size.toNat) (c.size - min fileOff.toNat c.size)
-
-theorem fileRead_safe {w : World} {base pathOff dstOff fileOff size : UInt64}
-    (hp : PathOk w.mem (base + pathOff))
-    (hw : ∀ path c, readPath w.mem (base + pathOff) = some path → w.fs.get path = some c →
-      Writable w.mem (base + dstOff) (readCount c fileOff size)) :
-    (ffiFileRead [base, pathOff, dstOff, fileOff, size] w).isSome = true := by
-  unfold ffiFileRead; dsimp only
-  refine bind_some hp fun path e => ?_
-  dsimp only
-  split
-  · rfl
-  · next c ec =>
-      have ec' : w.fs.get path = some c := by split at ec <;> simp_all
-      exact bind_some (hw path c e ec' _ (by simp [readCount])) fun _ _ => rfl
-
-theorem fileWrite_safe {w : World} {base pathOff srcOff fileOff size : UInt64}
-    (hp : PathOk w.mem (base + pathOff))
-    (hs : if size = 0 then CStr w.mem (base + srcOff) else Readable w.mem (base + srcOff) size.toNat) :
-    (ffiFileWrite [base, pathOff, srcOff, fileOff, size] w).isSome = true := by
-  unfold ffiFileWrite readCStrAt; dsimp only
-  refine bind_some hp fun path _ => ?_
-  dsimp only
-  split
-  · rfl
-  split
-  · next h0 =>
-    rw [if_pos (by simpa using h0)] at hs
-    exact bind_some (by simpa using hs) fun _ _ => rfl
-  · next h0 =>
-    rw [if_neg (by simpa using h0)] at hs
-    exact bind_some hs fun _ _ => rfl
-
 /-- How many bytes a read through raw pointers copies out of `c`. -/
 def readCountPtr (c : ByteArray) (fileOff size : UInt64) : Nat :=
   min size.toNat (c.size - min fileOff.toNat c.size)
 
-theorem fileReadToPtr_safe {w : World} {pathPtr dstPtr fileOff size : UInt64}
-    (hp : ¬ asI64 size ≤ 0 → PathOk w.mem pathPtr)
-    (hw : ∀ path c, readPath w.mem pathPtr = some path → w.fs.get path = some c →
+/-- The `cap`-byte field at `a` is there to read: all a path or a name that
+    base's own calls take needs ([`readField`]). -/
+def Field (m : Mem) (a cap : UInt64) : Prop := Readable m a cap.toNat
+
+theorem readField_isSome {m : Mem} {a cap : UInt64} (h : Field m a cap) :
+    (readField m a cap).isSome = true := by
+  unfold readField; exact bind_some h fun _ _ => rfl
+
+theorem fileReadToPtr_safe {w : World} {pathPtr pathCap dstPtr fileOff size : UInt64}
+    (hp : ¬ asI64 size ≤ 0 → Field w.mem pathPtr pathCap)
+    (hw : ∀ path c, readField w.mem pathPtr pathCap = some (some path) → w.fs.get path = some c →
       Writable w.mem dstPtr (readCountPtr c fileOff size)) :
-    (ffiFileReadToPtr [pathPtr, dstPtr, fileOff, size] w).isSome = true := by
+    (ffiFileReadToPtr [pathPtr, pathCap, dstPtr, fileOff, size] w).isSome = true := by
   unfold ffiFileReadToPtr; dsimp only
   split
   · rfl
   · next hsz =>
-    refine bind_some (hp hsz) fun path e => ?_
+    refine bind_some (readField_isSome (hp hsz)) fun path e => ?_
     dsimp only
     split
     · rfl
     · next c ec =>
-        have ec' : w.fs.get path = some c := by split at ec <;> simp_all
-        exact bind_some (hw path c e ec' _ (by simp [readCountPtr])) fun _ _ => rfl
+        obtain ⟨p, rfl, ec'⟩ : ∃ p, path = some p ∧ w.fs.get p = some c := by
+          rcases path with _ | p
+          · simp at ec
+          · exact ⟨p, rfl, by split at ec <;> simp_all⟩
+        exact bind_some (hw p c e ec' _ (by simp [readCountPtr])) fun _ _ => rfl
 
-theorem fileWriteFromPtr_safe {w : World} {pathPtr srcPtr fileOff size : UInt64}
-    (hp : ¬ (asI64 size ≤ 0 ∨ asI64 fileOff < 0) → PathOk w.mem pathPtr ∧ Readable w.mem srcPtr size.toNat) :
-    (ffiFileWriteFromPtr [pathPtr, srcPtr, fileOff, size] w).isSome = true := by
+theorem fileWriteFromPtr_safe {w : World} {pathPtr pathCap srcPtr fileOff size : UInt64}
+    (hp : ¬ (asI64 size ≤ 0 ∨ asI64 fileOff < 0) → Field w.mem pathPtr pathCap ∧ Readable w.mem srcPtr size.toNat) :
+    (ffiFileWriteFromPtr [pathPtr, pathCap, srcPtr, fileOff, size] w).isSome = true := by
   unfold ffiFileWriteFromPtr; dsimp only
   split
   · rfl
   · next hsz =>
     have h := hp (by simpa using hsz)
-    exact bind_some h.1 fun _ _ => by
+    exact bind_some (readField_isSome h.1) fun _ _ => by
       try dsimp only
       split
+      · split
+        · rfl
+        · exact bind_some h.2 fun _ _ => rfl
       · rfl
-      · exact bind_some h.2 fun _ _ => rfl
 
-theorem stdinReadline_safe {w : World} {base dstOff maxLen : UInt64}
-    (hw : ∀ line rest, w.stdin = line :: rest → ¬ asI64 maxLen ≤ 0 →
-      ∀ src : ByteArray, src.size = min line.size (maxLen.toNat - 1) →
-        ∃ m, copyIn w.mem (base + dstOff) src = some m ∧
-          (m.store (base + dstOff + UInt64.ofNat src.size) 1 0).isSome = true) :
-    (ffiStdinReadline [base, dstOff, maxLen] w).isSome = true := by
+theorem stdinReadline_safe {w : World} {dst cap : UInt64}
+    (hw : ∀ line rest, w.stdin = line :: rest → ¬ asI64 cap ≤ 0 →
+      Writable w.mem dst (min line.size cap.toNat)) :
+    (ffiStdinReadline [dst, cap] w).isSome = true := by
   unfold ffiStdinReadline; dsimp only
   split
   · rfl
-  · next hm =>
+  · next hc =>
     split
     · rfl
     · next line rest hs =>
-      obtain ⟨m, hc, hst⟩ := hw line rest hs hm _ (size_toByteArray_map_range _ _)
-      rw [size_toByteArray_map_range] at hst
-      exact bind_some (by rw [hc]; rfl) fun m' e => by
-        rw [hc] at e; cases e
-        exact bind_some hst fun _ _ => rfl
+      exact bind_some (hw line rest hs hc _ (size_toByteArray_map_range _ _)) fun _ _ => rfl
 
-theorem stdoutWrite_safe {w : World} {base srcOff size : UInt64}
-    (hr : ¬ asI64 size < 0 → Readable w.mem (base + srcOff) size.toNat) :
-    (ffiStdoutWrite [base, srcOff, size] w).isSome = true := by
+theorem stdoutWrite_safe {w : World} {src size : UInt64}
+    (hr : ¬ asI64 size < 0 → Readable w.mem src size.toNat) :
+    (ffiStdoutWrite [src, size] w).isSome = true := by
   unfold ffiStdoutWrite; dsimp only
   split
   · rfl
@@ -1072,24 +1011,35 @@ theorem nativeLoad_safe {w : World} {src len : UInt64}
   · rfl
   · next h => exact bind_some (hr (by simpa using h)) fun _ _ => rfl
 
-theorem nativeFree_safe (addr : UInt64) (w : World) : (ffiNativeFree [addr] w).isSome = true := by
-  unfold ffiNativeFree; dsimp only; split <;> rfl
+theorem nativeFree_safe {addr : UInt64} {w : World} (h : (w.nativeAt? addr).isSome) :
+    (ffiNativeFree [addr] w).isSome = true := by
+  unfold ffiNativeFree; dsimp only
+  split
+  · next e => rw [e] at h; cases h
+  · rfl
 
 theorem nativeArch_safe (w : World) : (ffiNativeArch [] w).isSome = true := rfl
 
-theorem cpuHas_safe {w : World} {name : UInt64} (hn : name ≠ 0 → CStr w.mem name) :
-    (ffiCpuHas [name] w).isSome = true := by
-  unfold ffiCpuHas readName; dsimp only
-  refine bind_some ?_ fun _ _ => rfl
-  split
-  · rfl
-  · next h =>
-    rw [Option.isSome_map]; exact hn (by simpa using h)
+theorem cpuHas_safe {w : World} {name cap : UInt64} (hn : Field w.mem name cap) :
+    (ffiCpuHas [name, cap] w).isSome = true := by
+  unfold ffiCpuHas; dsimp only
+  exact bind_some (readField_isSome hn) fun _ _ => by split <;> rfl
 
-theorem fileCreateDirAll_safe {w : World} {path : UInt64} (hp : PathOk w.mem path) :
-    (ffiFileCreateDirAll [path] w).isSome = true := by
+theorem fileCreateDirAll_safe {w : World} {path cap : UInt64} (hp : Field w.mem path cap) :
+    (ffiFileCreateDirAll [path, cap] w).isSome = true := by
   unfold ffiFileCreateDirAll; dsimp only
-  exact bind_some hp fun _ _ => by split <;> (try split) <;> rfl
+  exact bind_some (readField_isSome hp) fun _ _ => by
+    split <;> (try split) <;> (try split) <;> rfl
+
+theorem fileSize_safe {w : World} {path cap : UInt64} (hp : Field w.mem path cap) :
+    (ffiFileSize [path, cap] w).isSome = true := by
+  unfold ffiFileSize; dsimp only
+  exact bind_some (readField_isSome hp) fun _ _ => by split <;> rfl
+
+theorem fileSetLen_safe {w : World} {path cap len : UInt64} (hp : Field w.mem path cap) :
+    (ffiFileSetLen [path, cap, len] w).isSome = true := by
+  unfold ffiFileSetLen; dsimp only
+  exact bind_some (readField_isSome hp) fun _ _ => by split <;> (try split) <;> rfl
 
 -- threads
 
@@ -1134,23 +1084,17 @@ theorem threadJoin_safe {w : World} {ctx h : UInt64} (hc : ThreadOk w ctx) :
     none, and neither has `threadSpawn`, whose callee is a local function the
     program logic answers for. -/
 def Pre : IR.Ffi → List UInt64 → World → Prop
-  | .fileRead => fun bits w => match bits with
-    | [base, pathOff, dstOff, fileOff, size] => (PathOk w.mem (base + pathOff)) ∧ (∀ path c, readPath w.mem (base + pathOff) = some path → w.fs.get path = some c → Writable w.mem (base + dstOff) (readCount c fileOff size))
-    | _ => False
-  | .fileWrite => fun bits w => match bits with
-    | [base, pathOff, srcOff, _fileOff, size] => (PathOk w.mem (base + pathOff)) ∧ (if size = 0 then CStr w.mem (base + srcOff) else Readable w.mem (base + srcOff) size.toNat)
-    | _ => False
   | .fileReadToPtr => fun bits w => match bits with
-    | [pathPtr, dstPtr, fileOff, size] => (¬ asI64 size ≤ 0 → PathOk w.mem pathPtr) ∧ (∀ path c, readPath w.mem pathPtr = some path → w.fs.get path = some c → Writable w.mem dstPtr (readCountPtr c fileOff size))
+    | [pathPtr, pathCap, dstPtr, fileOff, size] => (¬ asI64 size ≤ 0 → Field w.mem pathPtr pathCap) ∧ (∀ path c, readField w.mem pathPtr pathCap = some (some path) → w.fs.get path = some c → Writable w.mem dstPtr (readCountPtr c fileOff size))
     | _ => False
   | .fileWriteFromPtr => fun bits w => match bits with
-    | [pathPtr, srcPtr, fileOff, size] => (¬ (asI64 size ≤ 0 ∨ asI64 fileOff < 0) → PathOk w.mem pathPtr ∧ Readable w.mem srcPtr size.toNat)
+    | [pathPtr, pathCap, srcPtr, fileOff, size] => (¬ (asI64 size ≤ 0 ∨ asI64 fileOff < 0) → Field w.mem pathPtr pathCap ∧ Readable w.mem srcPtr size.toNat)
     | _ => False
   | .stdinReadline => fun bits w => match bits with
-    | [base, dstOff, maxLen] => (∀ line rest, w.stdin = line :: rest → ¬ asI64 maxLen ≤ 0 → ∀ src : ByteArray, src.size = min line.size (maxLen.toNat - 1) → ∃ m, copyIn w.mem (base + dstOff) src = some m ∧ (m.store (base + dstOff + UInt64.ofNat src.size) 1 0).isSome = true)
+    | [dst, cap] => (∀ line rest, w.stdin = line :: rest → ¬ asI64 cap ≤ 0 → Writable w.mem dst (min line.size cap.toNat))
     | _ => False
   | .stdoutWrite => fun bits w => match bits with
-    | [base, srcOff, size] => (¬ asI64 size < 0 → Readable w.mem (base + srcOff) size.toNat)
+    | [src, size] => (¬ asI64 size < 0 → Readable w.mem src size.toNat)
     | _ => False
   | .sinf => fun bits w => match bits with
     | [_x] => True
@@ -1368,17 +1312,23 @@ def Pre : IR.Ffi → List UInt64 → World → Prop
     | [ctx, _hd] => (ThreadOk w ctx)
     | _ => False
   | .nativeFree => fun bits w => match bits with
-    | [_addr] => True
+    | [addr] => (w.nativeAt? addr).isSome
     | _ => False
   | .nativeArch => fun bits w => match bits with
     | [] => True
     | _ => False
   | .cpuHas => fun bits w => match bits with
-    | [name] => (name ≠ 0 → CStr w.mem name)
+    | [name, cap] => Field w.mem name cap
     | _ => False
   | .threadSpawn => fun _ _ => False
   | .fileCreateDirAll => fun bits w => match bits with
-    | [path] => PathOk w.mem path
+    | [path, cap] => Field w.mem path cap
+    | _ => False
+  | .fileSize => fun bits w => match bits with
+    | [path, cap] => Field w.mem path cap
+    | _ => False
+  | .fileSetLen => fun bits w => match bits with
+    | [path, cap, _] => Field w.mem path cap
     | _ => False
   -- The thread shims are stated where programs meet them, as `threadSpawn`
   -- and `threadJoin`, whose functions call them.
@@ -1387,20 +1337,21 @@ def Pre : IR.Ffi → List UInt64 → World → Prop
   | .memUnlock => fun bits _ => bits.length = 2
   | .memAdviseHuge => fun bits _ => bits.length = 2
   | .threadPriority => fun bits _ => bits.length = 1
+  -- A wait and a wake each need a word: four bytes there, at an address a
+  -- multiple of four.
+  | .memWait => fun bits w => match bits with
+    | [addr, _expected, _timeout] => addr % 4 = 0 ∧ (w.mem.load addr 4).isSome = true
+    | _ => False
+  | .memWake => fun bits w => match bits with
+    | [addr, _count] => addr % 4 = 0 ∧ (w.mem.load addr 4).isSome = true
+    | _ => False
+  | .clockNow => fun bits _ => bits.length = 0
 
 /-- **Every entry point answers under its precondition**: whatever the call,
     `Pre` is enough for the model not to refuse it. -/
 theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w) :
     (callBits f bits w).isSome = true := by
   cases f
-  case fileRead =>
-    simp only [Pre] at h; split at h
-    · apply fileRead_safe h.1 h.2
-    · exact h.elim
-  case fileWrite =>
-    simp only [Pre] at h; split at h
-    · apply fileWrite_safe h.1 h.2
-    · exact h.elim
   case fileReadToPtr =>
     simp only [Pre] at h; split at h
     · apply fileReadToPtr_safe h.1 h.2
@@ -1711,7 +1662,7 @@ theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w
     · exact h.elim
   case nativeFree =>
     simp only [Pre] at h; split at h
-    · apply nativeFree_safe _ _
+    · apply nativeFree_safe h
     · exact h.elim
   case nativeArch =>
     simp only [Pre] at h; split at h
@@ -1725,6 +1676,14 @@ theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w
   case fileCreateDirAll =>
     simp only [Pre] at h; split at h
     · apply fileCreateDirAll_safe h
+    · exact h.elim
+  case fileSize =>
+    simp only [Pre] at h; split at h
+    · apply fileSize_safe h
+    · exact h.elim
+  case fileSetLen =>
+    simp only [Pre] at h; split at h
+    · apply fileSetLen_safe h
     · exact h.elim
   case threadStart => exact h.elim
   case threadFinish => exact h.elim
@@ -1744,5 +1703,25 @@ theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w
     simp only [Pre] at h
     show (ffiGrant "priority" 1 bits w).isSome = true
     unfold ffiGrant; simp [h]
+  case memWait =>
+    simp only [Pre] at h; split at h
+    · rename_i a e t
+      obtain ⟨ha, hl⟩ := h
+      obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hl
+      show (ffiMemWait [a, e, t] w).isSome = true
+      simp [ffiMemWait, ha, hv]
+    · exact h.elim
+  case memWake =>
+    simp only [Pre] at h; split at h
+    · rename_i a c
+      obtain ⟨ha, hl⟩ := h
+      obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hl
+      show (ffiMemWake [a, c] w).isSome = true
+      simp [ffiMemWake, ha, hv]
+    · exact h.elim
+  case clockNow =>
+    simp only [Pre] at h
+    show (ffiClockNow bits w).isSome = true
+    match bits, h with | [], _ => rfl
 
 end AlgorithmLib.HProg.Contracts

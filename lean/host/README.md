@@ -138,12 +138,3 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
   two generators agree on one and `ContextSlots` has no entry for either.
   Inventing one here would mean shipping a convention no artifact uses, so they
   stay at the bare `ffi` call until a real one exists to lift.
-* **`fileWrite` fsyncs, and its contract does not say so.** `cl_file_write`
-  calls `sync_all()` after every write — a durability decision worth ~0.8 ms
-  per call on an SSD, constant in the write's size. Lean's `IO.FS.writeBinFile`
-  buffers (Lean exposes no fsync at all), so a benchmark of the two compares
-  durable against buffered and reports the artifact slower; at equal semantics
-  they are equal within noise, and the emitted loop itself measures 2 us/KB.
-  The fact is invisible in `Host.Sem`'s `fileWrite` contract, which is exactly
-  where it belongs — whether to keep the fsync, drop it, or split the entry
-  point is a semantics decision, not a performance tweak.

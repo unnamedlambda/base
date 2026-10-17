@@ -956,7 +956,7 @@ def code (spec : SceneSpec) : Prog V L Unit :=
     let _ ← cudaDownload ptr bufId pxOffV dataSz
     cudaCleanup ptr
     let total ← iconst64 (54 + pixelBytes spec)
-    let _ ← writeFile0 ptr filenameOff bmpHeaderOff total
+    let _ ← writeFile0 ptr filenameOff filenameRegion bmpHeaderOff total
 
 
 def clifIrSource (spec : SceneSpec) : Except String (List FuncData) :=

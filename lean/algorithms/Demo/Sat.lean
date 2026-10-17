@@ -409,7 +409,7 @@ def emitOutput (k : K V) : Prog V L Unit := do
   let resFlag ← load64 k.resultFlagAddr
   let outBase ← iadd k.ptr k.outOffV
   let write (len : V .i64) : Prog V L Unit := do
-    let _ ← writeFile k.ptr outputFilename_off out_off k.c0 len
+    let _ ← writeFile0 k.ptr outputFilename_off (outputStr_off - outputFilename_off) out_off len
   let unknown : Prog V L Unit := do
     emitStringBytes outBase "s UNKNOWN\n"
     write (← iconst64 10)
@@ -499,7 +499,7 @@ def mainCode : Prog V L Unit := do
   let clauseCountAddr ← absAddr ptr clauseCount_off
   let resultFlagAddr ← absAddr ptr resultFlag_off
 
-  let read ← readFile ptr inputFilename_off cnf_off maxCnfFileSize
+  let read ← readFile ptr inputFilename_off (outputFilename_off - inputFilename_off) cnf_off maxCnfFileSize
   -- a read that failed (-1) parses nothing
   let bytesRead ← select (← icmp .ugt read (← iconst64 maxCnfFileSize)) c0 read
 

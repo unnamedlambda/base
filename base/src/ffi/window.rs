@@ -58,9 +58,9 @@ pub(crate) struct Win {
     window: Arc<Window>,
 }
 
-/// The window `win` holds, shared; `None` for no handle.
-pub(crate) unsafe fn shared(win: i64) -> Option<Arc<Window>> {
-    (win as *const Win).as_ref().map(|w| w.window.clone())
+/// The window `win` holds, shared.
+pub(crate) unsafe fn shared(win: i64) -> Arc<Window> {
+    (*(win as *const Win)).window.clone()
 }
 
 fn new_event_loop() -> Option<EventLoop<()>> {
@@ -196,12 +196,15 @@ unsafe extern "C" fn base_window_init() -> bool {
 }
 
 /// A window `width` by `height` logical pixels titled with the C string at
-/// `title`, or null — for a size that is not positive too.
+/// `title`, or null — for a size that is not positive, or a title that is not
+/// UTF-8, too.
 unsafe extern "C" fn base_window_open(title: *const c_char, width: i32, height: i32) -> *mut Win {
     if width <= 0 || height <= 0 {
         return std::ptr::null_mut();
     }
-    let title = super::read_cstr_ptr(title as *const u8);
+    let Ok(title) = std::ffi::CStr::from_ptr(title).to_str() else {
+        return std::ptr::null_mut();
+    };
     let attrs = Window::default_attributes()
         .with_title(title)
         .with_inner_size(LogicalSize::new(f64::from(width), f64::from(height)));

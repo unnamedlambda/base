@@ -56,6 +56,31 @@ fn exported(mut functions: Vec<Function>) -> Vec<Function> {
     functions
 }
 
+/// A file's length is set and read back through the program's own calls: one
+/// made 5 bytes long answers 5.
+#[test]
+fn a_file_is_made_a_length_and_reports_it() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("len.bin");
+    let path_str = format!("{}\0", path.to_str().unwrap());
+    let f = function()
+        .entry(vec![
+            iconst64(v(1), 1000),
+            iadd(v(2), v(0), v(1)),
+            iconst64(v(3), 5),
+            iconst64(v(9600), 256),
+            call(Some(v(4)), imp("cl_file_set_len"), &[v(2), v(9600), v(3)]),
+            iconst64(v(9601), 256),
+            call(Some(v(5)), imp("cl_file_size"), &[v(2), v(9601)]),
+            ret_status(v(5)),
+        ])
+        .export("main");
+    let mut memory = vec![0u8; 2048];
+    memory[1000..1000 + path_str.len()].copy_from_slice(path_str.as_bytes());
+    assert_eq!(run(cranelift_config(memory, program(f)), "main").unwrap(), 5);
+    assert_eq!(fs::read(&path).unwrap(), [0u8; 5]);
+}
+
 /// The memory is the size the artifact states: an image that runs past it is
 /// refused, not made room for.
 #[test]
@@ -86,7 +111,10 @@ fn test_cranelift_basic_compilation() {
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(11), v(0), v(1)),
+                iadd(v(12), v(0), v(2)),
+                iconst64(v(9602), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(11), v(9602), v(12), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -122,7 +150,10 @@ fn test_cranelift_arithmetic_add() {
                 iconst64(v(5), 2016),
                 iconst64(v(6), 0),
                 iconst64(v(7), 8),
-                call(Some(v(8)), imp("cl_file_write"), &[v(0), v(4), v(5), v(6), v(7)]),
+                iadd(v(13), v(0), v(4)),
+                iadd(v(14), v(0), v(5)),
+                iconst64(v(9603), 256),
+                call(Some(v(8)), imp("cl_file_write_from_ptr"), &[v(13), v(9603), v(14), v(6), v(7)]),
                 ret(),
             ]),
     );
@@ -157,7 +188,10 @@ fn test_cranelift_arithmetic_multiply() {
                 iconst64(v(5), 2016),
                 iconst64(v(6), 0),
                 iconst64(v(7), 8),
-                call(Some(v(8)), imp("cl_file_write"), &[v(0), v(4), v(5), v(6), v(7)]),
+                iadd(v(9505), v(0), v(4)),
+                iadd(v(9506), v(0), v(5)),
+                iconst64(v(9604), 256),
+                call(Some(v(8)), imp("cl_file_write_from_ptr"), &[v(9505), v(9604), v(9506), v(6), v(7)]),
                 ret(),
             ]),
     );
@@ -194,7 +228,10 @@ fn test_cranelift_memory_operations() {
                 iconst64(v(7), 2012),
                 iconst64(v(8), 0),
                 iconst64(v(9), 4),
-                call(Some(v(10)), imp("cl_file_write"), &[v(0), v(6), v(7), v(8), v(9)]),
+                iadd(v(9507), v(0), v(6)),
+                iadd(v(9508), v(0), v(7)),
+                iconst64(v(9605), 256),
+                call(Some(v(10)), imp("cl_file_write_from_ptr"), &[v(9507), v(9605), v(9508), v(8), v(9)]),
                 ret(),
             ]),
     );
@@ -242,7 +279,10 @@ fn test_cranelift_conditional_logic() {
                 iconst64(v(6), 2024),
                 iconst64(v(7), 0),
                 iconst64(v(8), 8),
-                call(Some(v(9)), imp("cl_file_write"), &[v(0), v(5), v(6), v(7), v(8)]),
+                iadd(v(9509), v(0), v(5)),
+                iadd(v(9510), v(0), v(6)),
+                iconst64(v(9606), 256),
+                call(Some(v(9)), imp("cl_file_write_from_ptr"), &[v(9509), v(9606), v(9510), v(7), v(8)]),
                 ret(),
             ]),
     );
@@ -264,8 +304,8 @@ fn test_cranelift_conditional_logic() {
 
 #[test]
 fn test_clif_ffi_file_smoke() {
-    // Runtime smoke: exercises cl_file_read, cl_file_write, cl_file_read_to_ptr,
-    // cl_file_write_from_ptr via a real round-trip.
+    // Runtime smoke: exercises cl_file_read_to_ptr and cl_file_write_from_ptr
+    // via a real round-trip.
     let temp_dir = TempDir::new().unwrap();
     let path_a = temp_dir.path().join("smoke_a.bin");
     let path_b = temp_dir.path().join("smoke_b.bin");
@@ -279,14 +319,22 @@ fn test_clif_ffi_file_smoke() {
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 5),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9511), v(0), v(1)),
+                iadd(v(9512), v(0), v(2)),
+                iconst64(v(9607), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9511), v(9607), v(9512), v(3), v(4)]),
                 iconst64(v(6), 3100),
-                call(Some(v(7)), imp("cl_file_read"), &[v(0), v(1), v(6), v(3), v(4)]),
+                iadd(v(9513), v(0), v(1)),
+                iadd(v(9514), v(0), v(6)),
+                iconst64(v(9608), 256),
+                call(Some(v(7)), imp("cl_file_read_to_ptr"), &[v(9513), v(9608), v(9514), v(3), v(4)]),
                 iadd_imm(v(8), v(0), 2256),
                 iadd_imm(v(9), v(0), 3000),
-                call(Some(v(10)), imp("cl_file_write_from_ptr"), &[v(8), v(9), v(3), v(4)]),
+                iconst64(v(9609), 256),
+                call(Some(v(10)), imp("cl_file_write_from_ptr"), &[v(8), v(9609), v(9), v(3), v(4)]),
                 iadd_imm(v(11), v(0), 3200),
-                call(Some(v(12)), imp("cl_file_read_to_ptr"), &[v(8), v(11), v(3), v(4)]),
+                iconst64(v(9610), 256),
+                call(Some(v(12)), imp("cl_file_read_to_ptr"), &[v(8), v(9610), v(11), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -317,7 +365,10 @@ fn test_clif_call_basic() {
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9515), v(0), v(1)),
+                iadd(v(9516), v(0), v(2)),
+                iconst64(v(9611), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9515), v(9611), v(9516), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -353,7 +404,10 @@ fn test_clif_call_multiple_functions() {
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9517), v(0), v(1)),
+                iadd(v(9518), v(0), v(2)),
+                iconst64(v(9612), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9517), v(9612), v(9518), v(3), v(4)]),
                 ret(),
             ]),
         function()
@@ -362,7 +416,10 @@ fn test_clif_call_multiple_functions() {
                 iconst64(v(2), 3008),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9519), v(0), v(1)),
+                iadd(v(9520), v(0), v(2)),
+                iconst64(v(9613), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9519), v(9613), v(9520), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -412,7 +469,10 @@ fn test_clif_call_arithmetic() {
                 iconst64(v(5), 2016),
                 iconst64(v(6), 0),
                 iconst64(v(7), 8),
-                call(Some(v(8)), imp("cl_file_write"), &[v(0), v(4), v(5), v(6), v(7)]),
+                iadd(v(9521), v(0), v(4)),
+                iadd(v(9522), v(0), v(5)),
+                iconst64(v(9614), 256),
+                call(Some(v(8)), imp("cl_file_write_from_ptr"), &[v(9521), v(9614), v(9522), v(6), v(7)]),
                 ret(),
             ]),
     );
@@ -464,7 +524,10 @@ fn test_clif_call_sequential_mutations() {
                 iconst64(v(2), 2008),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9523), v(0), v(1)),
+                iadd(v(9524), v(0), v(2)),
+                iconst64(v(9615), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9523), v(9615), v(9524), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -513,7 +576,10 @@ fn test_clif_call_no_workers_needed() {
                 iconst64(v(3), 2000),
                 iconst64(v(4), 0),
                 iconst64(v(5), 8),
-                call(Some(v(6)), imp("cl_file_write"), &[v(0), v(2), v(3), v(4), v(5)]),
+                iadd(v(9525), v(0), v(2)),
+                iadd(v(9526), v(0), v(3)),
+                iconst64(v(9616), 256),
+                call(Some(v(6)), imp("cl_file_write_from_ptr"), &[v(9525), v(9616), v(9526), v(4), v(5)]),
                 ret(),
             ]),
     );
@@ -553,7 +619,10 @@ fn test_clif_call_file_read_write() {
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 256),
-                call(Some(v(5)), imp("cl_file_read"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9527), v(0), v(1)),
+                iadd(v(9528), v(0), v(2)),
+                iconst64(v(9617), 256),
+                call(Some(v(5)), imp("cl_file_read_to_ptr"), &[v(9527), v(9617), v(9528), v(3), v(4)]),
                 ret(),
             ]),
         function()
@@ -562,7 +631,10 @@ fn test_clif_call_file_read_write() {
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 256),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9529), v(0), v(1)),
+                iadd(v(9530), v(0), v(2)),
+                iconst64(v(9618), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9529), v(9618), v(9530), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -717,7 +789,10 @@ fn test_base_multi_execute_with_file_io() {
                 iconst64(v(2), 512),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9531), v(0), v(1)),
+                iadd(v(9532), v(0), v(2)),
+                iconst64(v(9619), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9531), v(9619), v(9532), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -1479,7 +1554,10 @@ fn compute(insts: Vec<Inst>, n: i64) -> Vec<u8> {
         iconst64(v(901), 2000),
         iconst64(v(902), 0),
         iconst64(v(903), n),
-        call(Some(v(904)), imp("cl_file_write"), &[v(0), v(900), v(901), v(902), v(903)]),
+        iadd(v(9533), v(0), v(900)),
+        iadd(v(9534), v(0), v(901)),
+        iconst64(v(9620), 256),
+        call(Some(v(904)), imp("cl_file_write_from_ptr"), &[v(9533), v(9620), v(9534), v(902), v(903)]),
         ret(),
     ]);
     let prog = program(
@@ -1750,7 +1828,10 @@ fn local_calls_dispatch_to_other_functions() {
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 16),
-                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
+                iadd(v(9535), v(0), v(1)),
+                iadd(v(9536), v(0), v(2)),
+                iconst64(v(9621), 256),
+                call(Some(v(5)), imp("cl_file_write_from_ptr"), &[v(9535), v(9621), v(9536), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -2067,15 +2148,13 @@ fn a_program_runs_machine_code_it_carries_as_data() {
         iconst64(v(7), 0),
         call_indirect(Some(v(8)), sig(Convention::Arch, &[I64; 4], Some(I64)), v(4), &[v(5), v(6), v(7), v(7)]),
         store(v(8), v(0), 200),
-        call(Some(v(9)), imp("cl_native_free"), &[v(4)]),
-        store(v(9), v(0), 208),
+        call(None, imp("cl_native_free"), &[v(4)]),
         ret(),
     ]));
     let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 42);
     assert_eq!(base.arena()[300] as i64, arch);
-    assert_eq!(i32::from_le_bytes(base.arena()[208..212].try_into().unwrap()), 0);
 }
 
 /// A callback: the host hands the program a function of its own, an entry

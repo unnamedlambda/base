@@ -192,6 +192,8 @@ def TOKENIZER_PATH_PTR_OFF : Nat := 0x0648  -- i64: ptr to null-terminated token
 
 -- Multi-turn conversation state (persists across cliLoop iterations).
 def RUNNING_POS_OFF        : Nat := 0x0650  -- i64: cumulative KV cache position
+def WEIGHTS_PATH_CAP_OFF   : Nat := 0x0658  -- i64: the weights path's field size
+def TOKENIZER_PATH_CAP_OFF : Nat := 0x0698  -- i64: the tokenizer path's field size
 
 -- Pre-tokenized system prompt placed in initial_memory; fed into the KV cache
 -- once at program start so every conversation is rooted in a proper Qwen-style
@@ -247,7 +249,7 @@ def WRAP_LEN        : Nat := 19
 /-- Tokens the decode loop may generate before stopping. -/
 def MAX_DECODE      : Nat := 128
 
-/-- Bytes `cl_stdin_readline` may deliver.  **Derived, not chosen**: one initial
+/-- Bytes `cl_stdin_read_line` may deliver.  **Derived, not chosen**: one initial
     token per input byte, plus the wrapper, plus whatever decode generates, must
     all fit the KV cache alongside the system prompt.  Picking this number by
     hand is what let it sit at 8192 against a 2048-position cache. -/
@@ -532,21 +534,25 @@ def walkPastNull (start : V .i64) : Prog V L (V .i64) := do
   iaddImm (e.head) 1
 
 /-- parseArgsFn (fn_37): split the caller's data buffer (two null-terminated
-    strings: `weights_path\0tokenizer_path\0`) into two pointers and store them
-    in shared memory so later actions can locate their argument. -/
+    strings: `weights_path\0tokenizer_path\0`) into two path fields, each a
+    pointer and a size (`Sem.readField`), and store them in shared memory so
+    later actions can locate their argument: the weights path's field runs to
+    the tokenizer path, and the tokenizer path's to the end of the data. -/
 def parseArgsFn : Prog V L Unit := do
   let ptr ← basePtr
   let dataPtr ← dataPtr
   storeI64 dataPtr (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
   let tokenizerPtr ← walkPastNull dataPtr
   storeI64 tokenizerPtr (← absAddr ptr TOKENIZER_PATH_PTR_OFF)
+  storeI64 (← isub tokenizerPtr dataPtr) (← absAddr ptr WEIGHTS_PATH_CAP_OFF)
+  storeI64 (← isub (← iadd dataPtr (← dataLen)) tokenizerPtr) (← absAddr ptr TOKENIZER_PATH_CAP_OFF)
 
 /-- Upload a tensor from disk into a GPU buffer via a pinned host scratch buffer.
     Statically unrolls into one (read, upload) pair per PINNED_CHUNK_BYTES chunk.
     The scratch buffer is reused for every chunk (host→GPU is synchronous), and
     each chunk goes to a distinct offset within the destination GPU buffer. -/
 def uploadFromFile {s : Shape}
-    (ctxPtr pathPtr scratchPtr : V .i64) (t : Prog.Tsr V s)
+    (ctxPtr pathPtr pathCap scratchPtr : V .i64) (t : Prog.Tsr V s)
     (fileOff totalSize : Nat) : Prog V L Unit := do
   let bufId := t.buf
   let numChunks := (totalSize + PINNED_CHUNK_BYTES - 1) / PINNED_CHUNK_BYTES
@@ -555,7 +561,7 @@ def uploadFromFile {s : Shape}
     let thisSize := min PINNED_CHUNK_BYTES (totalSize - off)
     let fileOff64 ← iconst64 (fileOff + off)
     let size64    ← iconst64 thisSize
-    let _ ← ffi .fileReadToPtr %[pathPtr, scratchPtr, fileOff64, size64]
+    let _ ← ffi .fileReadToPtr %[pathPtr, pathCap, scratchPtr, fileOff64, size64]
     let bufOff64  ← iconst64 off
     let _ ← ffi .cudaUploadOffset %[ctxPtr, bufId, bufOff64, scratchPtr, size64]
 
@@ -611,6 +617,7 @@ def buildRopeTable
 def loadInitCommon (ptr : V .i64) : Prog V L Unit := do
   -- Weights file path was parsed into a shared-memory slot by fn_37.
   let pathPtr ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
+  let pathCap ← load64 (← absAddr ptr WEIGHTS_PATH_CAP_OFF)
 
   -- Init CUDA context
   cudaInit ptr 0x10
@@ -677,9 +684,9 @@ def loadInitCommon (ptr : V .i64) : Prog V L Unit := do
   buildRopeTable ctxPtr pinnedPtr bufRopeTable
 
   -- Stream-upload embedding, rms_final, lm_head through pinned scratch
-  uploadFromFile ctxPtr pathPtr pinnedPtr bufEmbed    FILE_EMBED_OFF     EMBED_BYTES
-  uploadFromFile ctxPtr pathPtr pinnedPtr bufRmsFinal FILE_RMS_FINAL_OFF D_BYTES
-  uploadFromFile ctxPtr pathPtr pinnedPtr bufLmHead   FILE_LM_HEAD_OFF   EMBED_BYTES
+  uploadFromFile ctxPtr pathPtr pathCap pinnedPtr bufEmbed    FILE_EMBED_OFF     EMBED_BYTES
+  uploadFromFile ctxPtr pathPtr pathCap pinnedPtr bufRmsFinal FILE_RMS_FINAL_OFF D_BYTES
+  uploadFromFile ctxPtr pathPtr pathCap pinnedPtr bufLmHead   FILE_LM_HEAD_OFF   EMBED_BYTES
 
 -- ── CLIF Infer Functions ──────────────────────────────────────────────────────
 
@@ -1111,7 +1118,7 @@ def inferFinalFn : Prog V L Unit := do
     BPE tokenizer; what is local is only where the working buffers sit. -/
 def tokMem : TokenizerCommon.TokMem :=
   { htCtx := 0x00, cudaCtx := 0x10
-    pathPtr := TOKENIZER_PATH_PTR_OFF, bufPtr := TOK_BUF_PTR_OFF
+    pathPtr := TOKENIZER_PATH_PTR_OFF, pathCap := TOKENIZER_PATH_CAP_OFF, bufPtr := TOK_BUF_PTR_OFF
     tokenBuf := TOKEN_BUF_OFF, tokenCount := TOKEN_COUNT_OFF
     textIn := TEXT_IN_OFF, textOut := TEXT_OUT_OFF, textLen := TEXT_LEN_OFF
     htKey := HT_KEY_OFF, htVal := HT_VAL_OFF
@@ -1199,7 +1206,7 @@ def cliFn : Prog V L Unit := do
       -- turn.
       storeI64 (← iconst64 SYSTEM_TOKEN_COUNT) (← absAddr ptr RUNNING_POS_OFF)
       let runningPos ← load64 (← absAddr ptr RUNNING_POS_OFF)
-      let nRecv ← ffi .stdinReadline %[ptr, textInOff64, maxRecv]
+      let nRecv ← stdinReadline ptr textInOff64 maxRecv
       return (contIf .ugt nRecv zero64, %[], (runningPos, nRecv)))
     (body := fun _ rp => do
       let runningPos := rp.1
@@ -1300,7 +1307,7 @@ def cliFn : Prog V L Unit := do
       callLocalVoid q.fnDetok (← entryArgs)
       let outLen ← load64At ptr TEXT_LEN_OFF
       istore8 (← iconst32 10) (← iadd textOutPtr outLen)
-      let _ ← ffi .stdoutWrite %[ptr, textOutOff64, (← iaddImm outLen 1)]
+      let _ ← stdoutWrite ptr textOutOff64 (← iaddImm outLen 1)
       let endImPos ← iadd runningPos (← iadd nPrompt wrNOut)
       storeI32 imEndTok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 endImPos) (← absAddr ptr (INFER_IN_OFF + 4))
@@ -1401,6 +1408,8 @@ def memMap : RegionMap :=
     ⟨"weights_path_ptr",   WEIGHTS_PATH_PTR_OFF, 8⟩,
     ⟨"tokenizer_path_ptr", TOKENIZER_PATH_PTR_OFF, 8⟩,
     ⟨"running_pos",        RUNNING_POS_OFF, 8⟩,
+    ⟨"weights_path_cap",   WEIGHTS_PATH_CAP_OFF, 8⟩,
+    ⟨"tokenizer_path_cap", TOKENIZER_PATH_CAP_OFF, 8⟩,
     ⟨"system_tokens",      SYSTEM_TOKENS_OFF, 256⟩,
     ⟨"bind_tables",        BIND_BASE, 0xC0⟩,
     ⟨"meta_stage",         META_STAGE_OFF, 24⟩,
@@ -1636,12 +1645,12 @@ theorem memMap_within : RegionMap.withinB MEM_SIZE memMap = true := by decide
 /-- **The token buffer holds every token the reader can produce.**
 
     `tokenizeInitFn` loops `textLen` times writing one `u32` per input byte, and
-    `textLen` comes from `cl_stdin_readline` bounded by `MAX_RECV`.  So the loop
+    `textLen` comes from `cl_stdin_read_line` bounded by `MAX_RECV`.  So the loop
     bound and the region capacity are two separate constants that must agree,
     and nothing in `memMap_ok` relates them — the regions were disjoint the
     whole time the writer was running past one of them.
 
-    Depends on the FFI contract that `cl_stdin_readline(_, _, n)` returns at
+    Depends on the FFI contract that `cl_stdin_read_line(_, n)` returns at
     most `n`; the subsequent CR/LF trims only shrink it. -/
 theorem tokenBuf_holds_input : memMap.holdsB "token_buf" MAX_RECV 4 = true := by decide
 

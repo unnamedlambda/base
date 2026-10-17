@@ -360,7 +360,7 @@ def code : Prog V L Unit := do
   let _      ← gpuDownload ptr bufId pxOff dataSz
   gpuCleanup ptr
   let total  ← iconst64 (54 + pixelBytes)
-  let _      ← writeFile0 ptr filename_off bmpHeader_off total
+  let _      ← writeFile0 ptr filename_off filenameRegionSize bmpHeader_off total
 
 def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]

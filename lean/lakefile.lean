@@ -106,6 +106,8 @@ lean_exe genselfdescribingalgorithm where
   root := `Main.Demo.SelfDescribing
 lean_exe genbytescrubalgorithm where
   root := `Main.Demo.ByteScrub
+lean_exe gensharedsumalgorithm where
+  root := `Main.Demo.SharedSum
 lean_exe gencpubenchalgorithm where
   root := `Main.Bench.Cpu
 lean_exe gensystembench where

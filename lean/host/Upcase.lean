@@ -31,7 +31,7 @@ structure Fields where
   reserved       : Fld (.bytes 64)
   /-- How many bytes the program read, and therefore transformed and wrote.
 
-  The program knows this the moment `fileRead` returns, and a host cannot
+  The program knows this the moment its read returns, and a host cannot
   know it at all -- the file is read inside the artifact. Storing it is what
   lets `UpcaseHost` read the result back without being told its length.
 
@@ -53,9 +53,6 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
-
-abbrev fnRead : Ffi := .fileRead
-abbrev fnWrite : Ffi := .fileWrite
 
 /-- Read `inputFilename`, upper-case its ASCII letters in place, write
 `outputFilename`, and record how many bytes that was.

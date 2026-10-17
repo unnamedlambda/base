@@ -44,10 +44,11 @@ theorem ht_no_misuse (cfg : Cfg) [Check.Linked true cfg] (dataLen outLen : UInt6
     run cfg (runArgs dataLen outLen) w (emit ht) ≠ .misuse m := by
   check_body
 
-/-- Where `wc` may start: memory not frozen, the input a C string (the file's
-    path), the arena holding the largest file it reads, the output its count. -/
-abbrev WcStart : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .cstr (regionBase .data), .room .arena (BUF + WC_MAX),
+/-- Where `wc` may start: memory not frozen, the input the field holding the
+    file's path, `dl` bytes the caller passes, the arena holding the largest
+    file it reads, the output its count. -/
+abbrev WcStart (dl : UInt64) : World → Prop :=
+  Contracts.TState.holds [.part .frozen false, .roomArg .data dl, .room .arena (BUF + WC_MAX),
     .room .out 8]
 
 theorem wc_fine : Fine (emitGo (fnBody ptrParams (wc (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
@@ -56,7 +57,7 @@ theorem wc_fine : Fine (emitGo (fnBody ptrParams (wc (V := Slot) (L := Lvl))) �
 set_option maxRecDepth 20000 in
 /-- **`wc` never misuses the file adapter**, whatever file its input names:
     the file is read into room for as much as it asks for. -/
-theorem wc_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WcStart w) (m : String) :
+theorem wc_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WcStart dataLen w) (m : String) :
     run cfg (runArgs dataLen outLen) w (emit wc) ≠ .misuse m := by
   check_body
 

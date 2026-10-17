@@ -252,11 +252,6 @@ def compressionShader (bs : Nat) : String :=
 --   9. cl_file_write (compressed output — concatenated blocks with size header)
 -- ---------------------------------------------------------------------------
 
-/-- The file and GPU entry points this program calls, named out of the
-    standard table. -/
-
-abbrev fnWrite : Ffi := .fileWrite
-
 open AlgorithmLib.Prog in
 /-- The body, for any block size.
 
@@ -275,7 +270,7 @@ def code (bs : Nat) : Prog V L Unit :=
     -- Step 1: Read input file
     let inData    ← iconst64 inputData_off
     let zero      ← iconst64 0
-    let bytesRead ← readFile ptr inputFilename_off inputData_off maxInputSize
+    let bytesRead ← readFile ptr inputFilename_off filenameRegionSize inputData_off maxInputSize
     -- A read that failed (-1) or ran past the input region compresses nothing.
     let _ ← ifte .ugt bytesRead (← iconst64 maxInputSize) (pure %[]) (do
 
@@ -350,8 +345,9 @@ def code (bs : Nat) : Prog V L Unit :=
 
       -- Write 7-byte frame header to file
       let outFname ← iconst64 outputFilename_off
+      let outCap ← iconst64 filenameRegionSize
       let c7 ← iconst64 7
-      let _ ← ffi fnWrite %[ptr, outFname, inData, zero, c7]
+      let _ ← replaceFileAt ptr outFname outCap inData c7
 
       -- Loop over blocks: write [block_size:4][block_data:N] for each
       let c8        ← iconst64 8
@@ -375,11 +371,11 @@ def code (bs : Nat) : Prog V L Unit :=
           (do
             -- Write block_size (u32 LE) into scratch, then to file
             storeUnaligned compSz32 scratchAddr
-            let _ ← ffi fnWrite %[ptr, outFname, inData, foff, c4]
+            let _ ← writeFileAt ptr outFname outCap inData foff c4
             -- Write block data
             let biTimesMax ← imul bi maxCompBlkV
             let blkDataRel ← iadd outDataV biTimesMax
-            let _ ← ffi fnWrite %[ptr, outFname, blkDataRel, foffP4, compSz64]
+            let _ ← writeFileAt ptr outFname outCap blkDataRel foffP4 compSz64
             pure %[])
         -- the offset moves past a block only when one was written
         select (← icmp .uge szM1 maxCompBlkV) foff (← iadd foffP4 compSz64)
@@ -388,7 +384,7 @@ def code (bs : Nat) : Prog V L Unit :=
       -- Write 4-byte end mark (0x00000000) at the final offset
       let endMark ← iconst32 0
       storeUnaligned endMark scratchAddr
-      let _ ← ffi fnWrite %[ptr, outFname, inData, finalFoff, c4]
+      let _ ← writeFileAt ptr outFname outCap inData finalFoff c4
       pure %[])
 
 -- ---------------------------------------------------------------------------

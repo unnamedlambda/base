@@ -38,9 +38,14 @@ serialport = { version = "=4.10.1", default-features = false }
 # Windows, all reached from Rust.
 nusb = "=0.2.7"
 wasmtime-internal-jit-icache-coherence = "=36.0.13"
+# Waiting on a word of memory (`ffi/sync.rs`): the system's own address wait
+# (futex, WaitOnAddress, os_sync_wait_on_address), which a host's threads meet.
+wait_on_address = "=0.1.6"
+# A thread's priority on one scale for every system (`ffi/os.rs`).
+thread-priority = "=3.1.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Performance"] }
 
 [dev-dependencies]
 # For the HProg tests only: they run what the build generated.

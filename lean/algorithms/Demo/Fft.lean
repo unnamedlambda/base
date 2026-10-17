@@ -132,8 +132,6 @@ def fftShader : String :=
 open AlgorithmLib.Prog
 
 
-abbrev fnWrite : Ffi := .fileWrite
-
 def code : Prog V L Unit := do
   let ptr ← basePtr
   -- FFI declarations
@@ -145,7 +143,7 @@ def code : Prog V L Unit := do
 
   -- Step 1: Read input file
   let inDatOff ← iconst64 inputData_off
-  let bytesRead ← readFile ptr inputFilename_off inputData_off maxDataSize
+  let bytesRead ← readFile ptr inputFilename_off filenameRegionSize inputData_off maxDataSize
 
   -- A read that failed (-1), ran past the input region, or holds no complete
   -- number computes nothing: a write of size 0 would write up to a NUL.
@@ -228,10 +226,11 @@ def code : Prog V L Unit := do
     -- Step 5: Download the buffer the last stage wrote and write it out:
     -- direction 0 after the loop → the last stage wrote buf_a, else buf_b.
     let outFnOff ← iconst64 outputFilename_off
+    let outFnCap ← iconst64 filenameRegionSize
     let finish (dstOff : V .i64) (bufId : V .i32) : Prog V L Unit := do
       let _ ← gpuDownload ptr bufId dstOff alignedSz
       gpuCleanup ptr
-      let _ ← ffi fnWrite %[ptr, outFnOff, dstOff, c0, dataSz]
+      let _ ← replaceFileAt ptr outFnOff outFnCap dstOff dataSz
     let bufAOffC ← iconst64 bufA_off
     let bufBOffC ← iconst64 bufB_off
     let _ ← ifte .eq finalDir c0

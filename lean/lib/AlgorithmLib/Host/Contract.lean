@@ -65,10 +65,8 @@ structure Contract.Sound (c : Callee) (k : Contract) : Prop where
   /-- An answer lands in what the row says it leaves of any typestate. -/
   leaves : ∀ S vs bits w r w', S.holds w → vs.mapM asBits = some bits → c.call vs w = some (r, w') →
     (k.after bits (r.bind asBits) S).holds w'
-  /-- An answer changes no byte outside the row's memory frame; for
-      `fileRead`, whose frame is its answer, of files shorter than `2^64` bytes. -/
+  /-- An answer changes no byte outside the row's memory frame. -/
   writes : ∀ vs bits w r w', vs.mapM asBits = some bits → c.call vs w = some (r, w') →
-    (c = .ffi .fileRead → ∀ p x, w.fs.get p = some x → x.size < 2 ^ 64) →
     ∀ a, ¬ k.frame.allows bits (r.bind asBits) a → Unchanged w.mem w'.mem a
 
 theorem mapM_asBits_i64 : ∀ bits : List UInt64, (bits.map (V.sc .i64)).mapM asBits = some bits
@@ -96,8 +94,8 @@ theorem contract_sound {c : Callee} {k : Contract} (hk : c.contract = some k) : 
             rw [callFfi, mapM_asBits_i64]; exact pre_safe f bits w hp
           keeps := fun _ _ _ _ _ hb h => callBits_parts f (callFfi_bits hb h)
           leaves := fun _ _ _ _ _ _ hS hb h => after_sound hS (callFfi_bits hb h)
-          writes := fun vs bits w r w' hb h hfs a hout =>
-            callFfi_respects_frame f vs w r w' h bits hb (fun e => hfs (e ▸ rfl)) a hout }
+          writes := fun vs bits w r w' hb h a hout =>
+            callFfi_respects_frame f vs w r w' h bits hb a hout }
   | ext e =>
       simp only [Callee.contract] at hk
       split at hk
@@ -107,7 +105,7 @@ theorem contract_sound {c : Callee} {k : Contract} (hk : c.contract = some k) : 
           { answers := fun bits w hp => ExtContracts.ext_pre_safe e bits w hp
             keeps := fun _ _ _ _ _ hb h p _ => (lib_step ha h hb).parts p
             leaves := fun _ _ _ _ _ _ hS hb h => extAfter_sound hS hb h
-            writes := fun vs bits w r w' hb h _ a hout =>
+            writes := fun vs bits w r w' hb h a hout =>
               ExtContracts.ext_respects_frame e vs w r w' h bits hb a hout }
       · cases hk
   | _ => cases hk

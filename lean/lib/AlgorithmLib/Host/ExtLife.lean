@@ -37,6 +37,7 @@ def _root_.AlgorithmLib.IR.Ext.opens : Ext → Option Held
   | .window .open => some .window
   | .serial .open => some .port
   | .usb .open => some .usbDevice
+  | .usb .claim => some .usbInterface
   | .c .calloc => some .heap
   | _ => none
 
@@ -45,6 +46,7 @@ def _root_.AlgorithmLib.IR.Ext.closes : Ext → Option Held
   | .window .close => some .window
   | .serial .close => some .port
   | .usb .close => some .usbDevice
+  | .usb .release => some .usbInterface
   | .c .free => some .heap
   | _ => none
 
@@ -96,6 +98,10 @@ theorem port_live_iff {w : World} {a : UInt64} :
 
 theorem usbDevice_live_iff {w : World} {a : UInt64} :
     Held.usbDevice.live w a = true ↔ ∃ j, usbDevAddr j = a ∧ w.usb[j]?.map (·.live) = some true :=
+  find_live_iff _ _ _ _
+
+theorem usbInterface_live_iff {w : World} {a : UInt64} :
+    Held.usbInterface.live w a = true ↔ ∃ j, usbIfaceAddr j = a ∧ w.usbIfaces[j]?.map (·.live) = some true :=
   find_live_iff _ _ _ _
 
 /-- The slot a handle names has the handle's address. -/
@@ -475,6 +481,9 @@ theorem wl_step {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {
     | usbDevice =>
         have : ((wlEffect c w).2).usb = w.usb := by rw [he]
         simp only [Held.live, World.usbDev?] at hl ⊢; rw [this]; exact hl
+    | usbInterface =>
+        have : ((wlEffect c w).2).usbIfaces = w.usbIfaces := by rw [he]
+        simp only [Held.live, World.usbIface?] at hl ⊢; rw [this]; exact hl
     | heap =>
         have : ((wlEffect c w).2).heap = w.heap := by rw [he]
         simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
@@ -586,6 +595,9 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
     | usbDevice =>
         have : ((serEffect c w).2).usb = w.usb := by rw [he]
         simp only [Held.live, World.usbDev?] at hl ⊢; rw [this]; exact hl
+    | usbInterface =>
+        have : ((serEffect c w).2).usbIfaces = w.usbIfaces := by rw [he]
+        simp only [Held.live, World.usbIface?] at hl ⊢; rw [this]; exact hl
     | heap =>
         have : ((serEffect c w).2).heap = w.heap := by rw [he]
         simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
@@ -612,8 +624,9 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
 -- The USB library
 -- ---------------------------------------------------------------------------
 
-theorem usbEffect_shape (c : UsbCall) (w : World) : ∃ usb, (usbEffect c w).2 = { w with usb := usb } := by
-  cases c <;> exact ⟨_, rfl⟩
+theorem usbEffect_shape (c : UsbCall) (w : World) :
+    ∃ usb ifs, (usbEffect c w).2 = { w with usb := usb, usbIfaces := ifs } := by
+  cases c <;> exact ⟨_, _, rfl⟩
 
 theorem usbEffect_live {c : UsbCall} {w : World} {j : Nat} (hc : ∀ k, c = .close k → k ≠ j)
     (h : w.usb[j]?.map (·.live) = some true) :
@@ -624,7 +637,24 @@ theorem usbEffect_live {c : UsbCall} {w : World} {j : Nat} (hc : ∀ k, c = .clo
       simp only [usbEffect, Array.getElem?_modify]
       rw [if_neg (hc k rfl)]; exact h
   | claim k => simp only [usbEffect]; rw [map_modify_live _ _ _ _ _ (by intro; rfl)]; exact h
-  | release k => simp only [usbEffect]; rw [map_modify_live _ _ _ _ _ (by intro; rfl)]; exact h
+  | release j =>
+      simp only [usbEffect]
+      split
+      · rw [map_modify_live _ _ _ _ _ (by intro; rfl)]; exact h
+      · exact h
+  | transfer => exact h
+  | answer => exact h
+
+theorem usbEffect_iface_live {c : UsbCall} {w : World} {j : Nat} (hc : ∀ k, c = .release k → k ≠ j)
+    (h : w.usbIfaces[j]?.map (·.live) = some true) :
+    (usbEffect c w).2.usbIfaces[j]?.map (·.live) = some true := by
+  cases c with
+  | claim => exact map_push_live _ _ _ h
+  | release k =>
+      simp only [usbEffect, Array.getElem?_modify]
+      rw [if_neg (hc k rfl)]; exact h
+  | «open» => exact h
+  | close => exact h
   | transfer => exact h
   | answer => exact h
 
@@ -644,9 +674,31 @@ theorem usbDecode_close {f : UsbFn} {bits : List UInt64} {w : World} {j : Nat}
     try unfold usbDInfo at h
     try unfold usbDOpen at h
     try unfold usbDClaim at h
+    try unfold usbDRelease at h
     try unfold usbDControl at h
     try unfold usbDData at h
     decode_inv
+
+theorem usbDecode_release {f : UsbFn} {bits : List UInt64} {w : World} {j : Nat}
+    (h : usbDecode f bits w = some (.release j)) : f = .release := by
+  cases f
+  case release => rfl
+  all_goals
+    simp only [usbDecode] at h
+    try unfold usbDInfo at h
+    try unfold usbDOpen at h
+    try unfold usbDClose at h
+    try unfold usbDClaim at h
+    try unfold usbDControl at h
+    try unfold usbDData at h
+    decode_inv
+
+theorem usbDecode_claim {bits : List UInt64} {w : World} {c : UsbCall} (h : usbDecode .claim bits w = some c) :
+    c = .answer (.sc .i64 0) ∨ ∃ k n, c = .claim k n := by
+  simp only [usbDecode] at h
+  unfold usbDClaim at h
+  decode_inv
+  all_goals first | exact .inl rfl | exact .inr ⟨_, _, rfl⟩
 
 theorem usbDecode_open {bits : List UInt64} {w : World} {c : UsbCall} (h : usbDecode .open bits w = some c) :
     c = .answer (.sc .i64 0) ∨ ∃ i, c = .open i := by
@@ -677,10 +729,17 @@ theorem usbCall_of {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {
 theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : usbCall f bits w = some (r, w')) : LibStep (.usb f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := usbCall_of h
-  obtain ⟨usb, he⟩ := usbEffect_shape c w
+  obtain ⟨usb, ifs, he⟩ := usbEffect_shape c w
   refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
+    | usbInterface =>
+        obtain ⟨j, hj, hlj⟩ := usbInterface_live_iff.mp hl
+        refine usbInterface_live_iff.mpr ⟨j, hj, ?_⟩
+        show (usbEffect c w).2.usbIfaces[j]?.map (·.live) = some true
+        refine usbEffect_iface_live ?_ hlj
+        rintro k rfl rfl
+        exact hk (by rw [usbDecode_release hc]; rfl)
     | usbDevice =>
         obtain ⟨j, hj, hlj⟩ := usbDevice_live_iff.mp hl
         refine usbDevice_live_iff.mpr ⟨j, hj, ?_⟩
@@ -700,14 +759,22 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
         simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
   · intro k x hk hx h0
     cases f <;> (try cases hk)
-    rcases usbDecode_open hc with rfl | ⟨i, rfl⟩
-    · exact (answer_zero hr hx h0).elim
-    · simp only [usbEffect] at hr
-      subst hr
-      simp only [Option.bind_some, asBits, Option.some.injEq] at hx
-      subst hx
-      refine usbDevice_live_iff.mpr ⟨w.usb.size, rfl, ?_⟩
-      simp [usbEffect]
+    · rcases usbDecode_open hc with rfl | ⟨i, rfl⟩
+      · exact (answer_zero hr hx h0).elim
+      · simp only [usbEffect] at hr
+        subst hr
+        simp only [Option.bind_some, asBits, Option.some.injEq] at hx
+        subst hx
+        refine usbDevice_live_iff.mpr ⟨w.usb.size, rfl, ?_⟩
+        simp [usbEffect]
+    · rcases usbDecode_claim hc with rfl | ⟨k, n, rfl⟩
+      · exact (answer_zero hr hx h0).elim
+      · simp only [usbEffect] at hr
+        subst hr
+        simp only [Option.bind_some, asBits, Option.some.injEq] at hx
+        subst hx
+        refine usbInterface_live_iff.mpr ⟨w.usbIfaces.size, rfl, ?_⟩
+        simp [usbEffect]
 
 -- ---------------------------------------------------------------------------
 -- The CPU library
@@ -998,6 +1065,7 @@ theorem usbDecode_answer {f : UsbFn} {bits : List UInt64} {w : World} {v : V}
     try unfold usbDOpen at h
     try unfold usbDClose at h
     try unfold usbDClaim at h
+    try unfold usbDRelease at h
     try unfold usbDControl at h
     try unfold usbDData at h
     decode_inv
@@ -1116,6 +1184,9 @@ theorem lib_open_i64 {e : Ext} {k : Held} (hk : e.opens = some k) {vs : List V} 
     all_goals first
       | (cases hc; done)
       | (simp only [Option.some.injEq] at hc; subst hc; simp only [usbEffect, Option.some.injEq] at hr; exact ⟨_, hr⟩)
+  · obtain ⟨c, hc, hr, -⟩ := usbCall_of h
+    rcases usbDecode_claim hc with rfl | ⟨_, _, rfl⟩ <;>
+      (simp only [usbEffect, Option.some.injEq] at hr; exact ⟨_, hr⟩)
 
 /-- A call of the engine's own libraries reads only its arguments' bits. -/
 theorem extCall_bits {e : Ext} (ha : e.aside = true) {cs cs' : List V} {bits : List UInt64} (w : World)
@@ -1190,10 +1261,11 @@ def extNeeds : Ext → List UInt64 → Option (List (Held × UInt64) × List (UI
   | .serial .close, [p] | .serial .pending, [p] => some ([(.port, p)], [])
   | .serial .read, [p, buf, len] | .serial .write, [p, buf, len] => some ([(.port, p)], [(buf, lenOf len)])
   | .usb .count, [] | .usb .info, [_, _] | .usb .open, [_] => some ([], [])
-  | .usb .close, [d] | .usb .claim, [d, _] | .usb .release, [d, _] => some ([(.usbDevice, d)], [])
-  | .usb .control, [d, _, _, _, _, data, len, _] => some ([(.usbDevice, d)], [(data, len16 len)])
-  | .usb .bulk, [d, _, _, data, len, _] | .usb .interrupt, [d, _, _, data, len, _] =>
-      some ([(.usbDevice, d)], [(data, lenOf len)])
+  | .usb .close, [d] | .usb .claim, [d, _] => some ([(.usbDevice, d)], [])
+  | .usb .release, [i] => some ([(.usbInterface, i)], [])
+  | .usb .control, [i, _, _, _, _, data, len, _] => some ([(.usbInterface, i)], [(data, len16 len)])
+  | .usb .bulk, [i, _, data, len, _] | .usb .interrupt, [i, _, data, len, _] =>
+      some ([(.usbInterface, i)], [(data, lenOf len)])
   | _, _ => none
 
 theorem extNeeds_length {e : Ext} {bits : List UInt64} {n : List (Held × UInt64) × List (UInt64 × Nat)}
@@ -1211,6 +1283,16 @@ theorem readBytes_some {w : World} {a : UInt64} {n : Nat} (h : Fits w.mem a n) :
 
 theorem live_some {α : Type} {o : Option α} (h : o.isSome = true) : ∃ x, o = some x :=
   Option.isSome_iff_exists.mp h
+
+/-- A held interface names a slot of the interfaces claimed. -/
+theorem usbIface_get {w : World} {a : UInt64} {j : Nat} (h : w.usbIface? a = some j) :
+    ∃ f, w.usbIfaces[j]? = some f := by
+  unfold World.usbIface? at h
+  have := List.find?_some h
+  simp only [Bool.and_eq_true] at this
+  cases e : w.usbIfaces[j]? with
+  | none => rw [e] at this; simp at this
+  | some f => exact ⟨f, rfl⟩
 
 /-- **What a call needs is enough**: the handles `extNeeds` names held, and
     the bytes it names in memory not frozen, give the call's precondition. -/
@@ -1303,17 +1385,15 @@ theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
     repeat' split
     all_goals rfl
   · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
-    refine ⟨rfl, ?_⟩
-    simp only [usbDecode, usbDClaim, hk, Option.bind_eq_bind, Option.bind_some]
-    repeat' split
-    all_goals rfl
+    exact ⟨rfl, by simp [usbDecode, usbDRelease, hk]⟩
   -- usb: control, bulk, interrupt
   all_goals
     obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    obtain ⟨f, hf⟩ := usbIface_get hk
     obtain ⟨m, hm⟩ := copyIn_zeros (room _ List.mem_cons_self)
     obtain ⟨bs, hbs⟩ := readBytes_some (room _ List.mem_cons_self)
     refine ⟨rfl, ?_⟩
-    simp only [usbDecode, usbDControl, usbDData, hk, Option.bind_eq_bind, Option.bind_some]
+    simp only [usbDecode, usbDControl, usbDData, World.usbIfaceOf?, hk, hf, Option.bind_eq_bind, Option.bind_some]
     repeat' split
     all_goals simp_all
 

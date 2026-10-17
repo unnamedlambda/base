@@ -38,9 +38,12 @@ unsafe extern "C" fn base_serial_name(i: i32, out: *mut u8, cap: i64) -> i64 {
 }
 
 /// The port named by the C string at `path`, at `baud`, with reads waiting
-/// up to `timeout_ms` for a first byte; null where it does not open.
+/// up to `timeout_ms` for a first byte; null where it does not open, or where
+/// the name is not UTF-8.
 unsafe extern "C" fn base_serial_open(path: *const c_char, baud: i32, timeout_ms: i32) -> *mut Port {
-    let path = super::read_cstr_ptr(path as *const u8);
+    let Ok(path) = std::ffi::CStr::from_ptr(path).to_str() else {
+        return std::ptr::null_mut();
+    };
     if path.is_empty() || baud <= 0 || timeout_ms < 0 {
         return std::ptr::null_mut();
     }

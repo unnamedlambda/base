@@ -34,6 +34,7 @@ def loadLayerFn (l : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pathPtr   ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
+  let pathCap   ← load64 (← absAddr ptr WEIGHTS_PATH_CAP_OFF)
   let pinnedPtr ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
 
   let layerOff := FILE_LAYER_OFF l
@@ -81,7 +82,7 @@ def loadLayerFn (l : Nat) : Prog V L Unit := do
 
   -- Stream-upload weight tensors through pinned scratch
   let up {s : Shape} (t : Prog.Tsr V s) (fileOff size : Nat) : Prog V L Unit :=
-    uploadFromFile ctxPtr pathPtr pinnedPtr t (layerOff + fileOff) size
+    uploadFromFile ctxPtr pathPtr pathCap pinnedPtr t (layerOff + fileOff) size
   up bufRmsAttn LF_RMS_ATTN D_BYTES
   up bufWq      LF_WQ       WQ_BYTES
   up bufBq      LF_BQ       D_BYTES

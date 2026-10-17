@@ -14,7 +14,7 @@
 //! while a program runs, so threads sharing one `Driver` run their calls at
 //! once.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
@@ -204,6 +204,30 @@ impl PyDriver {
         Ok(pyo3::types::PyBytes::new_bound(py, &bytes))
     }
 
+    /// Sleep while the 32-bit word at `offset` of the arena holds
+    /// `expected`, until a wake on it, `timeout_ns` nanoseconds (none if
+    /// negative), or for no reason; the GIL is released meanwhile. It is the
+    /// system's own wait, so programs and Python threads meet at the word.
+    /// Loop on the condition.
+    #[pyo3(signature = (offset, expected, timeout_ns=-1))]
+    fn wait(&self, py: Python<'_>, offset: usize, expected: u32, timeout_ns: i64) -> PyResult<()> {
+        let word = self.word(offset)? as usize;
+        // SAFETY: a word of the arena, which `self` keeps alive, reached
+        // atomically by every thread.
+        allow_threads_unsafe(py, || base::wait(unsafe { AtomicU32::from_ptr(word as *mut u32) }, expected, timeout_ns));
+        Ok(())
+    }
+
+    /// Wake one thread waiting on the word at `offset` when `count` is 1, every
+    /// one for any other `count` but 0: a program's and Python's alike.
+    #[pyo3(signature = (offset, count=-1))]
+    fn wake(&self, offset: usize, count: i32) -> PyResult<()> {
+        let word = self.word(offset)?;
+        // SAFETY: as in `wait`.
+        base::wake(unsafe { AtomicU32::from_ptr(word) }, count);
+        Ok(())
+    }
+
     /// The arena itself, as a `memoryview`: no copy, and writable, so NumPy
     /// and anything else that takes a buffer reads and writes it in place. It
     /// holds this driver, so the view stays valid however long it is kept, and
@@ -233,6 +257,26 @@ impl PyDriver {
         }
         Ok(())
     }
+}
+
+impl PyDriver {
+    /// The word at `offset`: in the arena and 4-byte aligned, or an error.
+    fn word(&self, offset: usize) -> PyResult<*mut u32> {
+        let mut have = 0usize;
+        let arena = unsafe { capi::base_driver_arena(self.handle.0, &mut have) };
+        if offset % 4 != 0 || offset.checked_add(4).is_none_or(|end| end > have) {
+            return Err(PyValueError::new_err(format!(
+                "{offset} is not a 4-byte-aligned word of the {have} bytes of the arena"
+            )));
+        }
+        Ok(unsafe { arena.add(offset) }.cast())
+    }
+}
+
+/// Nanoseconds on the system's monotonic clock, the one programs read.
+#[pyfunction]
+fn now() -> i64 {
+    base::now()
 }
 
 /// Read an artifact from the `.cbor` file a generator wrote.
@@ -269,5 +313,6 @@ fn py_base(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDriver>()?;
     m.add_class::<PyFunction>()?;
     m.add_function(wrap_pyfunction!(load_artifact, m)?)?;
+    m.add_function(wrap_pyfunction!(now, m)?)?;
     Ok(())
 }

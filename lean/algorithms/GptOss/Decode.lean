@@ -343,6 +343,7 @@ def DT_OUTCOUNT : Nat := DTOK_BASE + 56
 /-- Where a step leaves the token it produced. -/
 def DT_NEXT : Nat := DTOK_BASE + 64
 def DT_GENCOUNT : Nat := DTOK_BASE + 72
+def DT_PATHCAP : Nat := DTOK_BASE + 80
 def DT_TEXTIN : Nat := DTOK_BASE + 128
 def DT_TEXTOUT : Nat := DT_TEXTIN + TEXT_MAX
 def DT_TOKBUF : Nat := DT_TEXTOUT + TEXT_MAX
@@ -354,7 +355,7 @@ def DMEM_SIZE : Nat := DT_GENTOK + 4 * TEXT_MAX + 0x100
 
 def dTokMem : TokenizerCommon.TokMem :=
   { htCtx := ContextSlots.ht, cudaCtx := ContextSlots.cuda
-    pathPtr := DT_PATHPTR, bufPtr := DT_BUFPTR
+    pathPtr := DT_PATHPTR, pathCap := DT_PATHCAP, bufPtr := DT_BUFPTR
     tokenBuf := DT_TOKBUF, tokenCount := DT_TOKCOUNT
     textIn := DT_TEXTIN, textOut := DT_TEXTOUT, textLen := DT_TEXTLEN
     htKey := DT_HTKEY, htVal := DT_HTVAL
@@ -385,7 +386,7 @@ def dMemMap : AlgorithmLib.Layout.RegionMap :=
         ⟨"tokCount", DT_TOKCOUNT, 8⟩, ⟨"tokTextLen", DT_TEXTLEN, 8⟩,
         ⟨"htKey", DT_HTKEY, 8⟩, ⟨"htVal", DT_HTVAL, 8⟩,
         ⟨"cpCount", DT_CPCOUNT, 8⟩, ⟨"outCount", DT_OUTCOUNT, 8⟩,
-        ⟨"next", DT_NEXT, 4⟩, ⟨"genCount", DT_GENCOUNT, 8⟩,
+        ⟨"next", DT_NEXT, 4⟩, ⟨"genCount", DT_GENCOUNT, 8⟩, ⟨"tokPathCap", DT_PATHCAP, 8⟩,
         ⟨"textIn", DT_TEXTIN, TEXT_MAX⟩, ⟨"textOut", DT_TEXTOUT, TEXT_MAX⟩,
         ⟨"tokBuf", DT_TOKBUF, 4 * TEXT_MAX⟩,
         ⟨"cpBuf", DT_CPBUF, 4 * TEXT_MAX⟩,
@@ -404,6 +405,8 @@ def D_POS : Nat := 4
 /-- Zero for a single step, one for a whole turn. -/
 def D_MODE : Nat := 8
 def D_TLEN : Nat := 12
+/-- Each path in the input is a field of this many bytes (`Sem.readField`). -/
+def D_PATH_FIELD : Nat := 256
 def D_PEXP : Nat := 16
 def D_PDEN : Nat := 272
 def D_PEMB : Nat := 528
@@ -544,7 +547,7 @@ def dInitM : Prog V L Unit := do
   storeI32 poolId (← absAddr ptr DPOOL_OFF)
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
-  let _ ← ffi .fileReadToPtr %[pExp, poolPtr, zero64, poolBytes]
+  let _ ← ffi .fileReadToPtr %[pExp, ← iconst64 D_PATH_FIELD, poolPtr, zero64, poolBytes]
   -- a staging buffer, big enough for the widest dense tensor
   let stageBytes ← iconst64 STAGE_BYTES
   let stageId ← ffi .cudaPinnedAlloc %[ctxPtr, stageBytes]
@@ -622,7 +625,7 @@ def dInitM : Prog V L Unit := do
       let n := dKindBytes.getD k 0
       let fo ← iconst64 (denseOff l k)
       let nb ← iconst64 n
-      let _ ← ffi .fileReadToPtr %[pDen, stagePtr, fo, nb]
+      let _ ← ffi .fileReadToPtr %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
       let id ← load32 (← absAddr ptr (dBindOff (dStoreBuf l k)))
       let _ ← ffi .cudaUpload %[ctxPtr, id, stagePtr, nb]
   -- `lm_head` is 1.08 GiB and the staging buffer is 29.5 MiB, so it goes over
@@ -637,7 +640,7 @@ def dInitM : Prog V L Unit := do
       let take := min STAGE_BYTES (n - c * STAGE_BYTES)
       let fo ← iconst64 (off + c * STAGE_BYTES)
       let nb ← iconst64 take
-      let _ ← ffi .fileReadToPtr %[pDen, stagePtr, fo, nb]
+      let _ ← ffi .fileReadToPtr %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
       let bo ← iconst64 (c * STAGE_BYTES)
       let _ ← ffi .cudaUploadOffset %[ctxPtr, id, bo, stagePtr, nb]
   -- **The rotation tables: two slices, and sines first.**
@@ -651,7 +654,7 @@ def dInitM : Prog V L Unit := do
   for (fo, bo) in [(fileRopeSin, 0), (fileRope, ropeSlice)] do
     let f ← iconst64 fo
     let nb ← iconst64 ropeSlice
-    let _ ← ffi .fileReadToPtr %[pDen, stagePtr, f, nb]
+    let _ ← ffi .fileReadToPtr %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, f, nb]
     let b ← iconst64 bo
     let _ ← ffi .cudaUploadOffset %[ctxPtr, bRope, b, stagePtr, nb]
   -- the narrow kernel's two counts
@@ -983,7 +986,7 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let rowB ← iconst64 (HH * 2)
   let rowOff ← imul (← uextend64 tok) rowB
   let pEmb ← iaddImm dataPtr D_PEMB
-  let _ ← ffi .fileReadToPtr %[pEmb, stagePtrT, rowOff, rowB]
+  let _ ← ffi .fileReadToPtr %[pEmb, ← iconst64 D_PATH_FIELD, stagePtrT, rowOff, rowB]
   let _ ← ffi .cudaUpload %[ctxPtr, bEmb, stagePtrT, rowB]
   dEnqueue ptr S_WIDEN ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_EMB, B_X, B_NMH]
   -- the meta both cache depths need
@@ -1104,6 +1107,7 @@ def dMainFn : Prog V L Unit :=
     dInitM
     let dp ← dataPtr
     storeI64 (← iaddImm dp D_PTOK) (← absAddr ptr DT_PATHPTR)
+    storeI64 (← iconst64 D_PATH_FIELD) (← absAddr ptr DT_PATHCAP)
     TokenizerCommon.loadTokenizerM dTokMem
     storeI32 (← iconst32 1) (← absAddr ptr DINIT_OFF))
   let dataPtr ← dataPtr

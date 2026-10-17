@@ -392,7 +392,7 @@ def compareBy (k : K V) (op left right : V .i64) : Prog V L (V .i64) := do
 
 /-- Write the output buffer's first `len` bytes to the output file. -/
 def writeOut (k : K V) (len : V .i64) : Prog V L Unit := do
-  let _ ← writeFile0 k.ptr OUTPUT_PATH OUTPUT_BUF len
+  let _ ← writeFile0 k.ptr OUTPUT_PATH (INPUT_PATH - OUTPUT_PATH) OUTPUT_BUF len
 
 /-- A literal string, written out. -/
 def writeText (k : K V) (s : String) : Prog V L Unit := do
@@ -459,7 +459,7 @@ def mainCode : Prog V L Unit := do
   let stackAddr ← absAddr ptr STACK_BASE
 
   -- one byte short of the buffer: its last byte stays zero, the text's end
-  let _ ← readFile ptr INPUT_PATH SOURCE_BUF (SOURCE_BUF_SZ - 1)
+  let _ ← readFile ptr INPUT_PATH (SOURCE_BUF - INPUT_PATH) SOURCE_BUF (SOURCE_BUF_SZ - 1)
   let htSlotPtr ← absAddr ptr AlgorithmLib.ContextSlots.ht
   ffiVoid fnHtInit %[htSlotPtr]
   let ctx ← load64 htSlotPtr

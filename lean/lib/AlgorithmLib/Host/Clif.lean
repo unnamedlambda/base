@@ -1093,7 +1093,7 @@ def Inst.storeOf? : Inst → Option (Val × Val)
     * a store to a *recognised* address `base + k` records what was written;
     * a store to an address the model cannot resolve could have hit anything,
       so **nothing** about memory survives it;
-    * a call can write through any pointer it was handed — `cl_stdin_readline`
+    * a call can write through any pointer it was handed — `cl_stdin_read_line`
       fills a buffer, `cl_cuda_upload_ptr` writes device memory — so a call
       clears the map too.
 
@@ -1364,7 +1364,7 @@ theorem bindScan_length (root : Nat) :
       cases isLaunchCallB i <;> simp
 
 /-- A block with no *launch* call binds nothing, even if it calls something
-    else — the `prim` case, where a tokenizer's `cl_stdin_readline` is fine. -/
+    else — the `prim` case, where a tokenizer's `cl_stdin_read_line` is fine. -/
 theorem bindScan_noLaunch (root : Nat) (is : List Inst) (b : BEnv)
     (h : launchCallCount is = 0) : (bindScan root b is).2 = [] :=
   List.eq_nil_of_length_eq_zero (by rw [bindScan_length root is b, h])

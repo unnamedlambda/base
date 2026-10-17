@@ -244,10 +244,11 @@ pub fn base_fn(symbol: &str, params: &[ClifTy], result: Option<ClifTy>) -> Calle
 /// Lean's `Ffi.sig` states for it.
 pub fn imp(name: &str) -> Callee {
     let (params, result): (&[ClifTy], _) = match name {
-        "cl_file_read" | "cl_file_write" => (&[I64; 5], Some(I64)),
-        "cl_file_read_to_ptr" | "cl_file_write_from_ptr" => (&[I64; 4], Some(I64)),
+        "cl_file_size" => (&[I64; 2], Some(I64)),
+        "cl_file_set_len" => (&[I64; 3], Some(I64)),
+        "cl_file_read_to_ptr" | "cl_file_write_from_ptr" => (&[I64; 5], Some(I64)),
         "cl_native_load" => (&[I64; 2], Some(I64)),
-        "cl_native_free" => (&[I64], Some(I32)),
+        "cl_native_free" => (&[I64], None),
         "cl_native_arch" => (&[], Some(I32)),
         _ => panic!("no signature here for {name}"),
     };

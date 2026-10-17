@@ -13,6 +13,16 @@
  * any C functions may. `base_driver_free` needs the driver to itself: no
  * function of it may be running, and none may be called after it.
  *
+ * Waiting on a word of the arena, waking, and the clock are the system's own
+ * calls, which programs make too, so a host's thread and a program's meet at
+ * a word with nothing of base between: a private futex on Linux
+ * (FUTEX_WAIT_PRIVATE / FUTEX_WAKE_PRIVATE), WaitOnAddress / WakeByAddress* on
+ * Windows, os_sync_wait_on_address / os_sync_wake_by_address_* on macOS 14.4
+ * and later. The clock is CLOCK_MONOTONIC on Linux, CLOCK_UPTIME_RAW on macOS,
+ * and QueryPerformanceCounter scaled to nanoseconds on Windows. base.hpp has
+ * them as base::wait, base::wake and base::now. (`std::atomic::wait` is not
+ * one of them: libstdc++ and libc++ count waiters of their own.)
+ *
  * Errors: only a load can fail with something to say, and it writes why into
  * the caller's buffer. Base keeps no error state.
  *
@@ -24,8 +34,8 @@
  *    address.
  *  - What an artifact runs with is decided when it is built, so a load takes
  *    nothing but the artifact.
- *  - Anything more a host reaches is a function of the program, rather
- *    than another function here.
+ *  - Anything more a host reaches is a function of the program, or the
+ *    system's own call, as waiting and the clock are.
  *  - A trap in a program ends the process: nothing of base runs on a call to
  *    catch one.
  */

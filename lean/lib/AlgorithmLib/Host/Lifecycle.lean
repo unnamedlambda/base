@@ -266,7 +266,7 @@ def Part.get : Part → World → Bool
 /-- **The kinds of handle a library hands a program**, which a typestate
     may say it holds: an open window, serial port or USB device. -/
 inductive Held where
-  | window | port | usbDevice | heap
+  | window | port | usbDevice | usbInterface | heap
   deriving DecidableEq, Repr
 
 /-- Whether `a` is a handle of kind `k` the program holds open; for the heap,
@@ -275,6 +275,7 @@ def Held.live : Held → World → UInt64 → Bool
   | .window, w, a => (w.wlWin? a).isSome
   | .port, w, a => (w.serPort? a).isSome
   | .usbDevice, w, a => (w.usbDev? a).isSome
+  | .usbInterface, w, a => (w.usbIface? a).isSome
   | .heap, w, a => (w.heapAt? a).isSome
 
 /-- **The parts each entry point may move.** Bringing a context up or down,
@@ -1091,91 +1092,26 @@ theorem callBits_unfrozen {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Opt
     simp only [Part.get] at this
     rw [this]; exact hz
 
+/-- A byte outside a call's frame survives it. -/
+theorem unchanged_of_mayWrite {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : callBits f bits w = some (r, w')) {x : UInt64} (hx : mayWrite f bits x = false) :
+    Unchanged w.mem w'.mem x := by
+  have hcall : callFfi f (bits.map (V.sc .i64)) w = some (r, w') := by
+    unfold callFfi; rw [mapM_asBits_sc]; exact h
+  exact callFfi_respects_frame f _ w r w' hcall bits (mapM_asBits_sc bits) _ (mayWrite_sound hx _)
+
 /-- **A cell outside a call's frame survives it.** -/
 theorem cell_kept {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    {a v : UInt64} (h : callBits f bits w = some (r, w')) (hf : f ≠ .fileRead) (hok : cellOk a = true)
+    {a v : UInt64} (h : callBits f bits w = some (r, w')) (hok : cellOk a = true)
     (hno : ((List.range 8).all fun i => !mayWrite f bits (a + UInt64.ofNat i)) = true)
     (hc : w.mem.load a 8 = some v) : w'.mem.load a 8 = some v := by
   obtain ⟨rg, off, hd, hp, hb⟩ := cellOk_spec hok
   have hz := callBits_unfrozen h (frozen_of_load hd hp hc)
   refine load_kept hd hp hb hc hz (callBits_rooms f h rg hp) fun i hi => ?_
-  have hcall : callFfi f (bits.map (V.sc .i64)) w = some (r, w') := by
-    unfold callFfi; rw [mapM_asBits_sc]; exact h
   have hm : mayWrite f bits (a + UInt64.ofNat i) = false := by
     have := List.all_eq_true.mp hno i (List.mem_range.mpr hi)
     simpa using this
-  exact callFfi_respects_frame f _ w r w' hcall bits (mapM_asBits_sc bits) (fun e => absurd e hf) _
-    (mayWrite_sound hm _)
-
-/-- What a read of a nonzero size may write: that many bytes at its
-    destination. A read of size `0` reads the whole file, which bounds
-    nothing. -/
-def readFrame : Frame := .atOff 0 2 4
-
-theorem fileRead_unchanged {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .fileRead bits w = some (r, w')) (hs : bits.getD 4 0 ≠ 0) {x : UInt64}
-    (hx : readFrame.mayWrite bits x = false) : Unchanged w.mem w'.mem x := by
-  change ffiFileRead bits w = some (r, w') at h
-  unfold ffiFileRead at h
-  match bits, h, hs, hx with
-  | [base, pathOff, dstOff, fileOff, size], h, hs, hx =>
-    simp only [List.getD_cons_succ, List.getD_cons_zero] at hs
-    simp only [readFrame, Frame.mayWrite, List.getD_cons_succ, List.getD_cons_zero, within,
-      decide_eq_false_iff_not, Nat.not_lt] at hx
-    simp only [Option.bind_eq_bind] at h
-    cases hp : readPath w.mem (base + pathOff) with
-    | none => rw [hp] at h; cases h
-    | some path =>
-      rw [hp, Option.bind_some] at h
-      split at h
-      · cases h; exact Unchanged.refl _ _
-      · simp only [hs, beq_iff_eq, if_false] at h
-        cases hc : copyIn w.mem (base + dstOff) _ with
-        | none => rw [hc] at h; cases h
-        | some m =>
-          rw [hc] at h
-          simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨_, rfl⟩ := h
-          refine Unchanged.of_eq (copyIn_other hc x fun i hi e => ?_)
-          simp only [List.size_toByteArray, List.length_map, List.length_range] at hi
-          subst e
-          rw [UInt64.add_comm, UInt64.add_sub_cancel, UInt64.toNat_ofNat'] at hx
-          have : i % 2 ^ 64 ≤ i := Nat.mod_le _ _
-          have := size.toNat_lt
-          omega
-
-/-- Whether a call with these argument bits may write the byte at `x`: by
-    its frame, and a read of a nonzero size by the bytes it asks for. -/
-def writesAt (f : IR.Ffi) (bits : List UInt64) (x : UInt64) : Bool :=
-  if f == .fileRead then bits.getD 4 0 == 0 || readFrame.mayWrite bits x else mayWrite f bits x
-
-theorem unchanged_of_writesAt {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) {x : UInt64} (hx : writesAt f bits x = false) :
-    Unchanged w.mem w'.mem x := by
-  unfold writesAt at hx
-  by_cases hf : f = .fileRead
-  · subst hf
-    simp only [beq_self_eq_true, if_true, Bool.or_eq_false_iff, beq_eq_false_iff_ne, ne_eq] at hx
-    exact fileRead_unchanged h hx.1 hx.2
-  · have hb : (f == .fileRead) = false := by simpa using hf
-    rw [hb, if_neg (by decide)] at hx
-    have hcall : callFfi f (bits.map (V.sc .i64)) w = some (r, w') := by
-      unfold callFfi; rw [mapM_asBits_sc]; exact h
-    exact callFfi_respects_frame f _ w r w' hcall bits (mapM_asBits_sc bits) (fun e => absurd e hf) _
-      (mayWrite_sound hx _)
-
-/-- `cell_kept`, for any call, a read by the bytes it asks for. -/
-theorem cell_kept_at {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    {a v : UInt64} (h : callBits f bits w = some (r, w')) (hok : cellOk a = true)
-    (hno : ((List.range 8).all fun i => !writesAt f bits (a + UInt64.ofNat i)) = true)
-    (hc : w.mem.load a 8 = some v) : w'.mem.load a 8 = some v := by
-  obtain ⟨rg, off, hd, hp, hb⟩ := cellOk_spec hok
-  have hz := callBits_unfrozen h (frozen_of_load hd hp hc)
-  refine load_kept hd hp hb hc hz (callBits_rooms f h rg hp) fun i hi => ?_
-  have hm : writesAt f bits (a + UInt64.ofNat i) = false := by
-    have := List.all_eq_true.mp hno i (List.mem_range.mpr hi)
-    simpa using this
-  exact unchanged_of_writesAt h hm
+  exact unchanged_of_mayWrite h hm
 
 theorem load_setLive {m : Mem} {a : UInt64} {r : Region} {off : Nat} (hd : decodeAddr a = some (r, off))
     (hp : r ≠ .pinned) (L : List (Nat × Nat)) (n : Nat) :
@@ -1350,14 +1286,13 @@ theorem cstrIn_kept {w w' : World} {a : UInt64} {n : Nat} (hx : (Fact.cstrIn a n
 def keeps (f : IR.Ffi) (bits : List UInt64) : Fact → Bool
   | .part p _ => !(moves f).contains p
   | .room r _ => r != .pinned
-  | .cell a _ => cellOk a && (List.range 8).all fun i => !writesAt f bits (a + UInt64.ofNat i)
+  | .cell a _ => cellOk a && (List.range 8).all fun i => !mayWrite f bits (a + UInt64.ofNat i)
   | .held _ _ | .opened _ _ => false
   | .cstr a => f == .lmdbInit && otherRegion (bits.headD 0) a
   | .htAt _ _ _ => false
   | .devSeq => Device.devUntouched.contains f || Device.seqKeepers.contains f
   | .oracles => true
-  | .cstrIn a n => if f == .fileRead then bits.getD 4 0 != 0 && !readFrame.touches bits a n
-      else !(frame f).touches bits a n
+  | .cstrIn a n => !(frame f).touches bits a n
   | .roomArg r _ => r != .pinned
   | .devBuf _ _ => Device.devUntouched.contains f || Device.bufKeepers.contains f
   | .pinnedUsed _ => f != .cudaPinnedAlloc
@@ -1376,7 +1311,7 @@ theorem keeps_sound {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V}
       rw [callBits_rooms f h rg hp]; exact hx
   | cell a v =>
       simp only [keeps, Bool.and_eq_true] at hk
-      exact cell_kept_at h hk.1 hk.2 hx
+      exact cell_kept h hk.1 hk.2 hx
   | held _ _ | opened _ _ => simp [keeps] at hk
   | cstr a =>
       simp only [keeps, Bool.and_eq_true, beq_iff_eq] at hk
@@ -1395,17 +1330,9 @@ theorem keeps_sound {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V}
       rw [e1, e2]; exact hx
   | cstrIn a n =>
       refine cstrIn_kept hx (callBits_unfrozen h hx.1) (fun rg hp => callBits_rooms f h rg hp) fun i hi => ?_
-      refine unchanged_of_writesAt h ?_
-      unfold writesAt
-      unfold keeps at hk
-      by_cases hf : f = .fileRead
-      · subst hf
-        simp only [beq_self_eq_true, if_true, Bool.and_eq_true, bne_iff_ne, ne_eq, Bool.not_eq_true'] at hk
-        simp only [beq_self_eq_true, if_true, Bool.or_eq_false_iff, beq_eq_false_iff_ne, ne_eq]
-        exact ⟨hk.1, Frame.touches_false hk.2 i hi⟩
-      · have hb : (f == .fileRead) = false := by simpa using hf
-        simp only [hb, if_false, Bool.false_eq_true, Bool.not_eq_true'] at hk ⊢
-        exact Frame.touches_false hk i hi
+      refine unchanged_of_mayWrite h ?_
+      simp only [keeps, Bool.not_eq_true'] at hk
+      exact Frame.touches_false hk i hi
   | roomArg rg x =>
       have hp : rg ≠ .pinned := by intro e; subst e; exact absurd hk (by simp only [keeps]; decide)
       show x.toNat ≤ w'.mem.sizes rg ∧ _
@@ -2511,31 +2438,6 @@ theorem cstr_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w) (h 
 theorem cstr_imp_of_state {S : TState} {w : World} {a : UInt64} {P : Prop} (hS : S.holds w)
     (h : S.contains (.cstr a) = true) : P → CStr w.mem a :=
   fun _ => holds_of_mem hS h
-
-/-- **A path the file shims can scan**, from the typestate: a C string it
-    names, or room for the `pathMax` bytes a scan may read. -/
-theorem pathOk_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w)
-    (h : (S.contains (.cstr a) || roomAt S a pathMax) = true) : PathOk w.mem a := by
-  rcases Bool.or_eq_true_iff.mp h with h | h
-  · exact pathOk_of_cstr (cstr_of_state hS h)
-  · obtain ⟨r, off, hd, _, hs, _, _⟩ := roomAt_spec hS h
-    exact pathOk_of_room hd hs
-
-theorem pathOk_imp_of_state {S : TState} {w : World} {a : UInt64} {P : Prop} (hS : S.holds w)
-    (h : (S.contains (.cstr a) || roomAt S a pathMax) = true) : P → PathOk w.mem a :=
-  fun _ => pathOk_of_state hS h
-
-/-- **A read into shared memory has room**: it asks for a length, not the whole
-    file, and there is room for that length. -/
-theorem fileRead_room_of_state {S : TState} {w : World} {dst fileOff size : UInt64} {p : String → Prop}
-    (hS : S.holds w) (h : (size != 0 && roomAt S dst size.toNat) = true) :
-    ∀ path c, p path → w.fs.get path = some c → Writable w.mem dst (readCount c fileOff size) := by
-  simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at h
-  intro _ c _ _
-  refine writable_of_state hS (roomAt_mono h.2 ?_)
-  unfold readCount
-  simp only [beq_iff_eq, h.1, if_false]
-  exact Nat.min_le_left _ _
 
 /-- **A read into memory has room**: room for as many bytes as it asks for. -/
 theorem readTo_of_state {S : TState} {w : World} {dst fileOff size : UInt64} {p : String → Prop}

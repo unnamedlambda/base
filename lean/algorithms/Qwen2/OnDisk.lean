@@ -41,6 +41,8 @@ def WORKING_SET_BASE : Nat := 0x0660
     the free slot between `WORKING_SET_BASE` (0x0660..0x0697) and
     `SYSTEM_TOKENS_OFF` (0x0700) — 104 bytes available, path is 23. -/
 def KV_CACHE_PATH_OFF : Nat := 0x06A0
+/-- The KV cache path's field: up to `SYSTEM_TOKENS_OFF`. -/
+def KV_CACHE_PATH_FIELD : Nat := SYSTEM_TOKENS_OFF - KV_CACHE_PATH_OFF
 
 /-- Hardcoded for now; future work could parameterize via parseArgsFn. -/
 def kvCachePathBytes : List UInt8 :=
@@ -136,6 +138,7 @@ def streamLayerFn : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pathPtr   ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
+  let pathCap   ← load64 (← absAddr ptr WEIGHTS_PATH_CAP_OFF)
   let pinnedPtr ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
   let layerIdx  ← load64 (← absAddr ptr LAYER_IDX_OFF)
   -- File offset: EMBED_BYTES + layerIdx * LAYER_BYTES
@@ -146,7 +149,7 @@ def streamLayerFn : Prog V L Unit := do
   let wsBaseA      ← absAddr ptr WORKING_SET_BASE
   -- ONE big read pulls the entire layer (~57 MB) into pinned scratch in one
   -- syscall.  The on-disk layout matches the pinned scratch layout 1:1.
-  let _ ← ffi .fileReadToPtr %[pathPtr, pinnedPtr, baseOff, layerBytes64]
+  let _ ← ffi .fileReadToPtr %[pathPtr, pathCap, pinnedPtr, baseOff, layerBytes64]
   -- 12 synchronous H→D uploads.  Sync semantics keep the pinned scratch safe
   -- to reuse on the next streamLayerFn call without an extra device sync.
   let upOne (bufId : V .i32) (scratchOff size : Nat) : Prog V L Unit := do
@@ -178,6 +181,7 @@ def kvLoadLayerFn : Prog V L Unit := do
   let tK         ← slotLoad LayerSlot.kCache wsBaseA
   let tV         ← slotLoad LayerSlot.vCache wsBaseA
   let kvPath     ← absAddr ptr KV_CACHE_PATH_OFF
+  let kvCap      ← iconst64 KV_CACHE_PATH_FIELD
   let kvBytes64  ← iconst64 KV_CACHE_BYTES
   let perLayer64 ← iconst64 (2 * KV_CACHE_BYTES)
   let kFileOff   ← imul layerIdx perLayer64
@@ -185,9 +189,9 @@ def kvLoadLayerFn : Prog V L Unit := do
   let zero64     ← iconst64 0
   -- position zero has nothing cached yet
   when .ne pos zero64 (do
-    let _ ← ffi .fileReadToPtr %[kvPath, pinnedPtr, kFileOff, kvBytes64]
+    let _ ← ffi .fileReadToPtr %[kvPath, kvCap, pinnedPtr, kFileOff, kvBytes64]
     let _ ← ffi .cudaUpload %[ctxPtr, tK.buf, pinnedPtr, kvBytes64]
-    let _ ← ffi .fileReadToPtr %[kvPath, pinnedPtr, vFileOff, kvBytes64]
+    let _ ← ffi .fileReadToPtr %[kvPath, kvCap, pinnedPtr, vFileOff, kvBytes64]
     let _ ← ffi .cudaUpload %[ctxPtr, tV.buf, pinnedPtr, kvBytes64]
     pure ())
 
@@ -203,6 +207,7 @@ def kvSaveLayerFn : Prog V L Unit := do
   let tK        ← slotLoad LayerSlot.kCache wsBaseA
   let tV        ← slotLoad LayerSlot.vCache wsBaseA
   let kvPath    ← absAddr ptr KV_CACHE_PATH_OFF
+  let kvCap     ← iconst64 KV_CACHE_PATH_FIELD
   let perLayer64  ← iconst64 (2 * KV_CACHE_BYTES)
   let kvBytes64   ← iconst64 KV_CACHE_BYTES
   let kFileOff    ← imul layerIdx perLayer64
@@ -218,9 +223,9 @@ def kvSaveLayerFn : Prog V L Unit := do
     let kSlotFile     ← iadd kFileOff slotOff
     let vSlotFile     ← iadd vFileOff slotOff
     let _ ← ffi .cudaDownloadOffset %[ctxPtr, tK.buf, slotOff, pinnedPtr, slotBytes64]
-    let _ ← ffi .fileWriteFromPtr           %[kvPath, pinnedPtr, kSlotFile, slotBytes64]
+    let _ ← ffi .fileWriteFromPtr           %[kvPath, kvCap, pinnedPtr, kSlotFile, slotBytes64]
     let _ ← ffi .cudaDownloadOffset %[ctxPtr, tV.buf, slotOff, pinnedPtr, slotBytes64]
-    let _ ← ffi .fileWriteFromPtr           %[kvPath, pinnedPtr, vSlotFile, slotBytes64]
+    let _ ← ffi .fileWriteFromPtr           %[kvPath, kvCap, pinnedPtr, vSlotFile, slotBytes64]
 
 -- ── CLIF IR ──────────────────────────────────────────────────────────────────
 

@@ -25,7 +25,9 @@ open AlgorithmLib.HProg
 -- The FFI
 -- ---------------------------------------------------------------------------
 
-/-- The bytes from `a` up to the first zero, as a path. -/
+/-- The C string at `a`: the bytes up to the first zero, which are UTF-8.
+    One that does not end inside its region, or is not UTF-8, is not a
+    C string, and a call given it is undefined. -/
 def readCStr (m : Mem) (a : UInt64) : Option String := do
   let (r, off) ← decodeAddr a
   let bs := m.region r
@@ -52,26 +54,21 @@ def le64 (x : UInt64) : ByteArray :=
 def ofLe64 (b : ByteArray) : UInt64 :=
   (List.range 8).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| (b.get! i).toUInt64) 0
 
-/-- The longest path the file shims scan for its terminating zero. -/
-def pathMax : Nat := 4096
-
-/-- A path as the file shims read it: the bytes up to the first zero among the
-    first `pathMax`. No zero among them, or bytes that are not UTF-8, give the
-    empty path, which every file shim refuses. A region that ends before either
-    is a read out of bounds. -/
-def readPath (m : Mem) (a : UInt64) : Option String := do
-  let (r, off) ← decodeAddr a
-  let bs := m.region r
-  let avail := bs.size - off
-  match (List.range (min avail pathMax)).find? (fun i => bs.get! (off + i) == 0) with
-  | some n => some ((String.fromUTF8? ((List.range n).map (fun i => bs.get! (off + i))).toByteArray).getD "")
-  | none => if avail < pathMax then none else some ""
-
 /-- The bytes from `a` up to the first zero. -/
 def readCStrAt (m : Mem) (a : UInt64) : Option String := readCStr m a
 
 /-- `n` bytes at `a` as a `ByteArray`, or `none` if they are not all mapped. -/
 def readBytes (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray := copyOut m a n
+
+/-- The string in the `cap`-byte field at `a`, as base's own calls take a path
+    or a name: its bytes up to the first zero, or all `cap` if there is none
+    (`sun_path`'s and `strnlen`'s form). Inner `none` for bytes that are not
+    UTF-8, which a call answers as its refusal; outer `none` when the field's
+    bytes are not all there. -/
+def readField (m : Mem) (a cap : UInt64) : Option (Option String) := do
+  let bs ← readBytes m a cap.toNat
+  let n := ((List.range bs.size).find? fun i => bs.get! i == 0).getD bs.size
+  pure (String.fromUTF8? (bs.extract 0 n))
 
 /-- Writing `bytes` into a file at `at_`, as `write_all` after a seek leaves it:
     a seek past the end leaves a hole that reads back as zeros, and a write
@@ -113,47 +110,14 @@ def cudaFail (w : World) : Option (Option V × World) := some (some (ofInt .i32 
 def colMajorSpan (rows cols ld : Nat) : Nat :=
   if rows = 0 || cols = 0 then 0 else ld * (cols - 1) + rows
 
--- file.rs
-def ffiFileRead (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [base, pathOff, dstOff, fileOff, size] => do
-      let path ← readPath w.mem (base + pathOff)
-      match (if path == "" then none else w.fs.get path) with
-      | none => some (some (ofInt .i64 (-1)), w)
-      | some content =>
-          let from_ := fileOff.toNat
-          let avail := content.size - min from_ content.size
-          let want := if size == 0 then avail else size.toNat
-          let n := min want avail
-          let slice := ((List.range n).map (fun i => content.get! (from_ + i))).toByteArray
-          let m ← copyIn w.mem (base + dstOff) slice
-          some (some (ofInt .i64 n), { w with mem := m })
-  | _ => none
-
-def ffiFileWrite (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [base, pathOff, srcOff, fileOff, size] => do
-      let path ← readPath w.mem (base + pathOff)
-      -- `size == 0` means "the bytes up to the first NUL", and writing at
-      -- offset 0 goes through `File::create`, which truncates.
-      if path == "" then some (some (ofInt .i64 (-1)), w) else
-      let bytes ←
-        if size == 0 then (readCStrAt w.mem (base + srcOff)).map (·.toUTF8)
-        else readBytes w.mem (base + srcOff) size.toNat
-      let at_ := fileOff.toNat
-      let prev := if at_ == 0 then ByteArray.empty else (w.fs.get path).getD ByteArray.empty
-      some (some (ofInt .i64 bytes.size), { w with fs := w.fs.set path (spliceAt prev bytes at_) })
-  | _ => none
-
--- These two take the path and the buffer as raw pointers, so neither is
--- relative to the shared arena.
+-- file.rs — a path and a buffer, each a pointer.
 def ffiFileReadToPtr (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
-  | [pathPtr, dstPtr, fileOff, size] =>
+  | [pathPtr, pathCap, dstPtr, fileOff, size] =>
       if asI64 size ≤ 0 then some (some (ofInt .i64 (-1)), w)
       else do
-        let path ← readPath w.mem pathPtr
-        match (if path == "" then none else w.fs.get path) with
+        let path ← readField w.mem pathPtr pathCap
+        match (match path with | some p => if p == "" then none else w.fs.get p | none => none) with
         | none => some (some (ofInt .i64 (-1)), w)
         | some content =>
             let from_ := fileOff.toNat
@@ -166,10 +130,10 @@ def ffiFileReadToPtr (bits : List UInt64) (w : World) : Option (Option V × Worl
 
 def ffiFileWriteFromPtr (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
-  | [pathPtr, srcPtr, fileOff, size] =>
+  | [pathPtr, pathCap, srcPtr, fileOff, size] =>
       if asI64 size ≤ 0 || asI64 fileOff < 0 then some (some (ofInt .i64 (-1)), w)
       else do
-        let path ← readPath w.mem pathPtr
+        let some path ← readField w.mem pathPtr pathCap | some (some (ofInt .i64 (-1)), w)
         if path == "" then some (some (ofInt .i64 (-1)), w) else
         let bytes ← readBytes w.mem srcPtr size.toNat
         let prev := (w.fs.get path).getD ByteArray.empty
@@ -177,13 +141,37 @@ def ffiFileWriteFromPtr (bits : List UInt64) (w : World) : Option (Option V × W
               { w with fs := w.fs.set path (spliceAt prev bytes fileOff.toNat) })
   | _ => none
 
+/-- The length of the file at a path, `-1` for none. -/
+def ffiFileSize (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match bits with
+  | [pathPtr, pathCap] => do
+      let path ← readField w.mem pathPtr pathCap
+      match (match path with | some p => if p == "" then none else w.fs.get p | none => none) with
+      | none => some (some (ofInt .i64 (-1)), w)
+      | some c => some (some (ofInt .i64 c.size), w)
+  | _ => none
+
+/-- The file at a path made `len` bytes long, created if there is none: cut
+    short, or extended with zeros. `-1` for a negative length. -/
+def ffiFileSetLen (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match bits with
+  | [pathPtr, pathCap, len] => do
+      let some path ← readField w.mem pathPtr pathCap | some (some (ofInt .i64 (-1)), w)
+      if path == "" || asI64 len < 0 then some (some (ofInt .i64 (-1)), w) else
+      let prev := (w.fs.get path).getD ByteArray.empty
+      let n := len.toNat
+      let next := if n ≤ prev.size then prev.extract 0 n
+        else prev ++ ByteArray.mk (Array.replicate (n - prev.size) 0)
+      some (some (ofInt .i64 0), { w with fs := w.fs.set path next })
+  | _ => none
+
 /-- `create_dir_all`. Directories are not modelled, so it changes nothing the
     model holds: `-1` when a file stands at the path or at a directory on the
     way to it, `0` otherwise. -/
 def ffiFileCreateDirAll (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
-  | [pathPtr] => do
-      let path ← readPath w.mem pathPtr
+  | [pathPtr, pathCap] => do
+      let some path ← readField w.mem pathPtr pathCap | some (some (ofInt .i64 (-1)), w)
       if path == "" then some (some (ofInt .i64 0), w) else
       if w.fs.files.any (fun (f, _) => f == path || path.startsWith (f ++ "/")) then
         some (some (ofInt .i64 (-1)), w)
@@ -196,27 +184,56 @@ def ffiGrant (key : String) (n : Nat) (bits : List UInt64) (w : World) :
     Option (Option V × World) :=
   if bits.length == n then some (some (ofInt .i32 (if w.grants key then 0 else -1)), w) else none
 
--- stdio.rs — a line comes back with its newline, capped at `max_len - 1` and
--- terminated; end of input is `0` and writes nothing.
+-- sync.rs — the system's address wait. A wait reads its word and may sleep
+-- while it holds what was expected, a wake wakes sleepers on it, and neither
+-- answers: a caller rereads the word. Both need a word: four bytes there, at
+-- an address a multiple of four.
+def ffiMemWait (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match bits with
+  | [addr, _, _] =>
+      if addr % 4 != 0 then none
+      else match w.mem.load addr 4 with
+        | none => none
+        | some _ => some (none, w)
+  | _ => none
+
+def ffiMemWake (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match bits with
+  | [addr, _] =>
+      if addr % 4 != 0 then none
+      else match w.mem.load addr 4 with
+        | none => none
+        | some _ => some (none, w)
+  | _ => none
+
+def ffiClockNow (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match bits with
+  | [] => some (some (ofInt .i64 w.clock), w)
+  | _ => none
+
+-- stdio.rs — a line comes back with its newline, or as much of it as `cap`
+-- holds, the rest left for the next read, as `fgets` leaves it; end of input
+-- is `0` and writes nothing, and a `cap` that is not positive is `-1`.
 def ffiStdinReadline (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
-  | [base, dstOff, maxLen] =>
-      if asI64 maxLen ≤ 0 then some (some (ofInt .i64 0), w)
+  | [dst, cap] =>
+      if asI64 cap ≤ 0 then some (some (ofInt .i64 (-1)), w)
       else match w.stdin with
         | [] => some (some (ofInt .i64 0), w)
         | line :: rest => do
-            let n := min line.size (maxLen.toNat - 1)
-            let m ← copyIn w.mem (base + dstOff) (((List.range n).map line.get!).toByteArray)
-            let m ← m.store (base + dstOff + UInt64.ofNat n) 1 0
-            some (some (ofInt .i64 n), { w with mem := m, stdin := rest })
+            let n := min line.size cap.toNat
+            let m ← copyIn w.mem dst (((List.range n).map line.get!).toByteArray)
+            let left := ((List.range (line.size - n)).map fun i => line.get! (n + i)).toByteArray
+            some (some (ofInt .i64 n),
+              { w with mem := m, stdin := if n < line.size then left :: rest else rest })
   | _ => none
 
 def ffiStdoutWrite (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
-  | [base, srcOff, size] =>
+  | [src, size] =>
       if asI64 size < 0 then some (some (ofInt .i64 (-1)), w)
       else do
-        let bytes ← readBytes w.mem (base + srcOff) size.toNat
+        let bytes ← readBytes w.mem src size.toNat
         some (some (ofInt .i64 size.toNat), { w with stdout := w.stdout ++ bytes })
   | _ => none
 
@@ -1696,23 +1713,20 @@ def ffiNativeLoad (bits : List UInt64) (w : World) : Option (Option V × World) 
 def World.nativeAt? (w : World) (addr : UInt64) : Option Nat :=
   (List.range w.native.size).find? fun k => nativeAddr k == addr && (w.native[k]?).join.isSome
 
+/-- A live load unmapped. Any other address is undefined: the engine keeps
+    no record of what it mapped, so it cannot tell. -/
 def ffiNativeFree (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
   | [addr] =>
       match w.nativeAt? addr with
-      | none => some (some (ofInt .i32 (-1)), w)
-      | some k => some (some (ofInt .i32 0), { w with native := w.native.set! k none })
+      | none => none
+      | some k => some (none, { w with native := w.native.set! k none })
   | _ => none
 
 def ffiNativeArch (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
   | [] => some (some (ofInt .i32 w.arch), w)
   | _ => none
-
--- A null or unterminated name reads as empty, which no feature is called.
-def readName (m : Mem) (a : UInt64) : Option String :=
-  if a == 0 then some ""
-  else (readCStr m a).map fun s => if 4096 ≤ s.utf8ByteSize then "" else s
 
 def featureCode : Option Bool → Int
   | some true => 1
@@ -1721,8 +1735,8 @@ def featureCode : Option Bool → Int
 
 def ffiCpuHas (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
-  | [name] => do
-      let s ← readName w.mem name
+  | [name, cap] => do
+      let some s ← readField w.mem name cap | some (some (ofInt .i32 (-1)), w)
       some (some (ofInt .i32 (featureCode (w.cpuHas s))), w)
   | _ => none
 
@@ -1791,8 +1805,6 @@ def ffiThreadJoin (bits : List UInt64) (w : World) : Option (Option V × World) 
     guessing. -/
 def callBits (f : IR.Ffi) (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match f with
-  | .fileRead => ffiFileRead bits w
-  | .fileWrite => ffiFileWrite bits w
   | .fileReadToPtr => ffiFileReadToPtr bits w
   | .fileWriteFromPtr => ffiFileWriteFromPtr bits w
   | .stdinReadline => ffiStdinReadline bits w
@@ -1876,6 +1888,11 @@ def callBits (f : IR.Ffi) (bits : List UInt64) (w : World) : Option (Option V ×
   | .memUnlock => ffiGrant "unlock" 2 bits w
   | .memAdviseHuge => ffiGrant "hugepages" 2 bits w
   | .threadPriority => ffiGrant "priority" 1 bits w
+  | .memWait => ffiMemWait bits w
+  | .memWake => ffiMemWake bits w
+  | .clockNow => ffiClockNow bits w
+  | .fileSize => ffiFileSize bits w
+  | .fileSetLen => ffiFileSetLen bits w
   | _ => none
 
 /-- A call with its arguments as values: every argument a scalar, read as bits,

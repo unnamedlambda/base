@@ -255,8 +255,9 @@ def copy (dst src : V .i64) : Prog V L Unit := do
 -- The data file
 -- ---------------------------------------------------------------------------
 
-/-- Write table `t` to `file`: header, then each entry's key and value lengths
-    as `u32` and its bytes, in key order. -/
+/-- Write table `t` to `file`, a C string naming the data file, which the
+    file calls take as a field of its length: header, then each entry's key
+    and value lengths as `u32` and its bytes, in key order. -/
 def persist (file t : V .i64) : Prog V L Unit := do
   let len ← load64 (← iaddImm t T_LEN)
   let size ← forLoopAcc len (← iconst64 16) fun i acc => do
@@ -275,7 +276,8 @@ def persist (file t : V .i64) : Prog V L Unit := do
     let _ ← memcpy (← iaddImm p 8) (← keyAt t e) klen
     let _ ← memcpy (← iadd (← iaddImm p 8) klen) (← valAt t e) vlen
     iadd at_ (← iaddImm (← iadd klen vlen) 8)
-  let _ ← ffi .fileWriteFromPtr %[file, buf, ← iconst64 0, size]
+  let fcap ← ext (.c .strlen) %[file]
+  let _ ← ffi .fileWriteFromPtr %[file, fcap, buf, ← iconst64 0, size]
   free buf
 
 /-- Read the table in `file` into the empty table `t`, when there is one: the
@@ -283,12 +285,13 @@ def persist (file t : V .i64) : Prog V L Unit := do
     key order. -/
 def load (file t : V .i64) : Prog V L Unit := do
   let hdr ← calloc (← iconst64 16)
-  let got ← ffi .fileReadToPtr %[file, hdr, ← iconst64 0, ← iconst64 16]
+  let fcap ← ext (.c .strlen) %[file]
+  let got ← ffi .fileReadToPtr %[file, fcap, hdr, ← iconst64 0, ← iconst64 16]
   let ok ← band (← icmp .eq got (← iconst64 16)) (← icmp .eq (← load64 hdr) (← iconst64 MAGIC))
   when .ne ok (← iconst .i8 0) (do
     let size ← load64 (← iaddImm hdr 8)
     let buf ← calloc size
-    let _ ← ffi .fileReadToPtr %[file, buf, ← iconst64 0, size]
+    let _ ← ffi .fileReadToPtr %[file, fcap, buf, ← iconst64 0, size]
     storeI64 buf (← iaddImm t T_ARENA)
     storeI64 size (← iaddImm t T_AUSED)
     storeI64 size (← iaddImm t T_ACAP)
@@ -355,7 +358,7 @@ def open_ : StatusBody := do
     let n ← ext (.c .strlen) %[path]
     let bad ← bor (← icmp .eq n (← iconst64 0)) (← icmp .uge n (← iconst64 4096))
     failUnless0 bad (do
-      let made ← ffi .fileCreateDirAll %[path]
+      let made ← ffi .fileCreateDirAll %[path, n]
       failIf .slt made (← iconst64 0) (do
         -- the data file's name: the path and "/data.tbl"
         let file ← calloc (← iaddImm n 10)

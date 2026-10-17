@@ -10,7 +10,7 @@ A call's precondition (`Contracts.Pre`) is a proposition about the world; the
 checker needs a decision. `preB` decides it from what the checker knows of the
 arguments and the typestate, by *atoms* each proven once: a context handle
 that is null or live (`ctxB`), bytes in memory the typestate gives room for
-(`memN`, `memB`), a C string or a path (`cstrB`, `pathB`), a lifecycle part
+(`memN`, `memB`), a C string (`cstrB`), a lifecycle part
 (`partB`), and the device's own facts. **`preB_sound`**: where `preB` accepts,
 `Pre` holds of the bits the arguments carry.
 -/
@@ -248,17 +248,6 @@ theorem cstrB_sound {Γ : Env} {w : World} {S : TState} {a : AV} {x : UInt64} (h
     · exact Contracts.cstrIn_of_state hS h
   · cases h
 
-/-- A path the file shims can scan: a C string, or room for `pathMax` bytes. -/
-def pathB (S : TState) (a : AV) : Bool := cstrB S a || memN S a pathMax
-
-theorem pathB_sound {Γ : Env} {w : World} {S : TState} {a : AV} {x : UInt64} (hS : S.holds w)
-    (hd : ∃ t, a.Desc Γ w (.sc t x)) (h : pathB S a = true) : Contracts.PathOk w.mem x := by
-  unfold pathB at h
-  rcases Bool.or_eq_true_iff.mp h with h | h
-  · exact Contracts.pathOk_of_cstr (cstrB_sound hS hd h)
-  · obtain ⟨r, off, hdec, -, hs, -, -⟩ := memN_spec hS hd h
-    exact Contracts.pathOk_of_room hdec hs
-
 theorem partB_sound {w : World} {S : TState} {p : Part} {b : Bool} (hS : S.holds w)
     (h : S.contains (.part p b) = true) : p.get w = b := holds_of_mem hS h
 
@@ -276,7 +265,6 @@ def frPos : Frame → List Nat
   | .none | .anywhere => []
   | .at d l => [d, l]
   | .atOff b o l => [b, o, l]
-  | .atOffRet b o => [b, o]
   | .fixed d _ => [d]
   | .fixed2 a b _ => [a, b]
   | .atRecords d c _ => [d, c]
@@ -296,7 +284,7 @@ theorem touches_congr {fr : Frame} {args args' : List UInt64}
 /-- The argument positions a call's keeping of fact `x` reads: its frame's for
     the bytes it may write, the slot for a C string `init` writes. -/
 def fpos (f : Ffi) : Fact → List Nat
-  | .cell .. | .cstrIn .. => if f = .fileRead then 4 :: frPos Contracts.readFrame else frPos (frame f)
+  | .cell .. | .cstrIn .. => frPos (frame f)
   | .cstr _ => [0]
   | _ => []
 
@@ -305,28 +293,13 @@ theorem keeps_congr {f : Ffi} {bits bits' : List UInt64} (x : Fact)
   have hgd : ∀ (l : List UInt64), l.headD 0 = l.getD 0 0 := fun l => by cases l <;> rfl
   cases x with
   | cell a v =>
-      by_cases hf : f = .fileRead
-      · subst hf
-        simp only [fpos, if_true, List.mem_cons] at h
-        have h4 := h 4 (.inl rfl)
-        have hfr : ∀ k ∈ frPos Contracts.readFrame, bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (.inr hk)
-        simp only [keeps, Contracts.writesAt, beq_self_eq_true, if_true, h4, mayWrite_congr hfr]
-      · have hfr : ∀ k ∈ frPos (frame f), bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (by
-          simp only [fpos, if_neg hf]; exact hk)
-        have hb : (f == .fileRead) = false := by simpa using hf
-        simp only [keeps, Contracts.writesAt, hb, Bool.false_eq_true, if_false, Contracts.mayWrite,
-          mayWrite_congr hfr]
+      have hfr : ∀ k ∈ frPos (frame f), bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (by
+        simp only [fpos]; exact hk)
+      simp only [keeps, Contracts.mayWrite, mayWrite_congr hfr]
   | cstrIn a n =>
-      by_cases hf : f = .fileRead
-      · subst hf
-        simp only [fpos, if_true, List.mem_cons] at h
-        have h4 := h 4 (.inl rfl)
-        have hfr : ∀ k ∈ frPos Contracts.readFrame, bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (.inr hk)
-        simp only [keeps, beq_self_eq_true, if_true, h4, touches_congr hfr]
-      · have hfr : ∀ k ∈ frPos (frame f), bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (by
-          simp only [fpos, if_neg hf]; exact hk)
-        have hb : (f == .fileRead) = false := by simpa using hf
-        simp only [keeps, hb, Bool.false_eq_true, if_false, touches_congr hfr]
+      have hfr : ∀ k ∈ frPos (frame f), bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (by
+        simp only [fpos]; exact hk)
+      simp only [keeps, touches_congr hfr]
   | cstr a =>
       have h0 := h 0 (by simp [fpos])
       simp only [keeps, hgd, h0]
@@ -624,54 +597,9 @@ def preWindowPresentGpuBuffer (S : TState) (as : List AV) : Bool :=
   | [c, g, _] => ctxB S .win winCtx c && ctxB S .gpu gpuCtx g
   | _ => false
 
-def preFileRead (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [b, po, dO, _, n] =>
-      match b.bits, po.bits, dO.bits, n.bits with
-      | some base, some p, some d, some k =>
-          pathB S (.known (.sc .i64 (base + p))) && k != 0 && memN S (.known (.sc .i64 (base + d))) k.toNat
-      | _, _, _, _ => false
-  | _ => false
-
-/-- The addresses `base + s` for `s` a number `sn` describes: inside the region
-    `base` starts. -/
-def addrAt (base : UInt64) (sn : Num) : AV :=
-  match [Region.arena, .data, .out].find? (regionBase · = base) with
-  | some r => if sn.hi ≤ span then .ptr r ⟨.i64, sn.lo, sn.hi, 1, none⟩ else .any
-  | none => .any
-
-theorem addrAt_desc {Γ : Env} {w : World} {base s : UInt64} {sn : Num} (hs : sn.Holds w s.toNat) :
-    (addrAt base sn).Desc Γ w (.sc .i64 (base + s)) := by
-  unfold addrAt
-  split
-  · rename_i r hr
-    have hb : regionBase r = base := by simpa using List.find?_some hr
-    split
-    · rename_i hsp
-      refine ⟨s.toNat, by rw [hb, UInt64.ofNat_toNat], ⟨hs.1, hs.2.1, Nat.one_dvd _, trivial⟩, hsp⟩
-    · trivial
-  · trivial
-
-def preFileWrite (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [b, po, so, _, n] =>
-      match b.bits, po.bits with
-      | some base, some p =>
-          pathB S (.known (.sc .i64 (base + p))) &&
-            (match so.bits, n.bits with
-             | some s, some k =>
-                 if k = 0 then cstrB S (.known (.sc .i64 (base + s)))
-                 else memN S (.known (.sc .i64 (base + s))) k.toNat
-             | _, _ =>
-                 match so.num, n.num with
-                 | some sn, some nn => decide (1 ≤ nn.lo) && memN S (addrAt base sn) nn.hi
-                 | _, _ => false)
-      | _, _ => false
-  | _ => false
-
 def preFileReadToPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [pp, d, _, n] => pathB S pp && memBR S rb 1 3 d n
+  | [pp, pc, d, _, n] => memBR S rb 0 1 pp pc && memBR S rb 2 4 d n
   | _ => false
 
 def preNativeArch (S : TState) (as : List AV) : Bool :=
@@ -686,9 +614,9 @@ def preNativeLoad (S : TState) (as : List AV) : Bool :=
       | none => false
   | _ => false
 
-def preCpuHas (S : TState) (as : List AV) : Bool :=
+def preCpuHas (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [n] => cstrB S n
+  | [n, c] => memBR S rb 0 1 n c
   | _ => false
 
 def preLmdbInit (S : TState) (as : List AV) : Bool :=
@@ -829,13 +757,14 @@ def preExt (S : TState) : Ext → List AV → Bool
         | some l => memN S buf (lenOf l)
         | none => false
   | .usb .count, [] | .usb .info, [_, _] | .usb .open, [_] => true
-  | .usb .close, [d] | .usb .claim, [d, _] | .usb .release, [d, _] => handB .usbDevice d
-  | .usb .control, [d, _, _, _, _, data, len, _] =>
-      handB .usbDevice d && match len.bits with
+  | .usb .close, [d] | .usb .claim, [d, _] => handB .usbDevice d
+  | .usb .release, [i] => handB .usbInterface i
+  | .usb .control, [i, _, _, _, _, data, len, _] =>
+      handB .usbInterface i && match len.bits with
         | some l => memN S data (len16 l)
         | none => false
-  | .usb .bulk, [d, _, _, data, len, _] | .usb .interrupt, [d, _, _, data, len, _] =>
-      handB .usbDevice d && match len.bits with
+  | .usb .bulk, [i, _, data, len, _] | .usb .interrupt, [i, _, data, len, _] =>
+      handB .usbInterface i && match len.bits with
         | some l => memN S data (lenOf l)
         | none => false
   | _, _ => false
@@ -949,12 +878,9 @@ def preCublasGemmExBf16 (S : TState) (as : List AV) : Bool :=
          | _, _, _ => false)
   | _, _ => false
 
-def preStdinReadline (S : TState) (as : List AV) : Bool :=
+def preStdinReadline (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [b, dO, n] =>
-      match b.bits, dO.bits, n.bits with
-      | some base, some d, some k => k != 0 && memN S (.known (.sc .i64 (base + d))) k.toNat
-      | _, _, _ => false
+  | [d, n] => memBR S rb 0 1 d n
   | _ => false
 
 def preThreadCleanup (S : TState) (as : List AV) : Bool :=
@@ -962,22 +888,24 @@ def preThreadCleanup (S : TState) (as : List AV) : Bool :=
   | [s] => memN S s 8 && slotOk S .thread threadCtx s
   | _ => false
 
-def preFileCreateDirAll (S : TState) (as : List AV) : Bool :=
+def preFileCreateDirAll (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [p] => pathB S p
+  | [p, c] => memBR S rb 0 1 p c
+  | _ => false
+
+def preFileSetLen (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
+  match as with
+  | [p, c, _] => memBR S rb 0 1 p c
   | _ => false
 
 def preFileWriteFromPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [pp, s, _, n] => pathB S pp && memBR S rb 1 3 s n
+  | [pp, pc, s, _, n] => memBR S rb 0 1 pp pc && memBR S rb 2 4 s n
   | _ => false
 
-def preStdoutWrite (S : TState) (as : List AV) : Bool :=
+def preStdoutWrite (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [b, so, n] =>
-      match b.bits, so.bits, n.bits with
-      | some base, some s, some k => memN S (.known (.sc .i64 (base + s))) k.toNat
-      | _, _, _ => false
+  | [s, n] => memBR S rb 0 1 s n
   | _ => false
 
 def preCudaFreeBuffer (S : TState) (as : List AV) : Bool :=
@@ -1023,6 +951,20 @@ def preThreadJoin (S : TState) (as : List AV) : Bool :=
   | [c, _] => ctxB S .thread threadCtx c
   | _ => false
 
+/-- A wait's word: four bytes of the program's memory, at an address the
+    checker knows to be a multiple of four. -/
+def preMemWait (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [p, _, _] =>
+      memN S p 4 && (match p with | .ptr .arena n => n.al % 4 == 0 | _ => false)
+  | _ => false
+
+def preMemWake (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [p, _] =>
+      memN S p 4 && (match p with | .ptr .arena n => n.al % 4 == 0 | _ => false)
+  | _ => false
+
 /-- A call whose contract asks nothing but its arguments' number. -/
 def preArity (n : Nat) (as : List AV) : Bool := as.length == n
 
@@ -1037,8 +979,11 @@ def preCtxN (S : TState) (n : Nat) (cap : Bool) (as : List AV) : Bool :=
     decides; every other entry point is refused. -/
 def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Bool :=
   match f with
-  | .cosf | .sinf | .nativeFree | .threadPriority => preArity 1 as
+  | .cosf | .sinf | .threadPriority => preArity 1 as
   | .powf | .memAdviseHuge | .memLock | .memUnlock => preArity 2 as
+  | .memWake => preMemWake S as
+  | .clockNow => preArity 0 as
+  | .memWait => preMemWait S as
   | .cudaEventCreate | .cudaMemInfoFree | .cudaMemInfoTotal | .cudaStreamCreate => preCtxN S 1 false as
   | .cudaEventDestroy | .cudaGraphDestroy | .cudaPinnedFree | .cudaPinnedPtr => preCtxN S 2 false as
   | .cudaGraphUpload => preCtxN S 3 false as
@@ -1068,12 +1013,10 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .windowOpen => preWindowOpen S as
   | .windowPoll => preWindowPoll S as
   | .windowPresentGpuBuffer => preWindowPresentGpuBuffer S as
-  | .fileRead => preFileRead S as
-  | .fileWrite => preFileWrite S as
   | .fileReadToPtr => preFileReadToPtr S rb as
   | .nativeArch => preNativeArch S as
   | .nativeLoad => preNativeLoad S as
-  | .cpuHas => preCpuHas S as
+  | .cpuHas => preCpuHas S rb as
   | .lmdbInit => preLmdbInit S as
   | .lmdbBeginWriteTxn => preLmdbBeginWriteTxn S as
   | .lmdbCommitWriteTxn => preLmdbCommitWriteTxn S as
@@ -1084,9 +1027,10 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .cublasSgemm => preCublasSgemm S as
   | .lmdbPut => preLmdbPut S as
   | .lmdbCursorScan => preLmdbCursorScan S as
-  | .fileCreateDirAll => preFileCreateDirAll S as
+  | .fileCreateDirAll | .fileSize => preFileCreateDirAll S rb as
+  | .fileSetLen => preFileSetLen S rb as
   | .fileWriteFromPtr => preFileWriteFromPtr S rb as
-  | .stdoutWrite => preStdoutWrite S as
+  | .stdoutWrite => preStdoutWrite S rb as
   | .cudaFreeBuffer => preCudaFreeBuffer S as
   | .cublasPtrArray => preCublasPtrArray S as
   | .cudaPinnedAlloc => preCudaPinnedAlloc S as
@@ -1094,7 +1038,7 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .gpuDownloadPtr => preGpuDownloadPtr S rb as
   | .threadInit => preThreadInit S as
   | .threadJoin => preThreadJoin S as
-  | .stdinReadline => preStdinReadline S as
+  | .stdinReadline => preStdinReadline S rb as
   | .threadCleanup => preThreadCleanup S as
   | .cudaLaunchNamedOnStream => preCudaLaunchNamedOnStream S as
   | .cudaUploadAsync => preCudaUploadAsync S rb as

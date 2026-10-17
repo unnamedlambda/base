@@ -1,33 +1,28 @@
 //! USB devices, through the `nusb` crate: the C functions a program's
 //! `Ext.usb` calls reach, by symbol.
 //!
-//! Nine blocking calls: how many devices the system lists and what each is —
-//! its bus, address, vendor and product — and a device opened by its place in
-//! the list, then its interfaces claimed and released and its control, bulk
-//! and interrupt transfers made, each waited for. A device is the program's:
-//! `base_usb_open` hands back a box it passes to every other call, holding
-//! the interfaces claimed through it, and `base_usb_close` drops it and them.
-//! The devices are listed afresh at each call. `Host/UsbLib.lean` states
-//! them.
+//! Nine blocking calls, each one call into the crate: how many devices the
+//! system lists and what each is — its bus, address, vendor and product — a
+//! device opened by its place in the list, an interface claimed through it and
+//! released, and control, bulk and interrupt transfers through a claimed
+//! interface, each waited for. A device and an interface are each a box of the
+//! crate's own object, handed back to the call that drops it; an interface
+//! keeps its device open until it is released. Nothing is kept here of which
+//! handles are live or what was claimed: that a handle names a live object of
+//! its kind is the call's precondition, as `Host/UsbLib.lean` states, and what
+//! the system does with a claim is the system's (a second claim of one
+//! interface through one device is granted on Linux and refused elsewhere).
+//! The devices are listed afresh at each call.
 //!
-//! A transfer answers how many bytes moved, or `-1`. One from the device must
-//! ask for a whole number of the endpoint's packets: the device may send up
-//! to that much, and a request that ends inside a packet is refused rather
-//! than have what overflows it dropped.
+//! A transfer answers how many bytes moved, or `-1`, as do a request type, a
+//! length or a timeout the crate cannot take.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use nusb::transfer::{
     Buffer, Bulk, BulkOrInterrupt, ControlIn, ControlOut, ControlType, In, Interrupt, Out, Recipient,
 };
 use nusb::{Device, DeviceInfo, Interface, MaybeFuture};
-
-/// An open device, as the program holds it, and the interfaces claimed.
-pub(crate) struct Dev {
-    device: Device,
-    claimed: HashMap<u8, Interface>,
-}
 
 fn listed() -> Vec<DeviceInfo> {
     nusb::list_devices().wait().map(|it| it.collect()).unwrap_or_default()
@@ -66,51 +61,57 @@ unsafe extern "C" fn base_usb_info(i: i32, which: i32) -> i64 {
 
 /// Device `i` opened, or null — for a device not listed, or one this
 /// process may not open.
-unsafe extern "C" fn base_usb_open(i: i32) -> *mut Dev {
+unsafe extern "C" fn base_usb_open(i: i32) -> *mut Device {
     match nth(i).map(|d| d.open().wait()) {
-        Some(Ok(device)) => Box::into_raw(Box::new(Dev { device, claimed: HashMap::new() })),
+        Some(Ok(device)) => Box::into_raw(Box::new(device)),
         _ => std::ptr::null_mut(),
     }
 }
 
-/// `dev` closed, and every interface claimed through it released.
-unsafe extern "C" fn base_usb_close(dev: *mut Dev) {
+/// `dev` closed. An interface claimed through it stays usable until it is
+/// released.
+///
+/// # Safety
+///
+/// `dev` is a device `base_usb_open` answered, not closed already.
+unsafe extern "C" fn base_usb_close(dev: *mut Device) {
     drop(Box::from_raw(dev));
 }
 
 /// Interface `iface` of `dev` claimed, detaching a kernel driver from it
-/// where the system has one: `0`, or `-1`.
-unsafe extern "C" fn base_usb_claim(dev: *mut Dev, iface: i32) -> i32 {
-    let Ok(n) = u8::try_from(iface) else { return -1 };
-    let d = &mut *dev;
-    if d.claimed.contains_key(&n) {
-        return 0;
-    }
-    match d.device.detach_and_claim_interface(n).wait() {
-        Ok(i) => {
-            d.claimed.insert(n, i);
-            0
-        }
-        Err(_) => -1,
+/// where the system has one: its handle, or null where the system does not
+/// grant it or the number is not one.
+///
+/// # Safety
+///
+/// `dev` is an open device.
+unsafe extern "C" fn base_usb_claim(dev: *mut Device, iface: i32) -> *mut Interface {
+    let Ok(n) = u8::try_from(iface) else { return std::ptr::null_mut() };
+    match (*dev).detach_and_claim_interface(n).wait() {
+        Ok(i) => Box::into_raw(Box::new(i)),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
-/// Interface `iface` of `dev` released: `0`, or `-1` for one not claimed.
-unsafe extern "C" fn base_usb_release(dev: *mut Dev, iface: i32) -> i32 {
-    let claimed = u8::try_from(iface).ok().and_then(|n| (*dev).claimed.remove(&n));
-    if claimed.is_some() {
-        0
-    } else {
-        -1
-    }
+/// `intf` released, which ends the system's claim for every handle to it.
+///
+/// # Safety
+///
+/// `intf` is an interface `base_usb_claim` answered, not released already.
+unsafe extern "C" fn base_usb_release(intf: *mut Interface) {
+    drop(Box::from_raw(intf));
 }
 
-/// A control transfer on `dev`'s default endpoint, its direction, kind and
-/// recipient from `request_type` as the SETUP packet has them, and `len`
-/// bytes of data at `data`: how many moved, or `-1`. It goes through an
-/// interface claimed where there is one, which Windows requires.
+/// A control transfer through `intf` on its device's default endpoint, its
+/// direction, kind and recipient from `request_type` as the SETUP packet has
+/// them, and `len` bytes of data at `data`: how many moved, or `-1`.
+///
+/// # Safety
+///
+/// `intf` is a held interface, and `data` has `len` bytes: readable for a
+/// transfer to the device, writable for one from it.
 unsafe extern "C" fn base_usb_control(
-    dev: *mut Dev,
+    intf: *mut Interface,
     request_type: i32,
     request: i32,
     value: i32,
@@ -135,18 +136,10 @@ unsafe extern "C" fn base_usb_control(
     };
     let (request, value, index) = (request as u8, value as u16, index as u16);
     let timeout = Duration::from_millis(ms);
-    let d = &*dev;
-    let via = d.claimed.values().next();
+    let intf = &*intf;
     if request_type & 0x80 != 0 {
         let setup = ControlIn { control_type, recipient, request, value, index, length: len };
-        let got = match via {
-            Some(i) => i.control_in(setup, timeout).wait(),
-            #[cfg(not(windows))]
-            None => d.device.control_in(setup, timeout).wait(),
-            #[cfg(windows)]
-            None => return -1,
-        };
-        match got {
+        match intf.control_in(setup, timeout).wait() {
             Ok(bytes) => {
                 let n = bytes.len().min(len as usize);
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, n);
@@ -157,14 +150,7 @@ unsafe extern "C" fn base_usb_control(
     } else {
         let out = if len == 0 { &[][..] } else { std::slice::from_raw_parts(data, len as usize) };
         let setup = ControlOut { control_type, recipient, request, value, index, data: out };
-        let sent = match via {
-            Some(i) => i.control_out(setup, timeout).wait(),
-            #[cfg(not(windows))]
-            None => d.device.control_out(setup, timeout).wait(),
-            #[cfg(windows)]
-            None => return -1,
-        };
-        match sent {
+        match intf.control_out(setup, timeout).wait() {
             Ok(()) => i64::from(len),
             Err(_) => -1,
         }
@@ -172,28 +158,29 @@ unsafe extern "C" fn base_usb_control(
 }
 
 /// A bulk or interrupt transfer of `len` bytes at `data` on `endpoint` of
-/// interface `iface`, claimed: how many moved, or `-1`.
+/// `intf`: how many moved, or `-1`. One from the device asks for a whole
+/// number of the endpoint's packets, or the crate fails it.
+///
+/// # Safety
+///
+/// As [`base_usb_control`].
 unsafe fn data_transfer<T: BulkOrInterrupt>(
-    dev: *mut Dev,
-    iface: i32,
+    intf: *mut Interface,
     endpoint: i32,
     data: *mut u8,
     len: i64,
     timeout_ms: i32,
 ) -> i64 {
-    let (Ok(n), Ok(ep), Ok(len), Ok(ms)) =
-        (u8::try_from(iface), u8::try_from(endpoint), usize::try_from(len), u64::try_from(timeout_ms))
+    // A transfer is one buffer of the crate's, whose length is a `u32`.
+    let (Ok(ep), Ok(len), Ok(ms)) =
+        (u8::try_from(endpoint), u32::try_from(len), u64::try_from(timeout_ms))
     else {
         return -1;
     };
-    let Some(intf) = (*dev).claimed.get(&n) else { return -1 };
-    let timeout = Duration::from_millis(ms);
+    let (len, timeout) = (len as usize, Duration::from_millis(ms));
+    let intf = &*intf;
     if ep & 0x80 != 0 {
         let Ok(mut e) = intf.endpoint::<T, In>(ep) else { return -1 };
-        let packet = e.max_packet_size();
-        if len == 0 || packet == 0 || len % packet != 0 {
-            return -1;
-        }
         let done = e.transfer_blocking(Buffer::new(len), timeout);
         if done.status.is_err() {
             return -1;
@@ -212,19 +199,18 @@ unsafe fn data_transfer<T: BulkOrInterrupt>(
     }
 }
 
-unsafe extern "C" fn base_usb_bulk(dev: *mut Dev, iface: i32, endpoint: i32, data: *mut u8, len: i64, timeout_ms: i32) -> i64 {
-    data_transfer::<Bulk>(dev, iface, endpoint, data, len, timeout_ms)
+unsafe extern "C" fn base_usb_bulk(intf: *mut Interface, endpoint: i32, data: *mut u8, len: i64, timeout_ms: i32) -> i64 {
+    data_transfer::<Bulk>(intf, endpoint, data, len, timeout_ms)
 }
 
 unsafe extern "C" fn base_usb_interrupt(
-    dev: *mut Dev,
-    iface: i32,
+    intf: *mut Interface,
     endpoint: i32,
     data: *mut u8,
     len: i64,
     timeout_ms: i32,
 ) -> i64 {
-    data_transfer::<Interrupt>(dev, iface, endpoint, data, len, timeout_ms)
+    data_transfer::<Interrupt>(intf, endpoint, data, len, timeout_ms)
 }
 
 /// The address of `symbol`, or `None` for one this library does not have.

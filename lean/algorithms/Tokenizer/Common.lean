@@ -53,8 +53,10 @@ structure TokMem where
   htCtx : Nat
   /-- i64: the CUDA context, needed only for the pinned allocation. -/
   cudaCtx : Nat
-  /-- i64: pointer to the null-terminated path of the tokenizer file. -/
+  /-- i64: pointer to the field holding the tokenizer file's path. -/
   pathPtr : Nat
+  /-- i64: that field's size in bytes (`Sem.readField`). -/
+  pathCap : Nat
   /-- i64: pointer to the file's contents once they are in host memory. -/
   bufPtr : Nat
   /-- u32 per token: the working array BPE merges in place. -/
@@ -109,11 +111,12 @@ def loadTokenizerM (c : TokMem) : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← load64 (← absAddr ptr c.cudaCtx)
   let pathP ← load64 (← absAddr ptr c.pathPtr)
+  let pathC ← load64 (← absAddr ptr c.pathCap)
   let bytes64 ← iconst64 c.fileMaxBytes
   let pinId ← ffi .cudaPinnedAlloc %[ctxPtr, bytes64]
   let bufP ← ffi .cudaPinnedPtr %[ctxPtr, pinId]
   let zero64 ← iconst64 0
-  let _ ← ffi .fileReadToPtr %[pathP, bufP, zero64, bytes64]
+  let _ ← ffi .fileReadToPtr %[pathP, pathC, bufP, zero64, bytes64]
   storeI64 bufP (← absAddr ptr c.bufPtr)
   ffiVoid .htInit %[ptr]
   let htCtx ← load64At ptr c.htCtx

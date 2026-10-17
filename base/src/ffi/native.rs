@@ -8,25 +8,15 @@
 //! * AArch64: AAPCS64 (x0–x3 in; x0 out; x19–x30, sp preserved; x18 untouched).
 //!
 //! It is position-independent, calls nothing and makes no system call. None of
-//! this is checked here.
+//! this is checked here, and nothing is kept of what was loaded: a free finds
+//! the mapping from the address it is handed.
 
-use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+/// What a free gives back to the system: the mapping `cl_native_load` made.
+type Mapping = region::Allocation;
 
-/// A mapping `cl_native_load` made.
-struct Mapping(#[allow(dead_code)] region::Allocation);
-
-// SAFETY: the allocation is owned memory addressed by a raw pointer; nothing
-// here dereferences it after loading or reads it through a shared reference,
-// and dropping it (unmapping) from any thread is what the OS calls allow.
-unsafe impl Send for Mapping {}
-unsafe impl Sync for Mapping {}
-
-/// Live mappings by address; a free of any other address is refused.
-fn loaded() -> &'static Mutex<BTreeMap<usize, Mapping>> {
-    static LOADED: OnceLock<Mutex<BTreeMap<usize, Mapping>>> = OnceLock::new();
-    LOADED.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
+/// Bytes ahead of the code, holding the box its mapping is kept in, so a free
+/// finds it from the code's own address. Sixteen keeps the code 16-aligned.
+const HEADER: usize = 16;
 
 /// Copy `len` bytes at `src` into fresh W^X executable memory; answers the
 /// address, or 0 on failure.
@@ -34,34 +24,38 @@ pub(crate) unsafe extern "C" fn cl_native_load(src: *const u8, len: i64) -> i64 
     if src.is_null() || len <= 0 {
         return 0;
     }
-    let len = len as usize;
-    let mut alloc = match region::alloc(len, region::Protection::READ_WRITE) {
+    let Some(size) = usize::try_from(len).ok().and_then(|n| n.checked_add(HEADER)) else { return 0 };
+    let mut alloc = match region::alloc(size, region::Protection::READ_WRITE) {
         Ok(a) => a,
         Err(_) => return 0,
     };
-    let dst = alloc.as_mut_ptr::<u8>();
-    std::ptr::copy_nonoverlapping(src, dst, len);
-    if wasmtime_internal_jit_icache_coherence::clear_cache(dst as *const _, len).is_err() {
+    let base = alloc.as_mut_ptr::<u8>();
+    let code = base.add(HEADER);
+    std::ptr::copy_nonoverlapping(src, code, size - HEADER);
+    if wasmtime_internal_jit_icache_coherence::clear_cache(code as *const _, size - HEADER).is_err() {
         return 0;
     }
-    if region::protect(dst, alloc.len(), region::Protection::READ_EXECUTE).is_err() {
+    let len = alloc.len();
+    let kept = Box::into_raw(Box::new(alloc));
+    base.cast::<*mut Mapping>().write(kept);
+    if region::protect(base, len, region::Protection::READ_EXECUTE).is_err()
+        || wasmtime_internal_jit_icache_coherence::pipeline_flush_mt().is_err()
+    {
+        drop(Box::from_raw(kept));
         return 0;
     }
-    if wasmtime_internal_jit_icache_coherence::pipeline_flush_mt().is_err() {
-        return 0;
-    }
-    let addr = dst as usize;
-    loaded().lock().unwrap().insert(addr, Mapping(alloc));
-    addr as i64
+    code as i64
 }
 
-/// Unmap what `cl_native_load` answered `addr` for. Answers 0, or -1 if `addr`
-/// is not one it answered (or was already freed).
-pub(crate) unsafe extern "C" fn cl_native_free(addr: i64) -> i32 {
-    match loaded().lock().unwrap().remove(&(addr as usize)) {
-        Some(_) => 0,
-        None => -1,
-    }
+/// Unmap what `cl_native_load` answered for `addr`.
+///
+/// # Safety
+///
+/// `addr` is an address `cl_native_load` answered, other than 0, not freed
+/// already, and no thread is running the code at it.
+pub(crate) unsafe extern "C" fn cl_native_free(addr: i64) {
+    let header = (addr as *const u8).sub(HEADER);
+    drop(Box::from_raw(header.cast::<*mut Mapping>().read()));
 }
 
 /// Which architecture's code this host runs: 1 for x86-64, 2 for AArch64,
@@ -76,11 +70,12 @@ pub(crate) unsafe extern "C" fn cl_native_arch() -> i32 {
     }
 }
 
-/// 1 if the CPU has the feature `name` (Rust's spelling), 0 if not, -1 for a
-/// name unknown here, so a typo is not mistaken for "absent".
-pub(crate) unsafe extern "C" fn cl_cpu_has(name: *const u8) -> i32 {
-    let name = super::read_cstr_ptr(name);
-    match cpu_has(&name) {
+/// 1 if the CPU has the feature named in the `cap`-byte field at `name`
+/// (Rust's spelling, [`super::read_field`]), 0 if not, -1 for a name unknown
+/// here, so a typo is not mistaken for "absent".
+pub(crate) unsafe extern "C" fn cl_cpu_has(name: *const u8, cap: i64) -> i32 {
+    let Some(name) = super::read_field(name, cap) else { return -1 };
+    match cpu_has(name) {
         Some(true) => 1,
         Some(false) => 0,
         None => -1,
@@ -163,17 +158,23 @@ mod tests {
             assert_ne!(f, 0);
             let body: Body = std::mem::transmute(f as usize);
             assert_eq!(body(40, 2, 0, 0), 42);
-            assert_eq!(cl_native_free(f), 0);
-            // not freeable twice
-            assert_eq!(cl_native_free(f), -1);
+            assert_eq!(f % 16, 0, "code starts 16-aligned");
+            cl_native_free(f);
         }
     }
 
-    /// Only what was loaded can be freed.
+    /// Mappings are independent: freeing one leaves another running.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
-    fn an_address_not_loaded_is_not_freed() {
-        let not_code = [0u8; 16];
-        assert_eq!(unsafe { cl_native_free(not_code.as_ptr() as i64) }, -1);
+    fn freeing_one_load_keeps_another() {
+        unsafe {
+            let (f, g) = (cl_native_load(ADD.as_ptr(), ADD.len() as i64), cl_native_load(ADD.as_ptr(), ADD.len() as i64));
+            assert!(f != 0 && g != 0 && f != g);
+            cl_native_free(f);
+            let body: Body = std::mem::transmute(g as usize);
+            assert_eq!(body(1, 2, 0, 0), 3);
+            cl_native_free(g);
+        }
     }
 
     #[test]
@@ -186,8 +187,8 @@ mod tests {
 
     #[test]
     fn a_feature_name_this_runtime_does_not_know_is_not_answered_no() {
-        assert_eq!(unsafe { cl_cpu_has(b"no-such-feature\0".as_ptr()) }, -1);
+        assert_eq!(unsafe { cl_cpu_has(b"no-such-feature\0".as_ptr(), 16) }, -1);
         #[cfg(target_arch = "x86_64")]
-        assert_eq!(unsafe { cl_cpu_has(b"sse2\0".as_ptr()) }, 1);
+        assert_eq!(unsafe { cl_cpu_has(b"sse2".as_ptr(), 4) }, 1);
     }
 }

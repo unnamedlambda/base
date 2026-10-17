@@ -61,6 +61,8 @@ def deptCsvPath_off  : Nat := 0x0400
 def scanFname_off    : Nat := 0x0500
 def filterFname_off  : Nat := 0x0540
 def joinFname_off    : Nat := 0x0580
+/-- Each output file name's field: scan, filter and join name one each. -/
+def outFnameRegion   : Nat := filterFname_off - scanFname_off
 def patternStr_off   : Nat := 0x05C0   -- filter pattern bytes (e.g. ",Seattle,")
 def patternRegion    : Nat := 64
 def flag_off         : Nat := patternStr_off + patternRegion   -- 0x0600
@@ -112,9 +114,6 @@ open AlgorithmLib.IR
 open AlgorithmLib.Prog
 
 
-/-- The externals every emitted function declares, in one order. -/
-abbrev fnFileWrite : Ffi := .fileWrite
-
 /-- One CSV buffer's rows written to a database, one row per key. A row runs to
     the next newline, or to the end of the buffer. -/
 def emitIngest (ptr lmdbCtx : V .i64) (handle : V .i32)
@@ -152,6 +151,8 @@ def emitWriteAll (ptr lmdbCtx : V .i64) (handle : V .i32) (resOff : V .i64)
   let two ← iconst64 2
   let four ← iconst64 4
   let count64 ← sextend64 count
+  let fcap ← iconst64 outFnameRegion
+  let _ ← ffi .fileSetLen %[← iadd ptr fnameOff, fcap, zero]
   let _ ← wloop %[zero, four, zero]
     (head := fun c => return (contIf .slt (c.head) count64, %[], ()))
     (body := fun c _ => do
@@ -164,7 +165,7 @@ def emitWriteAll (ptr lmdbCtx : V .i64) (handle : V .i32) (resOff : V .i64)
       let dataOff ← iadd (← iadd byteOff four) klen
       let valOff ← iadd resOff dataOff
       let vlenSigned ← sextend64 (← ireduce32 vlen)
-      let _ ← ffi fnFileWrite %[ptr, fnameOff, valOff, fileOff, vlenSigned]
+      let _ ← writeFileAt ptr fnameOff fcap valOff fileOff vlenSigned
       return %[← iadd i one, ← iadd dataOff vlen, ← iadd fileOff vlen])
 
 /-- The scanned rows whose value contains the pattern, plus the header row. -/
@@ -177,6 +178,8 @@ def emitFilter (ptr resOff : V .i64) (count : V .i32) (fnameOff : V .i64) (patte
   let seaLen ← iconst64 patternLen
   let patOff ← iconst64 patternStr_off
   let count64 ← sextend64 count
+  let fcap ← iconst64 outFnameRegion
+  let _ ← ffi .fileSetLen %[← iadd ptr fnameOff, fcap, zero]
   let _ ← wloop %[zero, four, zero]
     (head := fun c => return (contIf .slt (c.head) count64, %[], ()))
     (body := fun c _ => do
@@ -215,7 +218,7 @@ def emitFilter (ptr resOff : V .i64) (count : V .i32) (fnameOff : V .i64) (patte
       let _ ← ifte .ne (hit.head) zero
         (do
           let vlenSigned ← sextend64 (← ireduce32 vlen)
-          let _ ← ffi fnFileWrite %[ptr, fnameOff, valOff, fileOff, vlenSigned]
+          let _ ← writeFileAt ptr fnameOff fcap valOff fileOff vlenSigned
           pure %[])
         (pure %[])
       let nextFile ← ifte .ne (hit.head) zero
@@ -227,9 +230,9 @@ def mainCode (patternLen : Nat) : Prog V L Unit :=
   let ptr ← basePtr
   let empBufOff ← iconst64 empBuf_off
   let zero ← iconst64 0
-  let empSize ← readFile ptr empCsvPath_off empBuf_off empBufSize
+  let empSize ← readFile ptr empCsvPath_off (deptCsvPath_off - empCsvPath_off) empBuf_off empBufSize
   let deptBufOff ← iconst64 deptBuf_off
-  let deptSize ← readFile ptr deptCsvPath_off deptBuf_off deptBufSize
+  let deptSize ← readFile ptr deptCsvPath_off (scanFname_off - deptCsvPath_off) deptBuf_off deptBufSize
   let lmdbSlot := ptr
   ffiVoid .lmdbInit %[lmdbSlot]
   let lmdbCtx ← load64 ptr

@@ -381,7 +381,6 @@ def Frame.allows (fr : Frame) (args : List UInt64) (ret : Option UInt64) (a : UI
   | .none => False
   | .at d l => within (arg d) (arg l).toNat
   | .atOff b o l => within (arg b + arg o) (arg l).toNat
-  | .atOffRet b o => within (arg b + arg o) (ret.getD 0).toNat
   | .fixed d n => within (arg d) n
   | .fixed2 d e n => within (arg d) n ∨ within (arg e) n
   | .atRecords d c n => within (arg d) (n * (asI32 (arg c)).toNat)
@@ -442,7 +441,6 @@ theorem Frame.mayWrite_sound {fr : Frame} {args : List UInt64} {x : UInt64} (h :
       dsimp only at h ha
       simp only [Bool.or_eq_false_iff, decide_eq_false_iff_not, Nat.not_lt] at h
       rw [within_of h.1 ha] at h; cases h.2
-  | atOffRet _ _ => cases h
   | dataDependent _ => cases h
   | dataDependent2 _ _ => cases h
   | anywhere => cases h
@@ -456,7 +454,7 @@ theorem Frame.mayWrite_sound {fr : Frame} {args : List UInt64} {x : UInt64} (h :
     slots, downloads, pinned allocation, wgpu, the LMDB context and scan, and
     the window context and poll. -/
 def hostTouching : List IR.Ffi :=
-  [.fileRead, .fileWrite, .fileReadToPtr, .fileWriteFromPtr, .stdinReadline, .stdoutWrite,
+  [.fileReadToPtr, .fileWriteFromPtr, .stdinReadline, .stdoutWrite,
    .sinf, .cosf, .powf, .cudaInit,
    .cudaCleanup, .cudaDownload, .cudaDownloadOffset, .gpuInit, .gpuCleanup, .gpuCreateBuffer,
    .gpuCreatePipeline, .gpuUpload, .gpuUploadPtr, .gpuDispatch, .gpuDownload, .gpuDownloadPtr,
@@ -481,7 +479,8 @@ def deviceOnly : List IR.Ffi :=
 def offHost : List IR.Ffi :=
   [.lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .windowOpen,
    .windowPresentGpuBuffer, .nativeLoad, .nativeFree, .nativeArch, .cpuHas, .fileCreateDirAll,
-   .memLock, .memUnlock, .memAdviseHuge, .threadPriority]
+   .memLock, .memUnlock, .memAdviseHuge, .threadPriority, .memWait, .memWake, .clockNow,
+   .fileSize, .fileSetLen]
 
 /-- The entry points with an executable contract: the families the corpora run
     through the real symbols. -/
@@ -726,7 +725,7 @@ theorem ffiCpuHas_mem {bits : List UInt64} {w : World} {r w'}
   unfold ffiCpuHas at h
   split at h
   · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    (first | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl) | cases h)
+    split at h <;> (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
   · cases h
 
 theorem ffiFileCreateDirAll_mem {bits : List UInt64} {w : World} {r w'}
@@ -734,8 +733,8 @@ theorem ffiFileCreateDirAll_mem {bits : List UInt64} {w : World} {r w'}
   unfold ffiFileCreateDirAll at h
   split at h
   · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h <;> (try split at h) <;>
-      (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
+    repeat' split at h
+    all_goals (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
   · cases h
 
 theorem ffiGrant_mem_memLock {bits : List UInt64} {w : World} {r w'}
@@ -764,6 +763,43 @@ theorem ffiGrant_mem_threadPriority {bits : List UInt64} {w : World} {r w'}
   unfold ffiGrant at h
   split at h
   · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
+  · cases h
+
+theorem ffiMemWait_world {bits : List UInt64} {w : World} {r w'}
+    (h : ffiMemWait bits w = some (r, w')) : w' = w := by
+  unfold ffiMemWait at h
+  repeat' split at h
+  all_goals (cases h <;> rfl)
+
+theorem ffiMemWake_world {bits : List UInt64} {w : World} {r w'}
+    (h : ffiMemWake bits w = some (r, w')) : w' = w := by
+  unfold ffiMemWake at h
+  repeat' split at h
+  all_goals (cases h <;> rfl)
+
+theorem ffiFileSize_world {bits : List UInt64} {w : World} {r w'}
+    (h : ffiFileSize bits w = some (r, w')) : w' = w := by
+  unfold ffiFileSize at h
+  split at h
+  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+    repeat' split at h
+    all_goals (simp only [Option.some.injEq, Prod.mk.injEq] at h; exact h.2.symm)
+  · cases h
+
+theorem ffiFileSetLen_mem {bits : List UInt64} {w : World} {r w'}
+    (h : ffiFileSetLen bits w = some (r, w')) : w'.mem = w.mem := by
+  unfold ffiFileSetLen at h
+  split at h
+  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+    repeat' split at h
+    all_goals (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
+  · cases h
+
+theorem ffiClockNow_world {bits : List UInt64} {w : World} {r w'}
+    (h : ffiClockNow bits w = some (r, w')) : w' = w := by
+  unfold ffiClockNow at h
+  split at h
+  · simp only [Option.some.injEq, Prod.mk.injEq] at h; exact h.2.symm
   · cases h
 
 /-- An asynchronous copy changes host bytes only as its host side does. -/
@@ -852,13 +888,10 @@ set_option maxHeartbeats 2000000 in
     Over the entry points with a contract this is a theorem about the
     model; over the rest it holds because they have no behavior to violate it
     with (`callFfi_uncontracted`).
-
-    The one hypothesis, for `fileRead` alone, is that files are shorter than
-    `2^64` bytes: its frame is measured by the count it returns, an `i64`. -/
+-/
 theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : Option V) (w' : World)
     (h : callFfi f args w = some (ret, w'))
     (bits : List UInt64) (hb : args.mapM asBits = some bits)
-    (hfs : f = .fileRead → ∀ p c, w.fs.get p = some c → c.size < 2 ^ 64)
     (a : UInt64) (hout : ¬ (frame f).allows bits (ret.bind asBits) a) :
     Unchanged w.mem w'.mem a := by
   by_cases hc : f ∈ contracted
@@ -876,7 +909,7 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
   by_cases hst : f ∈ offHost
   case pos =>
     simp only [offHost, List.mem_cons, List.not_mem_nil, or_false] at hst
-    rcases hst with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
+    rcases hst with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
     · exact Unchanged.of_eq (by rw [ffiLmdbOpen_mem (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiLmdbBeginWriteTxn_mem (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiLmdbPut_mem (bits := bits) (w := w) h])
@@ -892,45 +925,23 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
     · exact Unchanged.of_eq (by rw [ffiGrant_mem_memUnlock (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiGrant_mem_memAdviseHuge (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiGrant_mem_threadPriority (bits := bits) (w := w) h])
+    · exact Unchanged.of_eq (by rw [ffiMemWait_world (bits := bits) (w := w) h])
+    · exact Unchanged.of_eq (by rw [ffiMemWake_world (bits := bits) (w := w) h])
+    · exact Unchanged.of_eq (by rw [ffiClockNow_world (bits := bits) (w := w) h])
+    · exact Unchanged.of_eq (by rw [ffiFileSize_world (bits := bits) (w := w) h])
+    · exact Unchanged.of_eq (by rw [ffiFileSetLen_mem (bits := bits) (w := w) h])
   have hc' : f ∈ hostTouching := by
     simp only [contracted, List.mem_append] at hc
     exact (hc.resolve_right hst).resolve_right hdev
   simp only [hostTouching, List.mem_cons, List.not_mem_nil, or_false] at hc'
-  rcases hc' with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
-  all_goals (delta callBits at h; dsimp only at h; simp only [gpuUploadAt, ffiFileRead, ffiFileWrite, ffiFileReadToPtr, ffiFileWriteFromPtr, ffiStdinReadline, ffiStdoutWrite, ffiSinf, ffiCosf, ffiPowf, ffiCudaInit, ffiCudaCleanup, ffiCudaDownload, ffiCudaDownloadOffset, ffiGpuInit, ffiGpuCleanup, ffiGpuCreateBuffer, ffiGpuCreatePipeline, ffiGpuUpload, ffiGpuUploadPtr, ffiGpuDispatch, ffiGpuDownload, ffiGpuDownloadPtr, ffiCudaPinnedAlloc, ffiCudaPinnedFree, ffiLmdbInit, ffiLmdbCleanup, ffiLmdbCursorScan, ffiWindowInit, ffiWindowCleanup, ffiWindowPoll, ffiCudaUploadAsync, ffiCudaUploadOffsetAsync, ffiCudaDownloadAsync, ffiThreadInit, ffiThreadCleanup, ffiThreadJoin] at h)
+  rcases hc' with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
+  all_goals (delta callBits at h; dsimp only at h; simp only [gpuUploadAt, ffiFileReadToPtr, ffiFileWriteFromPtr, ffiStdinReadline, ffiStdoutWrite, ffiSinf, ffiCosf, ffiPowf, ffiCudaInit, ffiCudaCleanup, ffiCudaDownload, ffiCudaDownloadOffset, ffiGpuInit, ffiGpuCleanup, ffiGpuCreateBuffer, ffiGpuCreatePipeline, ffiGpuUpload, ffiGpuUploadPtr, ffiGpuDispatch, ffiGpuDownload, ffiGpuDownloadPtr, ffiCudaPinnedAlloc, ffiCudaPinnedFree, ffiLmdbInit, ffiLmdbCleanup, ffiLmdbCursorScan, ffiWindowInit, ffiWindowCleanup, ffiWindowPoll, ffiCudaUploadAsync, ffiCudaUploadOffsetAsync, ffiCudaDownloadAsync, ffiThreadInit, ffiThreadCleanup, ffiThreadJoin] at h)
   all_goals (split at h <;> (try contradiction))
   all_goals (simp only [frame, Frame.allows, ctxSlot, List.getD, List.getElem?_cons_zero,
     List.getElem?_cons_succ, Option.getD_some] at hout)
   all_goals first
     | exact absurd trivial hout
     | skip
-  -- fileRead
-  next =>
-    obtain ⟨path, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · rename_i content hc
-      replace hc : w.fs.get path = some content := by split at hc <;> simp_all
-      obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h
-      obtain ⟨rfl, rfl⟩ := h
-      apply Unchanged.of_eq; apply copyIn_other hm
-      intro i hi e
-      apply hout
-      refine ⟨i, ?_, e⟩
-      rw [size_toByteArray_map_range] at hi
-      have hlt := hfs rfl path content hc
-      rw [Option.bind_some, asBits_ofInt_i64_nat, Option.getD_some, UInt64.toNat_ofNat',
-        Nat.mod_eq_of_lt (by omega)]
-      exact hi
-  -- fileWrite
-  next =>
-    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    split at h <;>
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
   -- fileReadToPtr
   next =>
     split at h
@@ -951,30 +962,24 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
     · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
     · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
       split at h
+      · split at h
+        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
+        obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
       · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
   -- stdinReadline
   next =>
     split at h
     · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · rename_i hpos
-      split at h
+    · split at h
       · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · obtain ⟨m1, hm1, h⟩ := Option.bind_eq_some_iff.mp h
-        obtain ⟨m2, hm2, h⟩ := Option.bind_eq_some_iff.mp h
+      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
         simp only [Option.some.injEq, Prod.mk.injEq] at h
         obtain ⟨rfl, rfl⟩ := h
-        have h1 := pos_of_asI64 hpos
-        refine Unchanged.of_eq ((Mem.store_other hm2 a ?_).trans (copyIn_other hm1 a ?_))
-        · intro k hk e
-          have hk0 : k = 0 := by omega
-          subst hk0
-          refine hout ⟨_, ?_, by simpa [UInt64.add_assoc] using e⟩
-          omega
-        · intro i hi e
-          rw [size_toByteArray_map_range] at hi
-          exact hout ⟨i, by omega, e⟩
+        apply Unchanged.of_eq; apply copyIn_other hm
+        intro i hi e
+        rw [size_toByteArray_map_range] at hi
+        exact hout ⟨i, by omega, e⟩
   -- stdoutWrite
   next =>
     split at h
@@ -1270,12 +1275,11 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
 theorem spec_frame_sound (f : IR.Ffi) {run : List V → World → Option (Option V × World)}
     (hr : f.spec.run? = some run) (args : List V) (w : World) (ret : Option V) (w' : World)
     (h : run args w = some (ret, w')) (bits : List UInt64) (hb : args.mapM asBits = some bits)
-    (hfs : ∀ p c, w.fs.get p = some c → c.size < 2 ^ 64)
     (a : UInt64) (hout : ¬ f.spec.frame.allows bits (ret.bind asBits) a) :
     Unchanged w.mem w'.mem a := by
   simp only [IR.Ffi.spec] at hr hout
   split at hr
-  · cases hr; exact callFfi_respects_frame f args w ret w' h bits hb (fun _ => hfs) a hout
+  · cases hr; exact callFfi_respects_frame f args w ret w' h bits hb a hout
   · cases hr
 
 end AlgorithmLib.HProg

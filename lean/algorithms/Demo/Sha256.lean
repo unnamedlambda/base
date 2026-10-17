@@ -433,7 +433,7 @@ def emitHexFormat (k : Consts V) : Prog V L Unit := do
   let outLen ← iconst64 65
   let outFname ← fldOffset f.outputFilename
   let outData ← fldOffset f.hexOutput
-  let _ ← ffi .fileWrite %[k.ptr, outFname, outData, k.zero, outLen]
+  let _ ← replaceFileAt k.ptr outFname (← iconst64 256) outData outLen
 
 -- Main builder: compose the sub-builders
 

@@ -1474,7 +1474,7 @@ def code (spec : BlackHoleSpec) : Prog V L Unit :=
     let _ ← cudaDownload ptr bgraBuf pxOffV bgraSz
     cudaCleanup ptr
     let total ← iconst64 (54 + pixelBytes spec)
-    let _ ← writeFile0 ptr filenameOff bmpHeaderOff total
+    let _ ← writeFile0 ptr filenameOff filenameRegion bmpHeaderOff total
 
 
 -- Generic in the spec, so there is no instance to `decide` at; the

@@ -1,44 +1,53 @@
+//! Standard input and output, each one call into std on bytes the program
+//! points at.
+
 use std::io::{BufRead, Write as IoWrite};
 
-pub(crate) unsafe extern "C" fn cl_stdin_readline(
-    ptr: *mut u8,
-    dst_off: i64,
-    max_len: i64,
-) -> i64 {
-    if max_len <= 0 {
-        return 0;
-    }
-
-    let mut line = String::new();
+/// A line of standard input into `dst`, with its newline, or as much of it as
+/// `cap` bytes hold, the rest left for the next call, as `fgets` leaves it:
+/// how many bytes, `0` at the end of input, `-1` for a `cap` that is not
+/// positive or a read that fails.
+///
+/// # Safety
+///
+/// `dst` has room for `cap` bytes.
+pub(crate) unsafe extern "C" fn cl_stdin_read_line(dst: *mut u8, cap: i64) -> i64 {
+    let Some(cap) = usize::try_from(cap).ok().filter(|&c| c > 0) else { return -1 };
     let mut stdin = std::io::stdin().lock();
-    let read = match stdin.read_line(&mut line) {
-        Ok(n) => n,
-        Err(_) => return -1,
-    };
-    if read == 0 {
-        return 0;
+    let mut n = 0;
+    while n < cap {
+        let buf = match stdin.fill_buf() {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        if buf.is_empty() {
+            break;
+        }
+        let take = buf.len().min(cap - n);
+        let line = buf[..take].iter().position(|&b| b == b'\n').map(|i| i + 1);
+        let take = line.unwrap_or(take);
+        std::ptr::copy_nonoverlapping(buf.as_ptr(), dst.add(n), take);
+        stdin.consume(take);
+        n += take;
+        if line.is_some() {
+            break;
+        }
     }
-
-    let buf = line.as_bytes();
-    let copy_len = buf.len().min(max_len.saturating_sub(1) as usize);
-    let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), max_len as usize);
-    dst[..copy_len].copy_from_slice(&buf[..copy_len]);
-    dst[copy_len] = 0;
-    copy_len as i64
+    n as i64
 }
 
-pub(crate) unsafe extern "C" fn cl_stdout_write(ptr: *mut u8, src_off: i64, size: i64) -> i64 {
-    if size < 0 {
-        return -1;
-    }
-
-    let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
+/// `size` bytes at `src` written to standard output and flushed to it: `size`,
+/// or `-1` for a negative `size` or a write that fails.
+///
+/// # Safety
+///
+/// `src` holds `size` readable bytes.
+pub(crate) unsafe extern "C" fn cl_stdout_write(src: *const u8, size: i64) -> i64 {
+    let Ok(len) = usize::try_from(size) else { return -1 };
+    let data = if len == 0 { &[][..] } else { std::slice::from_raw_parts(src, len) };
     let mut stdout = std::io::stdout().lock();
-    match stdout.write_all(data) {
-        Ok(_) => match stdout.flush() {
-            Ok(_) => size,
-            Err(_) => -1,
-        },
+    match stdout.write_all(data).and_then(|()| stdout.flush()) {
+        Ok(()) => size,
         Err(_) => -1,
     }
 }

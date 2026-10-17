@@ -16,14 +16,22 @@ endpoint; what a device answers a transfer is its `usbReply`, `none` for a
 transfer that fails. A device lives outside every region (`usbDevAddr`), so
 a program passes it and never loads through it.
 
-Every refusal answers `-1` and writes nothing: a device or interface not
-there, an interface not claimed, a request type with a kind or recipient
-USB does not have, a length out of range, and a transfer from the device
-that asks for part of a packet. On Windows a control transfer goes through a
-claimed interface, and without one is refused (`usbControlNeedsClaim`).
+A claim answers an interface handle of its own (`usbIfaceAddr`), held until
+it is released whether or not its device still is, and every transfer goes
+through one, control transfers too, as they must on Windows. What the system
+claimed is the device's (`UsbOpen.claimed`), and releasing any handle to a
+claim ends it. A claim answers null where the device does not allow it, where
+another opening of the same device holds it, and where this one does and the
+system does not hand out a second handle to it (`usbClaimAgain`). A transfer
+through a handle whose claim another released is what the device answers, as
+any is: Linux claims an interface again when a transfer reaches it.
 
-**Undefined.** A device not open, a buffer without room for what comes from
-the device or bytes to send.
+Every refusal answers `-1` and writes nothing: a request type with a kind or
+recipient USB does not have, a length out of range, and a transfer from the
+device that asks for part of a packet.
+
+**Undefined.** A device not open, an interface not held, and a buffer
+without room for what comes from the device or bytes to send.
 -/
 
 namespace AlgorithmLib.HProg.Sem
@@ -35,15 +43,15 @@ inductive UsbCall where
   | open (i : Nat)
   | close (k : Nat)
   | claim (k n : Nat)
-  | release (k n : Nat)
-  /-- A transfer on device `k`: what is asked, and whether its data comes
-      from the device. -/
+  | release (j : Nat)
+  /-- A transfer through device `k`: what is asked, and whether its data
+      comes from the device. -/
   | transfer (k : Nat) (x : UsbXfer) (fromDevice : Bool)
   /-- An answer that changes nothing. -/
   | answer (v : V)
 
 def usbNo : UsbCall := .answer (.sc .i64 (UInt64.ofInt (-1)))
-def usbNo32 : UsbCall := .answer (ofInt .i32 (-1))
+def usbNull : UsbCall := .answer (.sc .i64 0)
 
 /-- A control transfer's length, a `u16`; one out of range is none. -/
 def len16 (x : UInt64) : Nat := if x < 65536 then x.toNat else 0
@@ -63,6 +71,19 @@ def World.usbListed? (w : World) (i : UInt64) : Option UsbDevice :=
 /-- Whether device `k` has interface `n` claimed. -/
 def World.usbClaimed (w : World) (k n : Nat) : Bool :=
   ((w.usb[k]?).map (·.claimed.contains n)).getD false
+
+/-- Whether another opening of the device `k` is has interface `n` claimed. -/
+def World.usbBusy (w : World) (k n : Nat) : Bool :=
+  (List.range w.usb.size).any fun k' => k' != k &&
+    ((w.usb[k']?).map fun o => some o.device == (w.usb[k]?).map (·.device) && o.claimed.contains n).getD false
+
+/-- The interface held at `a`. -/
+def World.usbIface? (w : World) (a : UInt64) : Option Nat :=
+  (List.range w.usbIfaces.size).find? fun j => usbIfaceAddr j == a && (w.usbIfaces[j]?.map (·.live)).getD false
+
+/-- The interface held at `a`, as it was claimed. -/
+def World.usbIfaceOf? (w : World) (a : UInt64) : Option UsbIface :=
+  (w.usbIface? a).bind (w.usbIfaces[·]?)
 
 /-- The device open device `k` is. -/
 def World.usbDevOf (w : World) (k : Nat) : Option UsbDevice :=
@@ -90,27 +111,28 @@ def usbDClose : List UInt64 → Option UsbCall
   | [d] => (w.usbDev? d).map .close
   | _ => none
 
-def usbDClaim (release : Bool) : List UInt64 → Option UsbCall
+def usbDClaim : List UInt64 → Option UsbCall
   | [d, iface] => do
       let k ← w.usbDev? d
       let n := asI32 iface
-      if n < 0 || n > 255 then some usbNo32
-      else if release then
-        some (if w.usbClaimed k n.toNat then .release k n.toNat else usbNo32)
-      else if w.usbClaimed k n.toNat then some (.answer (ofInt .i32 0))
+      if n < 0 || n > 255 || w.usbBusy k n.toNat then some usbNull
+      else if w.usbClaimed k n.toNat then some (if w.usbClaimAgain then .claim k n.toNat else usbNull)
       else if ((w.usbDevOf k).map (·.claimable.contains n.toNat)).getD false then some (.claim k n.toNat)
-      else some usbNo32
+      else some usbNull
+  | _ => none
+
+def usbDRelease : List UInt64 → Option UsbCall
+  | [i] => (w.usbIface? i).map .release
   | _ => none
 
 /-- A control transfer: its data stage `len` bytes at `data`, read for one to
     the device and with room for one from it. -/
 def usbDControl : List UInt64 → Option UsbCall
-  | [d, rt, rq, val, idx, data, len, t] => do
-      let k ← w.usbDev? d
+  | [i, rt, rq, val, idx, data, len, t] => do
+      let f ← w.usbIfaceOf? i
+      let k := f.dev
       let r := rt &&& 0xff
-      let noClaim := ((w.usb[k]?).map (·.claimed.isEmpty)).getD true
-      if len ≥ 65536 || asI32 t < 0 || (r >>> 5) &&& 3 == 3 || r &&& 0x1f > 3
-          || (w.usbControlNeedsClaim && noClaim) then some usbNo
+      if len ≥ 65536 || asI32 t < 0 || (r >>> 5) &&& 3 == 3 || r &&& 0x1f > 3 then some usbNo
       else
         let n := len16 len
         let fromDevice := r &&& 0x80 != 0
@@ -122,14 +144,13 @@ def usbDControl : List UInt64 → Option UsbCall
   | _ => none
 
 /-- A bulk or interrupt transfer of `len` bytes at `data` on an endpoint of
-    a claimed interface. -/
+    an interface held, at most what one buffer of the system's holds. -/
 def usbDData (interrupt : Bool) : List UInt64 → Option UsbCall
-  | [d, iface, ep, data, len, t] => do
-      let k ← w.usbDev? d
-      let n := asI32 iface
+  | [i, ep, data, len, t] => do
+      let f ← w.usbIfaceOf? i
+      let k := f.dev
       let e := asI32 ep
-      if n < 0 || n > 255 || e < 0 || e > 255 || len ≥ 0x8000000000000000 || asI32 t < 0
-          || !w.usbClaimed k n.toNat then some usbNo
+      if e < 0 || e > 255 || len ≥ 0x100000000 || asI32 t < 0 then some usbNo
       else
         let l := lenOf len
         let fromDevice := e.toNat &&& 0x80 != 0
@@ -153,8 +174,8 @@ def usbDecode (f : UsbFn) (bits : List UInt64) (w : World) : Option UsbCall :=
   | .info => usbDInfo w bits
   | .open => usbDOpen w bits
   | .close => usbDClose w bits
-  | .claim => usbDClaim w false bits
-  | .release => usbDClaim w true bits
+  | .claim => usbDClaim w bits
+  | .release => usbDRelease w bits
   | .control => usbDControl w bits
   | .bulk => usbDData w false bits
   | .interrupt => usbDData w true bits
@@ -169,11 +190,16 @@ def World.usbAnswer (w : World) (k : Nat) (x : UsbXfer) : Option ByteArray :=
 def usbEffect (c : UsbCall) (w : World) : Option V × World :=
   match c with
   | .open i => (some (.sc .i64 (usbDevAddr w.usb.size)), { w with usb := w.usb.push { device := i } })
-  | .close k => (none, { w with usb := w.usb.modify k fun o => { o with live := false, claimed := [] } })
+  | .close k => (none, { w with usb := w.usb.modify k fun o => { o with live := false } })
   | .claim k n =>
-      (some (ofInt .i32 0), { w with usb := w.usb.modify k fun o => { o with claimed := n :: o.claimed } })
-  | .release k n =>
-      (some (ofInt .i32 0), { w with usb := w.usb.modify k fun o => { o with claimed := o.claimed.erase n } })
+      (some (.sc .i64 (usbIfaceAddr w.usbIfaces.size)),
+        { w with usb := w.usb.modify k (fun o => { o with claimed := n :: o.claimed }),
+                 usbIfaces := w.usbIfaces.push { dev := k, number := n } })
+  | .release j =>
+      let usb := match w.usbIfaces[j]? with
+        | some f => w.usb.modify f.dev (fun o => { o with claimed := o.claimed.filter (· != f.number) })
+        | none => w.usb
+      (none, { w with usb := usb, usbIfaces := w.usbIfaces.modify j (fun f => { f with live := false }) })
   | .transfer k x fromDevice =>
       let moved : Int := match w.usbAnswer k x with
         | none => -1
@@ -202,7 +228,7 @@ def usbCall (f : UsbFn) (bits : List UInt64) (w : World) : Option (Option V × W
     match f, bits with
     | .control, [_, _, _, _, _, data, len, _] =>
         (e.1, { e.2 with mem := (copyIn w.mem data (w.usbBack f bits len)).getD w.mem })
-    | .bulk, [_, _, _, data, len, _] | .interrupt, [_, _, _, data, len, _] =>
+    | .bulk, [_, _, data, len, _] | .interrupt, [_, _, data, len, _] =>
         (e.1, { e.2 with mem := (copyIn w.mem data (w.usbBack f bits len)).getD w.mem })
     | _, _ => e
 

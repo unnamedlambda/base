@@ -1,9 +1,9 @@
 //! Runs the native-code corpus: what `Sem.callFfi` says the native entry
 //! points do, against what they do on an x86-64 host.
 //!
-//! The body loads a few bytes of code, frees them twice, frees an address that
-//! was never loaded, and asks for the architecture and two CPU features, leaving
-//! each result code in the output buffer. The interpreter computed that buffer
+//! The body loads nothing, then a few bytes of code, which it frees, and asks
+//! for the architecture and two CPU features, leaving each result code in the
+//! output buffer. The interpreter computed that buffer
 //! when the artifact was generated (`lean/algorithms/Host/NativeCorpus.lean`),
 //! with its oracles set to an x86-64 host; here the same artifact runs through
 //! the JIT, and the two must agree byte for byte.
@@ -13,16 +13,13 @@ use base_types::Artifact;
 use std::path::PathBuf;
 
 /// Result codes, `i32`s from byte 0.
-const WHAT: [&str; 9] = [
-    "free what a null source loaded",
-    "free what a zero length loaded",
-    "free loaded code",
-    "free it twice refused",
-    "free an address never loaded refused",
+const WHAT: [&str; 6] = [
+    "a null source places nothing",
+    "a zero length places nothing",
+    "code placed",
     "architecture",
     "sse2 present",
     "a feature name the runtime does not know",
-    "a null feature name",
 ];
 
 #[cfg(target_arch = "x86_64")]

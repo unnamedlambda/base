@@ -977,16 +977,40 @@ def casesExt : List (Case V L) := Id.run do
     page and unlocking it, and lowering the calling thread's priority. The
     model's system grants everything, so these check the machine does too. -/
 def casesOs : List (Case V L) :=
-  [⟨"os/lock", do memLock (← absAddr (← basePtr) 0x1000) (← iconst64 4096)⟩,
-   ⟨"os/unlock", do memUnlock (← absAddr (← basePtr) 0x1000) (← iconst64 4096)⟩,
-   ⟨"os/priority-lower", do threadPriority (← iconst32 (-1))⟩]
+  [⟨"os/lock", do memLock (← basePtr) (← iconst64 0x200)⟩,
+   ⟨"os/unlock", do memUnlock (← basePtr) (← iconst64 0x200)⟩,
+   ⟨"os/priority-lower", do threadPriority (← iconst32 0)⟩]
+
+/-- Waiting, waking and the clock, alone: a word that does not hold what a
+    wait expects is not waited on, a wait nobody wakes ends by its timeout, a
+    wake with nobody waiting returns, and the clock does not go backwards. Each
+    wait and wake answers nothing, so a case answers `1` once it returned. -/
+def casesSync : List (Case V L) :=
+  [⟨"sync/changed", do
+    let p ← absAddr (← basePtr) 0x40
+    storeW .i32 (← iconst32 5) p
+    memWait p (← iconst32 4) (← iconst64 (-1))
+    iconst32 1⟩,
+   ⟨"sync/timeout", do
+    let p ← absAddr (← basePtr) 0x40
+    storeW .i32 (← iconst32 5) p
+    memWait p (← iconst32 5) (← iconst64 1000000)
+    iconst32 1⟩,
+   ⟨"sync/wake-nobody", do
+    memWake (← absAddr (← basePtr) 0x40) (← iconst32 (-1))
+    iconst32 1⟩,
+   ⟨"sync/clock", do
+    let a ← clockNow
+    let b ← clockNow
+    let ok ← icmp .sge b a
+    uextend64 ok⟩]
 
 /-- Every case, named so a failure says which one. -/
 def cases : List (Case V L) :=
   casesInt ++ casesShift ++ casesUnary ++ casesCmp ++ casesFloat ++ casesConv
     ++ casesVec ++ casesCfg ++ casesPminmax ++ casesBr ++ casesDLoop ++ casesCont ++ casesVecInt
     ++ casesDCont ++ casesMath ++ casesHt ++ casesIntFam ++ casesFloatFam ++ casesLoads ++ casesAtomic ++ casesExt
-    ++ casesOs
+    ++ casesOs ++ casesSync
 
 /-- Every case, storing its result at its own stride in the output buffer. -/
 def body : Prog V L Unit := do

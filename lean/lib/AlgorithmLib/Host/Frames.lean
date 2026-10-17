@@ -32,8 +32,6 @@ inductive Frame where
   /-- Writes `[args[base] + args[off], … + args[len])` — the shared-memory form,
       where the caller passes an offset rather than a pointer. -/
   | atOff (base off len : Nat)
-  /-- Writes at `args[base] + args[off]` for as many bytes as it returns. -/
-  | atOffRet (base off : Nat)
   /-- Writes exactly `n` bytes at `args[dst]`. -/
   | fixed (dst n : Nat)
   /-- Writes exactly `n` bytes at `args[a]` and `n` at `args[b]`: two out
@@ -65,12 +63,11 @@ def ctxSlot : Frame := .fixed 0 8
 def frame : IR.Ffi → Frame
   -- file.rs — the read family writes into shared memory, the write family only
   -- touches the file system.
-  | .fileRead => .atOffRet 0 2
-  | .fileReadToPtr => .at 1 3
-  | .fileWrite | .fileWriteFromPtr | .fileCreateDirAll => .none
+  | .fileReadToPtr => .at 2 4
+  | .fileWriteFromPtr | .fileCreateDirAll => .none
 
   -- stdio.rs
-  | .stdinReadline => .atOff 0 1 2
+  | .stdinReadline => .at 0 1
   | .stdoutWrite => .none
 
   -- mod.rs — the libm shims are pure.
@@ -124,6 +121,10 @@ def frame : IR.Ffi → Frame
   | .threadStart => .dataDependent 1
   | .threadFinish => .none
   | .memLock | .memUnlock | .memAdviseHuge | .threadPriority => .none
+  -- sync.rs — waiting, waking and the clock write nothing.
+  | .memWait | .memWake | .clockNow => .none
+  -- file.rs — a file's length is read or set without touching memory.
+  | .fileSize | .fileSetLen => .none
   | .threadJoin => .none
 
   -- native.rs — placing code and asking about the CPU write nothing the
@@ -167,7 +168,7 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   | .serial .name | .serial .read => .at 1 2
   | .serial _ => .none
   | .usb .control => .at 5 6
-  | .usb .bulk | .usb .interrupt => .at 3 4
+  | .usb .bulk | .usb .interrupt => .at 2 3
   | .usb _ => .none
   -- wgpu writes host memory only where a texture is acquired: the
   -- `WGPUSurfaceTexture` it is handed.

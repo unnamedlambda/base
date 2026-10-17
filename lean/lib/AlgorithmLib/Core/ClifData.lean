@@ -290,9 +290,9 @@ def SerialFn.all : List SerialFn := [.count, .name, .open, .close, .read, .write
 theorem SerialFn.mem_all (f : SerialFn) : f ∈ SerialFn.all := by cases f <;> simp [SerialFn.all]
 
 /-- The engine's USB library (`base/src/ffi/usb.rs`, over the `nusb`
-    crate): the devices the system lists and what each is, and a device
-    opened by its place, its interfaces claimed and released, and its
-    control, bulk and interrupt transfers, each waited for. -/
+    crate): the devices the system lists and what each is, a device opened
+    by its place, its interfaces claimed and released, and control, bulk and
+    interrupt transfers through a claimed interface, each waited for. -/
 inductive UsbFn where
   | count | info | open | close | claim | release | control | bulk | interrupt
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
@@ -512,9 +512,10 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
     | .info => ([.i32, .i32], some .i64)
     | .open => ([.i32], some .i64)
     | .close => ([.i64], none)
-    | .claim | .release => ([.i64, .i32], some .i32)
+    | .claim => ([.i64, .i32], some .i64)
+    | .release => ([.i64], none)
     | .control => ([.i64, .i32, .i32, .i32, .i32, .i64, .i32, .i32], some .i64)
-    | .bulk | .interrupt => ([.i64, .i32, .i32, .i64, .i64, .i32], some .i64)
+    | .bulk | .interrupt => ([.i64, .i32, .i64, .i64, .i32], some .i64)
 
 /-- The C declaration's parameter types, for the functions a header declares
     more than once in C++ (as overloads that take older enums): what selects
@@ -546,7 +547,7 @@ structure LoadOp where
 
 /-- One runtime entry point. -/
 inductive Ffi where
-  | fileRead | fileWrite | fileReadToPtr | fileWriteFromPtr
+  | fileReadToPtr | fileWriteFromPtr
   | stdinReadline | stdoutWrite
   | gpuInit | gpuCreateBuffer | gpuCreatePipeline | gpuUpload | gpuDownload
   | gpuDispatch | gpuCleanup | gpuUploadPtr | gpuDownloadPtr
@@ -567,24 +568,22 @@ inductive Ffi where
   | cudaLaunchNamedOnStream | cudaSync | cudaCleanup
   | cublasSgemv | cublasSgemvOnStream | cublasSgemm | cublasSgemmOnStream
   | cublasPtrArray | cublasSgemmBatchedOnStream
-  -- Appended, and appending is the rule: a callee's id is its position in
-  -- `all`, so inserting one renumbers every shipped artifact's calls.
   | cudaPinnedPtrAt | cudaMemInfoFree | cudaMemInfoTotal | cublasGemmExBf16
   | cublasGemmStridedBatchedExBf16
   | nativeLoad | nativeFree | nativeArch | cpuHas
   | fileCreateDirAll | threadStart | threadFinish
   | memLock | memUnlock | memAdviseHuge | threadPriority
+  | memWait | memWake | clockNow
+  | fileSize | fileSetLen
   deriving Repr, DecidableEq, Inhabited, Lean.ToExpr
 
 namespace Ffi
 
 /-- The C symbol the JIT resolves. -/
 def cname : Ffi → String
-  | .fileRead => "cl_file_read"
-  | .fileWrite => "cl_file_write"
   | .fileReadToPtr => "cl_file_read_to_ptr"
   | .fileWriteFromPtr => "cl_file_write_from_ptr"
-  | .stdinReadline => "cl_stdin_readline"
+  | .stdinReadline => "cl_stdin_read_line"
   | .stdoutWrite => "cl_stdout_write"
   | .gpuInit => "cl_gpu_init"
   | .gpuCreateBuffer => "cl_gpu_create_buffer"
@@ -676,15 +675,18 @@ def cname : Ffi → String
   | .memUnlock => "cl_mem_unlock"
   | .memAdviseHuge => "cl_mem_advise_huge"
   | .threadPriority => "cl_thread_priority"
+  | .memWait => "cl_mem_wait"
+  | .memWake => "cl_mem_wake"
+  | .clockNow => "cl_clock_now"
+  | .fileSize => "cl_file_size"
+  | .fileSetLen => "cl_file_set_len"
 
 /-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
 def sig : Ffi → List ClifTy × Option ClifTy
-  | .fileRead => ([.i64, .i64, .i64, .i64, .i64], some .i64)
-  | .fileWrite => ([.i64, .i64, .i64, .i64, .i64], some .i64)
-  | .fileReadToPtr => ([.i64, .i64, .i64, .i64], some .i64)
-  | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64], some .i64)
-  | .stdinReadline => ([.i64, .i64, .i64], some .i64)
-  | .stdoutWrite => ([.i64, .i64, .i64], some .i64)
+  | .fileReadToPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
+  | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
+  | .stdinReadline => ([.i64, .i64], some .i64)
+  | .stdoutWrite => ([.i64, .i64], some .i64)
   | .gpuInit => ([.i64], none)
   | .gpuCreateBuffer => ([.i64, .i64], some .i32)
   | .gpuCreatePipeline => ([.i64, .i64, .i64, .i32], some .i32)
@@ -808,12 +810,12 @@ def sig : Ffi → List ClifTy × Option ClifTy
   -- which bytes to carry in. Running them is not an import: it is a call with
   -- `Callee.native`.
   | .nativeLoad => ([.i64, .i64], some .i64)
-  | .nativeFree => ([.i64], some .i32)
+  | .nativeFree => ([.i64], none)
   | .nativeArch => ([], some .i32)
-  | .cpuHas => ([.i64], some .i32)
+  | .cpuHas => ([.i64, .i64], some .i32)
   -- `(path)`: the directory at the path, and every one missing on the way;
   -- `0`, or `-1` when that cannot be done.
-  | .fileCreateDirAll => ([.i64], some .i64)
+  | .fileCreateDirAll => ([.i64, .i64], some .i64)
   -- `(fn, arg)`: function `fn` of the program run on `arg` on a new thread,
   -- answered as a handle, or `-1`; `(handle)`: that thread waited for and the
   -- handle released, once: `0`, or `-1`.
@@ -827,6 +829,18 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .memUnlock => ([.i64, .i64], some .i32)
   | .memAdviseHuge => ([.i64, .i64], some .i32)
   | .threadPriority => ([.i32], some .i32)
+  -- ffi/sync.rs: `(addr, expected, timeout)` sleeps while the 32-bit word at
+  -- `addr` holds `expected`, until a wake on `addr`, the timeout in
+  -- nanoseconds (none if negative), or for no reason: `0` woken, `1` the word
+  -- did not hold it, `2` timed out, `-1` an address not 4-byte aligned.
+  -- `(addr, count)` wakes up to `count` waiters there (all if negative),
+  -- answering how many; `()` reads a clock that never goes backwards, in
+  -- nanoseconds. None changes what memory holds.
+  | .memWait => ([.i64, .i32, .i64], none)
+  | .memWake => ([.i64, .i32], none)
+  | .clockNow => ([], some .i64)
+  | .fileSize => ([.i64, .i64], some .i64)
+  | .fileSetLen => ([.i64, .i64, .i64], some .i64)
   -- What wgpu answers through a callback, waited for: `(instance)` its
   -- high-performance adapter, or `0`; `(adapter)` a device, or `0`;
   -- `(device, buffer, offset, dst, size)` the buffer's bytes copied to `dst`
@@ -838,7 +852,7 @@ def result (f : Ffi) : Option ClifTy := f.sig.2
 
 /-- Every entry point, in the order that fixes the ids. -/
 def all : List Ffi :=
-  [.fileRead, .fileWrite, .fileReadToPtr, .fileWriteFromPtr,
+  [.fileReadToPtr, .fileWriteFromPtr,
    .stdinReadline, .stdoutWrite,
    .gpuInit, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuDownload,
    .gpuDispatch, .gpuCleanup, .gpuUploadPtr, .gpuDownloadPtr,
@@ -862,7 +876,8 @@ def all : List Ffi :=
    .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16,
    .cublasGemmStridedBatchedExBf16,
    .nativeLoad, .nativeFree, .nativeArch, .cpuHas, .fileCreateDirAll, .threadStart, .threadFinish,
-   .memLock, .memUnlock, .memAdviseHuge, .threadPriority]
+   .memLock, .memUnlock, .memAdviseHuge, .threadPriority,
+   .memWait, .memWake, .clockNow, .fileSize, .fileSetLen]
 
 /-- The registry of entry points: `all` misses none and repeats none, so the
     ids below are a numbering of `Ffi` and not merely of a list beside it. -/
@@ -871,7 +886,7 @@ instance : Enum Ffi where
   complete f := by cases f <;> decide
   nodup := by decide
 
-/-- The callee id every artifact carries for `f`. -/
+/-- `f`'s position in `all`. -/
 def id (f : Ffi) : Nat := all.idxOf f
 
 /-- Distinct entry points carry distinct ids. -/

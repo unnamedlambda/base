@@ -115,7 +115,7 @@ def asmLoad : Prog V L Unit := do
   when .ule (← iconst64 (8 * (natives.length + 1))) (← outLen) do
     storeI64 (← iconst64 natives.length) out
     when .eq (← nativeArch) one do
-      when .eq (← cpuHas (← iaddImm base NAME_OFF)) one do
+      when .eq (← cpuHas (← iaddImm base NAME_OFF) (← iconst64 4)) one do
         for (off, len, k) in loads do
           let addr ← nativeLoad (← iaddImm base off) (← iconst64 len)
           storeI64 addr (← iaddImm base (SLOT_OFF + 8 * k))

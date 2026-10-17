@@ -25,8 +25,10 @@
 //! in a shared library reaches the library's data.
 //!
 //! That is all a host needs and nothing it could do itself: load and free a
-//! driver, a function by name, and the arena. Calling by name or copying out
-//! of the arena are a line or two in each host's binding.
+//! driver, a function by name, and the arena. Waiting on a word of the arena,
+//! waking, and the clock are the system's own calls (`ffi/sync.rs` names
+//! them), which a host makes itself and meets a program's at; calling by name
+//! or copying out of the arena are a line or two in each host's binding.
 //!
 //! # What stays fixed
 //!
@@ -34,8 +36,8 @@
 //! needs travels in its buffers, laid out by the program. The arena never moves or
 //! grows, since the program's code is linked to its address. What an artifact
 //! runs with is decided when it is built, so a load takes nothing but the
-//! artifact. Anything more a host reaches is a function of the program,
-//! rather than another function here. A trap in a program ends
+//! artifact. Anything more a host reaches is a function of the program, or
+//! the system's own call, rather than another function here. A trap in a program ends
 //! the process: nothing of base runs on a call to catch one.
 //!
 //! # Results

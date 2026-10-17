@@ -18,7 +18,7 @@ use std::thread::JoinHandle;
 type Worker = unsafe extern "C" fn(*mut u8);
 
 /// Run the worker at `func` on `arg`, on a new thread: the thread as a handle,
-/// or `-1` when there is no function or no thread could be made.
+/// or `-1` when no thread could be made.
 ///
 /// # Safety
 ///
@@ -26,9 +26,6 @@ type Worker = unsafe extern "C" fn(*mut u8);
 /// pointer and answering nothing, which stays mapped until the thread is
 /// finished.
 pub(crate) unsafe extern "C" fn cl_thread_start(func: *const u8, arg: *mut u8) -> i64 {
-    if func.is_null() {
-        return -1;
-    }
     let worker = std::mem::transmute::<*const u8, Worker>(func);
     let arg = arg as usize;
     match std::thread::Builder::new().spawn(move || worker(arg as *mut u8)) {
@@ -38,11 +35,13 @@ pub(crate) unsafe extern "C" fn cl_thread_start(func: *const u8, arg: *mut u8) -
 }
 
 /// Wait for the thread `handle` names and release it: `0`, or `-1` when it
-/// panicked or `handle` is not one. A handle may be finished once.
+/// panicked.
+///
+/// # Safety
+///
+/// `handle` is one `cl_thread_start` answered, other than `-1`, not finished
+/// already.
 pub(crate) unsafe extern "C" fn cl_thread_finish(handle: i64) -> i64 {
-    if handle == 0 || handle == -1 {
-        return -1;
-    }
     let join = Box::from_raw(handle as *mut JoinHandle<()>);
     match join.join() {
         Ok(()) => 0,
@@ -84,12 +83,4 @@ mod tests {
         assert_eq!(val, 77);
     }
 
-    #[test]
-    fn no_function_no_thread() {
-        unsafe {
-            assert_eq!(cl_thread_start(std::ptr::null(), std::ptr::null_mut()), -1);
-            assert_eq!(cl_thread_finish(-1), -1);
-            assert_eq!(cl_thread_finish(0), -1);
-        }
-    }
 }

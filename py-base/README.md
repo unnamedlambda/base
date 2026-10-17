@@ -89,6 +89,12 @@ through `output`, a writable contiguous byte buffer (a `bytearray`, a `uint8`
 NumPy array); both are zero-copy. The `int` is the status the function
 answered: a program whose body ends in a bare `return` answers `0`.
 
+### `driver.wait(offset, expected, timeout_ns=-1)`, `driver.wake(offset, count=-1)`, `py_base.now()`
+Waiting on a 4-byte-aligned word of the arena, waking its waiters,
+and the clock: the system's own calls, which programs make too, so a Python
+thread and a program's threads meet at the same words. The GIL is released
+while waiting. A wait may end for no reason: loop on the condition.
+
 ### `driver.arena -> memoryview`
 The arena itself: no copy, writable, and holding the driver alive.
 `len(driver.arena)` is its size, and `numpy.frombuffer(driver.arena, ...)`
@@ -104,10 +110,12 @@ while calls run. A range past the end is an error, not a short answer.
 
 One `Driver`, and its functions, may be used from any number of Python threads.
 The GIL is released while a program runs, so calls run at once, and a thread
-blocked inside the program (on a lock the program keeps) leaves
+blocked inside the program (on a lock the program keeps), or in `driver.wait`, leaves
 the others running. `output` is held for the whole call, so another thread
 resizing it gets `BufferError` rather than pulling it out from under the
-program. How calls share the arena is the program's to decide.
+program. How calls share the arena is the program's to decide;
+`tests/test_concurrency.py` runs `shared_sum`'s atomics and ring buffer from
+Python threads.
 
 ## Testing
 

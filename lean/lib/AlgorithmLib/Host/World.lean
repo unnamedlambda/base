@@ -1277,6 +1277,10 @@ structure SerPort where
 /-- Where the `k`th USB device opened lives: outside every region. -/
 def usbDevAddr (k : Nat) : UInt64 := 0xD000000000 + 0x10000 * UInt64.ofNat k
 
+/-- Where the `j`th interface claimed lives: outside every region, apart from
+    every device. -/
+def usbIfaceAddr (j : Nat) : UInt64 := 0xE000000000 + 0x10000 * UInt64.ofNat j
+
 /-- A USB transfer as the device sees it: a control transfer's SETUP fields
     and data length, or a bulk or interrupt transfer's endpoint and length,
     with the bytes sent to the device (empty for one from it). -/
@@ -1301,11 +1305,20 @@ structure UsbDevice where
   packet : Nat → Nat := fun _ => 64
 
 /-- A USB device the program opened: whether it is open, which listed device
-    it is, and the interfaces claimed through it. -/
+    it is, and the interfaces the system has claimed through it. A claim is
+    the system's: it lasts until any handle to it is released, and outlasts
+    the device's own handle while an interface's does. -/
 structure UsbOpen where
   live : Bool := true
   device : Nat
   claimed : List Nat := []
+
+/-- An interface handle the program was handed: whether it is held, the
+    device opened it was claimed through, and its number. -/
+structure UsbIface where
+  live : Bool := true
+  dev : Nat
+  number : Nat
 
 /-- The window library as the program has made it: whether this thread's
     event loop is up, and the windows by opening order. -/
@@ -1317,8 +1330,9 @@ structure WlState where
 structure World where
   mem : Mem
   fs  : FS := {}
-  /-- Lines `cl_stdin_readline` will return, in order, each including its
-      newline as `read_line` leaves it. An empty list is end of input. -/
+  /-- The lines of standard input still to be read, in order, each including
+      its newline; a read takes the first, or as much of it as fits, and leaves
+      the rest. An empty list is end of input. -/
   stdin : List ByteArray := []
   /-- What `cl_stdout_write` has written so far. -/
   stdout : ByteArray := ByteArray.empty
@@ -1393,6 +1407,9 @@ structure World where
       `"hugepages"`, `"priority"` — which depends on its limits and
       privileges, not on the program. -/
   grants : String → Bool := fun _ => true
+  /-- **The clock** `cl_clock_now` reads. Time does not pass in this model, so
+      two readings agree; a claim that needs the clock to move says so. -/
+  clock : Int := 0
   /-- **The logical CPUs online**, each with its physical core and package
       as the system reports them, `-1` where it does not. -/
   cpus : List (Int × Int) := [(0, 0)]
@@ -1408,9 +1425,12 @@ structure World where
   /-- **What listed device `i` answers a transfer**: the bytes it sends back
       (none asked for, for one to it), or `none` where the transfer fails. -/
   usbReply : Nat → UsbXfer → Option ByteArray := fun _ _ => none
-  /-- **Whether a control transfer needs a claimed interface**: on Windows. -/
-  usbControlNeedsClaim : Bool := false
+  /-- **Whether the system grants a claim of an interface already claimed
+      through the same device**, as a second handle to the one claim: Linux
+      does, and other systems refuse it. -/
+  usbClaimAgain : Bool := false
   usb : Array UsbOpen := #[]
+  usbIfaces : Array UsbIface := #[]
   /-- **What a compute shader computes**: the new contents of the buffers bound
       to a dispatch, from their contents before it. A read-only binding keeps
       its contents whatever this says, by construction. -/

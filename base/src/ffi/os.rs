@@ -7,10 +7,8 @@
 
 /// Keep `len` bytes from `ptr` in physical memory.
 pub(crate) unsafe extern "C" fn cl_mem_lock(ptr: *const u8, len: i64) -> i32 {
-    if ptr.is_null() || len <= 0 {
-        return -1;
-    }
-    match region::lock(ptr, len as usize) {
+    let Ok(len) = usize::try_from(len) else { return -1 };
+    match region::lock(ptr, len) {
         Ok(guard) => {
             // Unlocking is the program's to ask for, not the guard's.
             std::mem::forget(guard);
@@ -22,10 +20,8 @@ pub(crate) unsafe extern "C" fn cl_mem_lock(ptr: *const u8, len: i64) -> i32 {
 
 /// Let the system page `len` bytes from `ptr` out again.
 pub(crate) unsafe extern "C" fn cl_mem_unlock(ptr: *const u8, len: i64) -> i32 {
-    if ptr.is_null() || len <= 0 {
-        return -1;
-    }
-    match region::unlock(ptr, len as usize) {
+    let Ok(len) = usize::try_from(len) else { return -1 };
+    match region::unlock(ptr, len) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -33,14 +29,12 @@ pub(crate) unsafe extern "C" fn cl_mem_unlock(ptr: *const u8, len: i64) -> i32 {
 
 /// Ask for huge pages under the whole pages inside `len` bytes from `ptr`.
 pub(crate) unsafe extern "C" fn cl_mem_advise_huge(ptr: *const u8, len: i64) -> i32 {
-    if ptr.is_null() || len <= 0 {
-        return -1;
-    }
+    let Some(end) = usize::try_from(len).ok().and_then(|n| (ptr as usize).checked_add(n)) else { return -1 };
     #[cfg(target_os = "linux")]
     {
         let page = region::page::size();
         let start = (ptr as usize).div_ceil(page) * page;
-        let end = (ptr as usize + len as usize) / page * page;
+        let end = end / page * page;
         if start >= end {
             return -1;
         }
@@ -52,57 +46,25 @@ pub(crate) unsafe extern "C" fn cl_mem_advise_huge(ptr: *const u8, len: i64) -> 
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = end;
         -1
     }
 }
 
-/// Raise (`1`) or lower (`-1`) the calling thread's priority by a step from
-/// where it stands, or reset it (`0`).
+/// The calling thread's priority set to `level`, on the scale the
+/// `thread-priority` crate makes the same on every system: `0` the lowest,
+/// `99` the highest, carried to niceness on Linux and to the priority classes
+/// on Windows. Lowering is the thread's own to do; raising past where it
+/// started takes privilege. `-1` for a level off the scale or one not granted.
 pub(crate) unsafe extern "C" fn cl_thread_priority(level: i32) -> i32 {
-    #[cfg(target_os = "linux")]
-    {
-        // Relative to where the thread stands: lowering is always the
-        // thread's own to do, raising takes privilege.
-        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
-        *libc::__errno_location() = 0;
-        let now = libc::getpriority(libc::PRIO_PROCESS, tid);
-        if now == -1 && *libc::__errno_location() != 0 {
-            return -1;
-        }
-        let nice = match level {
-            1 => now - 5,
-            0 => 0,
-            -1 => (now + 5).min(19),
-            _ => return -1,
-        };
-        if libc::setpriority(libc::PRIO_PROCESS, tid, nice) == 0 {
-            0
-        } else {
-            -1
-        }
-    }
-    #[cfg(all(unix, not(target_os = "linux")))]
-    {
-        let _ = level;
+    use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
+    let Some(v) = u8::try_from(level).ok().and_then(|v| ThreadPriorityValue::try_from(v).ok()) else {
+        return -1;
+    };
+    if set_current_thread_priority(ThreadPriority::Crossplatform(v)).is_ok() {
+        0
+    } else {
         -1
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
-            THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL,
-        };
-        let p = match level {
-            1 => THREAD_PRIORITY_ABOVE_NORMAL,
-            0 => THREAD_PRIORITY_NORMAL,
-            -1 => THREAD_PRIORITY_BELOW_NORMAL,
-            _ => return -1,
-        };
-        if SetThreadPriority(GetCurrentThread(), p) != 0 {
-            0
-        } else {
-            -1
-        }
     }
 }
 
@@ -124,11 +86,12 @@ mod tests {
     }
 
     #[test]
-    fn lowering_priority_is_granted_and_nonsense_is_not() {
+    fn lowering_priority_is_granted_and_off_the_scale_is_not() {
         unsafe {
-            assert_eq!(cl_thread_priority(7), -1);
+            assert_eq!(cl_thread_priority(100), -1);
+            assert_eq!(cl_thread_priority(-1), -1);
             #[cfg(target_os = "linux")]
-            assert_eq!(cl_thread_priority(-1), 0);
+            assert_eq!(cl_thread_priority(0), 0);
         }
     }
 

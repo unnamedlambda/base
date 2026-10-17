@@ -146,12 +146,6 @@ def arrayAddPtxSource : String := buildModuleWith { version := "7.0", target := 
 
 open AlgorithmLib.Prog
 
-
-/-- The externals every emitted function declares, in one order, so a slot
-    index means the same thing in all of them. -/
-abbrev fnRead : Ffi := .stdinReadline
-abbrev fnWrite : Ffi := .stdoutWrite
-
 def loadByteAt (ptr : V .i64) (baseOff : Nat) (idx : V .i64) : Prog V L (V .i64) := do
   let base ← iconst64 baseOff
   let rel ← iadd base idx
@@ -1294,8 +1288,8 @@ def clifCode : Prog V L Unit :=
       storeOutputByte ptr zero (← iconst64 asciiGreater)
       storeOutputByte ptr one (← iconst64 asciiSpace)
       let two ← iconst64 2
-      let _ ← ffi fnWrite %[ptr, outOff, two]
-      let readLen ← ffi fnRead %[ptr, inputOff, inputMax]
+      let _ ← stdoutWrite ptr outOff two
+      let readLen ← stdinReadline ptr inputOff inputMax
       return (contIf .ne readLen zero, %[], readLen))
     (body := fun _ readLen => do
       fldStore ptr f.inputLen readLen
@@ -1305,14 +1299,14 @@ def clifCode : Prog V L Unit :=
         (do
           let outLen ← emitFormatSigned ptr lineResult
           fldStore ptr f.outputLen outLen
-          let _ ← ffi fnWrite %[ptr, outOff, outLen]
+          let _ ← stdoutWrite ptr outOff outLen
           pure %[])
         (do
           let two ← iconst64 2
           let _ ← ifte .eq shouldPrint two
             (do
               let rawLen ← fldLoad ptr f.outputLen
-              let _ ← ffi fnWrite %[ptr, outOff, rawLen]
+              let _ ← stdoutWrite ptr outOff rawLen
               pure %[])
             (pure %[])
           pure %[])

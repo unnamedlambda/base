@@ -828,7 +828,7 @@ theorem track_cudaDownloadAsync {bits : List UInt64} {w : World} {r w'}
 /-- The entry points whose contracts never touch the device: files, streams,
     libm, wgpu, LMDB, the window, native code and threads. -/
 def devUntouched : List IR.Ffi :=
-  [.fileRead, .fileWrite, .fileReadToPtr, .fileWriteFromPtr, .stdinReadline, .stdoutWrite, .sinf, .cosf, .powf, .gpuInit, .gpuCleanup, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuUploadPtr, .gpuDispatch, .gpuDownload, .gpuDownloadPtr, .lmdbInit, .lmdbCleanup, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .lmdbCursorScan, .windowInit, .windowCleanup, .windowOpen, .windowPoll, .windowPresentGpuBuffer, .nativeLoad, .nativeFree, .nativeArch, .cpuHas, .threadInit, .threadCleanup, .threadJoin, .fileCreateDirAll, .memLock, .memUnlock, .memAdviseHuge, .threadPriority]
+  [.fileReadToPtr, .fileWriteFromPtr, .stdinReadline, .stdoutWrite, .sinf, .cosf, .powf, .gpuInit, .gpuCleanup, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuUploadPtr, .gpuDispatch, .gpuDownload, .gpuDownloadPtr, .lmdbInit, .lmdbCleanup, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .lmdbCursorScan, .windowInit, .windowCleanup, .windowOpen, .windowPoll, .windowPresentGpuBuffer, .nativeLoad, .nativeFree, .nativeArch, .cpuHas, .threadInit, .threadCleanup, .threadJoin, .fileCreateDirAll, .memLock, .memUnlock, .memAdviseHuge, .threadPriority, .memWait, .memWake, .clockNow]
 
 theorem pump_dev (w : World) : w.pump.dev = w.dev := by
   unfold World.pump; split <;> rfl

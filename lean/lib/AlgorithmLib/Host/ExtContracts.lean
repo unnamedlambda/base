@@ -495,33 +495,36 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
       [("whether this process may open it", .unmodelled "the world's usbDevices"),
        ("a device not listed answers null", .observed "UsbCorpus")]
   | .usb .close => [("an open device", .documented "usb.rs: base_usb_close drops the device")]
-  | .usb .claim | .usb .release =>
+  | .usb .claim =>
       [("an open device", .documented "usb.rs: base_usb_close drops the device"),
        ("which interfaces it lets be claimed", .unmodelled "the world's usbDevices"),
-       ("releasing one not claimed answers -1", .documented "usb.rs: base_usb_release")]
+       ("claimed through another opening answers null", .documented "Linux usbfs: USBDEVFS_CLAIMINTERFACE answers EBUSY"),
+       ("claimed through this one again", .unmodelled "the world's usbClaimAgain: Linux grants a second handle")]
+  | .usb .release =>
+      [("an interface held", .documented "usb.rs: base_usb_release drops the interface"),
+       ("the claim ends, for every handle to it", .documented "nusb: dropping an Interface releases it")]
   | .usb .control =>
-      [("an open device", .documented "usb.rs: base_usb_close drops the device"),
+      [("an interface held", .documented "nusb: control through a claimed interface, on every platform"),
        ("len bytes of data", .documented "USB 2.0 9.3: wLength bytes in the data stage"),
        ("a kind or recipient USB lacks refused", .documented "USB 2.0 9.3: bmRequestType"),
-       ("on Windows through a claimed interface", .documented "nusb: Device::control_in is not on Windows"),
        ("what the device answers", .unmodelled "the world's usbReply")]
   | .usb .bulk | .usb .interrupt =>
-      [("an open device, the interface claimed", .documented "nusb: endpoints belong to a claimed interface"),
+      [("an interface held", .documented "nusb: endpoints belong to a claimed interface"),
        ("from the device, whole packets", .documented "nusb: an IN transfer asks for a multiple of the packet size"),
        ("len bytes of data", .documented "usb.rs: base_usb_bulk moves at most len bytes"),
        ("what the device answers", .unmodelled "the world's usbReply")]
   | .wgpu .createInstance => []
   | .wgpu .requestAdapter =>
-      [("an instance held", .documented "wgpu.rs: a handle of another kind is refused"),
+      [("an instance held", .documented "webgpu.h: a handle names a live object of its type; wgpu.rs takes it as that type"),
        ("an adapter, or 0 without one", .unmodelled "the world's wgAdapter")]
   | .wgpu .requestDevice =>
-      [("an adapter held", .documented "wgpu.rs: a handle of another kind is refused"),
+      [("an adapter held", .documented "webgpu.h: a handle names a live object of its type; wgpu.rs takes it as that type"),
        ("a device with no scope pushed", .documented "WebGPU: a new device's error scope stack is empty")]
   | .wgpu (.release _) =>
       [("an object the program holds, of the kind", .documented "wgpu.rs: a release frees the object's box; a use after it is undefined")]
   | .wgpu .deviceGetQueue => [("device held", .documented "wgpu.rs: a device holds its one queue")]
   | .wgpu .deviceCreateBuffer =>
-      [("device held", .documented "wgpu.rs: a handle of another kind is refused"),
+      [("device held", .documented "webgpu.h: a handle names a live object of its type; wgpu.rs takes it as that type"),
        ("usage nonzero, MAP_READ only with COPY_DST", .documented "WebGPU: createBuffer validation"),
        ("zeroed", .documented "WebGPU: buffers are zero-initialized"),
        ("room", .unmodelled "running out of memory is not modelled")]
@@ -539,7 +542,7 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
   | .wgpu .deviceCreateBindGroup =>
       [("whole storage buffers the program holds", .documented "WebGPU: createBindGroup validation"),
        ("exactly the layout's bindings", .documented "WebGPU: every layout entry has one bind group entry")]
-  | .wgpu .deviceCreateCommandEncoder => [("device held", .documented "wgpu.rs: a handle of another kind is refused")]
+  | .wgpu .deviceCreateCommandEncoder => [("device held", .documented "webgpu.h: a handle names a live object of its type; wgpu.rs takes it as that type")]
   | .wgpu .deviceCreateRenderPipeline =>
       [("a module held, entry points UTF-8", .documented "WebGPU: createRenderPipeline validation"),
        ("RGBA8 or BGRA8", .documented "wgpu.rs: the formats a target takes")]

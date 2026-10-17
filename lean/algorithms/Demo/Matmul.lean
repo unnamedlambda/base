@@ -173,6 +173,7 @@ def PTX_REGION : Nat := 8192
 def BIND_OFF : Nat := PTX_OFF + PTX_REGION            -- 0x2100
 def PARAMS_OFF : Nat := BIND_OFF + 16                  -- 0x2110
 def OUTPUT_FN_OFF : Nat := PARAMS_OFF + 16             -- 0x2120
+def OUTPUT_FN_REGION : Nat := 256
 def DATA_OFF : Nat := 0x3000
 
 -- ---------------------------------------------------------------------------
@@ -192,7 +193,7 @@ def buildPayload (m k n : Nat) : List UInt8 :=
     uint32ToBytes (UInt32.ofNat k) ++
     uint32ToBytes (UInt32.ofNat n) ++
     uint32ToBytes 0
-  let outFn := padTo (stringToBytes "matmul_output.bin") 256
+  let outFn := padTo (stringToBytes "matmul_output.bin") OUTPUT_FN_REGION
   let preData := reserved ++ ptxBytes ++ bindDesc ++ params ++ outFn
   let prePad := zeros (DATA_OFF - preData.length)
   -- Random matrices: distinct seeds so A ≠ B
@@ -209,8 +210,6 @@ def buildPayload (m k n : Nat) : List UInt8 :=
 
 open AlgorithmLib.Prog
 
-
-abbrev fnWrite : Ffi := .fileWrite
 
 def code (m k n : Nat) : Prog V L Unit :=
   let aBytes := m * k * 4
@@ -265,7 +264,7 @@ def code (m k n : Nat) : Prog V L Unit :=
 
     -- Write output file: bytes [cOff .. cOff + cBytes)
     let fnOffV ← iconst64 OUTPUT_FN_OFF
-    let _ ← ffi fnWrite %[ptr, fnOffV, cOffV, c0, cSz]
+    let _ ← replaceFileAt ptr fnOffV (← iconst64 OUTPUT_FN_REGION) cOffV cSz
 
 
 def clifIrSource (m k n : Nat) : Except String (List FuncData) :=

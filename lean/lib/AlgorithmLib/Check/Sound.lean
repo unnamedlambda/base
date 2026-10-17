@@ -1343,7 +1343,7 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
     Stmt1 cfg (A.Holds vals) s (fun Γ w => B1.Holds vals Γ w ∨ B2.Holds vals Γ w) fo := by
   unfold answerCases at hc
   split at hc
-  · rename_i b po dO fo' n
+  · rename_i pp pc d fo' n
     split at hc
     · rename_i t0 sz hn
       split at hc
@@ -1359,10 +1359,10 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
           obtain ⟨r, w', bits, hcall, hA', hab, hr⟩ := ffiCall_core hB' hA hvs
           refine ⟨r, w', hcall, fun v hv => ?_⟩
           obtain ⟨x, rfl, hans, -⟩ := hr v hv
-          have hP := hA'.push (av := .sc (Ffi.fileRead.result.getD .i64))
-            (v := .sc (Ffi.fileRead.result.getD .i64) x) (TyV.sc (ffi_result_lanes Ffi.fileRead))
+          have hP := hA'.push (av := .sc (Ffi.fileReadToPtr.result.getD .i64))
+            (v := .sc (Ffi.fileReadToPtr.result.getD .i64) x) (TyV.sc (ffi_result_lanes Ffi.fileReadToPtr))
           have hlen : Γ.size = A.len := hA.1.1
-          have hat : ∀ u, (Γ.push (.sc (Ffi.fileRead.result.getD .i64) x))[A.len]? = some u →
+          have hat : ∀ u, (Γ.push (.sc (Ffi.fileReadToPtr.result.getD .i64) x))[A.len]? = some u →
               u = .sc .i64 x := by
             intro u hu
             rw [← hlen, Array.getElem?_push_size] at hu

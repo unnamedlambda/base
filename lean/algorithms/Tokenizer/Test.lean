@@ -52,6 +52,7 @@ def T_HT_VAL : Nat := T_BASE + 40
 def T_CP_COUNT : Nat := T_BASE + 48
 def T_OUT_COUNT : Nat := T_BASE + 56
 def T_INIT : Nat := T_BASE + 64
+def T_PATH_CAP : Nat := T_BASE + 72
 def T_TEXT_IN : Nat := T_BASE + 128
 def T_TEXT_OUT : Nat := T_TEXT_IN + TEXT_MAX
 def T_TOKEN_BUF : Nat := T_TEXT_OUT + TEXT_MAX
@@ -62,7 +63,7 @@ def T_MEM_SIZE : Nat := T_OUT_TOK + 4 * TEXT_MAX + 0x100
 
 def tokMem : TokenizerCommon.TokMem :=
   { htCtx := ContextSlots.ht, cudaCtx := ContextSlots.cuda
-    pathPtr := T_PATH_PTR, bufPtr := T_BUF_PTR
+    pathPtr := T_PATH_PTR, pathCap := T_PATH_CAP, bufPtr := T_BUF_PTR
     tokenBuf := T_TOKEN_BUF, tokenCount := T_TOKEN_COUNT
     textIn := T_TEXT_IN, textOut := T_TEXT_OUT, textLen := T_TEXT_LEN
     htKey := T_HT_KEY, htVal := T_HT_VAL
@@ -77,7 +78,7 @@ def tMemMap : AlgorithmLib.Layout.RegionMap :=
   , ⟨"tokenCount", T_TOKEN_COUNT, 8⟩, ⟨"textLen", T_TEXT_LEN, 8⟩
   , ⟨"htKey", T_HT_KEY, 8⟩, ⟨"htVal", T_HT_VAL, 8⟩
   , ⟨"cpCount", T_CP_COUNT, 8⟩, ⟨"outCount", T_OUT_COUNT, 8⟩
-  , ⟨"init", T_INIT, 4⟩
+  , ⟨"init", T_INIT, 4⟩, ⟨"pathCap", T_PATH_CAP, 8⟩
   , ⟨"textIn", T_TEXT_IN, TEXT_MAX⟩, ⟨"textOut", T_TEXT_OUT, TEXT_MAX⟩
   , ⟨"tokenBuf", T_TOKEN_BUF, 4 * TEXT_MAX⟩
   , ⟨"cpBuf", T_CP_BUF, 4 * TEXT_MAX⟩
@@ -107,6 +108,7 @@ def tMainFn : Prog V L Unit :=
   when .eq flag zero32 (do
     cudaInit ptr
     storeI64 (← iaddImm dataPtr D_PATH) (← absAddr ptr T_PATH_PTR)
+    storeI64 (← iconst64 (D_TEXT - D_PATH)) (← absAddr ptr T_PATH_CAP)
     TokenizerCommon.loadTokenizerM tokMem
     storeI32 (← iconst32 1) (← absAddr ptr T_INIT))
   -- the text, into this program's own buffer

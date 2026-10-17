@@ -270,18 +270,17 @@ theorem sumTrips_no_misuse (cfg : Cfg) (w : World) (h : Scratch w) (m : String) 
   check_body
 
 /-- Open the first USB device and, where it opened, claim its first
-    interface, read its device descriptor into the output, release the
-    interface and close the device. -/
+    interface and, where that was granted, read the device descriptor into
+    the output through it and release it; then close the device. -/
 def usbSession {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} : Prog V L Unit := do
   let d ← ext (.usb .open) %[← iconst32 0]
   when .ne d (← iconst64 0) do
-    let iface ← iconst32 0
-    let _ ← ext (.usb .claim) %[d, iface]
-    let _ ← ext (.usb .control) %[d, ← iconst32 0x80, ← iconst32 6, ← iconst32 0x100, ← iconst32 0,
-      ← outPtr, ← iconst32 18, ← iconst32 1000]
-    let _ ← ext (.usb .release) %[d, iface]
-    let _ ← ext (.usb .close) %[d]
-    pure ()
+    let i ← ext (.usb .claim) %[d, ← iconst32 0]
+    when .ne i (← iconst64 0) do
+      let _ ← ext (.usb .control) %[i, ← iconst32 0x80, ← iconst32 6, ← iconst32 0x100, ← iconst32 0,
+        ← outPtr, ← iconst32 18, ← iconst32 1000]
+      ext (.usb .release) %[i]
+    ext (.usb .close) %[d]
 
 /-- Where it may start: memory not frozen, and room in the output for the
     descriptor. Nothing about USB is asked: the device may not be there, or
@@ -294,9 +293,9 @@ theorem usbSession_fine : Fine (emitGo (fnBody ptrParams (usbSession (V := Slot)
 
 open HProgStaticChecks (args) in
 /-- **A USB session never misuses the library**, whatever devices the
-    machine has: each call is handed a device it holds, because the one it
-    opened was checked not null before it was used, and the descriptor lands
-    where there is room. -/
+    machine has: each call is handed a device or interface it holds, because
+    each one opened or claimed was checked not null before it was used, and
+    the descriptor lands where there is room. -/
 theorem usbSession_no_misuse (cfg : Cfg) (w : World) (h : OutRoom w) (m : String) :
     run cfg args w (emit usbSession) ≠ .misuse m := by
   check_body

@@ -34,3 +34,4 @@ base-build/tests/two-packages/target/
 /paper/*.aux
 /paper/*.log
 /paper/*.out
+/applications/shared-sum/cpp/shared_sum

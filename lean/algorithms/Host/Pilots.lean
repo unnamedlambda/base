@@ -51,8 +51,9 @@ namespace Hist
 open HistogramBench1 (INPUT_PATH_OFF OUTPUT_PATH_OFF HIST_OFF HIST_BYTES DATA_OFF MEM_SIZE MAX_DATA_BYTES
   PATH_MAX_IN PATH_MAX_OUT BINS)
 
-abbrev fnRead : Ffi := .fileRead
-abbrev fnWrite : Ffi := .fileWrite
+abbrev fnRead : Ffi := .fileReadToPtr
+abbrev fnEmpty : Ffi := .fileSetLen
+abbrev fnWrite : Ffi := .fileWriteFromPtr
 
 /-- `HistogramBench1.orchFn`, as a term. -/
 def code : Prog V L Unit := do
@@ -82,9 +83,10 @@ def code : Prog V L Unit := do
       return %[← iaddImm di 1])
   istore8 zeroI (← iadd (← absAddr (← basePtr) OUTPUT_PATH_OFF) outEnd.head)
   -- read the file, then derive the element count and the histogram bounds
-  -- at most the data region: a read of size 0 would take the whole file
+  -- at most the data region
   let fileSize ← ffi fnRead
-    %[(← basePtr), ← iconst64 INPUT_PATH_OFF, ← iconst64 DATA_OFF, zeroI, ← iconst64 MAX_DATA_BYTES]
+    %[← absAddr (← basePtr) INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← absAddr (← basePtr) DATA_OFF, zeroI,
+     ← iconst64 MAX_DATA_BYTES]
   let n ← ushr fileSize (← iconst64 2)
   let histPtr ← absAddr (← basePtr) HIST_OFF
   let histEnd ← iadd histPtr (← iconst64 HIST_BYTES)
@@ -127,16 +129,17 @@ def code : Prog V L Unit := do
     (body := fun dp _ => do
       bump histPtr (← iconst64 1) dp 0
       return %[← iaddImm dp 4])
-  -- write the histogram out
-  let _ ← ffi fnWrite
-    %[(← basePtr), ← iconst64 OUTPUT_PATH_OFF, ← iconst64 HIST_OFF, zeroI,
-     ← iconst64 HIST_BYTES]
+  -- write the histogram out, in place of what the file held
+  let outPath ← absAddr (← basePtr) OUTPUT_PATH_OFF
+  let outCap ← iconst64 PATH_MAX_OUT
+  let _ ← ffi fnEmpty %[outPath, outCap, zeroI]
+  let _ ← ffi fnWrite %[outPath, outCap, ← absAddr (← basePtr) HIST_OFF, zeroI, ← iconst64 HIST_BYTES]
   return ()
 
 
 /-- The program reads one file and then writes one, and does nothing else
     across the FFI. -/
-theorem code_calls : callsOf (Prog.emit code) = [fnRead, fnWrite].map Callee.ffi := rfl
+theorem code_calls : callsOf (Prog.emit code) = [fnRead, fnEmpty, fnWrite].map Callee.ffi := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
@@ -363,12 +366,14 @@ def code : Prog V L Unit := do
     (thn := do pure %[← iadd acc (← iconst64 1000)])
     (els := pure %[acc])
   store (branched.head) (← absAddr (← basePtr) 0x408)
-  let _ ← ffi Hist.fnWrite
-    %[(← basePtr), ← iconst64 0x200, ← iconst64 0x400, zeroI, ← iconst64 16]
+  let outPath ← absAddr (← basePtr) 0x200
+  let outCap ← iconst64 0x200
+  let _ ← ffi Hist.fnEmpty %[outPath, outCap, zeroI]
+  let _ ← ffi Hist.fnWrite %[outPath, outCap, ← absAddr (← basePtr) 0x400, zeroI, ← iconst64 16]
   return ()
 
 
-theorem code_calls : Prog.callNames code = [Hist.fnWrite].map (·.cname) := rfl
+theorem code_calls : Prog.callNames code = [Hist.fnEmpty, Hist.fnWrite].map (·.cname) := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program

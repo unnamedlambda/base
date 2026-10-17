@@ -107,8 +107,8 @@ impl Function<'_> {
     ///
     /// Any number of threads may call functions of one driver at once. Each
     /// call runs on its caller's thread against the one arena, and how calls
-    /// share it is the program's to decide: with atomics, or by keeping to
-    /// disjoint bytes.
+    /// share it is the program's to decide: with atomics, as `shared_sum`
+    /// does, or by keeping to disjoint bytes.
     pub fn call(&self, input: &[u8], output: &mut [u8]) -> i64 {
         // SAFETY: a function the engine checked has `FunctionPtr`'s
         // signature, mapped for as long as the driver this borrows; the
@@ -123,6 +123,11 @@ impl Function<'_> {
 }
 
 pub use jit::FunctionPtr;
+
+/// Waiting on a word of the arena, waking, and the clock, for a host:
+/// the system's own calls, which programs make too, so a host's thread and a
+/// program's meet at a word ([`Driver::arena_ptr`] plus an offset).
+pub use ffi::sync::{now, wait, wake};
 
 pub struct Driver {
     arena: Arena,
@@ -246,7 +251,7 @@ impl Driver {
     ///
     /// Sound while any number of calls run. Every naturally aligned 8-byte
     /// word the range covers is read with one relaxed atomic load, so a word a
-    /// program updates atomically is never copied
+    /// program updates atomically, like `shared_sum`'s total, is never copied
     /// torn: it is a value the word held at some point during the read. The
     /// bytes outside such words are read one at a time, and different words
     /// may be copied at different moments.
