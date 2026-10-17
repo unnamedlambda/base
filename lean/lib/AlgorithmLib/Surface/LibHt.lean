@@ -25,6 +25,8 @@ states.
 
 **Limits.** One thread. Running out of heap is not modelled: an allocation
 that fails leaves the table as it was, and the call does nothing further.
+`htInit` that cannot allocate the context or one of its arrays frees what it
+allocated and leaves null in the slot.
 -/
 
 namespace AlgorithmLib.LibHt
@@ -87,24 +89,31 @@ def bytesEq (a b n : V .i64) : Prog V L (V .i64) := do
   uextend64 (← icmp .eq d zero)
 
 /-- Copy `n` bytes to the end of the arena, doubling it first when they do
-    not fit: where they now start. -/
+    not fit: where they now start, or `-1` with the arena as it was where it
+    could not be grown. -/
 def append (s p n : V .i64) : Prog V L (V .i64) := do
   let usedA ← at_ s AUSED
   let capA ← at_ s ACAP
   let used ← load64 usedA
   let need ← iadd used n
-  when .ugt need (← load64 capA) (do
+  let zero ← iconst64 0
+  let room ← ifte (jTys := [.i64]) .ule need (← load64 capA) (do pure %[← iconst64 1]) (do
     let cap ← load64 capA
     let nc ← umax (← ishlImm cap 1) need
     let na ← calloc nc
-    let old ← load64 (← at_ s ARENA)
-    let _ ← memcpy na old used
-    free old
-    storeI64 na (← at_ s ARENA)
-    storeI64 nc capA)
-  let _ ← memcpy (← iadd (← load64 (← at_ s ARENA)) used) p n
-  storeI64 need usedA
-  pure used
+    let r ← ifte (jTys := [.i64]) .eq na zero (pure %[zero]) (do
+      let old ← load64 (← at_ s ARENA)
+      let _ ← memcpy na old used
+      free old
+      storeI64 na (← at_ s ARENA)
+      storeI64 nc capA
+      pure %[← iconst64 1])
+    pure %[r.head])
+  let r ← ifte (jTys := [.i64]) .eq room.head zero (do pure %[← iconst64 (-1)]) (do
+    let _ ← memcpy (← iadd (← load64 (← at_ s ARENA)) used) p n
+    storeI64 need usedA
+    pure %[used])
+  pure r.head
 
 /-- An entry's key, as an address in the arena. -/
 def keyAt (s e : V .i64) : Prog V L (V .i64) := do
@@ -161,31 +170,41 @@ def grow (s : V .i64) : Prog V L Unit := do
       storeI64 (← bor (← ishlImm (← ushrImm h 32) 32) (← iaddImm i 1)) slot)
 
 /-- Append a new entry for `key` at index slot `slot`: the key and the value
-    copied into the arena, the entry array doubled first if it is full. -/
+    copied into the arena, the entry array doubled first if it is full. Where
+    the entry array or the arena cannot be grown, the table's entries are as
+    they were. -/
 def insertAt (s slot key klen val vlen h : V .i64) : Prog V L Unit := do
   let countA ← at_ s COUNT
   let ecapA ← at_ s ECAP
   let count ← load64 countA
   let entryW ← iconst64 ENTRY
-  when .uge count (← load64 ecapA) (do
+  let zero ← iconst64 0
+  let failed ← iconst64 (-1)
+  let room ← ifte (jTys := [.i64]) .ult count (← load64 ecapA) (do pure %[← iconst64 1]) (do
     let ncap ← ishlImm (← load64 ecapA) 1
     let ne ← calloc (← imul ncap entryW)
-    let old ← load64 (← at_ s ENTRIES)
-    let _ ← memcpy ne old (← imul count entryW)
-    free old
-    storeI64 ne (← at_ s ENTRIES)
-    storeI64 ncap ecapA)
-  let ko ← append s key klen
-  let vo ← append s val vlen
-  let e ← iadd (← load64 (← at_ s ENTRIES)) (← imul count entryW)
-  storeI64 ko e
-  storeI64 klen (← iaddImm e 8)
-  storeI64 vo (← iaddImm e 16)
-  storeI64 vlen (← iaddImm e 24)
-  let n ← iaddImm count 1
-  storeI64 (← bor (← ishlImm (← ushrImm h 32) 32) n) slot
-  storeI64 n countA
-  when .ugt (← ishlImm n 1) (← load64 (← at_ s ICAP)) (grow s)
+    let r ← ifte (jTys := [.i64]) .eq ne zero (pure %[zero]) (do
+      let old ← load64 (← at_ s ENTRIES)
+      let _ ← memcpy ne old (← imul count entryW)
+      free old
+      storeI64 ne (← at_ s ENTRIES)
+      storeI64 ncap ecapA
+      pure %[← iconst64 1])
+    pure %[r.head])
+  when .ne room.head zero (do
+    let ko ← append s key klen
+    when .ne ko failed (do
+      let vo ← append s val vlen
+      when .ne vo failed (do
+        let e ← iadd (← load64 (← at_ s ENTRIES)) (← imul count entryW)
+        storeI64 ko e
+        storeI64 klen (← iaddImm e 8)
+        storeI64 vo (← iaddImm e 16)
+        storeI64 vlen (← iaddImm e 24)
+        let n ← iaddImm count 1
+        storeI64 (← bor (← ishlImm (← ushrImm h 32) 32) n) slot
+        storeI64 n countA
+        when .ugt (← ishlImm n 1) (← load64 (← at_ s ICAP)) (grow s))))
 
 /-- The entry at position `pos` plus one. -/
 def entryOf (s pos : V .i64) : Prog V L (V .i64) := do
@@ -204,9 +223,10 @@ def set (s key klen val vlen : V .i64) : Prog V L Unit := do
         (do let _ ← memcpy (← valAt s e) val vlen; pure %[])
         (do
           let vo ← append s val vlen
-          let e ← entryOf s pos
-          storeI64 vo (← iaddImm e 16)
-          storeI64 vlen (← iaddImm e 24)
+          when .ne vo (← iconst64 (-1)) (do
+            let e ← entryOf s pos
+            storeI64 vo (← iaddImm e 16)
+            storeI64 vlen (← iaddImm e 24))
           pure %[])
       pure %[])
   pure ()
@@ -230,13 +250,22 @@ def init : Body := do
   let zero ← iconst64 0
   let s ← calloc (← iconst64 SIZE)
   let r ← ifte (jTys := [.i64]) .eq s zero (pure %[zero]) (do
-    storeI64 (← calloc (← iconst64 (64 * ENTRY))) (← at_ s ENTRIES)
-    storeI64 (← iconst64 64) (← at_ s ECAP)
-    storeI64 (← calloc (← iconst64 (128 * 8))) (← at_ s INDEX)
-    storeI64 (← iconst64 128) (← at_ s ICAP)
-    storeI64 (← calloc (← iconst64 4096)) (← at_ s ARENA)
-    storeI64 (← iconst64 4096) (← at_ s ACAP)
-    pure %[s])
+    let e ← calloc (← iconst64 (64 * ENTRY))
+    let r ← ifte (jTys := [.i64]) .eq e zero (do free s; pure %[zero]) (do
+      let ix ← calloc (← iconst64 (128 * 8))
+      let r ← ifte (jTys := [.i64]) .eq ix zero (do free e; free s; pure %[zero]) (do
+        let ar ← calloc (← iconst64 4096)
+        let r ← ifte (jTys := [.i64]) .eq ar zero (do free ix; free e; free s; pure %[zero]) (do
+          storeI64 e (← at_ s ENTRIES)
+          storeI64 (← iconst64 64) (← at_ s ECAP)
+          storeI64 ix (← at_ s INDEX)
+          storeI64 (← iconst64 128) (← at_ s ICAP)
+          storeI64 ar (← at_ s ARENA)
+          storeI64 (← iconst64 4096) (← at_ s ACAP)
+          pure %[s])
+        pure %[r.head])
+      pure %[r.head])
+    pure %[r.head])
   storeI64 r.head slot
 
 def cleanup : Body := do

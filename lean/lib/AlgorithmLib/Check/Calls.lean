@@ -823,12 +823,14 @@ def preLmdbCursorScan (S : TState) (as : List AV) : Bool :=
 /-- A handle of kind `k` held, by its description. -/
 def handB (k : Contracts.Held) : AV → Bool
   | .hand k' true => k' == k
+  | .blk _ true => k == .heap
   | _ => false
 
 /-- **What a call of the engine's own libraries needs, decided** by the
     arguments it is handed, as `extNeeds` asks it: each handle held, and room
     for each buffer it reads or writes, by a length known. -/
 def preExt (S : TState) : Ext → List AV → Bool
+  | .present _, [] => true
   | .c .memcpy, [d, s, n] =>
       match d.bits, s.bits, n.bits with
       | some d', some s', some n' =>

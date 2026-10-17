@@ -75,6 +75,12 @@ inductive AV where
   /-- A 64-bit handle of kind `k` held open; where `held` is false, that or
       null: what an open answers. -/
   | hand (k : Contracts.Held) (held : Bool)
+  /-- The start of a live heap block of at least `n` bytes; where `held` is
+      false, that or null: what `calloc` answers. -/
+  | blk (n : Nat) (held : Bool)
+  /-- The value of slot `b` and between `lo` and `hi` more: an address into
+      the block slot `b` starts. -/
+  | into (b : R) (lo hi : Nat)
   | any
   deriving Repr, Inhabited
 
@@ -90,6 +96,9 @@ def AV.Desc (Γ : Env) (w : World) : AV → V → Prop
       v = boolV (cmpInt c t x y)
   | .sc t, v => TyV t v
   | .hand k held, v => ∃ x, v = .sc .i64 x ∧ ((held = false ∧ x = 0) ∨ k.live w x = true)
+  | .blk n held, v => ∃ x, v = .sc .i64 x ∧ ((held = false ∧ x = 0) ∨ Contracts.Blk w x n)
+  | .into b lo hi, v => ∃ base off, Γ[b]? = some (.sc .i64 base) ∧ v = .sc .i64 (base + UInt64.ofNat off) ∧
+      lo ≤ off ∧ off ≤ hi
   | .any, _ => True
 
 /-- The scalar type a value is known to have. -/
@@ -100,6 +109,8 @@ def AV.scTy : AV → Option ClifTy
   | .cmp .. => some .i8
   | .sc t => if t.lanes.isNone then some t else none
   | .hand .. => some .i64
+  | .blk .. => some .i64
+  | .into .. => some .i64
   | _ => none
 
 /-- The type a value is known to have, scalar or vector. -/
@@ -120,12 +131,15 @@ def AV.isKnown : AV → Bool
 /-- The slots a value's description reads. -/
 def AV.refs : AV → List R
   | .cmp _ a b => [a, b]
+  | .into b _ _ => [b]
   | _ => []
 
 /-- The same value, described without reading other slots: what may be moved
     to another environment. -/
 def AV.portable : AV → AV
   | .cmp .. => .sc .i8
+  | .blk .. => .sc .i64
+  | .into .. => .sc .i64
   | v => v
 
 theorem AV.scTy_desc {Γ : Env} {w : World} {av : AV} {v : V} {t : ClifTy} (hd : av.Desc Γ w v)
@@ -158,6 +172,12 @@ theorem AV.scTy_desc {Γ : Env} {w : World} {av : AV} {v : V} {t : ClifTy} (hd :
   | hand k b =>
       simp only [scTy, Option.some.injEq] at h; subst h
       obtain ⟨x, rfl, -⟩ := hd; exact ⟨x, rfl⟩
+  | blk n b =>
+      simp only [scTy, Option.some.injEq] at h; subst h
+      obtain ⟨x, rfl, -⟩ := hd; exact ⟨x, rfl⟩
+  | into b lo hi =>
+      simp only [scTy, Option.some.injEq] at h; subst h
+      obtain ⟨_, _, -, rfl, -⟩ := hd; exact ⟨_, rfl⟩
   | any => cases h
 
 theorem AV.ty_desc {Γ : Env} {w : World} {av : AV} {v : V} {t : ClifTy} (hd : av.Desc Γ w v)
@@ -200,13 +220,16 @@ theorem AV.portable_desc {Γ Γ' : Env} {w : World} {av : AV} {v : V} (hd : av.D
     av.portable.Desc Γ' w v := by
   cases av with
   | cmp c a b => obtain ⟨_, _, _, -, -, -, rfl⟩ := hd; exact ⟨_, rfl⟩
+  | blk n b => obtain ⟨x, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
+  | into b lo hi => obtain ⟨_, _, -, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
   | _ => exact hd
 
 /-- A description reads only the slots `refs` names, and the world only
     through region sizes other than the pinned one's and the handles held. -/
 theorem AV.desc_transport {Γ Γ' : Env} {w w' : World} {av : AV} {v : V} (hd : av.Desc Γ w v)
     (hΓ : ∀ a ∈ av.refs, Γ'[a]? = Γ[a]?) (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
-    (hh : ∀ (k : Contracts.Held) b, av = .hand k b → ∀ x, k.live w x = true → k.live w' x = true) :
+    (hh : ∀ (k : Contracts.Held) b, av = .hand k b → ∀ x, k.live w x = true → k.live w' x = true)
+    (hb : ∀ n b, av = .blk n b → ∀ x, Contracts.Blk w x n → Contracts.Blk w' x n) :
     av.Desc Γ' w' v := by
   cases av with
   | int n =>
@@ -223,6 +246,12 @@ theorem AV.desc_transport {Γ Γ' : Env} {w w' : World} {av : AV} {v : V} (hd : 
   | hand k b =>
       obtain ⟨x, rfl, h⟩ := hd
       exact ⟨x, rfl, h.imp id (hh k b rfl x)⟩
+  | blk n b =>
+      obtain ⟨x, rfl, h⟩ := hd
+      exact ⟨x, rfl, h.imp id (hb n b rfl x)⟩
+  | into b lo hi =>
+      obtain ⟨base, off, h1, h2⟩ := hd
+      exact ⟨base, off, by rw [hΓ b (by simp [refs])]; exact h1, h2⟩
   | any => exact hd
 
 -- ---------------------------------------------------------------------------
@@ -764,7 +793,7 @@ theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {
   · obtain ⟨u, hu, hd⟩ := he i hlt
     refine ⟨u, by rw [Array.getElem?_push, if_neg (by omega)]; exact hu, ?_⟩
     rw [AS.get_pushS_lt hlt]
-    refine AV.desc_transport hd (fun a ha => ?_) (fun _ _ => rfl) (fun _ _ _ _ h => h)
+    refine AV.desc_transport hd (fun a ha => ?_) (fun _ _ => rfl) (fun _ _ _ _ h => h) (fun _ _ _ _ h => h)
     rcases Nat.lt_or_ge a Γ.size with ha' | ha'
     · rw [Array.getElem?_push, if_neg (by omega)]
     · -- a slot past the environment reads nothing, so no description names one
@@ -778,6 +807,12 @@ theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {
           rcases ha with rfl | rfl
           · rw [Array.getElem?_eq_none (by omega)] at hx; cases hx
           · rw [Array.getElem?_eq_none (by omega)] at hy; cases hy
+      | into b lo hi =>
+          intro hd ha
+          obtain ⟨_, _, hb, -⟩ := hd
+          simp only [AV.refs, List.mem_cons, List.not_mem_nil, or_false] at ha
+          subst ha
+          rw [Array.getElem?_eq_none (by omega)] at hb; cases hb
       | _ => intro _ ha; simp [AV.refs] at ha
   · have hi' : i = A.len := by omega
     subst hi'
@@ -792,34 +827,39 @@ theorem AS.Holds.push {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a
     keeps the region sizes and each handle a slot is described as. -/
 theorem AS.Holds.worldP {A : AS} {Γ : Env} {w w' : World} (h : A.Holds vals Γ w) {S : TState}
     (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
-    (hh : ∀ i (k : Contracts.Held) b, A.get i = .hand k b → ∀ x, k.live w x = true → k.live w' x = true) :
+    (hh : ∀ i (k : Contracts.Held) b, A.get i = .hand k b → ∀ x, k.live w x = true → k.live w' x = true)
+    (hb : ∀ i n b, A.get i = .blk n b → ∀ x, Contracts.Blk w x n → Contracts.Blk w' x n) :
     (A.withFacts S).Holds vals Γ w' :=
   ⟨⟨h.1.1, fun i hi => Sym.fits_congr (h.1.2.1 i hi) (fun _ _ => rfl) rfl hw (Nat.le_refl _),
     h.1.2.2.clearWorld w'⟩, fun i hi => by
     obtain ⟨v, hv, hd⟩ := h.2.1 i hi
-    exact ⟨v, hv, AV.desc_transport hd (fun _ _ => rfl) hw (fun k b e => hh i k b e)⟩, hS⟩
+    exact ⟨v, hv, AV.desc_transport hd (fun _ _ => rfl) hw (fun k b e => hh i k b e) (fun n b e => hb i n b e)⟩, hS⟩
 
 /-- The same, reached by a step that keeps every handle held. -/
 theorem AS.Holds.world {A : AS} {Γ : Env} {w w' : World} (h : A.Holds vals Γ w) {S : TState}
     (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
-    (hh : ∀ (k : Contracts.Held) x, k.live w x = true → k.live w' x = true) :
+    (hh : ∀ (k : Contracts.Held) x, k.live w x = true → k.live w' x = true)
+    (hb : ∀ x n, Contracts.Blk w x n → Contracts.Blk w' x n) :
     (A.withFacts S).Holds vals Γ w' :=
-  h.worldP hS hw fun _ k _ _ => hh k
+  h.worldP hS hw (fun _ k _ _ => hh k) (fun _ n _ _ x => hb x n)
 
 /-- Whether a value is described as a handle. -/
 def AV.isHand : AV → Bool
   | .hand .. => true
+  | .blk .. => true
   | _ => false
 
 /-- A value described without the handle it may be: what a step that may close
     any handle leaves of it. -/
 def AV.forget : AV → AV
   | .hand .. => .sc .i64
+  | .blk .. => .sc .i64
   | a => a
 
 theorem AV.forget_desc {Γ : Env} {w : World} {av : AV} {v : V} (hd : av.Desc Γ w v) : av.forget.Desc Γ w v := by
   cases av with
   | hand k b => obtain ⟨x, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
+  | blk n b => obtain ⟨x, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
   | _ => exact hd
 
 /-- A description that is no handle reads the world only through region sizes. -/
@@ -839,6 +879,10 @@ theorem AV.desc_transport_nh {Γ Γ' : Env} {w w' : World} {av : AV} {v : V} (hd
   | known _ => exact hd
   | sc _ => exact hd
   | hand k b => cases hn
+  | blk n b => cases hn
+  | into b lo hi =>
+      obtain ⟨base, off, h1, h2⟩ := hd
+      exact ⟨base, off, by rw [hΓ b (by simp [refs])]; exact h1, h2⟩
   | any => exact hd
 
 /-- The state with every handle forgotten. -/
@@ -867,17 +911,24 @@ theorem AS.Holds.forgetHands {A : AS} {Γ : Env} {w : World} (h : A.Holds vals �
 theorem AS.Holds.worldNH {A : AS} {Γ : Env} {w w' : World} (h : A.Holds vals Γ w) (hn : A.NoHands) {S : TState}
     (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r) :
     (A.withFacts S).Holds vals Γ w' :=
-  h.worldP hS hw fun i k b e => by have := hn i; rw [e] at this; cases this
+  h.worldP hS hw (fun i k b e => by have := hn i; rw [e] at this; cases this)
+    (fun i n b e => by have := hn i; rw [e] at this; cases this)
 
 /-- A value described without the handles of kind `k` it may be. -/
 def AV.forgetK (k : Contracts.Held) : AV → AV
   | .hand k' b => if k' = k then .sc .i64 else .hand k' b
+  | .blk n b => if k = .heap then .sc .i64 else .blk n b
   | a => a
 
 theorem AV.forgetK_desc {Γ : Env} {w : World} {k : Contracts.Held} {av : AV} {v : V} (hd : av.Desc Γ w v) :
     (av.forgetK k).Desc Γ w v := by
   cases av with
   | hand k' b =>
+      simp only [AV.forgetK]
+      split
+      · obtain ⟨x, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
+      · exact hd
+  | blk n b =>
       simp only [AV.forgetK]
       split
       · obtain ⟨x, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
@@ -906,14 +957,63 @@ theorem AS.Holds.forgetKind {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ
         obtain ⟨v, hv, hd⟩ := h.2.1 i hi
         exact ⟨v, hv, by rw [AS.forgetKind_get]; exact AV.forgetK_desc hd⟩, h.2.2⟩
 
+/-- A block the state still names after a step that may close handles of
+    kind `kc`: the step frees nothing. -/
+theorem AS.forgetKind_blk {A : AS} {kc : Option Contracts.Held} {i : R} {n : Nat} {b : Bool}
+    (h : (A.forgetKind kc).get i = .blk n b) : kc ≠ some .heap ∧ A.get i = .blk n b := by
+  cases kc with
+  | none => exact ⟨by simp, h⟩
+  | some k =>
+      rw [AS.forgetKind_get] at h
+      cases e' : A.get i <;> rw [e'] at h <;> simp only [AV.forgetK, reduceCtorEq] at h
+      · split at h <;> cases h
+      · split at h
+        · cases h
+        · rename_i hne; cases h; exact ⟨fun e => hne (Option.some.inj e), rfl⟩
+
+/-- The state a library call leaves: the handles of the kind it may close
+    forgotten, and, outside the C library, every heap block. -/
+def AS.forgetExt (A : AS) (e : Ext) : AS :=
+  match e with
+  | .c _ => A.forgetKind e.closes
+  | _ => (A.forgetKind e.closes).forgetKind (some .heap)
+
+theorem AS.Holds.forgetExt {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) (e : Ext) :
+    (A.forgetExt e).Holds vals Γ w := by
+  cases e <;> first | exact h.forgetKind _ | exact (h.forgetKind _).forgetKind _
+
+theorem AS.forgetExt_blk {A : AS} {e : Ext} {i : R} {n : Nat} {b : Bool}
+    (h : (A.forgetExt e).get i = .blk n b) : (∃ f, e = .c f) ∧ e.closes ≠ some .heap := by
+  cases e <;> first
+    | exact ⟨⟨_, rfl⟩, (AS.forgetKind_blk h).1⟩
+    | exact absurd rfl (AS.forgetKind_blk h).1
+
 theorem AS.forgetKind_hand {A : AS} {kc : Option Contracts.Held} {i : R} {k : Contracts.Held} {b : Bool}
     (h : (A.forgetKind kc).get i = .hand k b) : kc ≠ some k := by
   intro e; subst e
   rw [AS.forgetKind_get] at h
   cases e' : A.get i <;> rw [e'] at h <;> simp only [AV.forgetK, reduceCtorEq] at h
-  split at h
-  · cases h
-  · rename_i hne; cases h; exact hne rfl
+  · split at h
+    · cases h
+    · rename_i hne; cases h; exact hne rfl
+  · split at h <;> cases h
+
+theorem AV.forgetK_hand {av : AV} {k0 k : Contracts.Held} {b : Bool} (h : av.forgetK k0 = .hand k b) :
+    av = .hand k b := by
+  cases av <;> simp only [AV.forgetK, reduceCtorEq] at h
+  · split at h
+    · cases h
+    · exact h
+  · split at h <;> cases h
+
+theorem AS.forgetExt_hand {A : AS} {e : Ext} {i : R} {k : Contracts.Held} {b : Bool}
+    (h : (A.forgetExt e).get i = .hand k b) : e.closes ≠ some k := by
+  cases e <;> first
+    | exact AS.forgetKind_hand h
+    | (unfold AS.forgetExt at h
+       dsimp only at h
+       rw [AS.forgetKind_get] at h
+       exact AS.forgetKind_hand (AV.forgetK_hand h))
 
 -- ---------------------------------------------------------------------------
 -- Operations
@@ -1319,6 +1419,29 @@ theorem load_of_fits {Γ : Env} {w : World} {op : LoadOp} {a : R} {t : ClifTy} {
     (hok : loadKindOk op = true) (hu : Γ[a]? = some (.sc t x)) (hf : Fits w.mem x (loadBytes op)) :
     ∃ v, evalOp w.mem Γ (.load op a) = some v ∧ ∀ Γ', (loadAV op).Desc Γ' w v := by
   obtain ⟨v, hv, ht⟩ := evalOp_load_fits hok hu hf
+  refine ⟨v, hv, fun _ => ?_⟩
+  unfold loadAV
+  split
+  · rename_i hi
+    obtain ⟨y, rfl, hy⟩ := evalOp_load_hi hi hv
+    exact ⟨y, rfl, Nat.zero_le _, hy, Nat.one_dvd _, trivial⟩
+  · exact ht
+
+/-- A scalar load whose bytes can be read answers a value of its type. -/
+theorem evalOp_load_some {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy} {x : UInt64}
+    (hl : op.ty.lanes = none) (ha : Γ[a]? = some (.sc t x)) (hb : ∃ b, m.load x (loadBytes op) = some b) :
+    ∃ v, evalOp m Γ (.load op a) = some v ∧ TyV op.ty v := by
+  obtain ⟨b, hb⟩ := hb
+  unfold loadBytes at hb
+  cases hk : op.kind <;> simp only [hk, hl] at hb <;>
+    exact ⟨_, by simp [evalOp, Sem.get, ha, hk, hl, hb] <;> rfl,
+      by first | exact TyV.sc hl | (unfold norm; exact TyV.sc hl) | (unfold ofInt; exact TyV.sc hl)⟩
+
+/-- …and leaves what `loadAV` says. -/
+theorem load_of_some {Γ : Env} {w : World} {op : LoadOp} {a : R} {t : ClifTy} {x : UInt64}
+    (hl : op.ty.lanes = none) (hu : Γ[a]? = some (.sc t x)) (hb : ∃ b, w.mem.load x (loadBytes op) = some b) :
+    ∃ v, evalOp w.mem Γ (.load op a) = some v ∧ ∀ Γ', (loadAV op).Desc Γ' w v := by
+  obtain ⟨v, hv, ht⟩ := evalOp_load_some hl hu hb
   refine ⟨v, hv, fun _ => ?_⟩
   unfold loadAV
   split

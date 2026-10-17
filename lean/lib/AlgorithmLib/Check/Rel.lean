@@ -94,6 +94,8 @@ theorem AV.rangeOf_sound {Γ : Env} {w : World} {av : AV} {r : R} {v : V} (hv : 
       split <;> simp
   | sc t => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
   | hand k b => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
+  | blk n b => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
+  | into b lo hi => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
   | any => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
 
 /-- A number a value's bits, as a number, are a multiple of. -/
@@ -116,6 +118,8 @@ theorem AV.absAl_dvd {Γ : Env} {w : World} {av : AV} {t : ClifTy} {x : UInt64}
   | cmp => exact Nat.one_dvd _
   | sc => exact Nat.one_dvd _
   | hand => exact Nat.one_dvd _
+  | blk => exact Nat.one_dvd _
+  | into => exact Nat.one_dvd _
   | any => exact Nat.one_dvd _
 
 /-- A slot's linear facts, with the bound its range's fit gives. -/
@@ -369,13 +373,28 @@ def AV.capBy (av : AV) : AV → AV
       | _ => av
   | _ => av
 
-/-- What an operation leaves, sharpened by the linear facts. -/
+/-- A heap block's start, or an address into one, and a number known exactly
+    more: an address into the block. -/
+def intoAV (A : AS) (a b : R) : Option AV :=
+  if isI64 A a && isI64 A b then
+    match (A.get b).bits with
+    | some c =>
+        match A.get a with
+        | .blk _ _ => some (.into a c.toNat c.toNat)
+        | .into r lo hi => some (.into r (lo + c.toNat) (hi + c.toNat))
+        | _ => none
+    | none => none
+  else none
+
+/-- What an operation leaves, sharpened by the linear facts, or an address
+    into a heap block. -/
 def opAV (A : AS) (o : Op) (av : AV) : AV :=
   match o with
   | .isub a b =>
       match subNoWrap A a b with
       | some m => av.capBy m
       | none => av
+  | .iadd a b => (intoAV A a b).getD av
   | _ => av
 
 theorem opAV_desc {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : Op} {av : AV} {v : V}
@@ -427,6 +446,50 @@ theorem opAV_desc {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : O
           rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr hxy)]
           dsimp only
           omega
+        · cases e
+  case iadd a b =>
+    simp only [opAV]
+    cases e : intoAV A a b with
+    | none => exact hd
+    | some av' =>
+        simp only [Option.getD_some]
+        unfold intoAV at e
+        split at e
+        · rename_i hc
+          simp only [Bool.and_eq_true] at hc
+          obtain ⟨x, hx, ha⟩ := slot_i64 h hc.1
+          obtain ⟨y, hy, hb⟩ := slot_i64 h hc.2
+          have e2 : v = .sc .i64 (x + y) := by
+            simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
+          subst e2
+          have hxp : (Γ.push (V.sc .i64 (x + y)))[a]? = some (.sc .i64 x) := by
+            have hlt : a < Γ.size := by rw [h.1.1]; exact ha
+            rw [Array.getElem?_push]
+            split
+            · rename_i heq; exact absurd heq (Nat.ne_of_lt hlt)
+            · exact hx
+          split at e
+          · rename_i c hcb
+            obtain ⟨t, ey⟩ := AV.bits_desc (h.descAt hy) hcb
+            simp only [V.sc.injEq] at ey
+            obtain ⟨-, rfl⟩ := ey
+            split at e
+            · cases e
+              exact ⟨x, y.toNat, hxp, by rw [UInt64.ofNat_toNat], Nat.le_refl _, Nat.le_refl _⟩
+            · rename_i r lo hi hga
+              cases e
+              have hda := h.descAt hx
+              rw [hga] at hda
+              obtain ⟨base, off, hr, ex, hlo, hhi⟩ := hda
+              simp only [V.sc.injEq, true_and] at ex
+              subst ex
+              refine ⟨base, off + y.toNat, ?_, ?_, by omega, by omega⟩
+              · rw [Array.getElem?_push, if_neg]
+                · exact hr
+                · intro e; subst e; rw [Array.getElem?_eq_none (Nat.le_refl _)] at hr; cases hr
+              · rw [UInt64.ofNat_add, UInt64.ofNat_toNat, UInt64.add_assoc]
+            · cases e
+          · cases e
         · cases e
   all_goals exact hd
 

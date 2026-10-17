@@ -221,6 +221,31 @@ theorem entryKnown_holds {S : TState} {args : List V} {w : World} (h : S.holds w
     Option.getD_some]
   rfl
 
+/-- The checker's state where a body is called with arguments each of which
+    one of `avs` describes, the typestate its facts: how a library function is
+    entered. -/
+def entryWith (S : TState) (avs : List AV) : AS := AS.ofList avs S
+
+theorem entryWith_holds {S : TState} {avs : List AV} {args : List V} {w : World} (h : S.holds w)
+    (hd : DescAll args.toArray w avs args) : (entryWith S avs).Holds vals args.toArray w := by
+  unfold entryWith
+  refine ⟨⟨by rw [AS.ofList_len, hd.length]; simp, AS.ofList_fits _ _ _ _, AS.ofList_par_at _ _ _ _⟩,
+    fun i hi => ?_, by rw [AS.ofList_facts]; exact h⟩
+  rw [AS.ofList_len] at hi
+  rw [AS.ofList_get]
+  obtain ⟨v, hv, hdv⟩ := hd.get hi
+  exact ⟨v, by simpa using hv, hdv⟩
+
+/-- A pointer to `n` writable bytes of region `r`: how a caller hands over a
+    place to write. -/
+def AV.room (r : Region) (n : Nat) : AV := .ptr r ⟨.i64, 0, span - n, 1, some (r, 1, n)⟩
+
+theorem AV.room_desc {Γ : Env} {w : World} {r : Region} {n off : Nat} (hr : r ≠ .pinned)
+    (hn : n ≤ span) (h : off + n ≤ w.mem.sizes r) (hs : off + n ≤ span) :
+    (AV.room r n).Desc Γ w (.sc .i64 (regionBase r + UInt64.ofNat off)) :=
+  ⟨off, rfl, ⟨Nat.zero_le _, by show off ≤ span - n; omega, Nat.one_dvd _, hr, by omega⟩,
+    by show span - n ≤ span; omega⟩
+
 /-- Whether the checker accepts a body from a state, the body leaving only by
     falling off its end, in a state whose facts include `S'` and whose record
     of the parameters names the cells and buffers `P'` does. -/
@@ -559,6 +584,37 @@ elab "check_calls" : tactic => do
     evalTactic (← `(tactic| have hacc : traceOf $sCert $sA $sc = some $sT := by decide +kernel))
     let hA ← entryProof h S idx dLen oLen P pidx vs
     evalTactic (← `(tactic| refine check_calls_of hacc $hA $shr))
+
+open Lean Meta Elab Tactic in
+/-- Prove `run cfg args w c ≠ .misuse m ∧ run cfg args w c ≠ .fault m` for a
+    body entered with arguments `avs` describes, from the hypothesis that the
+    world satisfies a closed typestate, by the checker. What is left is that
+    `avs` describe the arguments (`DescAll`). -/
+elab "check_lib " avs:term : tactic => do
+  let g ← getMainGoal
+  g.withContext do
+    let (h, L) ← findTypestate "check_lib"
+    let L ← instantiateMVars L
+    if L.hasFVar then throwError "check_lib: the typestate names a variable"
+    let tgt ← instantiateMVars (← g.getType)
+    let some runE := tgt.find? (fun e => e.isAppOfArity ``Sem.run 4)
+      | throwError "check_lib: the goal runs no body"
+    let code := runE.getArg! 3
+    if code.hasFVar then throwError "check_lib: the body names a variable"
+    let avsE ← Term.elabTermEnsuringType avs (some (mkApp (mkConst ``List [0]) (mkConst ``AV)))
+    let avsE ← instantiateMVars avsE
+    let A := mkApp2 (mkConst ``entryWith) L avsE
+    let cert ← match ← unsafe evalExpr (Except String Cert)
+        (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
+        (mkApp3 (mkConst ``certOrRefusal) (toExpr false) A code) with
+      | .ok c => pure c
+      | .error e => throwError "check_lib: the checker refuses this body:\n{e}"
+    let sCert ← Term.exprToSyntax (toExpr cert)
+    let sA ← Term.exprToSyntax A
+    let sh ← Term.exprToSyntax h
+    let sc ← Term.exprToSyntax code
+    evalTactic (← `(tactic| have hacc : accepts $sCert $sA $sc = true := by decide +kernel))
+    evalTactic (← `(tactic| refine check_run (vals := []) hacc rfl (entryWith_holds $sh ?_) _))
 
 /-- `ship_entry X : code under P` states and proves the two theorems of a
     shipped body: `X_fine`, that its emission is well formed, and `X_no_misuse`,

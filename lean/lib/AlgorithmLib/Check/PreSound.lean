@@ -939,6 +939,13 @@ theorem handB_sound {a : AV} {x : UInt64} {k : Contracts.Held} (hd : ∃ t, a.De
     rcases hl with ⟨h1, -⟩ | hl
     · cases h1
     · exact hl
+  · simp only [beq_iff_eq] at h
+    subst h
+    obtain ⟨t, x', e, hl⟩ := hd
+    cases e
+    rcases hl with ⟨h1, -⟩ | hl
+    · cases h1
+    · exact hl.live
   · cases h
 
 /-- Room for `n` bytes the arguments name, and a handle the arguments name,
@@ -961,6 +968,10 @@ theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List U
   have noroom : ∀ q ∈ ([] : List (UInt64 × Nat)), Fits w.mem q.1 q.2 := by simp
   unfold preExt at h
   split at h <;> (try (cases h; done))
+  -- whether a library is there
+  · have := ArgBits.nil_inv hb
+    subst this
+    exact ⟨[], [], rfl, none_, noroom⟩
   -- C: memcpy
   · rename_i d s n
     split at h

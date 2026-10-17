@@ -40,6 +40,8 @@ def AV.beq : AV → AV → Bool
   | .cmp c a b, .cmp c' a' b' => c == c' && a == a' && b == b'
   | .sc t, .sc t' => decide (t = t')
   | .hand k b, .hand k' b' => decide (k = k') && b == b'
+  | .blk n b, .blk n' b' => decide (n = n') && b == b'
+  | .into r lo hi, .into r' lo' hi' => decide (r = r') && decide (lo = lo') && decide (hi = hi')
   | .any, .any => true
   | _, _ => false
 
@@ -146,6 +148,7 @@ def joinOpt : Option AS → Option AS → Except String (Option AS)
     slot past the cut no longer can. -/
 def AV.cut (n : Nat) : AV → AV
   | .cmp c a b => if a < n ∧ b < n then .cmp c a b else .sc .i8
+  | .into b lo hi => if b < n then .into b lo hi else .sc .i64
   | v => v
 
 /-- Linear facts kept in an environment cut to `n` slots: those that read no
@@ -265,6 +268,7 @@ def nonZero (A : AS) (x y : R) : AS :=
   | .known (.sc _ 0) =>
       match A.get x with
       | .hand k false => A.setAV x (.hand k true)
+      | .blk n false => A.setAV x (.blk n true)
       | _ => A.tightenLo x 1 1
   | _ => A
 
@@ -335,14 +339,33 @@ def absStore (A : AS) (v a : R) (n : Nat) : Except String AS :=
       | _, some _, none => .ok (A.withFactsK (A.facts.filter (!·.isCell)) (!·.isCell))
       | ga, none, _ => .error s!"store of {n} bytes to {repr ga} the typestate gives no room for"
 
-/-- A store `absStore` refuses: one the linear facts show inside a region
-    keeps every fact but the cells; where `fo` says the body may fault, any
-    may fault, or write anywhere, and keeps the same. -/
+/-- Whether `n` bytes at slot `a` lie inside a heap block the state names,
+    with no copy in flight and no worker running. -/
+def memBlk (A : AS) (a : R) (n : Nat) : Bool :=
+  decide (0 < n) && A.facts.contains (.part .frozen false) && A.facts.contains (.part .idle true) &&
+    match A.get a with
+    | .into b _ hi =>
+        (match A.get b with
+         | .blk sz true => decide (hi + n ≤ sz)
+         | _ => false)
+    | .blk sz true => decide (n ≤ sz)
+    | _ => false
+
+/-- A scalar load from inside a heap block. -/
+def blkLoad (A : AS) : Op → Option AV
+  | .load op a => if op.ty.lanes.isNone && memBlk A a (loadBytes op) then some (loadAV op) else none
+  | _ => none
+
+/-- A store `absStore` refuses: one the linear facts show inside a region,
+    or a scalar one inside a heap block, keeps every fact but the cells; where
+    `fo` says the body may fault, any may fault, or write anywhere, and keeps
+    the same. -/
 def absStoreF (fo : Bool) (A : AS) (v a : R) (n : Nat) : Except String AS :=
   match absStore A v a n with
   | .ok A' => .ok A'
   | .error e =>
-      if (storeBytes A v n).any (memRel A a) || fo then .ok (A.withFacts (A.facts.filter (!·.isCell)))
+      if (storeBytes A v n).any (memRel A a) || ((A.get v).scTy.isSome && memBlk A a n) || fo then
+        .ok (A.withFacts (A.facts.filter (!·.isCell)))
       else .error e
 
 /-- A load the ranges cannot place, placed by the linear facts. -/
@@ -418,12 +441,17 @@ def ffiAnswer (S : TState) (f : Ffi) (as : List AV) : AV :=
   | some n => .known (ofInt .i32 n)
   | none => .sc (f.result.getD .i64)
 
-/-- What a library call answers: for an open, null or a handle held; any value
-    otherwise. -/
-def extAnswer (e : Ext) : AV :=
-  match e.opens with
-  | some k => .hand k false
-  | none => .any
+/-- What a library call answers: for `calloc` asked for a known number of
+    bytes, null or a heap block of that many; for whether a library is there,
+    a flag; for another open, null or a handle held; any value otherwise. -/
+def extAnswer (e : Ext) (as : List AV) : AV :=
+  match e, as.mapM AV.bits with
+  | .c .calloc, some [n, sz] => .blk (n.toNat * sz.toNat) false
+  | .present _, _ => .sc .i32
+  | _, _ =>
+      match e.opens with
+      | some k => .hand k false
+      | none => .any
 
 /-- Whether a statement that keeps a call's answer (`val`), or one that drops
     it, may name the callee: a library function answers as its signature says. -/
@@ -445,7 +473,7 @@ def AS.callee (A : AS) (c : Callee) (args : List R) : Except String (AS × AV) :
   | .ext e =>
       let as := args.map A.get
       if e.aside && as.all (·.scTy.isSome) && preExt A.facts e as then
-        .ok ((A.forgetKind e.closes).withFacts (A.facts.filter (extKeepsA e as)), extAnswer e)
+        .ok ((A.forgetExt e).withFacts (A.facts.filter (extKeepsA e as)), extAnswer e as)
       else .error s!"call {repr e}: precondition not decided (args {repr as})"
   | c => .error s!"call of {repr c} not handled"
 
@@ -458,8 +486,11 @@ def absStmt (fo : Bool) (A : AS) : Stmt → Except String AS
           match relLoad A o with
           | some av => .ok (A.push av)
           | none =>
-              if fo then .ok (A.push .any)
-              else .error s!"operation {o.name} not shown defined on {repr (o.regs.map A.get)}"
+              match blkLoad A o with
+              | some av => .ok (A.push av)
+              | none =>
+                  if fo then .ok (A.push .any)
+                  else .error s!"operation {o.name} not shown defined on {repr (o.regs.map A.get)}"
   | .store ty v a => absStoreF fo A v a (tyBytes ty)
   | .storeUnaligned v a => absStoreF fo A v a (tyBytes ((A.get v).scTy.getD .i64))
   | .istore8 v a => match (A.get v).scTy with
