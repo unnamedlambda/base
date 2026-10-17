@@ -1035,11 +1035,11 @@ theorem evalInst_iadd_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
     | vec => simp at h
     | sc tb wb =>
       simp only [] at h
-      by_cases hc : (ta == tb) = true ∧ ta.isInt = true
+      by_cases hc : ta = tb ∧ ta.isInt = true
       · rw [if_pos hc] at h
         simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
         obtain ⟨ht, hb⟩ := hc
-        have ht' : ta = tb := ty_eq_of_beq ht
+        have ht' : ta = tb := ht
         subst ht'
         exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
       · rw [if_neg hc] at h; simp at h
@@ -1059,11 +1059,11 @@ theorem evalInst_isub_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
     | vec => simp at h
     | sc tb wb =>
       simp only [] at h
-      by_cases hc : (ta == tb) = true ∧ ta.isInt = true
+      by_cases hc : ta = tb ∧ ta.isInt = true
       · rw [if_pos hc] at h
         simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
         obtain ⟨ht, hb⟩ := hc
-        have ht' : ta = tb := ty_eq_of_beq ht
+        have ht' : ta = tb := ht
         subst ht'
         exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
       · rw [if_neg hc] at h; simp at h
@@ -1083,11 +1083,11 @@ theorem evalInst_imul_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
     | vec => simp at h
     | sc tb wb =>
       simp only [] at h
-      by_cases hc : (ta == tb) = true ∧ ta.isInt = true
+      by_cases hc : ta = tb ∧ ta.isInt = true
       · rw [if_pos hc] at h
         simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
         obtain ⟨ht, hb⟩ := hc
-        have ht' : ta = tb := ty_eq_of_beq ht
+        have ht' : ta = tb := ht
         subst ht'
         exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
       · rw [if_neg hc] at h; simp at h

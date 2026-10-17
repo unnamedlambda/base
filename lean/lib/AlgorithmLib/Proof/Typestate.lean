@@ -56,10 +56,6 @@ open AlgorithmLib.HProg.DevSpec
 
 namespace AlgorithmLib.HProg.Sem
 
-local instance : LawfulBEq ClifTy where
-  eq_of_beq {a b} h := by cases a <;> cases b <;> first | rfl | exact absurd h (by decide)
-  rfl {a} := by cases a <;> decide
-
 /-- Each slot holds a scalar of its type, in order. -/
 def ArgsTy (Γ : Env) : List R → List ClifTy → Prop
   | [], [] => True
@@ -1140,7 +1136,6 @@ theorem evalOp_umin64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64}
   simp only [bin, Sem.get, ha, hb]
   simp [ibinOp, ClifTy.isInt, norm64]
   have hw : (widthMask ClifTy.i64).toNat = 2 ^ 64 - 1 := rfl
-  refine ⟨rfl, ?_⟩
   rw [hw, Nat.and_two_pow_sub_one_eq_mod, Nat.and_two_pow_sub_one_eq_mod,
     Nat.mod_eq_of_lt x.toNat_lt, Nat.mod_eq_of_lt y.toNat_lt]
 
@@ -1311,7 +1306,7 @@ theorem evalOp_icmp64 {m : Mem} {Γ : Env} {c : ICmpCond} {a b : R} {x y : UInt6
 theorem evalOp_bandNot64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64}
     (ha : Γ[a]? = some (.sc .i64 x)) (hb : Γ[b]? = some (.sc .i64 y)) :
     evalOp m Γ (.bandNot a b) = some (.sc .i64 (x &&& ~~~y)) := by
-  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]; decide
+  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]
 
 theorem evalOp_ishl64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64} {tb : ClifTy}
     (ha : Γ[a]? = some (.sc .i64 x)) (hb : Γ[b]? = some (.sc tb y)) (htb : tb.isInt = true) :
@@ -1339,17 +1334,17 @@ theorem evalOp_ushr64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64} {tb : ClifTy
 theorem evalOp_band64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64}
     (ha : Γ[a]? = some (.sc .i64 x)) (hb : Γ[b]? = some (.sc .i64 y)) :
     evalOp m Γ (.band a b) = some (.sc .i64 (x &&& y)) := by
-  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]; decide
+  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]
 
 theorem evalOp_bor64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64}
     (ha : Γ[a]? = some (.sc .i64 x)) (hb : Γ[b]? = some (.sc .i64 y)) :
     evalOp m Γ (.bor a b) = some (.sc .i64 (x ||| y)) := by
-  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]; decide
+  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]
 
 theorem evalOp_bxor64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64}
     (ha : Γ[a]? = some (.sc .i64 x)) (hb : Γ[b]? = some (.sc .i64 y)) :
     evalOp m Γ (.bxor a b) = some (.sc .i64 (x ^^^ y)) := by
-  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]; decide
+  simp [evalOp, Sem.get, ha, hb, zipIntBits, norm64, ClifTy.isInt]
 
 /-- An integer operation that asks its operands be of one type: when one is a
     64-bit value, so is the other, or the operation is undefined. -/
@@ -2658,10 +2653,6 @@ theorem TyAt.get {Γ : Env} {r : R} {t : ClifTy} (h : TyAt Γ r t) : ∃ v, Γ[r
 
 section VecTy
 
-local instance : LawfulBEq ClifTy where
-  eq_of_beq {a b} h := by cases a <;> cases b <;> first | rfl | exact absurd h (by decide)
-  rfl {a} := by cases a <;> decide
-
 /-- Operands of their types, scalars or vectors. -/
 def ArgsV (Γ : Env) : List R → List ClifTy → Prop
   | [], [] => True
@@ -3180,10 +3171,6 @@ theorem wp_loop_vcTA {tys exitTys : List ClifTy} {u : ClifTy} {init : Vals Slot 
     exact hi.elim id fun h => absurd hn (h.some a.1.cc)
 
 section LoopN
-
-local instance : LawfulBEq ClifTy where
-  eq_of_beq {a b} h := by cases a <;> cases b <;> first | rfl | exact absurd h (by decide)
-  rfl {a} := by cases a <;> decide
 
 /-- What a test's outcome tells of its operands' values, its fields apart. -/
 def CondOutR (Γ : Env) (cc : ICmpCond) (a b : R) (exitOnTrue : Bool) (Pc Px : Prop) : Prop :=

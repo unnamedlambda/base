@@ -220,21 +220,6 @@ theorem sgemmOn_bufs {i₀ : Int} {n₀ : Nat} {w : World}
       simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_bufs hop ht
   · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
 
-theorem bufs_cudaCreateBuffer {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaCreateBuffer bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaCreateBuffer at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · simp only [Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-        exact ht.push _
-  · cases hk
-
 theorem bufs_cudaUpload {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
     (h : ffiCudaUpload bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
   unfold ffiCudaUpload at h
@@ -290,173 +275,6 @@ theorem bufs_cudaUploadOffset {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w 
               (by rw [hid, hget]; rfl) ht
   · cases hk
 
-theorem bufs_cudaDownload {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaDownload bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaDownload at h
-  split at h
-  · split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-        · split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-          · obtain ⟨d', hsr, h⟩ := Option.bind_eq_some_iff.mp h
-            obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-            simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            exact syncRead_bufs hsr ht
-  · cases h
-
-theorem bufs_cudaDownloadOffset {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaDownloadOffset bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaDownloadOffset at h
-  split at h
-  · split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-        · split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-          · obtain ⟨d', hsr, h⟩ := Option.bind_eq_some_iff.mp h
-            obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-            simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            exact syncRead_bufs hsr ht
-  · cases h
-
-theorem bufs_cudaFreeBuffer {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaFreeBuffer bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaFreeBuffer at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · obtain ⟨r', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-          simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-          exact ht.put_none _
-  · cases hk
-
-theorem bufs_cudaSync {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaSync bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaSync at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-      exact ht
-  · cases hk
-
-theorem bufs_cudaLaunch {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaLaunch bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaLaunch at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-        exact cudaLaunchOn_bufs hk ht
-  · cases hk
-
-theorem bufs_cudaLaunchNamed {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaLaunchNamed bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaLaunchNamed at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-        obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-        exact cudaLaunchOn_bufs hk ht
-  · cases hk
-
-theorem bufs_cublasSgemv {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCublasSgemv bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCublasSgemv at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · exact sgemvOn_bufs hk ht
-  · cases hk
-
-theorem bufs_cublasSgemm {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCublasSgemm bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCublasSgemm at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · exact sgemmOn_bufs hk ht
-  · cases hk
-
-theorem bufs_cublasGemmExBf16 {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCublasGemmExBf16 bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCublasGemmExBf16 at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · split at hk
-          · cases hk
-          · dsimp only at hk
-            obtain ⟨d', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-            simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_bufs hop ht
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · cases hk
-
-theorem bufs_cublasGemmStridedBatchedExBf16 {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCublasGemmStridedBatchedExBf16 bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) :
-    BufIs i₀ n₀ w'.dev := by
-  unfold ffiCublasGemmStridedBatchedExBf16 at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · split at hk
-          · cases hk
-          · dsimp only at hk
-            obtain ⟨d', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-            simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_bufs hop ht
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · cases hk
-
 theorem memInfoOf_bufs {i₀ : Int} {n₀ : Nat} {w : World} {ctx : UInt64} {pick : UInt64 × UInt64 → UInt64}
     {r : Option V} {d : Dev} (hk : memInfoOf w ctx pick = some (r, d)) (ht : BufIs i₀ n₀ w.dev) :
     BufIs i₀ n₀ d := by
@@ -464,174 +282,19 @@ theorem memInfoOf_bufs {i₀ : Int} {n₀ : Nat} {w : World} {ctx : UInt64} {pic
   obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
   split at hk <;> (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht)
 
-theorem bufs_cudaPinnedAlloc {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaPinnedAlloc bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaPinnedAlloc at h
-  split at h
-  · split at h
-    · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · dsimp only at h
-        split at h
-        · cases h
-        · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-  · cases h
-
-theorem bufs_cudaPinnedFree {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaPinnedFree bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaPinnedFree at h
-  split at h
-  · split at h
-    · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · split at h
-        · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-        · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-  · cases h
-
-theorem bufs_cudaPinnedPtr {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaPinnedPtr bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaPinnedPtr at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk <;> (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht)
-  · cases hk
-
-theorem bufs_cudaPinnedPtrAt {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaPinnedPtrAt bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaPinnedPtrAt at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · split at hk <;> (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht)
-  · cases hk
-
-theorem bufs_cudaMemInfoFree {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaMemInfoFree bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaMemInfoFree at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · exact memInfoOf_bufs hk ht
-  · cases hk
-
-theorem bufs_cudaMemInfoTotal {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaMemInfoTotal bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaMemInfoTotal at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · exact memInfoOf_bufs hk ht
-  · cases hk
-
-theorem bufs_cudaStreamCreate {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaStreamCreate bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaStreamCreate at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-      first | exact ht | exact ht.joinInto _ _ | exact (ht.joinInto _ _).joinInto _ _
-  · cases hk
-
-theorem bufs_cudaStreamSync {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaStreamSync bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaStreamSync at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · cases hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-          first | exact ht | exact ht.joinInto _ _ | exact (ht.joinInto _ _).joinInto _ _
-  · cases hk
-
-theorem bufs_cudaStreamDestroy {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaStreamDestroy bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaStreamDestroy at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · dsimp only at hk
-          split at hk
-          · cases hk
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-            first | exact ht | exact ht.joinInto _ _ | exact (ht.joinInto _ _).joinInto _ _
-  · cases hk
-
-theorem bufs_cudaEventElapsedMsBits {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaEventElapsedMsBits bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaEventElapsedMsBits at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  rcases bits with _ | ⟨c, _ | ⟨s, _ | ⟨e, _ | ⟨_, _⟩⟩⟩⟩ <;> simp only at hk <;> try cases hk
-  obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-  split at hk
-  · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · split at hk <;> first
-      | (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht)
-      | cases hk
-      | (split at hk <;> first | (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht) | cases hk)
-
-theorem bufs_cudaGraphDestroy {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaGraphDestroy bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaGraphDestroy at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · cases hk
-
-theorem bufs_cudaGraphUpload {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaGraphUpload bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaGraphUpload at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · split at hk <;> (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht)
-  · cases hk
+/-- Close `BufIs` at one answer of a contract, through the steps it took. -/
+macro "bufs_close" : tactic => `(tactic| (
+  repeat' (first
+    | assumption
+    | refine devOp_bufs (by assumption) ?_
+    | refine syncRead_bufs (by assumption) ?_
+    | refine memInfoOf_bufs (by assumption) ?_
+    | refine cudaLaunchOn_bufs (by assumption) ?_
+    | refine sgemvOn_bufs (by assumption) ?_
+    | refine sgemmOn_bufs (by assumption) ?_
+    | refine BufIs.put_none ?_ _
+    | refine BufIs.push ?_ _
+    | refine BufIs.joinInto ?_ _ _)))
 
 /-- The calls that keep every buffer made at its size: all that issue work on
     the default stream, and those that make, wait on and drop streams,
@@ -639,36 +302,18 @@ theorem bufs_cudaGraphUpload {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w :
 def bufKeepers : List IR.Ffi :=
   [.cudaCreateBuffer, .cudaUpload, .cudaUploadOffset, .cudaDownload, .cudaDownloadOffset, .cudaFreeBuffer, .cudaSync, .cudaLaunch, .cudaLaunchNamed, .cublasSgemv, .cublasSgemm, .cublasGemmExBf16, .cublasGemmStridedBatchedExBf16, .cudaPinnedAlloc, .cudaPinnedFree, .cudaPinnedPtr, .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cudaStreamCreate, .cudaStreamSync, .cudaStreamDestroy, .cudaEventElapsedMsBits, .cudaGraphDestroy, .cudaGraphUpload]
 
+set_option maxHeartbeats 4000000 in
 /-- **A call that keeps buffers keeps each one's size.** -/
 theorem callBits_bufs (f : IR.Ffi) (hf : f ∈ bufKeepers) {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World}
     {r : Option V} {w' : World} (h : callBits f bits w = some (r, w')) (hd : BufIs i₀ n₀ w.dev) :
     BufIs i₀ n₀ w'.dev := by
-  cases f
-  case cudaCreateBuffer => exact bufs_cudaCreateBuffer h hd
-  case cudaUpload => exact bufs_cudaUpload h hd
-  case cudaUploadOffset => exact bufs_cudaUploadOffset h hd
-  case cudaDownload => exact bufs_cudaDownload h hd
-  case cudaDownloadOffset => exact bufs_cudaDownloadOffset h hd
-  case cudaFreeBuffer => exact bufs_cudaFreeBuffer h hd
-  case cudaSync => exact bufs_cudaSync h hd
-  case cudaLaunch => exact bufs_cudaLaunch h hd
-  case cudaLaunchNamed => exact bufs_cudaLaunchNamed h hd
-  case cublasSgemv => exact bufs_cublasSgemv h hd
-  case cublasSgemm => exact bufs_cublasSgemm h hd
-  case cublasGemmExBf16 => exact bufs_cublasGemmExBf16 h hd
-  case cublasGemmStridedBatchedExBf16 => exact bufs_cublasGemmStridedBatchedExBf16 h hd
-  case cudaPinnedAlloc => exact bufs_cudaPinnedAlloc h hd
-  case cudaPinnedFree => exact bufs_cudaPinnedFree h hd
-  case cudaPinnedPtr => exact bufs_cudaPinnedPtr h hd
-  case cudaPinnedPtrAt => exact bufs_cudaPinnedPtrAt h hd
-  case cudaMemInfoFree => exact bufs_cudaMemInfoFree h hd
-  case cudaMemInfoTotal => exact bufs_cudaMemInfoTotal h hd
-  case cudaStreamCreate => exact bufs_cudaStreamCreate h hd
-  case cudaStreamSync => exact bufs_cudaStreamSync h hd
-  case cudaStreamDestroy => exact bufs_cudaStreamDestroy h hd
-  case cudaEventElapsedMsBits => exact bufs_cudaEventElapsedMsBits h hd
-  case cudaGraphDestroy => exact bufs_cudaGraphDestroy h hd
-  case cudaGraphUpload => exact bufs_cudaGraphUpload h hd
-  all_goals simp [bufKeepers] at hf
+  cases f <;> first
+    | exact absurd hf (by decide)
+    | exact bufs_cudaUpload h hd
+    | exact bufs_cudaUploadOffset h hd
+    | (dsimp only [callBits] at h; unfold_head h
+       first
+         | (refine devOnly_bufs h ?_; intro r d hk; dev_walk hk <;> bufs_close)
+         | (dev_walk h <;> bufs_close))
 
 end AlgorithmLib.Device

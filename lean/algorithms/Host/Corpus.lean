@@ -749,7 +749,7 @@ def zeroAt (ty : ClifTy) : Prog V L (V ty) := do
   let a ← absAddr (← basePtr) opaqueSlot
   match ty with
   | .i8 => load_i8 a | .i16 => load_i16 a | .i32 => load32 a | .i64 => load64 a
-  | t => load { ty := t } a
+  | t => load { ty := t } a rfl
 
 /-- An integer operand of type `ty` the compiler cannot fold. -/
 def opq (ty : ClifTy) (k : Int) (h : ty.isInt = true := by decide) : Prog V L (V ty) := do
@@ -876,11 +876,14 @@ def casesLoads : List (Case V L) := Id.run do
   cs := cs ++ [⟨"loads/put", do
     storeI64 (← opq .i64 (-0x7f7e7d7c7b7a7979)) (← absAddr (← basePtr) loadsSlot)
     iconst64 0⟩]
-  for (kn, k) in [("uload16", LoadKind.uload16), ("sload16", .sload16), ("sload32", .sload32),
-                  ("uload32", .uload32), ("sload8", .sload8)] do
+  let kinds : List (String × { k : LoadKind // k.admits .i64 = true }) :=
+    [("uload16", ⟨.uload16, by decide⟩), ("sload16", ⟨.sload16, by decide⟩),
+     ("sload32", ⟨.sload32, by decide⟩), ("uload32", ⟨.uload32, by decide⟩),
+     ("sload8", ⟨.sload8, by decide⟩)]
+  for (kn, k) in kinds do
     for off in [0, 1, 3] do
       cs := cs ++ [⟨s!"{kn}/{off}", do
-        load { kind := k, ty := .i64 } (← absAddr (← basePtr) (loadsSlot + off))⟩]
+        load { kind := k.1, ty := .i64 } (← absAddr (← basePtr) (loadsSlot + off)) k.2⟩]
   -- every width change, and the narrow stores built from them
   for (x : Int) in [-1, 0x1234, -0x1234, 0x7f, 0x80, 0x12345678] do
     cs := cs ++ [⟨s!"ireduce.i8/{x}", do ireduce .i8 (← opq .i64 x)⟩,

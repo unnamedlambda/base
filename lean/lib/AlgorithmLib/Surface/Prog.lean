@@ -230,8 +230,8 @@ inductive Op' (V : ClifTy → Type) : ClifTy → Type where
       (h : lane < laneCount ta := by decide) : Op' V (laneTy ta)
   | vhighBits {ta} (a : V ta) (h : ta.isVec = true := by decide) : Op' V .i32
   | bitcast (ty : ClifTy) {ta} (a : V ta)
-      (h : (ta.width == ty.width) = true := by decide) : Op' V ty
-  | load (op : LoadOp) (a : V .i64) : Op' V op.ty
+      (h : (ta.width == ty.width && (!ta.isVec || ta == ty)) = true := by decide) : Op' V ty
+  | load (op : LoadOp) (a : V .i64) (h : op.kind.admits op.ty = true := by decide) : Op' V op.ty
   | ibin (k : IBin) {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Op' V ty
   | ishift (k : IShift) {ta tb} (a : V ta) (b : V tb)
       (h : (ta.isInt && tb.isInt) = true := by decide) : Op' V ta
@@ -283,7 +283,7 @@ def Op'.erase {ty : ClifTy} : Op' (fun _ => R) ty → Op
   | .extractlane a l _ => .extractlane a l
   | .vhighBits a _ => .vhighBits a
   | .bitcast t a _ => .bitcast t a
-  | .load op a => .load op a
+  | .load op a _ => .load op a
   | .ibin k a b _ => .ibin k a b
   | .ishift k a b _ => .ishift k a b
   | .iun k a _ => .iun k a
@@ -715,10 +715,10 @@ instance {ps res} : Inhabited (LocalRef ps res) := ⟨{ callee := .local 0 }⟩
 theorem floatVec_isFloat {ty : ClifTy} (h : ty.isFloatVec = true) :
     (ty.isFloat || ty.isFloatVec) = true := by simp [h]
 
-/-- Comparing a float vector yields a mask of the operands' own width, which is
+/-- Comparing a float vector yields a mask of the operands' own type, which is
     what makes `pmin`'s bitcast well-typed. -/
 theorem cmpTy_width {ty : ClifTy} (h : ty.isFloatVec = true) :
-    ((cmpTy ty).width == ty.width) = true := by
+    ((cmpTy ty).width == ty.width && (!(cmpTy ty).isVec || cmpTy ty == ty)) = true := by
   revert h; cases ty <;> decide
 
 -- ---------------------------------------------------------------------------
@@ -841,7 +841,8 @@ def extractlane {ta} (a : V ta) (lane : Nat) (h : lane < laneCount ta := by deci
     Prog V L (V (laneTy ta)) := op (.extractlane a lane h)
 def vhighBits {ta} (a : V ta) (h : ta.isVec = true := by decide) : Prog V L (V .i32) :=
   op (.vhighBits a h)
-def bitcast (ty : ClifTy) {ta} (a : V ta) (h : (ta.width == ty.width) = true := by decide) :
+def bitcast (ty : ClifTy) {ta} (a : V ta)
+    (h : (ta.width == ty.width && (!ta.isVec || ta == ty)) = true := by decide) :
     Prog V L (V ty) := op (.bitcast ty a h)
 
 def ibin (k : IBin) {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
@@ -927,7 +928,8 @@ def sextend (ty : ClifTy) {ta} (a : V ta) (h : IExt.sextend.admits ta ty = true 
     Prog V L (V ty) := iext .sextend ty a h
 def fdemote (a : V .f64) : Prog V L (V .f32) := fconv .demote .f32 a
 
-def load (o : LoadOp) (a : V .i64) : Prog V L (V o.ty) := op (.load o a)
+def load (o : LoadOp) (a : V .i64) (h : o.kind.admits o.ty = true := by decide) : Prog V L (V o.ty) :=
+  op (.load o a h)
 def uload16_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .uload16, ty := .i64 } a
 def sload16_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .sload16, ty := .i64 } a
 def sload32_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .sload32, ty := .i64 } a

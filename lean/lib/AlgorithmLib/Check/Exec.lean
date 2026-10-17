@@ -424,6 +424,30 @@ def extAnswer (e : Ext) : AV :=
   | some k => .hand k false
   | none => .any
 
+/-- Whether a statement that keeps a call's answer (`val`), or one that drops
+    it, may name the callee: a library function answers as its signature says. -/
+def answersAs (c : Callee) (val : Bool) : Bool :=
+  match c with
+  | .ext e => e.sig.2.isSome == val
+  | _ => true
+
+/-- **The call rule.** The state after a call the checker accepts, its answer
+    not yet appended, and what it answers: an entry point of the engine by
+    `AS.ffiCall`, a library function the typestate follows by what it needs
+    (`preExt`) and keeps (`extKeepsA`); no other callee is accepted. -/
+def AS.callee (A : AS) (c : Callee) (args : List R) : Except String (AS × AV) :=
+  match c with
+  | .ffi f =>
+      match A.ffiCall f args with
+      | .ok B => .ok (B, ffiAnswer A.facts f (args.map A.get))
+      | .error e => .error e
+  | .ext e =>
+      let as := args.map A.get
+      if e.aside && as.all (·.scTy.isSome) && preExt A.facts e as then
+        .ok ((A.forgetKind e.closes).withFacts (A.facts.filter (extKeepsA e as)), extAnswer e)
+      else .error s!"call {repr e}: precondition not decided (args {repr as})"
+  | c => .error s!"call of {repr c} not handled"
+
 /-- What a statement leaves; where `fo` says the body may fault, an operation
     or a store the checker cannot show defined is let fault. -/
 def absStmt (fo : Bool) (A : AS) : Stmt → Except String AS
@@ -440,22 +464,15 @@ def absStmt (fo : Bool) (A : AS) : Stmt → Except String AS
   | .istore8 v a => match (A.get v).scTy with
       | some _ => absStoreF fo A v a 1
       | none => if fo then .ok (A.withFacts (A.facts.filter (!·.isCell))) else .error "istore8 of a non-scalar"
-  | .call (.ffi f) args =>
-      match A.ffiCall f args with
-      | .ok B => .ok (B.push (ffiAnswer A.facts f (args.map A.get)))
+  | .call c args =>
+      match A.callee c args with
+      | .ok (B, av) =>
+          if answersAs c true then .ok (B.push av) else .error s!"call of {repr c}: it answers nothing"
       | .error e => .error e
-  | .callVoid (.ffi f) args => A.ffiCall f args
-  | .call (.ext e) args =>
-      let as := args.map A.get
-      if e.aside && e.sig.2.isSome && as.all (·.scTy.isSome) && preExt A.facts e as then
-        .ok (((A.forgetKind e.closes).withFacts (A.facts.filter (extKeepsA e as))).push (extAnswer e))
-      else .error s!"call {repr e}: precondition not decided (args {repr as})"
-  | .callVoid (.ext e) args =>
-      let as := args.map A.get
-      if e.aside && e.sig.2.isNone && as.all (·.scTy.isSome) && preExt A.facts e as then
-        .ok ((A.forgetKind e.closes).withFacts (A.facts.filter (extKeepsA e as)))
-      else .error s!"call {repr e}: precondition not decided (args {repr as})"
-  | .call c _ | .callVoid c _ => .error s!"call of {repr c} not handled"
+  | .callVoid c args =>
+      match A.callee c args with
+      | .ok (B, _) => if answersAs c false then .ok B else .error s!"call of {repr c}: its answer is dropped"
+      | .error e => .error e
 
 /-- A statement, for a refusal's message. -/
 def stmtStr (n : Nat) : Stmt → String

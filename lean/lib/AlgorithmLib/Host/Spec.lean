@@ -21,9 +21,9 @@ What a foreign call does is stated in three places, each for a reason:
 
 `Ffi.spec` gathers the three into one value, and `callFfi_respects_frame`
 checks two of them against each other: every contract writes only inside its
-declared frame, so no frame is an assumption. `Host.Lifecycle` extends the
-value with when a call answers and what it leaves of a typestate
-(`Ffi.contract`).
+declared frame, so no frame is an assumption. `Host.Lifecycle` adds when a call
+answers and what it leaves of a typestate, and `Host.Contract` is the table
+(`Callee.contract`).
 -/
 
 namespace AlgorithmLib.HProg

@@ -28,6 +28,10 @@ inductive ClifTy where
   | f32x4 | i8x16
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
+instance : LawfulBEq ClifTy where
+  eq_of_beq {a b} h := by cases a <;> cases b <;> first | rfl | exact absurd h (by decide)
+  rfl {a} := by cases a <;> decide
+
 /-- An SSA value reference -/
 structure Val where
   id : Nat

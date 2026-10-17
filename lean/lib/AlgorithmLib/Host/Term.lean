@@ -479,6 +479,14 @@ def _root_.AlgorithmLib.IR.IExt.admits : IExt → ClifTy → ClifTy → Bool
 def _root_.AlgorithmLib.IR.IUn.admits (k : IUn) (ta : ClifTy) : Bool :=
   ta.isInt && (k != .bswap || decide (ta.width ≥ 16))
 
+/-- The types a load of this kind yields: any for a plain load, an integer
+    wider than what it reads for one that widens. -/
+def _root_.AlgorithmLib.IR.LoadKind.admits : LoadKind → ClifTy → Bool
+  | .plain, _ => true
+  | .uload8, t | .sload8, t => t.isInt && decide (t.width > 8)
+  | .uload16, t | .sload16, t => t.isInt && decide (t.width > 16)
+  | .uload32, t | .sload32, t => t.isInt && decide (t.width > 32)
+
 /-- The type `o` yields, or `none` when an operand is out of scope, the operand
     types disagree, or the operation does not apply to them. -/
 def Op.check (Γ : TyEnv) : Op → Option ClifTy
@@ -543,10 +551,12 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       need (lane < n) lt
   | .vhighBits a => do
       let ta ← Γ.get a; need ta.isVec .i32
+  -- A vector is reinterpreted only as itself: its lanes are the value, and a
+  -- reading at another lane width would have to re-cut them.
   | .bitcast ty a => do
-      let ta ← Γ.get a; need (ta.width == ty.width) ty
+      let ta ← Γ.get a; need (ta.width == ty.width && (!ta.isVec || ta == ty)) ty
   | .load op a => do
-      let ta ← Γ.get a; need (ta == .i64) op.ty
+      let ta ← Γ.get a; need (ta == .i64 && op.kind.admits op.ty) op.ty
   | .ibin _ a b => do
       let ta ← Γ.get a; let tb ← Γ.get b
       need (ta == tb && ta.isInt) ta

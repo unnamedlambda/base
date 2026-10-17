@@ -767,63 +767,73 @@ theorem extCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} (ha : e.asid
     · exact .inr (st.opens k x hk (by simp [asBits]) h0)
   · trivial
 
-theorem extCall_sound {cfg : Cfg} {A A' : AS} {e : Ext} {args : List R} {fo fa : Bool}
-    (h : absStmt fa A (.call (.ext e) args) = .ok A') : Stmt1 cfg (A.Holds vals) (.call (.ext e) args) (A'.Holds vals) fo := by
-  simp only [absStmt] at h
+theorem callee_ffi {A B : AS} {f : Ffi} {args : List R} {av : AV} (h : A.callee (.ffi f) args = .ok (B, av)) :
+    A.ffiCall f args = .ok B ∧ av = ffiAnswer A.facts f (args.map A.get) := by
+  simp only [AS.callee] at h
   split at h
-  · rename_i hc
-    cases h
-    simp only [Bool.and_eq_true] at hc
-    obtain ⟨⟨⟨ha, -⟩, hsc⟩, hp⟩ := hc
-    refine call_rule fun Γ w vs hA hvs => ?_
-    obtain ⟨r, w', hcall, hA', hr⟩ := extCall_core (cfg := cfg) ha hsc hp hA hvs
-    exact ⟨r, w', hcall, fun v hv => hA'.push (hr v hv)⟩
+  · rename_i B' hB; cases h; exact ⟨hB, rfl⟩
   · cases h
 
-theorem extCallVoid_sound {cfg : Cfg} {A A' : AS} {e : Ext} {args : List R} {fo fa : Bool}
-    (h : absStmt fa A (.callVoid (.ext e) args) = .ok A') : Stmt1 cfg (A.Holds vals) (.callVoid (.ext e) args) (A'.Holds vals) fo := by
-  simp only [absStmt] at h
+theorem callee_ext {A B : AS} {e : Ext} {args : List R} {av : AV} (h : A.callee (.ext e) args = .ok (B, av)) :
+    e.aside = true ∧ (args.map A.get).all (fun a => a.scTy.isSome) = true ∧
+      preExt A.facts e (args.map A.get) = true ∧
+      B = (A.forgetKind e.closes).withFacts (A.facts.filter (extKeepsA e (args.map A.get))) ∧
+      av = extAnswer e := by
+  simp only [AS.callee] at h
   split at h
   · rename_i hc
     cases h
     simp only [Bool.and_eq_true] at hc
-    obtain ⟨⟨⟨ha, -⟩, hsc⟩, hp⟩ := hc
-    refine callVoid_rule fun Γ w vs hA hvs => ?_
-    obtain ⟨r, w', hcall, hA', -⟩ := extCall_core (cfg := cfg) ha hsc hp hA hvs
-    exact ⟨r, w', hcall, hA'⟩
+    exact ⟨hc.1.1, hc.1.2, hc.2, rfl, rfl⟩
   · cases h
+
+/-- **A call the checker accepts answers**, ends where the rule's state says,
+    and its answer is the one the rule gives. -/
+theorem callee_core {cfg : Cfg} {A B : AS} {c : Callee} {args : List R} {av : AV}
+    (h : A.callee c args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V} (hA : A.Holds vals Γ w)
+    (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
+    ∃ r w', callOf cfg.locals c vs (obsCall w c vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+      ∀ v, r = some v → av.Desc (Γ.push v) w' v := by
+  cases c with
+  | ffi f =>
+      obtain ⟨hB, rfl⟩ := callee_ffi h
+      obtain ⟨r, w', _bits, hcall, hA', -, hr⟩ := ffiCall_core hB hA hvs
+      refine ⟨r, w', hcall, hA', fun v hv => ?_⟩
+      obtain ⟨x, rfl, -, hdn⟩ := hr v hv
+      unfold ffiAnswer
+      split
+      · rename_i n hn; exact hdn n hn
+      · exact TyV.sc (ffi_result_lanes f)
+  | ext e =>
+      obtain ⟨ha, hsc, hp, rfl, rfl⟩ := callee_ext h
+      exact extCall_core (cfg := cfg) ha hsc hp hA hvs
+  | _ => simp [AS.callee] at h
 
 theorem call_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo fa : Bool}
     (h : absStmt fa A (.call c args) = .ok A') : Stmt1 cfg (A.Holds vals) (.call c args) (A'.Holds vals) fo := by
-  cases c with
-  | ffi f =>
-      simp only [absStmt] at h
-      split at h
-      · rename_i B hB
-        cases h
-        refine call_rule fun Γ w vs hA hvs => ?_
-        obtain ⟨r, w', _bits, hcall, hA', -, hr⟩ := ffiCall_core hB hA hvs
-        refine ⟨r, w', hcall, fun v hv => ?_⟩
-        obtain ⟨x, rfl, -, hdn⟩ := hr v hv
-        unfold ffiAnswer
-        split
-        · rename_i n hn
-          exact hA'.push (av := .known (ofInt .i32 n)) (hdn n hn)
-        · exact hA'.push (av := .sc (f.result.getD .i64)) (TyV.sc (ffi_result_lanes f))
-      · cases h
-  | ext e => exact extCall_sound h
-  | _ => simp [absStmt] at h
+  simp only [absStmt] at h
+  split at h
+  · rename_i B av hB
+    split at h
+    · cases h
+      refine call_rule fun Γ w vs hA hvs => ?_
+      obtain ⟨r, w', hcall, hA', hr⟩ := callee_core hB hA hvs
+      exact ⟨r, w', hcall, fun v hv => hA'.push (hr v hv)⟩
+    · cases h
+  · cases h
 
 theorem callVoid_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo fa : Bool}
     (h : absStmt fa A (.callVoid c args) = .ok A') : Stmt1 cfg (A.Holds vals) (.callVoid c args) (A'.Holds vals) fo := by
-  cases c with
-  | ffi f =>
-      simp only [absStmt] at h
+  simp only [absStmt] at h
+  split at h
+  · rename_i B av hB
+    split at h
+    · cases h
       refine callVoid_rule fun Γ w vs hA hvs => ?_
-      obtain ⟨r, w', _bits, hcall, hA', -⟩ := ffiCall_core h hA hvs
+      obtain ⟨r, w', hcall, hA', -⟩ := callee_core hB hA hvs
       exact ⟨r, w', hcall, hA'⟩
-  | ext e => exact extCallVoid_sound h
-  | _ => simp [absStmt] at h
+    · cases h
+  · cases h
 
 /-- **A call's answer by cases**: where `answerCases` splits the state after a
     call, one of the two describes where it ends. -/
@@ -839,12 +849,13 @@ theorem answerCases_sound {cfg : Cfg} {A A' B1 B2 : AS} {s : Stmt} {fo fa : Bool
       · rename_i hs
         simp only [Option.some.injEq, Prod.mk.injEq] at hc
         obtain ⟨rfl, rfl⟩ := hc
-        simp only [absStmt] at h
+        simp only [absStmt, answersAs, if_true] at h
         split at h
-        · rename_i B hB
+        · rename_i B av hB
+          obtain ⟨hB', rfl⟩ := callee_ffi hB
           cases h
           refine call_rule fun Γ w vs hA hvs => ?_
-          obtain ⟨r, w', bits, hcall, hA', hab, hr⟩ := ffiCall_core hB hA hvs
+          obtain ⟨r, w', bits, hcall, hA', hab, hr⟩ := ffiCall_core hB' hA hvs
           refine ⟨r, w', hcall, fun v hv => ?_⟩
           obtain ⟨x, rfl, hans, -⟩ := hr v hv
           have hP := hA'.push (av := .sc (Ffi.fileRead.result.getD .i64))
@@ -2804,6 +2815,21 @@ theorem ffi_rooms {cfg : Cfg} {A : AS} {f : Ffi} {Γ : Env} {w : World} {vs : Li
   obtain ⟨bits, -, hc⟩ := Option.bind_eq_some_iff.mp hc
   exact fun rg hrg => callBits_rooms f hc rg hrg
 
+/-- An accepted call keeps every region's size but the pinned one's. -/
+theorem callee_rooms {cfg : Cfg} {A B : AS} {c : Callee} {args : List R} {av : AV}
+    (h : A.callee c args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V} {res : Option V} {w2 : World}
+    (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs)
+    (hc : callOf cfg.locals c vs (obsCall w c vs) = some (res, w2)) : KeepsRooms w w2 := by
+  cases c with
+  | ffi f =>
+      obtain ⟨hB, -⟩ := callee_ffi h
+      obtain ⟨hf, hz, -⟩ := ffiCall_ok hB
+      exact ffi_rooms hA hf hz hc
+  | ext e =>
+      obtain ⟨ha, hsc, -, -, -⟩ := callee_ext h
+      exact ext_rooms hA ha hsc hvs hc
+  | _ => simp [AS.callee] at h
+
 theorem absStmt_step {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo A s = .ok A') {Γ : Env} {w : World}
     (hA : A.Holds vals Γ w) {Γ' : Env} {w' : World} (hr : runStmt cfg Γ w s = .ok Γ' w') :
     Ext Γ Γ' ∧ KeepsRooms w w' := by
@@ -2823,70 +2849,33 @@ theorem absStmt_step {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt
       obtain ⟨rfl, hs⟩ := istore8_world hr
       exact ⟨Ext.refl _, fun r _ => congrFun hs r⟩
   | call c args =>
-      cases c with
-      | ffi f =>
-          simp only [absStmt] at h
-          split at h
-          · rename_i B hB
-            obtain ⟨hf, hz, -⟩ := ffiCall_ok hB
-            rw [runStmt_call] at hr
-            split at hr
-            · cases hr
-            · rename_i vs hvs
-              split at hr
-              · exact absurd hr failOf_ne_ok
-              · rename_i res w2 hc
-                split at hr
-                · cases hr; exact ⟨Ext.push _ _, ffi_rooms hA hf hz hc⟩
-                · cases hr
-          · cases h
-      | ext e =>
-          simp only [absStmt] at h
-          split at h
-          · rename_i hc
-            simp only [Bool.and_eq_true] at hc
-            obtain ⟨⟨⟨ha, -⟩, hsc⟩, -⟩ := hc
-            rw [runStmt_call] at hr
-            split at hr
-            · cases hr
-            · rename_i vs hvs
-              split at hr
-              · exact absurd hr failOf_ne_ok
-              · rename_i res w2 hc
-                split at hr
-                · cases hr; exact ⟨Ext.push _ _, ext_rooms hA ha hsc hvs hc⟩
-                · cases hr
-          · cases h
-      | _ => simp [absStmt] at h
-  | callVoid c args =>
-      cases c with
-      | ffi f =>
-          simp only [absStmt] at h
-          obtain ⟨hf, hz, -⟩ := ffiCall_ok h
-          rw [runStmt_callVoid] at hr
+      simp only [absStmt] at h
+      split at h
+      · rename_i B av hB
+        rw [runStmt_call] at hr
+        split at hr
+        · cases hr
+        · rename_i vs hvs
           split at hr
-          · cases hr
-          · rename_i vs hvs
+          · exact absurd hr failOf_ne_ok
+          · rename_i res w2 hc
             split at hr
-            · exact absurd hr failOf_ne_ok
-            · rename_i res w2 hc
-              cases hr; exact ⟨Ext.refl _, ffi_rooms hA hf hz hc⟩
-      | ext e =>
-          simp only [absStmt] at h
-          split at h
-          · rename_i hc
-            simp only [Bool.and_eq_true] at hc
-            obtain ⟨⟨⟨ha, -⟩, hsc⟩, -⟩ := hc
-            rw [runStmt_callVoid] at hr
-            split at hr
+            · cases hr; exact ⟨Ext.push _ _, callee_rooms hB hA hvs hc⟩
             · cases hr
-            · rename_i vs hvs
-              split at hr
-              · exact absurd hr failOf_ne_ok
-              · rename_i res w2 hc
-                cases hr; exact ⟨Ext.refl _, ext_rooms hA ha hsc hvs hc⟩
-          · cases h
-      | _ => simp [absStmt] at h
+      · cases h
+  | callVoid c args =>
+      simp only [absStmt] at h
+      split at h
+      · rename_i B av hB
+        rw [runStmt_callVoid] at hr
+        split at hr
+        · cases hr
+        · rename_i vs hvs
+          split at hr
+          · exact absurd hr failOf_ne_ok
+          · rename_i res w2 hc
+            cases hr; exact ⟨Ext.refl _, callee_rooms hB hA hvs hc⟩
+      · cases h
 
 /-- The state a run is in, as seen from where it started: the checker's state
     describes it, its environment extends the one it started in, and every

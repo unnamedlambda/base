@@ -549,8 +549,11 @@ def satToSint (ty : ClifTy) (x : Float) : V :=
   else if x ≥ 0 then ofInt ty x.toUInt64.toNat
   else ofInt ty (-((-x).toUInt64.toNat : Int))
 
-/-- What an operation computes, given the slots in scope. `none` exactly when
-    `Op.check` would reject it or an address is unmapped. -/
+/-- What an operation computes, given the slots in scope. Where `Op.check`
+    accepts it answers at the type the checker gives, unless a division traps
+    or an address is unmapped; where it answers, the checker accepts every use
+    the checker's own conditions on constants, loads and vector casts allow
+    (`Host.OpAgree`). -/
 def evalOp (m : Mem) (Γ : Env) : Op → Option V
   | .iconst ty k => some (ofInt ty k)
   | .fconst ty b => some (.sc ty (b &&& widthMask ty))

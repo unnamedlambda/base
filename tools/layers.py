@@ -41,8 +41,8 @@ SHARED_APPS = {"Scan", "Tokenizer"}
 APP_EDGES = {("Host", "Bench"), ("Bench", "Host")}
 # The host proofs a generator must not reach.
 PROOFS = {f"AlgorithmLib.Host.{m}" for m in
-          ["Sem", "Blocks", "Frames", "Sound", "Trust", "SemCheck", "Clif", "ClifCheck", "HostIR",
-           "StaticCong", "Static", "Hoare", "DevSpec", "StaticHoare", "Contracts", "Lifecycle", "LaunchSpec"]}
+          ["Sem", "Blocks", "Frames", "Sound", "Trust", "OpAgree", "Clif", "ClifCheck", "HostIR",
+           "Hoare", "DevSpec", "Contracts", "Lifecycle", "LaunchSpec"]}
 # Generators that still reach them, and why.
 GENERATOR_EXCEPTIONS = {
     # `ML.HostBridge` states host-to-kernel facts over `HostIR`, and these
