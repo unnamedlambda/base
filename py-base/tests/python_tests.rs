@@ -1,42 +1,40 @@
-//! Runs the py-base Python test suite as a `cargo test`-visible integration test.
-//!
-//! Behavior: rebuilds the extension via `maturin develop` against the active
-//! venv, then invokes `pytest`.
+//! The Python suite, against the extension this build made: copied beside the
+//! tests under the name Python imports, so nothing installed is touched.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The extension cargo built for this profile: `target/<profile>/`, two up from
+/// this test's own executable in `deps/`.
+fn built_extension() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().and_then(Path::parent).unwrap();
+    dir.join(if cfg!(windows) {
+        "py_base.dll"
+    } else if cfg!(target_os = "macos") {
+        "libpy_base.dylib"
+    } else {
+        "libpy_base.so"
+    })
+}
 
 #[test]
 fn python_tests() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let venv_python = manifest_dir.join(".venv/bin/python");
-
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let python = manifest.join(".venv/bin/python");
     assert!(
-        venv_python.exists(),
-        "py-base venv not found at {}. \
-         Set it up with `python3 -m venv py-base/.venv && \
-         source py-base/.venv/bin/activate && pip install maturin pytest pyarrow`.",
-        venv_python.display(),
+        python.exists(),
+        "no venv at {}: `python3 -m venv py-base/.venv && py-base/.venv/bin/pip install pytest`",
+        python.display()
     );
-
-    // Rebuild the extension into the venv so tests run against the current source.
-    // Match the profile cargo itself was invoked with, so `cargo test --release`
-    // exercises the release build and plain `cargo test` stays fast.
-    let mut args = vec!["-m", "maturin", "develop", "-q"];
-    if !cfg!(debug_assertions) {
-        args.push("--release");
-    }
-    let build = Command::new(&venv_python)
-        .args(&args)
-        .current_dir(&manifest_dir)
+    let module = tempfile::TempDir::new().unwrap();
+    let name = if cfg!(windows) { "py_base.pyd" } else { "py_base.so" };
+    std::fs::copy(built_extension(), module.path().join(name)).expect("the extension cargo built");
+    let status = Command::new(&python)
+        .args(["-m", "pytest", "tests", "-q", "-W", "ignore:py_base was built without optimisations:UserWarning"])
+        .env("PYTHONPATH", module.path())
+        .current_dir(&manifest)
         .status()
-        .expect("failed to spawn `maturin develop`");
-    assert!(build.success(), "`maturin develop` failed");
-
-    let status = Command::new(&venv_python)
-        .args(["-m", "pytest", "tests", "-q"])
-        .current_dir(&manifest_dir)
-        .status()
-        .expect("failed to spawn pytest");
-    assert!(status.success(), "py-base pytest suite failed");
+        .expect("pytest");
+    assert!(status.success(), "the Python suite failed");
 }

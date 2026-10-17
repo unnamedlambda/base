@@ -18,3 +18,4 @@ memchr = "2"
 [[bin]]
 name = "system-bench"
 path = "src/main.rs"
+test = false

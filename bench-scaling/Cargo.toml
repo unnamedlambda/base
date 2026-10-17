@@ -20,8 +20,10 @@ jit = ["dep:base", "dep:base-types"]
 [[bin]]
 name = "bench-scaling"
 path = "src/main.rs"
+test = false
 
 [[bin]]
 name = "clifbench"
 path = "src/bin/clifbench.rs"
+test = false
 required-features = ["jit"]

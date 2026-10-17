@@ -13,3 +13,4 @@ lean-artifacts = { path = "../../lean" }
 [[bin]]
 name = "cpu-bench"
 path = "src/main.rs"
+test = false
