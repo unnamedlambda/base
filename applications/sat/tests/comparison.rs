@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_sat_binary() -> String {
-    env!("CARGO_BIN_EXE_sat").to_string()
+    "sat".to_string()
 }
 
 fn get_cnf_dir() -> String {
@@ -17,7 +17,7 @@ fn run_base_sat(cnf_path: &str) -> (String, String) {
     // Use a unique temp directory so parallel tests don't share sat_output.txt
     let tmpdir = tempfile::tempdir().expect("Failed to create temp dir");
 
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .arg(cnf_path)
         .current_dir(tmpdir.path())
         .output()

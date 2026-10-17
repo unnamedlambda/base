@@ -50,7 +50,7 @@ fn batch_sum(f: impl Fn(usize) -> f32) -> f32 {
     acc
 }
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
 
     let mut rng = Lcg::new(0x5eed_1234);

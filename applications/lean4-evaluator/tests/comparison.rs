@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn get_lean4_eval_binary() -> String {
-    env!("CARGO_BIN_EXE_lean4-eval").to_string()
+    "lean4-eval".to_string()
 }
 
 fn get_temp_files() -> (String, String) {
@@ -32,7 +32,7 @@ fn run_ours(code: &str, test_file: &str, output_file: &str) -> (String, String) 
     let _ = fs::remove_file(output_file);
 
     let binary = get_lean4_eval_binary();
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .arg(test_file)
         .arg(output_file)
         .env("RUST_LOG", "trace")

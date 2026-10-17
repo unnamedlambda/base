@@ -14,10 +14,9 @@ const QWEN2_ON_DISK_BINARY: &[u8] = lean_artifacts::QWEN2_ON_DISK;
 /// fresh, empty cache (otherwise stale K/V from a previous run would leak in).
 const KV_CACHE_FILE: &str = "/tmp/qwen2_kvcache.bin";
 
-fn main() {
+pub fn main(args: Vec<String>) {
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
+        if args.len() < 3 {
         eprintln!("Usage: qwen2_on_disk <weights.bin> <tokenizer.bin>");
         eprintln!();
         eprintln!("The weights file can live anywhere on disk (e.g. /mnt/nvme/qwen-32b.bin).");

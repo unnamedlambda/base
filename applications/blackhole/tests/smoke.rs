@@ -1,8 +1,7 @@
 use std::fs;
-use std::process::Command;
 
 fn get_blackhole_binary() -> String {
-    env!("CARGO_BIN_EXE_blackhole").to_string()
+    "blackhole".to_string()
 }
 
 fn assert_bmp_header(path: &std::path::Path, expected_width: i32, expected_height: i32) {
@@ -23,7 +22,7 @@ fn assert_bmp_header(path: &std::path::Path, expected_width: i32, expected_heigh
 fn test_blackhole_smoke_writes_bmp() {
     let tmpdir = tempfile::tempdir().expect("Failed to create temp dir");
     let binary = get_blackhole_binary();
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .current_dir(tmpdir.path())
         .output()
         .unwrap_or_else(|e| panic!("Failed to run {}: {}", binary, e));

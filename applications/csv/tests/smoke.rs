@@ -1,8 +1,7 @@
 use std::fs;
-use std::process::Command;
 
 fn get_csv_binary() -> String {
-    env!("CARGO_BIN_EXE_csv").to_string()
+    "csv".to_string()
 }
 
 fn copy_fixture_tree(root: &std::path::Path) {
@@ -23,7 +22,7 @@ fn test_csv_smoke_outputs_expected_files() {
     copy_fixture_tree(tmpdir.path());
 
     let binary = get_csv_binary();
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .current_dir(tmpdir.path())
         .output()
         .unwrap_or_else(|e| panic!("Failed to run {}: {}", binary, e));

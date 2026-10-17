@@ -14,7 +14,7 @@ const CHUNK: usize = K * 4 * 32;      // 16384 floats per block
 const GRID: usize = 4096;             // blocks, one warp each
 const N: usize = GRID * CHUNK;        // 67,108,864 floats = 256 MiB
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..N).map(|i| ((i % 1024) as f32) * 0.001).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 

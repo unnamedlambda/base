@@ -6,7 +6,7 @@ at batch `BATCH`. Every kernel — both matvecs, the activation and its
 derivative, both outer products, both optimiser steps — is an instance of a
 schema proven in `lean/algorithms/Warp/MlpCifar.lean` and checked
 bit-for-bit against its committed fold order by
-`cargo run --bin mlp-cifar --release`.
+`cargo run --release --bin apps -- mlp-cifar`.
 
 One thing happens on the host: the data loader, which keeps the dataset in RAM
 and uploads one batch. Softmax and the cross-entropy gradient run on the device

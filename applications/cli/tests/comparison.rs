@@ -1,13 +1,13 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn get_cli_binary() -> String {
-    env!("CARGO_BIN_EXE_cli").to_string()
+    "cli".to_string()
 }
 
 fn run_cli(input: &str) -> String {
     let binary = get_cli_binary();
-    let mut child = Command::new(&binary)
+    let mut child = crate::app(&binary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

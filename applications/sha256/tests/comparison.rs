@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_sha256_binary() -> String {
-    env!("CARGO_BIN_EXE_sha256").to_string()
+    "sha256".to_string()
 }
 
 /// Run our SHA-256 binary on a file, return the hex digest (trimmed).
@@ -10,7 +10,7 @@ fn run_base_sha256(input_path: &str) -> String {
     let binary = get_sha256_binary();
     let tmpdir = tempfile::tempdir().expect("Failed to create temp dir");
 
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .arg(input_path)
         .current_dir(tmpdir.path())
         .output()

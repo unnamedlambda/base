@@ -9,10 +9,10 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-const QWEN2_BIN: &str = env!("CARGO_BIN_EXE_qwen2");
-const QWEN2_ON_DISK_BIN: &str = env!("CARGO_BIN_EXE_qwen2_on_disk");
+const QWEN2_BIN: &str = "qwen2";
+const QWEN2_ON_DISK_BIN: &str = "qwen2_on_disk";
 
 const EXPECTED_HELLO: &str = "hello! how can i assist you today?\n";
 
@@ -41,7 +41,7 @@ fn locate_files() -> Option<(PathBuf, PathBuf)> {
 }
 
 fn ask(bin: &str, weights: &PathBuf, tokenizer: &PathBuf, prompt: &str) -> String {
-    let mut child = Command::new(bin)
+    let mut child = crate::app(bin)
         .args([weights.as_os_str(), tokenizer.as_os_str()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

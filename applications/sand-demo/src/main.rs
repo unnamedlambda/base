@@ -4,7 +4,7 @@ const ARTIFACT_BINARY: &[u8] =
     lean_artifacts::FALLING_SAND;
 
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
     println!("Falling sand — hold LEFT: sand, RIGHT: walls, MIDDLE: erase. Esc/close to quit.");
     // SAFETY: the artifact is the one Lean built for this application.

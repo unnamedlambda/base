@@ -32,7 +32,7 @@ fn grad(x: &[f32; G]) -> [f32; G] {
     ]
 }
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..NIN).map(|i| ((i % 617) as f32 - 308.0) * 0.004).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 

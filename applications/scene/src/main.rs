@@ -4,7 +4,7 @@ const ARTIFACT_BINARY: &[u8] =
     lean_artifacts::SCENE_APP;
 
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
 
     let start = std::time::Instant::now();

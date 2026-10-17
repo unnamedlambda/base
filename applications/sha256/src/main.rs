@@ -7,9 +7,8 @@ const ARTIFACT_BINARY: &[u8] =
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: u64 = 0x100;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
+pub fn main(args: Vec<String>) {
+        if args.len() < 2 {
         eprintln!("Usage: sha256 <input_file>");
         std::process::exit(1);
     }

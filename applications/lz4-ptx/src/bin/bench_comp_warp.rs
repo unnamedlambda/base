@@ -125,7 +125,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     );
 }
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let path = std::env::var("LZ4_CORPUS").unwrap_or_else(|_| CORPUS.to_string());
     let corpus = std::fs::read(&path).unwrap_or_else(|e| {
         panic!("read {path}: {e} — run applications/lz4-ptx/baseline/setup.sh --corpus-only")

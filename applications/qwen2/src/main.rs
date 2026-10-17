@@ -10,10 +10,9 @@ use base::{Driver, Artifact};
 const QWEN2_BINARY: &[u8] = lean_artifacts::QWEN2;
 
 
-fn main() {
+pub fn main(args: Vec<String>) {
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
+        if args.len() < 3 {
         eprintln!("Usage: qwen2 <weights.bin> <tokenizer.bin>");
         std::process::exit(1);
     }

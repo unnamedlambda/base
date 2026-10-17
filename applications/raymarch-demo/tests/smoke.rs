@@ -1,4 +1,3 @@
-use std::process::Command;
 use std::time::Duration;
 
 #[test]
@@ -7,7 +6,7 @@ fn app_launches_and_runs() {
         eprintln!("no display; skipping app_launches_and_runs");
         return;
     }
-    let mut child = Command::new(env!("CARGO_BIN_EXE_raymarch-demo"))
+    let mut child = crate::app("raymarch-demo")
         .spawn()
         .expect("spawn raymarch-demo");
     std::thread::sleep(Duration::from_millis(1500));

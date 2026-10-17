@@ -9,7 +9,7 @@ const ART: &[u8] =
 /// Qwen2-0.5B's hidden size.
 const N: usize = 896;
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     // Layout: adj (overwritten by the silu backward), x, z, dy, then W.
     let xa: Vec<f32> = (0..N).map(|j| ((j % 61) as f32 - 30.0) * 0.02).collect();
     let z: Vec<f32> = (0..N).map(|i| ((i % 89) as f32 - 44.0) * 0.03).collect();

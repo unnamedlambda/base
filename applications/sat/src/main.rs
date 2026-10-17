@@ -7,9 +7,8 @@ const ARTIFACT_BINARY: &[u8] =
 /// Payload offset where the input CNF filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: u64 = 0x100;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
+pub fn main(args: Vec<String>) {
+        if args.len() < 2 {
         eprintln!("Usage: sat <input.cnf>");
         std::process::exit(1);
     }

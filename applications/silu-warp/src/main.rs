@@ -9,7 +9,7 @@ const ART: &[u8] = lean_artifacts::SILU_WARP;
 const GRID: usize = 2097152;
 const N: usize = GRID * 32;
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..N).map(|i| ((i % 2048) as f32 - 1024.0) * 0.01).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 

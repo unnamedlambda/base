@@ -33,7 +33,7 @@ fn model(x0: &[f32; D]) -> f32 {
     x.iter().fold(0.0, |a, b| a + b)
 }
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..NIN)
         .map(|i| ((i % 977) as f32 - 488.0) * 0.003)
         .collect();

@@ -1,15 +1,14 @@
 use std::fs;
-use std::process::Command;
 
 fn get_matmul_binary() -> String {
-    env!("CARGO_BIN_EXE_matmul").to_string()
+    "matmul".to_string()
 }
 
 #[test]
 fn test_matmul_smoke_writes_nontrivial_output() {
     let tmpdir = tempfile::tempdir().expect("Failed to create temp dir");
     let binary = get_matmul_binary();
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .current_dir(tmpdir.path())
         .output()
         .unwrap_or_else(|e| panic!("Failed to run {}: {}", binary, e));

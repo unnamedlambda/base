@@ -181,7 +181,7 @@ fn bench(
     });
 }
 
-fn main() {
+pub fn main(_args: Vec<String>) {
     let shapes: [(&[u8], usize, usize, &str, usize); 4] = [
         (ART_QWEN, 896, 4864, "Qwen2 FFN gate/up", 200),
         (ART_2048, 2048, 4096, "n=2048", 100),

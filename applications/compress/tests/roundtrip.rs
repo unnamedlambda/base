@@ -2,13 +2,13 @@ use std::fs;
 use std::process::Command;
 
 fn get_compress_binary() -> String {
-    env!("CARGO_BIN_EXE_compress").to_string()
+    "compress".to_string()
 }
 
 /// Compress a file using our binary, returns path to the .lz4 output
 fn run_compress(input_path: &str, work_dir: &std::path::Path) -> String {
     let binary = get_compress_binary();
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .arg(input_path)
         .current_dir(work_dir)
         .output()

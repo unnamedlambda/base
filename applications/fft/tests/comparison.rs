@@ -3,7 +3,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_fft_binary() -> String {
-    env!("CARGO_BIN_EXE_fft").to_string()
+    "fft".to_string()
 }
 
 /// Naive DFT reference implementation: O(N^2)
@@ -57,7 +57,7 @@ fn run_base_fft(input: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let input_path = tmpdir.path().join("input.bin");
     write_complex_file(&input_path, input);
 
-    let output = Command::new(&binary)
+    let output = crate::app(&binary)
         .arg(input_path.to_str().unwrap())
         .current_dir(tmpdir.path())
         .output()

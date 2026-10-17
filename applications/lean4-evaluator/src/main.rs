@@ -7,11 +7,10 @@ const INPUT_PATH_MAX_LEN: usize = 256;
 const OUTPUT_PATH_OFFSET: u64 = 0x0038;
 const OUTPUT_PATH_MAX_LEN: usize = 64;
 
-fn main() {
+pub fn main(args: Vec<String>) {
     let mut artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
+        if args.len() < 2 {
         eprintln!("Usage: lean4-eval <source.lean> [output_file]");
         std::process::exit(1);
     }
