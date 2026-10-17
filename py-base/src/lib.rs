@@ -1,18 +1,6 @@
-//! Python over base's C ABI.
-//!
-//! Nothing here reaches into the runtime's Rust types: every call goes through
-//! `base::capi`, the same functions a C or Lean host calls. That is what
-//! keeps the three hosts on one core rather than three surfaces that drift —
-//! the way `execute` answering Arrow on one side and bytes on another once did.
-//!
-//! It is the C API in Python's terms: a `Driver` loads an artifact, `function`
-//! answers one of its functions as a `Function`, which is the C function
-//! itself, and calling it calls the program. What this adds is Python's
-//! conventions: an exception instead of a failure value, the buffer protocol
-//! for the caller's input and output and for the arena, a `Function` holding
-//! its driver alive, and the GIL released
-//! while a program runs, so threads sharing one `Driver` run their calls at
-//! once.
+//! base's C API in Python's terms, through `base::capi` only: exceptions for
+//! failures, buffers for input, output and the arena, and the GIL released
+//! while a program runs.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
@@ -23,8 +11,7 @@ use pyo3::types::PyMemoryView;
 
 use base::capi;
 
-/// What a generator emits, held as the bytes it was written as: the runtime is
-/// what decodes them, so there is no second reader here to disagree with it.
+/// An encoded artifact.
 #[pyclass(name = "Artifact")]
 #[derive(Clone)]
 struct PyArtifact {
@@ -39,9 +26,7 @@ impl PyArtifact {
     }
 }
 
-/// Wrapper that asserts a closure is Ungil (safe to run without the GIL).
-/// Caller must ensure captured references remain valid during execution
-/// and that no Python objects are accessed inside the closure.
+/// A closure run without the GIL; it must touch no Python object.
 struct UnsafeUngil<F>(F);
 unsafe impl<F> Send for UnsafeUngil<F> {}
 unsafe impl<F> Sync for UnsafeUngil<F> {}
@@ -60,19 +45,15 @@ where
     py.allow_threads(move || wrapped.call())
 }
 
-/// A driver from `base_driver_load`, which the C API lets any number of
-/// threads call and read through at once.
+/// A driver from `base_driver_load`.
 struct Handle(*mut base::Driver);
 
-// SAFETY: the calls made through the handle are the ones the C API admits
-// concurrently; the one that needs it alone, the free, runs in `Drop`, when
-// Python holds no other reference and so no call is running.
+// SAFETY: the C API admits these calls from any thread; the free runs in
+// `Drop`, when nothing else holds the driver.
 unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
 
-/// A compiled artifact and the arena it runs in. Compiling is the expensive
-/// step, so build one, find its functions with `function`, and call them as
-/// often as you like, from as many threads as you like.
+/// A compiled artifact and its arena. Load once; call its functions from any thread.
 #[pyclass(name = "Driver", frozen)]
 struct PyDriver {
     handle: Handle,
@@ -84,8 +65,7 @@ impl Drop for PyDriver {
     }
 }
 
-/// A function of a `Driver`, as the C function it is. It holds its driver,
-/// so the driver lives as long as any `Function` of it does.
+/// A function of a `Driver`, which it keeps alive.
 #[pyclass(name = "Function", frozen)]
 struct PyFunction {
     _driver: Py<PyDriver>,
@@ -94,18 +74,9 @@ struct PyFunction {
 
 #[pymethods]
 impl PyFunction {
-    /// Run the function with `input`, answering in `output`, and return the
-    /// status it answered: `0` unless the function's body ends in a `return`
-    /// carrying a value.
-    ///
-    /// Both buffers are the caller's own memory, handed to the program as
-    /// pointers: nothing is copied in or out. The GIL is released while the
-    /// program runs, so calls from several threads run at once.
-    ///
-    /// `output` is any writable contiguous buffer (a `bytearray`, a NumPy
-    /// array, a `memoryview` of one). It is held as an exported buffer for the
-    /// whole call, so another thread cannot resize or free it under the
-    /// program: Python refuses with `BufferError` instead.
+    /// Runs the function on `input` (bytes) and `output` (any writable
+    /// contiguous buffer), in place, and returns its status. The GIL is
+    /// released meanwhile; `output` cannot be resized during the call.
     #[pyo3(signature = (input=None, output=None))]
     fn __call__(
         &self,
@@ -151,8 +122,7 @@ impl PyDriver {
         Ok(Self { handle: Handle(handle) })
     }
 
-    /// The function named `name`, as the C function it is. Find it once and
-    /// call it: the lookup is the only part that is not the program.
+    /// The function named `name`.
     fn function(slf: &Bound<'_, Self>, name: &str) -> PyResult<PyFunction> {
         let handle = slf.get().handle.0;
         let f = unsafe { capi::base_driver_function(handle, name.as_ptr(), name.len()) }
@@ -160,20 +130,13 @@ impl PyDriver {
         Ok(PyFunction { _driver: slf.clone().unbind(), f })
     }
 
-    /// `length` bytes of the arena from `offset`, copied.
-    ///
-    /// This is how a host reads what a program left behind, at an address its
-    /// generator says it wrote, including while other threads' calls run. A
-    /// range past the end is an error rather than a short answer, so a
-    /// truncated read cannot be mistaken for a result.
+    /// `length` bytes of the arena from `offset`, copied; safe while calls run.
     fn read<'py>(
         &self,
         py: Python<'py>,
         offset: usize,
         length: usize,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
-        // Refused before allocating, so a length nothing could hold is an
-        // exception rather than an allocation failure.
         let mut have = 0usize;
         let arena = unsafe { capi::base_driver_arena(self.handle.0, &mut have) };
         if offset.checked_add(length).is_none_or(|end| end > have) {
@@ -181,10 +144,7 @@ impl PyDriver {
                 "{offset}..{offset}+{length} is outside the {have} bytes of the arena"
             )));
         }
-        // Other threads' calls may be writing the arena, so it is read as they
-        // write it: each aligned 8-byte word with one atomic load, so a word a
-        // program updates atomically is never seen torn, and the bytes either
-        // side one at a time.
+        // Each aligned word with one atomic load, so none is read torn.
         let mut bytes = vec![0u8; length];
         let mut i = 0;
         while i < length {
@@ -204,11 +164,8 @@ impl PyDriver {
         Ok(pyo3::types::PyBytes::new_bound(py, &bytes))
     }
 
-    /// Sleep while the 32-bit word at `offset` of the arena holds
-    /// `expected`, until a wake on it, `timeout_ns` nanoseconds (none if
-    /// negative), or for no reason; the GIL is released meanwhile. It is the
-    /// system's own wait, so programs and Python threads meet at the word.
-    /// Loop on the condition.
+    /// Sleeps while the word at `offset` holds `expected`, until woken,
+    /// `timeout_ns` passes (never if negative), or spuriously.
     #[pyo3(signature = (offset, expected, timeout_ns=-1))]
     fn wait(&self, py: Python<'_>, offset: usize, expected: u32, timeout_ns: i64) -> PyResult<()> {
         let word = self.word(offset)? as usize;
@@ -218,8 +175,7 @@ impl PyDriver {
         Ok(())
     }
 
-    /// Wake one thread waiting on the word at `offset` when `count` is 1, every
-    /// one for any other `count` but 0: a program's and Python's alike.
+    /// Wakes one waiter on the word at `offset` when `count` is 1, all otherwise.
     #[pyo3(signature = (offset, count=-1))]
     fn wake(&self, offset: usize, count: i32) -> PyResult<()> {
         let word = self.word(offset)?;
@@ -228,14 +184,8 @@ impl PyDriver {
         Ok(())
     }
 
-    /// The arena itself, as a `memoryview`: no copy, and writable, so NumPy
-    /// and anything else that takes a buffer reads and writes it in place. It
-    /// holds this driver, so the view stays valid however long it is kept, and
-    /// `len(driver.arena)` is its size.
-    ///
-    /// While calls run, a program may be writing it, and a plain view reads
-    /// without atomics: reach bytes a running program may touch with `read`,
-    /// and the rest, or all of it between calls, through the view.
+    /// The arena itself as a writable `memoryview`, keeping the driver alive.
+    /// While calls run, read bytes a program may touch with `read`.
     #[getter]
     fn arena<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyMemoryView>> {
         PyMemoryView::from_bound(slf.as_any())
@@ -273,13 +223,13 @@ impl PyDriver {
     }
 }
 
-/// Nanoseconds on the system's monotonic clock, the one programs read.
+/// Nanoseconds on the monotonic clock programs read.
 #[pyfunction]
 fn now() -> i64 {
     base::now()
 }
 
-/// Read an artifact from the `.cbor` file a generator wrote.
+/// The artifact in a `.cbor` file.
 #[pyfunction]
 fn load_artifact(path: &str) -> PyResult<PyArtifact> {
     let bytes = std::fs::read(path)
@@ -287,12 +237,7 @@ fn load_artifact(path: &str) -> PyResult<PyArtifact> {
     Ok(PyArtifact { bytes })
 }
 
-/// Whether this extension was compiled without optimisations.
-///
-/// `maturin develop` builds a debug extension unless told otherwise, and
-/// nothing about the result says so: it imports and runs, about fifteen times
-/// slower at everything. Measured on this machine, loading a 19 MB artifact
-/// took 812 ms debug against 68 ms release. So say it once, at import.
+/// Warns at import when built without optimisations, which runs ~15x slower.
 fn warn_if_unoptimised(py: Python<'_>) -> PyResult<()> {
     if !cfg!(debug_assertions) {
         return Ok(());
