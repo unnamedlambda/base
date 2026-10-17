@@ -72,6 +72,18 @@ theorem store_frozen {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.sto
 theorem copyIn_frozen {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m') :
     m'.frozen = m.frozen := (copyIn_same h).frozen.symm
 
+theorem store_busy {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m') :
+    m'.busy = m.busy := by
+  unfold Mem.store at h
+  obtain ⟨⟨r, off⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
+  dsimp only at h
+  split at h
+  · cases h
+  · cases h; unfold Mem.setRegion; split <;> rfl
+
+theorem copyIn_busy {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m') :
+    m'.busy = m.busy := (copyIn_same h).busy.symm
+
 theorem put_live (d : Dev) (id : Nat) (b : Option ByteArray) : (d.put id b).live = d.live := rfl
 
 theorem putAll_live : ∀ (ws : List (Nat × ByteArray)) (d : Dev),
@@ -231,6 +243,8 @@ inductive Part where
   | cudaDevice
   /-- wgpu finds an adapter: an oracle no call changes. -/
   | gpuAdapter
+  /-- No asynchronous copy is in flight over page-locked memory. -/
+  | idle
   deriving DecidableEq, Repr
 
 def Part.get : Part → World → Bool
@@ -245,6 +259,7 @@ def Part.get : Part → World → Bool
   | .display, w => w.display
   | .cudaDevice, w => w.cudaDevice
   | .gpuAdapter, w => w.gpuAdapter
+  | .idle, w => w.mem.busy.isEmpty
 
 /-- **The kinds of handle a library hands a program**, which a typestate
     may say it holds: an open window, serial port or USB device. -/
@@ -263,7 +278,7 @@ def Held.live : Held → World → UInt64 → Bool
 /-- **The parts each entry point may move.** Bringing a context up or down,
     beginning or ending a capture, and joining or dropping a worker; every other
     call keeps every part (`callBits_parts`). -/
-def moves : IR.Ffi → List Part
+def movesLife : IR.Ffi → List Part
   | .cudaInit | .cudaCleanup => [.cuda, .capturing]
   | .cudaGraphBeginCapture | .cudaGraphEndCapture => [.capturing]
   | .lmdbInit | .lmdbCleanup => [.lmdb, .lmdbEmpty]
@@ -274,6 +289,11 @@ def moves : IR.Ffi → List Part
   | .threadCleanup => [.thread, .frozen]
   | .threadJoin => [.frozen]
   | _ => []
+
+/-- **The parts each entry point may move**: the lifecycle parts `movesLife`
+    names, and whether an asynchronous copy is in flight, which no entry point
+    is shown to keep. -/
+def moves (f : IR.Ffi) : List Part := .idle :: movesLife f
 
 /-- A call to `f` from `w` to `w'` kept every part it does not move. -/
 def KeepsParts (f : IR.Ffi) (w w' : World) : Prop := ∀ p, p ∉ moves f → p.get w' = p.get w
@@ -2842,16 +2862,16 @@ theorem afterStore_sound {S : TState} {w w' : World} {ao vo : Option UInt64} {a 
           · exact hk
 
 theorem foldl_stores_sizes {α : Type} (f : α → Mem → Option Mem) (hf : ∀ x m m', f x m = some m' →
-    m'.sizes = m.sizes ∧ m'.frozen = m.frozen) :
+    m'.sizes = m.sizes ∧ m'.frozen = m.frozen ∧ m'.busy = m.busy) :
     ∀ (l : List α) (m m' : Mem), l.foldlM (fun mm x => f x mm) m = some m' →
-      m'.sizes = m.sizes ∧ m'.frozen = m.frozen
-  | [], m, m', h => by cases h; exact ⟨rfl, rfl⟩
+      m'.sizes = m.sizes ∧ m'.frozen = m.frozen ∧ m'.busy = m.busy
+  | [], m, m', h => by cases h; exact ⟨rfl, rfl, rfl⟩
   | x :: l, m, m', h => by
       simp only [List.foldlM_cons, Option.bind_eq_bind] at h
       obtain ⟨m1, h1, h⟩ := Option.bind_eq_some_iff.mp h
-      obtain ⟨e1, f1⟩ := hf x m m1 h1
-      obtain ⟨e2, f2⟩ := foldl_stores_sizes f hf l m1 m' h
-      exact ⟨e2.trans e1, f2.trans f1⟩
+      obtain ⟨e1, f1, b1⟩ := hf x m m1 h1
+      obtain ⟨e2, f2, b2⟩ := foldl_stores_sizes f hf l m1 m' h
+      exact ⟨e2.trans e1, f2.trans f1, b2.trans b1⟩
 
 set_option maxHeartbeats 2000000 in
 /-- Every entry point is found by its own C name. -/

@@ -79,7 +79,7 @@ theorem mapM_asBits_i64 : ∀ bits : List UInt64, (bits.map (V.sc .i64)).mapM as
 theorem LibStep.parts {e : Ext} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (st : LibStep e bits w r w') (p : Part) : p.get w' = p.get w := by
   cases p <;> simp only [Part.get, st.dev, st.lmdb, st.win, st.gpu, st.thread, st.display, st.cudaDevice,
-    st.gpuAdapter, st.mem.1]
+    st.gpuAdapter, st.mem.1, st.mem.2.2.2]
 
 theorem callFfi_bits {f : IR.Ffi} {vs : List V} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (hb : vs.mapM asBits = some bits) (h : callFfi f vs w = some (r, w')) : callBits f bits w = some (r, w') := by

@@ -20,7 +20,7 @@ variable {vals : List UInt64}
 
 open AlgorithmLib.HProg.Contracts (Fact TState holds_of_mem Part afterStore afterStore_sound storeKeeps
   storeKeeps_sound storeKeeps_cell_of storeKeeps_cstrIn_of cellOk cellOk_spec nonCell_kept store_sizes_eq
-  store_frozen callBits_rooms after streamsOf_holds eventsOf_holds readyIn)
+  store_frozen store_busy callBits_rooms after streamsOf_holds eventsOf_holds readyIn)
 
 -- ---------------------------------------------------------------------------
 -- Addresses as numbers
@@ -189,7 +189,7 @@ theorem absStore_scalar {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = 
   have hx := Fits.toNat_le hfit
   have hn : n ≤ 2 ^ 64 := by omega
   have hsz := store_sizes_eq hm
-  have hp := fun p => store_parts (a := x) (n := k) (b := c) (w := w) (store_frozen hm) p
+  have hp := fun p => store_parts (a := x) (n := k) (b := c) (w := w) ⟨store_frozen hm, store_busy hm⟩ p
   have hda : (A.get a).Desc Γ w (.sc t x) := hA.desc ha
   unfold absStore at h
   simp only [storeBytes, hsc] at h
@@ -230,7 +230,7 @@ theorem absStore_scalar {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = 
 /-- **A vector store**: every fact but the cells survives. -/
 theorem absStore_vec {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = .ok A') {Γ : Env}
     {w : World} (hA : A.Holds vals Γ w) (hsc : (A.get v).scTy = none) {x c : UInt64} {m : Mem} {k : Nat}
-    (hsz : m.sizes = w.mem.sizes) (hz : m.frozen = w.mem.frozen) :
+    (hsz : m.sizes = w.mem.sizes) (hz : m.frozen = w.mem.frozen ∧ m.busy = w.mem.busy) :
     A'.Holds vals Γ { obsStore w x k c with mem := m } := by
   unfold absStore at h
   cases hk : storeBytes A v n with
@@ -350,7 +350,7 @@ theorem istore8_sound {cfg : Cfg} {A A' : AS} {v a : R} {tv : ClifTy} {fo : Bool
 
 /-- Whatever a store writes, every fact but the cells survives it. -/
 theorem wild_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {x c : UInt64} {k : Nat} {m : Mem}
-    (hsz : m.sizes = w.mem.sizes) (hz : m.frozen = w.mem.frozen) :
+    (hsz : m.sizes = w.mem.sizes) (hz : m.frozen = w.mem.frozen ∧ m.busy = w.mem.busy) :
     (A.withFacts (A.facts.filter (!·.isCell))).Holds vals Γ { obsStore w x k c with mem := m } :=
   hA.keep (nonCell_kept hA.2.2 (store_parts hz) (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl⟩ hsz) hsz
     (fun kk _ hk => by cases kk <;> exact hk)
@@ -363,12 +363,12 @@ theorem wild_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} :
   · dsimp only
     split
     · split
-      · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+      · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) ⟨store_frozen hm, store_busy hm⟩
       · rfl
     · split
       · rename_i m hm
         rw [← Array.foldlM_toList] at hm
-        obtain ⟨hs, hz⟩ := Contracts.foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h⟩) _ _ _ hm
+        obtain ⟨hs, hz⟩ := Contracts.foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h, store_busy h⟩) _ _ _ hm
         exact wild_holds hA hs hz
       · rfl
   · trivial
@@ -379,13 +379,13 @@ theorem wild_storeU {cfg : Cfg} {A : AS} {v a : R} :
   rw [runStmt_storeUnaligned]
   split
   · split
-    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) ⟨store_frozen hm, store_busy hm⟩
     · rfl
   · dsimp only
     split
     · rename_i m hm
       rw [← Array.foldlM_toList] at hm
-      obtain ⟨hs, hz⟩ := Contracts.foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h⟩) _ _ _ hm
+      obtain ⟨hs, hz⟩ := Contracts.foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h, store_busy h⟩) _ _ _ hm
       exact wild_holds hA hs hz
     · rfl
   · trivial
@@ -396,7 +396,7 @@ theorem wild_istore8 {cfg : Cfg} {A : AS} {v a : R} :
   rw [runStmt_istore8]
   split
   · split
-    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) ⟨store_frozen hm, store_busy hm⟩
     · rfl
   · trivial
 
@@ -427,7 +427,7 @@ theorem rel_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} {fo : Bool}
         rcases store_val (hA.desc hv) hk with ⟨tv, b, hsc, rfl, rfl⟩ | ⟨T, lane, cnt, ls, hsc, hl, rfl, hn, rfl⟩
         · obtain ⟨m, hm⟩ := hfit.store b
           simp only [hm]
-          exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+          exact wild_holds hA (store_sizes_eq hm) ⟨store_frozen hm, store_busy hm⟩
         · have hlw : ((some (lane, cnt)).map (·.1.width)).getD 8 / 8 = tyBytes lane := rfl
           simp only [hl]
           rw [hlw]
@@ -458,7 +458,7 @@ theorem rel_storeU {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
         · simp only [hsc, Option.getD_some] at hfit
           obtain ⟨m, hm⟩ := hfit.store b
           simp only [hm]
-          exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+          exact wild_holds hA (store_sizes_eq hm) ⟨store_frozen hm, store_busy hm⟩
         · have hlw : ((some (lane, cnt)).map (·.1.width)).getD 8 / 8 = tyBytes lane := rfl
           simp only [hl]
           rw [hlw]
@@ -495,7 +495,7 @@ theorem rel_istore8 {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
           subst hk1
           obtain ⟨m, hm⟩ := hfit.store (b &&& 0xff)
           simp only [hm]
-          exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+          exact wild_holds hA (store_sizes_eq hm) ⟨store_frozen hm, store_busy hm⟩
 
 theorem storeF_sound {cfg : Cfg} {A A' : AS} {ty : ClifTy} {v a : R} {fo : Bool}
     (h : absStoreF fo A v a (tyBytes ty) = .ok A') : Stmt1 cfg (A.Holds vals) (.store ty v a) (A'.Holds vals) fo := by
@@ -2882,7 +2882,7 @@ theorem store_world {cfg : Cfg} {Γ Γ' : Env} {w w' : World} {ty : ClifTy} {v a
       · rename_i m hm
         cases hr
         rw [← Array.foldlM_toList] at hm
-        exact ⟨rfl, (foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h⟩) _ _ _ hm).1, rfl⟩
+        exact ⟨rfl, (foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h, store_busy h⟩) _ _ _ hm).1, rfl⟩
       · cases hr
   · cases hr
 
@@ -2899,7 +2899,7 @@ theorem storeU_world {cfg : Cfg} {Γ Γ' : Env} {w w' : World} {v a : R}
     · rename_i m hm
       cases hr
       rw [← Array.foldlM_toList] at hm
-      exact ⟨rfl, (foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h⟩) _ _ _ hm).1, rfl⟩
+      exact ⟨rfl, (foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_frozen h, store_busy h⟩) _ _ _ hm).1, rfl⟩
     · cases hr
   · cases hr
 

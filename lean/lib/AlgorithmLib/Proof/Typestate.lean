@@ -747,9 +747,10 @@ theorem fits_regroup {m : Mem} {b x c : UInt64} {n : Nat} (h : Fits m (b + c + x
     Fits m (b + x + c) n := by
   rwa [UInt64.add_assoc, UInt64.add_comm x c, ← UInt64.add_assoc]
 
-theorem store_parts {w : World} {m : Mem} {a : UInt64} {n : Nat} {b : UInt64} (hz : m.frozen = w.mem.frozen)
+theorem store_parts {w : World} {m : Mem} {a : UInt64} {n : Nat} {b : UInt64}
+    (hz : m.frozen = w.mem.frozen ∧ m.busy = w.mem.busy)
     (p : Part) : p.get { obsStore w a n b with mem := m } = p.get w := by
-  cases p <;> first | rfl | exact hz
+  cases p <;> first | rfl | exact hz.1 | (show m.busy.isEmpty = w.mem.busy.isEmpty; rw [hz.2])
 
 /-- **A store, by the typestate.** When the address and the value are both
     known, the typestate keeps what the store cannot reach and learns the cell
@@ -789,7 +790,7 @@ theorem wp_store_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
       | none => rw [hm] at hrun; cases hrun
       | some m =>
           rw [hm] at hrun; cases hrun
-          refine afterStore_sound hS (store_parts (Contracts.store_frozen hm)) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+          refine afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
             (fun _ => hm) ?_ ?_ hn
           · intro x hx
             cases st with
@@ -821,7 +822,7 @@ theorem wp_store_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
         | none =>
             rw [← Array.foldlM_toList] at hm
             obtain ⟨hsz, hz⟩ := Contracts.foldl_stores_sizes _
-              (fun _ _ _ h => ⟨Contracts.store_sizes_eq h, Contracts.store_frozen h⟩) _ _ _ hm
+              (fun _ _ _ h => ⟨Contracts.store_sizes_eq h, Contracts.store_frozen h, Contracts.store_busy h⟩) _ _ _ hm
             exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ hsz
       · cases hrun
 
@@ -875,16 +876,17 @@ theorem wp_store_unknown {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α �
     (hk : ∀ w', S'.holds w' → wp cfg d J k Q Γ w') : wp cfg d J (.store v a k) Q Γ w :=
   wp_store_state S none (fun _ _ h => by cases h) hS (.inl hJ) (by subst hS'; exact hk)
 
-/-- Lanes stored one after another keep every region's size and the frozen flag. -/
+/-- Lanes stored one after another keep every region's size, the frozen flag and the copies in flight. -/
 theorem foldlM_lane_stores_inv {addr : UInt64} {lw : Nat} : ∀ (l : List (UInt64 × Nat)) (m0 m : Mem),
     l.foldlM (fun mm (p : UInt64 × Nat) => mm.store (addr + UInt64.ofNat (p.2 * lw)) lw p.1) m0 = some m →
-    m.sizes = m0.sizes ∧ m.frozen = m0.frozen
-  | [], m0, m, h => by simp at h; subst h; exact ⟨rfl, rfl⟩
+    m.sizes = m0.sizes ∧ m.frozen = m0.frozen ∧ m.busy = m0.busy
+  | [], m0, m, h => by simp at h; subst h; exact ⟨rfl, rfl, rfl⟩
   | p :: l, m0, m, h => by
       simp only [List.foldlM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
       obtain ⟨m1, h1, h2⟩ := h
-      obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv l m1 m h2
-      exact ⟨hs.trans (Contracts.store_sizes_eq h1), hz.trans (Contracts.store_frozen h1)⟩
+      obtain ⟨hs, hz, hb⟩ := foldlM_lane_stores_inv l m1 m h2
+      exact ⟨hs.trans (Contracts.store_sizes_eq h1), hz.trans (Contracts.store_frozen h1),
+        hb.trans (Contracts.store_busy h1)⟩
 
 /-- **A store under default flags, by the typestate**: its width is the
     value's own. -/
@@ -942,14 +944,14 @@ theorem wp_storeUnaligned_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q 
           rw [hm] at hrun; cases hrun
           cases st with
           | none =>
-              exact Contracts.nonCell_kept hS (store_parts (Contracts.store_frozen hm)) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩
+              exact Contracts.nonCell_kept hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩
                 (Contracts.store_sizes_eq hm)
           | some q =>
               obtain ⟨x, t', y⟩ := q
               obtain ⟨⟨t0, ht⟩, hv'⟩ := hst x t' y rfl
               rw [ha] at ht; cases ht
               rw [hv] at hv'; cases hv'
-              exact afterStore_sound hS (store_parts (Contracts.store_frozen hm)) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+              exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
                 (fun _ => hm) (fun _ h => by cases h; rfl) (fun _ h => by cases h; rfl) (tyBytes_le _)
 
 theorem wp_storeU_known {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
@@ -1051,7 +1053,7 @@ theorem wp_istore8_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α �
       | none => rw [hm] at hrun; simp only [reduceCtorEq] at hrun
       | some m =>
           rw [hm] at hrun; cases hrun
-          exact afterStore_sound hS (store_parts (Contracts.store_frozen hm)) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+          exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
             (fun _ => hm) (fun x hx => by
               obtain ⟨t, ht⟩ := ha x hx
               rw [ha'] at ht; cases ht; rfl) (fun _ h => by cases h) (by decide)

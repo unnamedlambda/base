@@ -129,18 +129,20 @@ theorem map_push_live {α : Type} (live : α → Bool) (arr : Array α) (x : α)
 /-- `m'` is `m` with at most its bytes changed and pinned memory grown:
     frozen alike, every other region as large. -/
 def Rewritten (m m' : Mem) : Prop :=
-  m'.frozen = m.frozen ∧ (∀ r, r ≠ .pinned → m'.sizes r = m.sizes r) ∧ m.sizes .pinned ≤ m'.sizes .pinned
+  m'.frozen = m.frozen ∧ (∀ r, r ≠ .pinned → m'.sizes r = m.sizes r) ∧ m.sizes .pinned ≤ m'.sizes .pinned ∧
+    m'.busy = m.busy
 
-theorem Rewritten.refl (m : Mem) : Rewritten m m := ⟨rfl, fun _ _ => rfl, Nat.le_refl _⟩
+theorem Rewritten.refl (m : Mem) : Rewritten m m := ⟨rfl, fun _ _ => rfl, Nat.le_refl _, rfl⟩
 
-theorem Rewritten.of_eq {m m' : Mem} (hf : m'.frozen = m.frozen) (hs : m'.sizes = m.sizes) : Rewritten m m' :=
-  ⟨hf, fun r _ => by rw [hs], by rw [hs]; exact Nat.le_refl _⟩
+theorem Rewritten.of_eq {m m' : Mem} (hf : m'.frozen = m.frozen) (hs : m'.sizes = m.sizes)
+    (hb : m'.busy = m.busy) : Rewritten m m' :=
+  ⟨hf, fun r _ => by rw [hs], by rw [hs]; exact Nat.le_refl _, hb⟩
 
 theorem Rewritten.copyIn (m : Mem) (a : UInt64) (src : ByteArray) :
     Rewritten m ((Sem.copyIn m a src).getD m) := by
   cases h : Sem.copyIn m a src with
   | none => exact Rewritten.refl m
-  | some m' => exact Rewritten.of_eq (copyIn_frozen h) (copyIn_sizes_eq h)
+  | some m' => exact Rewritten.of_eq (copyIn_frozen h) (copyIn_sizes_eq h) (copyIn_busy h)
 
 /-- **What a call of the engine's own libraries leaves**: the observations
     made so far, every lifecycle part, memory rewritten in place, each handle
@@ -604,16 +606,16 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
   -- memmove
   · obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
   -- memset
   · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
   -- strlen
   · obtain ⟨i, -, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
@@ -629,7 +631,7 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
       exact (answer_zero rfl hx h0).elim
     · rename_i hz hroom
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_⟩,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, rfl⟩,
         fun k a _ hl => ?_, ?_⟩
       · simp only [Mem.sizes, Mem.region, ByteArray.size_append]; omega
       · cases k
@@ -651,7 +653,7 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
       exact LibStep.of_mem (Rewritten.refl _) rfl
     · obtain ⟨⟨off, n⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq rfl (funext fun r => by cases r <;> rfl),
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq rfl (funext fun r => by cases r <;> rfl) rfl,
         fun k a hk hl => ?_, ?_⟩
       · cases k
         all_goals first | exact hl | exact absurd rfl hk
@@ -728,10 +730,11 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       · show w'.display = w.display; rw [st.display]
       · show w'.cudaDevice = w.cudaDevice; rw [st.cudaDevice]
       · show w'.gpuAdapter = w.gpuAdapter; rw [st.gpuAdapter]
+      · show w'.mem.busy.isEmpty = w.mem.busy.isEmpty; rw [st.mem.2.2.2]
   | room rg n =>
       show n ≤ w'.mem.sizes rg
       by_cases hp : rg = .pinned
-      · subst hp; exact Nat.le_trans hx st.mem.2.2
+      · subst hp; exact Nat.le_trans hx st.mem.2.2.1
       · rw [st.mem.2.1 rg hp]; exact hx
   | cell a v =>
       simp only [extKeeps, Bool.and_eq_true] at hk
@@ -764,7 +767,7 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       show x.toNat ≤ w'.mem.sizes rg ∧ _
       refine ⟨?_, hx.2⟩
       by_cases hp : rg = .pinned
-      · subst hp; exact Nat.le_trans hx.1 st.mem.2.2
+      · subst hp; exact Nat.le_trans hx.1 st.mem.2.2.1
       · rw [st.mem.2.1 rg hp]; exact hx.1
   | cstrIn a n =>
       simp only [extKeeps, Bool.and_eq_true, Bool.not_eq_true'] at hk
