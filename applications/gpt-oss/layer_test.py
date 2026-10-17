@@ -69,7 +69,7 @@ def main():
 
     art = py_base.load_artifact(args.artifact)
     base = py_base.Driver(art)
-    want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
+    want = struct.unpack_from("<I", base.read(0x80, 4))[0]
 
     anorm = bank.f32(ent["attn_norm"], (H,))
     qkv_w_raw = bank.dense[ent["qkv_w"]:ent["qkv_b"]]
@@ -180,7 +180,7 @@ def main():
                 step[H * 4:H * 4 + 256] = meta.tobytes()
                 step = bytes(step)
             out = bytearray(H * 4 + E * 4)
-            base.execute("main", step, out)
+            base.function("main")(step, out)
             if pos in readback:
                 kept[pos] = (np.frombuffer(bytes(out[:H * 4]), np.float32).copy(),
                              np.frombuffer(bytes(out[H * 4:]), np.float32).copy())

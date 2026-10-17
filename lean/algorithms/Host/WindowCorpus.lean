@@ -77,7 +77,7 @@ def program : Except String (List FuncData) :=
 def env : FnEnv := (Prog.run body).2.1
 
 def entryArgVals : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  [.sc .i64 (Sem.regionBase .data),
    .sc .i64 0, .sc .i64 (Sem.regionBase .out), .sc .i64 OUT.toUInt64]
 
 def startWorld : Sem.World :=
@@ -170,7 +170,7 @@ def displayChecked : Except String Code := Prog.emitChecked displayBody
 def displayExpected : Except String ByteArray :=
   let env := (Prog.run displayBody).2.1
   let args : List Sem.V :=
-    [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+    [.sc .i64 (Sem.regionBase .data),
      .sc .i64 0, .sc .i64 (Sem.regionBase .out), .sc .i64 D_OUT.toUInt64]
   let w : Sem.World :=
     { mem := { arena := ⟨displayImage.toArray⟩, data := ByteArray.empty,
@@ -188,7 +188,7 @@ def utf8Body (n : Nat) : Prog V L Unit := do
 
 def utf8Refuses (bs : List UInt8) : Option Bool :=
   let body := utf8Body bs.length
-  let args : List Sem.V := [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  let args : List Sem.V := [.sc .i64 (Sem.regionBase .data),
      .sc .i64 0, .sc .i64 (Sem.regionBase .out), .sc .i64 4]
   let arena : ByteArray := ⟨(bs ++ List.replicate 8 0).toArray⟩
   let w : Sem.World := { mem := { arena := arena, data := ByteArray.empty, out := ByteArray.mk (Array.replicate 4 0) } }

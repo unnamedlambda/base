@@ -115,7 +115,7 @@ def main():
             struct.pack_into(f"<{len(post)}I", buf, D_POST, *post)
         buf[D_TEXT:D_TEXT + len(raw)] = raw
         out = bytearray(D_OUT_BYTES)
-        base.execute("main", bytes(buf), out)
+        base.function("main")(bytes(buf), out)
         b = bytes(out)
         n, _ = struct.unpack_from("<Ii", b, 0)
         reply = b[D_OUT_TEXT:D_OUT_TEXT + n].decode("utf-8", "replace")

@@ -40,7 +40,7 @@ fn main() {
     }
 
     let artifact = Artifact::from_bytes(QWEN2_ON_DISK_BINARY).expect("the build checked this artifact");
-    let mut base = Driver::load(artifact).expect("Driver::load");
+    let base = Driver::load(artifact).expect("Driver::load");
 
     eprintln!("Starting qwen2_on_disk (weights={weights_path}, tokenizer={tokenizer_path})");
     base.execute("main", &data, &mut [])

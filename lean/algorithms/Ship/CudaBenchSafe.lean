@@ -50,7 +50,7 @@ ship_entry CudaSoftmaxPersist_load : CudaSoftmaxPersist.loadCode under CudaSoftm
 
 ship_entry CudaSoftmaxPersist_prep : CudaSoftmaxPersist.prepCode under CudaSoftmaxPersistRun dataLen outLen
 
-theorem CudaSoftmaxPersist_core_fine : Fine (emitGo (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem CudaSoftmaxPersist_core_fine : Fine (emitGo (fnBody ptrParams (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -65,7 +65,7 @@ theorem CudaSoftmaxPersist_core_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) 
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit)) ≠ .fault m :=
   Hoare.run_sound (CudaSoftmaxPersist_core_triple cfg dataLen outLen w h) rfl m
 
-theorem CudaSoftmaxPersist_finalize_fine : Fine (emitGo (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem CudaSoftmaxPersist_finalize_fine : Fine (emitGo (fnBody ptrParams (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -90,7 +90,7 @@ abbrev CudaGemvPersistRun (dl ol : UInt64) : World → Prop := Contracts.TState.
    .room .arena CudaGemvPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
    .cell (regionBase .arena + UInt64.ofNat CudaGemvPersist.CTX_OFF) cudaCtx]
 
-theorem CudaGemvPersist_load_fine : Fine (emitGo (CudaGemvPersist.loadCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem CudaGemvPersist_load_fine : Fine (emitGo (fnBody ptrParams (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -110,7 +110,7 @@ abbrev CudaGemvPersistInfer (dl ol m n : UInt64) : World → Prop := Contracts.T
    .cell (regionBase .arena + UInt64.ofNat CudaGemvPersist.N_OFF) n,
    .devBuf 0 ((m * n) <<< 2), .devBuf 1 (n <<< 2), .devBuf 2 (m <<< 2)]
 
-theorem CudaGemvPersist_infer_fine : Fine (emitGo (CudaGemvPersist.inferCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem CudaGemvPersist_infer_fine : Fine (emitGo (fnBody ptrParams (CudaGemvPersist.inferCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -166,7 +166,7 @@ ship_entry CudaDecodeAttention_load : CudaDecodeAttention.loadCode under CudaDec
 
 ship_entry CudaDecodeAttention_prep : CudaDecodeAttention.prepCode under CudaDecodeAttentionRun dataLen outLen
 
-theorem CudaDecodeAttention_finalize_fine : Fine (emitGo (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem CudaDecodeAttention_finalize_fine : Fine (emitGo (fnBody ptrParams (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -196,7 +196,7 @@ abbrev CudaDecodeAttentionCore (dl ol s : UInt64) : World → Prop := Contracts.
    .devBuf 0 3584, .devBuf 1 (s * 3584), .devBuf 2 (s * 3584), .devBuf 3 ((s * 14) <<< 2),
    .devBuf 4 ((s * 14) <<< 2), .devBuf 5 3584, .devBuf 6 8]
 
-theorem CudaDecodeAttention_core_fine : Fine (emitGo (CudaDecodeAttention.coreCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem CudaDecodeAttention_core_fine : Fine (emitGo (fnBody ptrParams (CudaDecodeAttention.coreCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -257,11 +257,11 @@ abbrev decodeFns : Nat → Option Fn :=
   persistFns CudaDecodeAttention.loadCode CudaDecodeAttention.prepCode CudaDecodeAttention.coreCode
     CudaDecodeAttention.finalizeCode CudaDecodeAttention.STACK_DEPTH
 
-theorem softmax_infer_fine : Fine (emitGo (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem softmax_infer_fine : Fine (emitGo (fnBody ptrParams (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
-theorem softmax_stack_fine : Fine (emitGo (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) :
-    Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem softmax_stack_fine : Fine (emitGo (fnBody ptrParams (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) :
+    Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 /-- The softmax program's own calls, at any depth, on what an entry is handed:
@@ -287,7 +287,7 @@ theorem CudaSoftmaxPersist_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataLe
   have h4 := (softmax_summaries env steps k dataLen outLen).2
   by
     rw [show (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) =
-      [.straight (Check.seqCalls [3, 4])] from rfl]
+      [.straight (.op .memory :: Check.seqCalls [3, 4])] from rfl]
     exact Check.seqCalls_run (cs := [3, 4]) ⟨_, h3, _, h4, trivial⟩ h m
 
 set_option maxRecDepth 200000 in
@@ -302,14 +302,14 @@ theorem CudaSoftmaxPersist_stack_no_misuse (env : FnEnv) (steps k : Nat) (dataLe
   have h4 := (softmax_summaries env steps k dataLen outLen).2
   by
     rw [show (emit (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) =
-      [.straight (Check.seqCalls (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]))] from rfl]
+      [.straight (.op .memory :: Check.seqCalls (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]))] from rfl]
     exact Check.seqCalls_run (Check.sumChain_repeat h3 (rest := [4]) ⟨_, h4, trivial⟩ _) h m
 
-theorem decode_infer_fine : Fine (emitGo (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem decode_infer_fine : Fine (emitGo (fnBody ptrParams (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   softmax_infer_fine
 
-theorem decode_stack_fine : Fine (emitGo (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) :
-    Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem decode_stack_fine : Fine (emitGo (fnBody ptrParams (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) :
+    Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 /-- The decode-attention program's own calls, at any depth, on what an entry
@@ -337,7 +337,7 @@ theorem CudaDecodeAttention_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataL
   have h4 := (decode_summaries env steps k dataLen outLen s hs).2
   by
     rw [show (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) =
-      [.straight (Check.seqCalls [3, 4])] from rfl]
+      [.straight (.op .memory :: Check.seqCalls [3, 4])] from rfl]
     exact Check.seqCalls_run (cs := [3, 4]) ⟨_, h3, _, (Check.summary_weaken h4 (by
       intro f hf
       simp only [List.mem_cons, List.not_mem_nil, or_false] at hf ⊢
@@ -356,7 +356,7 @@ theorem CudaDecodeAttention_stack_no_misuse (env : FnEnv) (steps k : Nat) (dataL
   have h4 := (decode_summaries env steps k dataLen outLen s hs).2
   by
     rw [show (emit (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) =
-      [.straight (Check.seqCalls (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]))] from rfl]
+      [.straight (.op .memory :: Check.seqCalls (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]))] from rfl]
     exact Check.seqCalls_run (Check.sumChain_repeat h3 (rest := [4]) ⟨_, (Check.summary_weaken h4 (by
       intro f hf
       simp only [List.mem_cons, List.not_mem_nil, or_false] at hf ⊢

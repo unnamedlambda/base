@@ -94,9 +94,12 @@ theorem spawnWorker_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (vs : List 
       by_cases h1 : (!(ctx == threadCtx && w.thread.live) || w.thread.outstanding.isSome) = true
       · rw [if_pos h1] at hc; cases hc
       · rw [if_neg h1] at hc ⊢
-        cases hl : L₁ fn.toNat [.sc .i64 arg] w with
-        | error _ => rw [hl] at hc; cases hc
-        | ok x => rw [hl] at hc; rw [h _ _ _ _ hl]; exact hc
+        by_cases hb : fn < fnBase
+        · rw [if_pos hb] at hc; cases hc
+        · rw [if_neg hb] at hc ⊢
+          cases hl : L₁ (fn - fnBase).toNat [.sc .i64 arg] w with
+          | error _ => rw [hl] at hc; cases hc
+          | ok x => rw [hl] at hc; rw [h _ _ _ _ hl]; exact hc
   · cases hc
 
 theorem callOf_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (c : Callee) (vs : List V) (w : World)
@@ -129,6 +132,7 @@ theorem callOf_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (c : Callee) (vs
           rw [hl] at hc; simp only [Except.toOption, Option.some.injEq] at hc; subst hc
           rw [h _ _ _ _ hl]; rfl
   | native => cases hc
+  | host _ _ => cases hc
   | atomic a => exact hc
   | ext e => exact hc
 

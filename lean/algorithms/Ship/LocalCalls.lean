@@ -22,7 +22,7 @@ abbrev SW : World → Prop := Contracts.TState.holds [.part .frozen false, .room
 
 def wrap : Body := sequenceWrapper [5, 6]
 
-theorem wrap_fine : Fine (emitGo (wrap : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem wrap_fine : Fine (emitGo (fnBody ptrParams (wrap : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxHeartbeats 400000 in
@@ -31,7 +31,7 @@ theorem wrap_no_misuse (cfg : Cfg) (dl ol : UInt64)
     (w : World) (hw : SW w) (m : String) :
     Sem.run cfg (runArgs dl ol) w (emit (wrap : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dl ol) w (emit (wrap : Prog Slot Lvl Unit)) ≠ .fault m := by
-  rw [show (emit (wrap : Prog Slot Lvl Unit)) = [.straight (Check.seqCalls [5, 6])] from rfl]
+  rw [show (emit (wrap : Prog Slot Lvl Unit)) = [.straight (.op .memory :: Check.seqCalls [5, 6])] from rfl]
   exact Check.seqCalls_run (cs := [5, 6]) ⟨_, h5, _, h6, trivial⟩ hw m
 
 /-- A leaf that stores into the arena: its summary, from its condition. -/
@@ -40,7 +40,7 @@ def leaf : Body := do
   let v ← iconst64 7
   storeI64 v (← absAddr p 8)
 
-theorem leaf_fine : Fine (emitGo (leaf : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem leaf_fine : Fine (emitGo (fnBody ptrParams (leaf : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxHeartbeats 400000 in

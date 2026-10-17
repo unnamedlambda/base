@@ -29,7 +29,7 @@ abbrev WindowDemoMainOn (d : Bool) : World → Prop := Contracts.TState.holds
    .cstrIn (regionBase .arena + 80) 4096]
 
 theorem WindowDemo_main_fine :
-    Fine (emitGo (WindowDemo.mainBody : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+    Fine (emitGo (fnBody ptrParams (WindowDemo.mainBody : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 ship_entry WindowDemo_main_display : WindowDemo.mainBody under (WindowDemoMainOn true)

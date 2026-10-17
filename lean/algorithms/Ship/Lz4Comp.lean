@@ -34,7 +34,7 @@ abbrev Start (dl ol : UInt64) : World → Prop := Contracts.TState.holds
   [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena 10848, .roomArg .data dl, .roomArg .out ol,
    .cstrIn (regionBase .arena + UInt64.ofNat Lz4Ship.rPTX_OFF) (10720 - Lz4Ship.rPTX_OFF)]
 
-theorem warp15_fine : Fine (emitGo (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem warp15_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -100,7 +100,7 @@ theorem warp15_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
   rw [bindOff_15]
   check_calls
 
-theorem warp16_fine : Fine (emitGo (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem warp16_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in

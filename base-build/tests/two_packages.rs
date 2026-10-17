@@ -82,7 +82,7 @@ fn artifact(package: &str, name: &str) -> PathBuf {
 
 fn size(p: &Path) -> u64 {
     let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-    base_types::Artifact::from_bytes(&bytes).expect("an artifact").required_memory
+    base_types::Artifact::from_bytes(&bytes).expect("an artifact").arena_size
 }
 
 /// One test, because there is one fixture: cargo serialises concurrent builds

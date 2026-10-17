@@ -5,25 +5,23 @@
 //! keeps the three hosts on one core rather than three surfaces that drift —
 //! the way `execute` answering Arrow on one side and bytes on another once did.
 //!
-//! What this adds is Python's conventions: an exception instead of a failure
-//! value and the message the runtime left, the buffer protocol for the caller's
-//! input and output, and the GIL released while a program runs.
+//! It is the C API in Python's terms: a `Driver` loads an artifact, `function`
+//! answers one of its functions as a `Function`, which is the C function
+//! itself, and calling it calls the program. What this adds is Python's
+//! conventions: an exception instead of a failure value, the buffer protocol
+//! for the caller's input and output and for the arena, a `Function` holding
+//! its driver alive, and the GIL released
+//! while a program runs, so threads sharing one `Driver` run their calls at
+//! once.
 
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyMemoryView;
 
 use base::capi;
-
-/// The message the failed call left on this thread, as a Python exception.
-fn last_error(what: &str) -> PyErr {
-    let len = unsafe { capi::base_last_error(std::ptr::null_mut(), 0) };
-    let mut buf = vec![0u8; len];
-    unsafe { capi::base_last_error(buf.as_mut_ptr(), buf.len()) };
-    match String::from_utf8(buf) {
-        Ok(message) if !message.is_empty() => PyValueError::new_err(format!("{what}: {message}")),
-        _ => PyValueError::new_err(format!("{what} failed")),
-    }
-}
 
 /// What a generator emits, held as the bytes it was written as: the runtime is
 /// what decodes them, so there is no second reader here to disagree with it.
@@ -62,16 +60,79 @@ where
     py.allow_threads(move || wrapped.call())
 }
 
-/// A compiled artifact and the memory it runs in. Compiling is the expensive
-/// step, so build one and call it as often as you like.
-#[pyclass(name = "Driver", unsendable)]
+/// A driver from `base_driver_load`, which the C API lets any number of
+/// threads call and read through at once.
+struct Handle(*mut base::Driver);
+
+// SAFETY: the calls made through the handle are the ones the C API admits
+// concurrently; the one that needs it alone, the free, runs in `Drop`, when
+// Python holds no other reference and so no call is running.
+unsafe impl Send for Handle {}
+unsafe impl Sync for Handle {}
+
+/// A compiled artifact and the arena it runs in. Compiling is the expensive
+/// step, so build one, find its functions with `function`, and call them as
+/// often as you like, from as many threads as you like.
+#[pyclass(name = "Driver", frozen)]
 struct PyDriver {
-    handle: *mut base::Driver,
+    handle: Handle,
 }
 
 impl Drop for PyDriver {
     fn drop(&mut self) {
-        unsafe { capi::base_driver_free(self.handle) };
+        unsafe { capi::base_driver_free(self.handle.0) };
+    }
+}
+
+/// A function of a `Driver`, as the C function it is. It holds its driver,
+/// so the driver lives as long as any `Function` of it does.
+#[pyclass(name = "Function", frozen)]
+struct PyFunction {
+    _driver: Py<PyDriver>,
+    f: base::FunctionPtr,
+}
+
+#[pymethods]
+impl PyFunction {
+    /// Run the function with `input`, answering in `output`, and return the
+    /// status it answered: `0` unless the function's body ends in a `return`
+    /// carrying a value.
+    ///
+    /// Both buffers are the caller's own memory, handed to the program as
+    /// pointers: nothing is copied in or out. The GIL is released while the
+    /// program runs, so calls from several threads run at once.
+    ///
+    /// `output` is any writable contiguous buffer (a `bytearray`, a NumPy
+    /// array, a `memoryview` of one). It is held as an exported buffer for the
+    /// whole call, so another thread cannot resize or free it under the
+    /// program: Python refuses with `BufferError` instead.
+    #[pyo3(signature = (input=None, output=None))]
+    fn __call__(
+        &self,
+        py: Python<'_>,
+        input: Option<&[u8]>,
+        output: Option<PyBuffer<u8>>,
+    ) -> PyResult<i64> {
+        let input = input.unwrap_or(&[]);
+        let (output_ptr, output_len) = match &output {
+            Some(output) => {
+                if output.readonly() || !output.is_c_contiguous() {
+                    return Err(PyValueError::new_err("output must be a writable contiguous buffer"));
+                }
+                (output.buf_ptr() as *mut u8, output.len_bytes())
+            }
+            None => (std::ptr::null_mut(), 0),
+        };
+        let f = self.f;
+        let input_ptr = input.as_ptr() as usize;
+        let input_len = input.len();
+        let output_ptr = output_ptr as usize;
+        let status = allow_threads_unsafe(py, || unsafe {
+            f(input_ptr as *const u8, input_len, output_ptr as *mut u8, output_len)
+        });
+        // Released only now that the program is done with it.
+        drop(output);
+        Ok(status)
     }
 }
 
@@ -79,82 +140,98 @@ impl Drop for PyDriver {
 impl PyDriver {
     #[new]
     fn new(artifact: &PyArtifact) -> PyResult<Self> {
-        let handle = unsafe { capi::base_driver_load(artifact.bytes.as_ptr(), artifact.bytes.len()) };
-        if handle.is_null() {
-            return Err(last_error("Driver"));
-        }
-        Ok(Self { handle })
-    }
-
-    /// Call the entry point the artifact exports as `name`, returning the
-    /// status it answered: `0` unless the entry's body ends in a `return`
-    /// carrying a value.
-    ///
-    /// `input` is what the program is handed and `output` the buffer it answers in. Both
-    /// are the caller's own memory, handed to the program as pointers: nothing
-    /// is copied in or out.
-    #[pyo3(signature = (name, input=None, output=None))]
-    fn execute(
-        &mut self,
-        py: Python<'_>,
-        name: &str,
-        input: Option<&[u8]>,
-        output: Option<&Bound<'_, pyo3::types::PyByteArray>>,
-    ) -> PyResult<i64> {
-        let input = input.unwrap_or(&[]);
-        let (output_ptr, output_len) = match output {
-            Some(output) => (output.data(), output.len()),
-            None => (std::ptr::null_mut(), 0),
+        let mut err = [0u8; 1024];
+        let handle = unsafe {
+            capi::base_driver_load(artifact.bytes.as_ptr(), artifact.bytes.len(), err.as_mut_ptr(), err.len())
         };
-        let handle = self.handle;
-        let mut status = 0i64;
-        let rc = allow_threads_unsafe(py, || unsafe {
-            capi::base_driver_execute(
-                handle,
-                name.as_ptr(),
-                name.len(),
-                input.as_ptr(),
-                input.len(),
-                output_ptr,
-                output_len,
-                &mut status,
-            )
-        });
-        if rc != 0 {
-            return Err(last_error("execute"));
+        if handle.is_null() {
+            let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
+            return Err(PyValueError::new_err(format!("Driver: {}", String::from_utf8_lossy(&err[..end]))));
         }
-        Ok(status)
+        Ok(Self { handle: Handle(handle) })
     }
 
-    /// `length` bytes of the program's memory from `offset`, copied.
+    /// The function named `name`, as the C function it is. Find it once and
+    /// call it: the lookup is the only part that is not the program.
+    fn function(slf: &Bound<'_, Self>, name: &str) -> PyResult<PyFunction> {
+        let handle = slf.get().handle.0;
+        let f = unsafe { capi::base_driver_function(handle, name.as_ptr(), name.len()) }
+            .ok_or_else(|| PyValueError::new_err(format!("the artifact has no function named {name:?}")))?;
+        Ok(PyFunction { _driver: slf.clone().unbind(), f })
+    }
+
+    /// `length` bytes of the arena from `offset`, copied.
     ///
     /// This is how a host reads what a program left behind, at an address its
-    /// generator says it wrote. A range past the end is an error rather than a
-    /// short answer, so a truncated read cannot be mistaken for a result.
-    fn read_memory<'py>(
+    /// generator says it wrote, including while other threads' calls run. A
+    /// range past the end is an error rather than a short answer, so a
+    /// truncated read cannot be mistaken for a result.
+    fn read<'py>(
         &self,
         py: Python<'py>,
         offset: usize,
         length: usize,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        // Refused before allocating, so a length nothing could hold is an
+        // exception rather than an allocation failure.
         let mut have = 0usize;
-        let memory = unsafe { capi::base_driver_memory(self.handle, &mut have) };
-        if memory.is_null() || offset > have || length > have - offset {
+        let arena = unsafe { capi::base_driver_arena(self.handle.0, &mut have) };
+        if offset.checked_add(length).is_none_or(|end| end > have) {
             return Err(PyValueError::new_err(format!(
-                "{offset}..{} is outside the {have} bytes of memory",
-                offset + length
+                "{offset}..{offset}+{length} is outside the {have} bytes of the arena"
             )));
         }
+        // Other threads' calls may be writing the arena, so it is read as they
+        // write it: each aligned 8-byte word with one atomic load, so a word a
+        // program updates atomically is never seen torn, and the bytes either
+        // side one at a time.
+        let mut bytes = vec![0u8; length];
+        let mut i = 0;
+        while i < length {
+            // SAFETY: in bounds, checked above; the arena lives as long as the
+            // driver, which `self` holds.
+            let at = unsafe { arena.add(offset + i) };
+            if at as usize % 8 == 0 && length - i >= 8 {
+                let word = unsafe { AtomicU64::from_ptr(at.cast()) }.load(Ordering::Relaxed);
+                bytes[i..i + 8].copy_from_slice(&word.to_ne_bytes());
+                i += 8;
+            } else {
+                bytes[i] = unsafe { AtomicU8::from_ptr(at) }.load(Ordering::Relaxed);
+                i += 1;
+            }
+        }
         // `bytes`, not the list of ints a `Vec<u8>` would convert to.
-        let bytes = unsafe { std::slice::from_raw_parts(memory.add(offset), length) };
-        Ok(pyo3::types::PyBytes::new_bound(py, bytes))
+        Ok(pyo3::types::PyBytes::new_bound(py, &bytes))
     }
 
-    /// How many bytes of memory this program runs in.
-    fn memory_size(&self) -> usize {
+    /// The arena itself, as a `memoryview`: no copy, and writable, so NumPy
+    /// and anything else that takes a buffer reads and writes it in place. It
+    /// holds this driver, so the view stays valid however long it is kept, and
+    /// `len(driver.arena)` is its size.
+    ///
+    /// While calls run, a program may be writing it, and a plain view reads
+    /// without atomics: reach bytes a running program may touch with `read`,
+    /// and the rest, or all of it between calls, through the view.
+    #[getter]
+    fn arena<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyMemoryView>> {
+        PyMemoryView::from_bound(slf.as_any())
+    }
+
+    /// The buffer protocol over the arena, which `arena` is a view of.
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut pyo3::ffi::Py_buffer,
+        flags: std::os::raw::c_int,
+    ) -> PyResult<()> {
         let mut len = 0usize;
-        unsafe { capi::base_driver_memory(self.handle, &mut len) };
-        len
+        let ptr = capi::base_driver_arena(slf.get().handle.0, &mut len);
+        // An empty arena has no address; a view of nothing still needs one.
+        let ptr = if ptr.is_null() { std::ptr::NonNull::<u8>::dangling().as_ptr() } else { ptr };
+        // The view holds a reference to the driver, so the arena outlives it.
+        if pyo3::ffi::PyBuffer_FillInfo(view, slf.as_ptr(), ptr.cast(), len as isize, 0, flags) == -1 {
+            return Err(PyErr::fetch(slf.py()));
+        }
+        Ok(())
     }
 }
 
@@ -164,19 +241,6 @@ fn load_artifact(path: &str) -> PyResult<PyArtifact> {
     let bytes = std::fs::read(path)
         .map_err(|e| PyValueError::new_err(format!("Cannot read {}: {}", path, e)))?;
     Ok(PyArtifact { bytes })
-}
-
-/// Compile an artifact and call the entry point it exports as `name`, once.
-#[pyfunction]
-#[pyo3(signature = (artifact, name, input=None))]
-fn run(
-    py: Python<'_>,
-    artifact: &PyArtifact,
-    name: &str,
-    input: Option<&[u8]>,
-) -> PyResult<i64> {
-    let mut base = PyDriver::new(artifact)?;
-    base.execute(py, name, input, None)
 }
 
 /// Whether this extension was compiled without optimisations.
@@ -203,7 +267,7 @@ fn py_base(m: &Bound<'_, PyModule>) -> PyResult<()> {
     warn_if_unoptimised(m.py())?;
     m.add_class::<PyArtifact>()?;
     m.add_class::<PyDriver>()?;
+    m.add_class::<PyFunction>()?;
     m.add_function(wrap_pyfunction!(load_artifact, m)?)?;
-    m.add_function(wrap_pyfunction!(run, m)?)?;
     Ok(())
 }

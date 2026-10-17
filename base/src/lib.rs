@@ -8,20 +8,21 @@ compile_error!("base runs only on 64-bit little-endian targets");
 pub use base_types::Artifact;
 use std::{
     collections::HashMap,
-    pin::Pin,
-    sync::{Arc, Once},
+    ptr::NonNull,
+    sync::{
+        atomic::{AtomicU64, AtomicU8, Ordering},
+        Once,
+    },
 };
-use tracing::{debug, info, info_span};
+use tracing::{info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 pub mod capi;
 mod clif_decode;
 mod ffi;
-mod imports;
 mod libs;
 mod jit;
 
-use crate::jit::THREAD_COMPILED_FNS;
 
 #[derive(Debug)]
 pub enum Error {
@@ -31,29 +32,102 @@ pub enum Error {
     Clif(String),
     /// The arena could not be allocated. Nothing has run: this is the size the
     /// artifact asked for against what the host can give.
-    Memory(String),
-    /// The artifact exports no entry point by that name.
-    NoSuchEntry(String),
+    Arena(String),
+    /// The artifact has no function by that name.
+    NoSuchFunction(String),
+    /// A read reached past the end of the arena.
+    Range(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Clif(m) => write!(f, "clif: {m}"),
-            Error::Memory(m) => write!(f, "memory: {m}"),
-            Error::NoSuchEntry(m) => write!(f, "no such entry: {m}"),
+            Error::Arena(m) => write!(f, "arena: {m}"),
+            Error::NoSuchFunction(m) => write!(f, "no such function: {m}"),
+            Error::Range(m) => write!(f, "out of range: {m}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
 
+/// The arena a program runs in: its own pages, mapped anonymous and zeroed,
+/// as a loader maps a library's `.bss`.
+///
+/// Held as a pointer rather than a slice: running programs write it from any
+/// number of threads while the `Driver` is shared, and a `&mut [u8]` asserts
+/// that nothing else reaches its bytes.
+///
+/// Page-aligned, so an address a program keeps naturally aligned relative to
+/// its base is naturally aligned in fact, which an atomic needs, and huge
+/// pages can back it: Linux aligns a large anonymous mapping to them itself.
+/// Pages a program never touches never cost anything.
+struct Arena {
+    ptr: NonNull<u8>,
+    len: usize,
+    /// The mapping, unmapped when the arena goes; none for an empty arena.
+    _map: Option<region::Allocation>,
+}
+
+impl Arena {
+    /// `len` zeroed bytes, or `None` if the system will not map them.
+    fn zeroed(len: usize) -> Option<Self> {
+        if len == 0 {
+            // Never read or written.
+            return Some(Arena { ptr: NonNull::<u128>::dangling().cast(), len, _map: None });
+        }
+        let mut map = region::alloc(len, region::Protection::READ_WRITE).ok()?;
+        let ptr = NonNull::new(map.as_mut_ptr::<u8>())?;
+        Some(Arena { ptr, len, _map: Some(map) })
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: `len` initialized bytes, and `&mut self` is the only access.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+/// A function of a [`Driver`], as the C function it is: calling it runs the
+/// program's code directly, with nothing of the engine's in between.
+///
+/// It borrows the driver, so it cannot outlive it. A host outside Rust gets the
+/// same function from `base_driver_function`, and keeping the driver alive for as
+/// long as it calls it is then its own part.
+#[derive(Clone, Copy)]
+pub struct Function<'d> {
+    f: jit::FunctionPtr,
+    _driver: std::marker::PhantomData<&'d Driver>,
+}
+
+impl Function<'_> {
+    /// Call the function with `input`, answering in `output`, and answer
+    /// the status it returned (`0` from one that returns nothing). The buffers
+    /// are the program's to read and write directly: nothing is copied.
+    ///
+    /// Any number of threads may call functions of one driver at once. Each
+    /// call runs on its caller's thread against the one arena, and how calls
+    /// share it is the program's to decide: with atomics, or by keeping to
+    /// disjoint bytes.
+    pub fn call(&self, input: &[u8], output: &mut [u8]) -> i64 {
+        // SAFETY: a function the engine checked has `FunctionPtr`'s
+        // signature, mapped for as long as the driver this borrows; the
+        // buffers are valid for their lengths.
+        unsafe { (self.f)(input.as_ptr(), input.len(), output.as_mut_ptr(), output.len()) }
+    }
+
+    /// The function itself, for a host that calls it through a C pointer.
+    pub fn as_ptr(&self) -> FunctionPtr {
+        self.f
+    }
+}
+
+pub use jit::FunctionPtr;
+
 pub struct Driver {
-    memory: Pin<Box<[u8]>>,
-    mem_ptr: *mut u8,
-    clif_fns: Option<Arc<Vec<jit::Compiled>>>,
-    /// Each exported function's index, by its name.
-    exports: HashMap<String, u32>,
+    arena: Arena,
+    /// Each function a host may call, by its name.
+    exports: HashMap<String, FunctionPtr>,
     _module: Option<cranelift_jit::JITModule>,
 }
 
@@ -65,11 +139,10 @@ impl Drop for Driver {
     /// mapped for the life of the process, and the region it was placed in is
     /// reserved up front, so every dropped `Driver` would leak that reservation.
     fn drop(&mut self) {
-        // The functions stay reachable through this thread's installed table,
-        // but nothing calls them without a `Driver` to execute: a program's
-        // workers are joined by `cl_thread_cleanup` before the program that
-        // spawned them returns.
-        self.clif_fns = None;
+        // Nothing runs the code once the driver goes: a host may call a
+        // function only while the driver lives, and a program's workers are
+        // joined by `cl_thread_cleanup` before the program that spawned them
+        // returns.
         if let Some(module) = self._module.take() {
             unsafe { module.free_memory() };
         }
@@ -81,178 +154,151 @@ impl Driver {
     /// program runs in. There is no driver without an artifact, so this is the
     /// only way to obtain one.
     pub fn load(artifact: Artifact) -> Result<Self, Error> {
-        // The arena holds what the program asked for and the image it ships
-        // with, and nothing else: the caller's buffers are arguments, so there
-        // is no header the engine has to make room for.
-        let too_big = |what: String| Error::Memory(format!("{what}, more than this host can hold"));
-        let mut size = usize::try_from(artifact.required_memory)
-            .map_err(|_| too_big(format!("required_memory is {}", artifact.required_memory)))?;
+        // The arena is the size the artifact states, which covers its image:
+        // the generator decides it, and a segment past it is refused.
+        let size = usize::try_from(artifact.arena_size).map_err(|_| {
+            Error::Arena(format!("the arena is {} bytes, more than this host can hold", artifact.arena_size))
+        })?;
+        // In order and apart, so the image has one spelling.
+        let mut free_from = 0usize;
         for s in &artifact.data {
-            let end = usize::try_from(s.offset)
-                .ok()
-                .and_then(|o| o.checked_add(s.bytes.len()))
-                .ok_or_else(|| too_big(format!("a segment at {} ends past the address space", s.offset)))?;
-            size = size.max(end);
+            let at = usize::try_from(s.offset).ok().filter(|&at| at >= free_from);
+            let Some(at) = at else {
+                return Err(Error::Arena(format!(
+                    "a segment at {} is out of order or overlaps the one before it, which ends at {free_from}",
+                    s.offset
+                )));
+            };
+            let end = at.checked_add(s.bytes.len());
+            if end.is_none_or(|end| end > size) {
+                return Err(Error::Arena(format!(
+                    "a segment of {} bytes at {} ends past the {size} bytes of the arena",
+                    s.bytes.len(),
+                    s.offset
+                )));
+            }
+            free_from = at + s.bytes.len();
         }
-        let mut memory =
-            zeroed(size).ok_or_else(|| too_big(format!("the program's memory is {size} bytes")))?;
+        let mut arena = Arena::zeroed(size).ok_or_else(|| {
+            Error::Arena(format!("the arena is {size} bytes, more than this host can hold"))
+        })?;
         // Zeros everywhere a segment does not reach, which is what an artifact
         // leaves out rather than shipping.
+        let bytes = arena.bytes_mut();
         for s in &artifact.data {
             let at = s.offset as usize;
-            memory[at..at + s.bytes.len()].copy_from_slice(&s.bytes);
+            bytes[at..at + s.bytes.len()].copy_from_slice(&s.bytes);
         }
-        Self::from_parts(artifact.functions, memory)
+        Self::from_parts(&artifact.primitives, &artifact.functions, arena)
     }
 
     fn from_parts(
-        functions: Vec<base_types::clif::Function>,
-        memory: Box<[u8]>,
+        primitives: &[base_types::clif::Primitive],
+        functions: &[base_types::clif::Function],
+        arena: Arena,
     ) -> Result<Self, Error> {
-        let _span = info_span!("base_driver_load", memory_size = memory.len()).entered();
+        let _span = info_span!("base_driver_load", memory_size = arena.len).entered();
         info!("loading artifact");
 
-        let mut memory = Pin::new(memory);
-        let mem_ptr = memory.as_mut().as_mut_ptr();
-
-        let (module, clif_fns) = if functions.is_empty() {
-            (None, None)
+        let driver = if functions.is_empty() {
+            Driver { arena, exports: HashMap::new(), _module: None }
         } else {
-            let (module, fns) = jit::compile(&functions).map_err(Error::Clif)?;
-            (Some(module), Some(fns))
-        };
-        let exports = exports_of(&functions, clif_fns.as_deref().map_or(&[], |f| f))?;
-
-        info!("driver ready");
-        Ok(Driver {
-            memory,
-            mem_ptr,
-            clif_fns,
-            exports,
-            _module: module,
-        })
-    }
-
-    /// The shared memory a program reads and writes, borrowed for as long as
-    /// this `Driver` is not executing.
-    pub fn memory(&self) -> &[u8] {
-        &self.memory
-    }
-
-    /// Call the entry point exported as `name` with `input`, and answer the
-    /// status it returned. The entry answers in `output`, which it
-    /// sees directly: nothing is copied either way. The status is the value
-    /// the program returned, passed through without being read; a program
-    /// that returns nothing has status `0`.
-    ///
-    /// A name is the only way a host reaches a function. A function's position
-    /// is the generator's to choose and free to change, so it never leaves the
-    /// artifact.
-    pub fn execute(&mut self, name: &str, input: &[u8], output: &mut [u8]) -> Result<i64, Error> {
-        let _span = info_span!("execute", name).entered();
-        info!("starting execution");
-
-        let fn_idx = *self.exports.get(name).ok_or_else(|| {
-            Error::NoSuchEntry(format!("the artifact exports no entry point named {name:?}"))
-        })? as usize;
-        // Only a program with functions can export a name.
-        let fns = self.clif_fns.clone().expect("an exported name implies compiled functions");
-        // The FFI entry points a program calls — `cl_thread_init` and what
-        // it spawns — reach the compiled functions through a thread-local,
-        // with no `Driver` in hand. Installing them here rather than at
-        // construction is what lets a host execute from any thread, and
-        // makes two instances on one thread each find their own.
-        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(fns.clone()));
-        debug!(fn_idx, "clif_call");
-        // The caller's buffers are arguments, not a place in the arena the
-        // program is told to look at. The arity is the one the function's
-        // own entry block declared, and `exports_of` admitted only these two.
-        let f = fns[fn_idx];
-        let status = unsafe {
-            match (f.arity, f.answers) {
-                (5, true) => {
-                    let entry: unsafe extern "C" fn(
-                        *mut u8,
-                        *const u8,
-                        usize,
-                        *mut u8,
-                        usize,
-                    ) -> i64 = std::mem::transmute(f.addr);
-                    entry(self.mem_ptr, input.as_ptr(), input.len(), output.as_mut_ptr(), output.len())
-                }
-                (5, false) => {
-                    let entry: unsafe extern "C" fn(*mut u8, *const u8, usize, *mut u8, usize) =
-                        std::mem::transmute(f.addr);
-                    entry(self.mem_ptr, input.as_ptr(), input.len(), output.as_mut_ptr(), output.len());
-                    0
-                }
-                (1, true) => {
-                    let entry: unsafe extern "C" fn(*mut u8) -> i64 =
-                        std::mem::transmute(f.addr);
-                    entry(self.mem_ptr)
-                }
-                (1, false) => {
-                    let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(f.addr);
-                    entry(self.mem_ptr);
-                    0
-                }
-                (n, _) => unreachable!("{name:?} is exported but takes {n} parameters"),
+            // The program's code is linked to the arena's address, so it is
+            // fixed before compiling, and it never moves.
+            let program = jit::compile(primitives, functions, arena.ptr.as_ptr()).map_err(Error::Clif)?;
+            Driver {
+                arena,
+                exports: program.exports,
+                _module: Some(program.module),
             }
         };
-        info!(status, "execution complete");
-        Ok(status)
+        info!("driver ready");
+        Ok(driver)
     }
-}
 
-/// `size` zeroed bytes, or `None` if the allocator cannot provide them.
-///
-/// Zeroed by the allocator rather than written: memories run to hundreds of
-/// megabytes, and pages a program never touches then never cost anything.
-fn zeroed(size: usize) -> Option<Box<[u8]>> {
-    if size == 0 {
-        return Some(Box::default());
+    /// The arena, borrowed exclusively: nothing can execute while the slice is
+    /// held, which is what makes a plain slice of it sound. [`Driver::read`] is
+    /// the way in while programs run.
+    pub fn arena(&mut self) -> &[u8] {
+        self.arena.bytes_mut()
     }
-    let layout = std::alloc::Layout::array::<u8>(size).ok()?;
-    // SAFETY: `layout` is non-zero-sized, and a non-null result is `size`
-    // initialized bytes allocated with the layout `Box<[u8]>` frees with.
-    unsafe {
-        let ptr = std::alloc::alloc_zeroed(layout);
-        (!ptr.is_null()).then(|| Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, size)))
-    }
-}
 
-/// The exported names of `functions`, compiled as `compiled`.
-///
-/// A name is refused twice over: a second function under it would make which
-/// one a host reaches depend on the order a map was filled, and a named
-/// function that is not shaped like an entry point would be called with
-/// arguments it does not take.
-fn exports_of(
-    functions: &[base_types::clif::Function],
-    compiled: &[jit::Compiled],
-) -> Result<HashMap<String, u32>, Error> {
-    let mut exports = HashMap::new();
-    for (i, (f, c)) in functions.iter().zip(compiled).enumerate() {
-        let Some(name) = &f.entry_name else { continue };
-        if c.arity != 5 && c.arity != 1 {
-            return Err(Error::Clif(format!(
-                "u0:{i} is exported as {name:?} but takes {} parameters; an entry point \
-                 takes the memory base, optionally followed by the input and output buffers",
-                c.arity
+    /// How many bytes the arena holds.
+    pub fn arena_size(&self) -> usize {
+        self.arena.len
+    }
+
+    /// Where the arena is: the same address for as long as the driver lives,
+    /// and the one its programs see as their base.
+    ///
+    /// This is how a host shares the arena with running programs rather than
+    /// copying out of it. While any call runs, the host reaches bytes a
+    /// program may also touch only with atomic operations, as the program
+    /// does, and is free with bytes no running program touches. That is the
+    /// rule two threads of one C program follow, and it lets a host take the
+    /// ordering it needs: an acquire load of a flag a program set with a
+    /// release store, then the data the flag guards.
+    pub fn arena_ptr(&self) -> *mut u8 {
+        self.arena.ptr.as_ptr()
+    }
+
+    /// Copy `out.len()` bytes of the arena from `offset` into `out`.
+    ///
+    /// Sound while any number of calls run. Every naturally aligned 8-byte
+    /// word the range covers is read with one relaxed atomic load, so a word a
+    /// program updates atomically is never copied
+    /// torn: it is a value the word held at some point during the read. The
+    /// bytes outside such words are read one at a time, and different words
+    /// may be copied at different moments.
+    ///
+    /// A range reaching past the end is an error rather than a short read, so
+    /// a truncated read cannot be mistaken for a result.
+    pub fn read(&self, offset: usize, out: &mut [u8]) -> Result<(), Error> {
+        let len = self.arena.len;
+        if offset.checked_add(out.len()).is_none_or(|end| end > len) {
+            return Err(Error::Range(format!(
+                "{offset}..{offset}+{} is outside the {len} bytes of the arena",
+                out.len()
             )));
         }
-        if let Some(prev) = exports.insert(name.clone(), i as u32) {
-            return Err(Error::Clif(format!(
-                "u0:{prev} and u0:{i} are both exported as {name:?}"
-            )));
+        let base = self.arena.ptr.as_ptr();
+        let mut i = 0;
+        // SAFETY, for both loads: in bounds, checked above; the word's address
+        // is 8-aligned where it is loaded as one; and every access a host makes
+        // while programs run is atomic.
+        while i < out.len() {
+            let at = unsafe { base.add(offset + i) };
+            if at as usize % 8 == 0 && out.len() - i >= 8 {
+                let word = unsafe { AtomicU64::from_ptr(at.cast()) }.load(Ordering::Relaxed);
+                out[i..i + 8].copy_from_slice(&word.to_ne_bytes());
+                i += 8;
+            } else {
+                out[i] = unsafe { AtomicU8::from_ptr(at) }.load(Ordering::Relaxed);
+                i += 1;
+            }
         }
+        Ok(())
     }
-    Ok(exports)
+
+    /// The function named `name`, as the C function it is. A host calling one
+    /// function often finds it once and calls it.
+    pub fn function(&self, name: &str) -> Result<Function<'_>, Error> {
+        let f = *self.exports.get(name).ok_or_else(|| {
+            Error::NoSuchFunction(format!("the artifact has no function named {name:?}"))
+        })?;
+        Ok(Function { f, _driver: std::marker::PhantomData })
+    }
+
+    /// Call the function named `name` with `input`, answering in `output`:
+    /// [`Driver::function`], then [`Function::call`].
+    pub fn execute(&self, name: &str, input: &[u8], output: &mut [u8]) -> Result<i64, Error> {
+        Ok(self.function(name)?.call(input, output))
+    }
 }
 
-/// Compile an artifact and call the entry point it exports as `name`, once.
+/// Compile an artifact and call its function named `name`, once.
 pub fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
-    let mut driver = Driver::load(artifact)?;
+    let driver = Driver::load(artifact)?;
     driver.execute(name, &[], &mut [])
 }
 
@@ -277,43 +323,38 @@ pub fn init_tracing() {
 /// The program as CLIF text — what was built, rather than what the caller
 /// believes was built. For eyeballing a test or a generated artifact; nothing
 /// in the pipeline reads it.
-pub fn clif_text(functions: &[base_types::clif::Function]) -> Result<String, String> {
+pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
     use base_types::clif::Callee;
     let mut out = String::new();
     let isa = cranelift_native::builder().map_err(|e| e.to_string())?;
     let cc = cranelift_codegen::isa::CallConv::triple_default(isa.triple());
-    for (i, f) in functions.iter().enumerate() {
+    for (i, f) in artifact.functions.iter().enumerate() {
         // Cranelift prints a callee as the `FuncId` it was declared with, so
         // the stub resolver records what each id stood for and the names are
         // put back afterward.
         let mut names: Vec<String> = Vec::new();
-        let mut declare = |c: &Callee| {
-            let sig = match c {
-                Callee::Import(n) => {
-                    let import = imports::lookup(n)
-                        .ok_or_else(|| format!("u0:{i} imports {n}, which base does not provide"))?;
-                    clif_decode::signature(&import.params, import.result, cc)
+        let mut resolve = |c: Callee| {
+            let (name, sig) = match c {
+                Callee::Function(n) => {
+                    let callee = artifact
+                        .functions
+                        .get(n as usize)
+                        .ok_or_else(|| format!("a call to u0:{n}, which the program does not define"))?;
+                    (format!("u0:{n}"), clif_decode::signature_of(callee, n as usize, cc)?)
                 }
-                Callee::Local(n) => {
-                    let callee = functions
-                        .get(*n as usize)
-                        .ok_or_else(|| format!("call to u0:{n}, which the program does not define"))?;
-                    clif_decode::signature_of(callee, *n as usize, cc)?
+                Callee::Primitive(n) => {
+                    let p = artifact
+                        .primitives
+                        .get(n as usize)
+                        .ok_or_else(|| format!("a call to primitive {n}, which the program does not declare"))?;
+                    (format!("%{}!{}", p.lib, p.symbol), clif_decode::signature(&p.signature, cc)?)
                 }
-                Callee::Native => return Err("machine code has no symbol to resolve".into()),
-                Callee::Atomic(_) => return Err("an atomic has no symbol to resolve".into()),
-                Callee::Extern(e) => clif_decode::signature(&e.params, e.result, cc),
             };
-            names.push(match c {
-                Callee::Import(n) => format!("%{n}"),
-                Callee::Local(i) => format!("u0:{i}"),
-                Callee::Extern(e) => format!("%{}!{}", e.lib, e.symbol),
-                Callee::Native | Callee::Atomic(_) => unreachable!("returned above"),
-            });
+            names.push(name);
             Ok((clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false }, sig))
         };
-        let text = format!("{}", clif_decode::decode_function(f, i, cc, &mut declare)?);
-        let mut text = text;
+        let mut module = clif_decode::Module { primitives: &artifact.primitives, arena: 0, resolve: &mut resolve };
+        let mut text = format!("{}", clif_decode::decode_function(f, i, cc, &mut module)?);
         for (i, name) in names.iter().enumerate().rev() {
             text = text.replace(&format!("= u0:{i} sig"), &format!("= {name} sig"));
         }

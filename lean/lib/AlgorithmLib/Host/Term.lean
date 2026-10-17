@@ -109,6 +109,13 @@ inductive Op where
   /-- `a * b + c`, rounded once. -/
   | fma     (a b c : R)
   | iext    (k : IExt) (ty : ClifTy) (a : R)
+  /-- The address of the program's memory: CLIF's `symbol_value` of the
+      symbol `memory`, which the engine links to the arena when it loads the
+      program. -/
+  | memory
+  /-- The address of the program's own function `u0:i`: CLIF's `func_addr`,
+      which the engine links when it loads the program. -/
+  | funcAddr (i : Nat)
   deriving Repr
 
 /-- The slots an operation reads, in the order its CLIF instruction takes them.
@@ -116,7 +123,7 @@ inductive Op where
     Used to say "every operand is in scope" without appealing to `wf`, which
     also checks types and is therefore stronger than the dynamic step needs. -/
 def Op.regs : Op → List R
-  | .iconst _ _ | .fconst _ _ => []
+  | .iconst _ _ | .fconst _ _ | .memory | .funcAddr _ => []
   | .iadd a b | .isub a b | .imul a b | .udiv a b
   | .ishl a b | .ushr a b | .band a b | .bandNot a b
   | .bor a b | .bxor a b | .icmp _ a b
@@ -157,6 +164,8 @@ def Op.name : Op → String
   | .fbin _ _ _ => "fbin" | .fun1 _ _ => "fun1" | .fconv _ _ _ => "fconv"
   | .fma _ _ _ => "fma"
   | .iext _ _ _ => "iext"
+  | .memory => "memory"
+  | .funcAddr _ => "funcAddr"
 
 /-- Statements. `op` and `call` define the next slot; the rest define nothing. -/
 inductive Stmt where
@@ -577,6 +586,8 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       let ta ← Γ.get a; need (k.admits ta ty) ty
   | .iext k ty a => do
       let ta ← Γ.get a; need (k.admits ta ty) ty
+  | .memory => some .i64
+  | .funcAddr _ => some .i64
 
 /-- Every argument in scope and typed as the signature declares. -/
 def argsOk (Γ : TyEnv) (d : CalleeSig) (args : List R) : Bool :=
@@ -988,6 +999,8 @@ def emitStmt (s : CS) : Stmt → CS
         | .fconv k t a  => .fconv v k t (s.get a)
         | .fma a b c    => .fma v (s.get a) (s.get b) (s.get c)
         | .iext k t a   => .iext v k t (s.get a)
+        | .memory       => .memory v
+        | .funcAddr i   => .funcAddr v (.local i)
         | .fcvtFromSint ty a => .fcvtFromSint v ty (s.get a)
         | .fcvtToUint ty a   => .fcvtToUint v ty (s.get a)
         | .splat ty a   => .splat v ty (s.get a)
@@ -1131,11 +1144,12 @@ def emitCode : Nat → CS → List Piece → CS
   | fuel + 1, s, p :: ps => emitCode fuel (emitPiece fuel s p) ps
 end
 
-/-- What an entry point's entry block takes: the memory base pointer, then the
-caller's input buffer and its length, then the caller's output buffer and its
-length. The runtime passes the caller's buffers as these arguments, so there is
-no place in memory the runtime and a program have to agree on. -/
-def ptrParams : List ClifTy := [.i64, .i64, .i64, .i64, .i64]
+/-- What an entry point takes: the caller's input buffer and its length, then
+the caller's output buffer and its length, which is the C function a host calls.
+The caller's buffers are these arguments, so there is no place in memory the
+runtime and a program have to agree on; the program's own memory is not one of
+them, since a function takes its address itself (`Prog.withMemory`). -/
+def ptrParams : List ClifTy := [.i64, .i64, .i64, .i64]
 
 /-- Compile a body, well-formed or not.
 

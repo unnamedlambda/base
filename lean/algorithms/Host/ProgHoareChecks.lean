@@ -139,16 +139,17 @@ theorem syncLoop_pt (cfg : Cfg) :
 
 /-- The one check on the finished emission: nothing failed, and the code fits
     the fuel the model counts slots with. -/
-theorem syncLoop_fine : Fine (emitGo (syncLoop (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem syncLoop_fine : Fine (emitGo (fnBody ptrParams (syncLoop (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 /-- **What ships never misuses a call**: for every input, however many trips the
     first byte asks for, from any world where the device is not capturing. No
     part of the program is run to show it, and nothing about it is written but
     its typestate. -/
-theorem syncLoop_no_misuse (cfg : Cfg) (args : List V) (w : World) (hargs : args.length = 5)
+theorem syncLoop_no_misuse (cfg : Cfg) (args : List V) (w : World) (hargs : args.length = 4)
     (h : Live w) (m : String) : run cfg args w (emit syncLoop) ≠ .misuse m :=
-  run_safe (emit_triple (params := ptrParams) (syncLoop_pt cfg) syncLoop_fine
+  run_safe (emit_triple (params := ptrParams)
+    (by rw [fnBody_entry]; exact PT.withMemory (syncLoop_pt cfg) fun _ _ _ h => h) syncLoop_fine
     (fun _ _ ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs, ptrParams], h⟩)) m
 
 -- The precondition is not idle: a device capturing on the default stream
@@ -194,8 +195,8 @@ def ctxLoop {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} : P
 abbrev Arena : World → Prop :=
   Contracts.TState.holds [.part .cudaDevice true, .part .frozen false, .room .arena 64]
 
-theorem ctxLoop_fine : Fine (emitGo (ctxLoop (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem ctxLoop_fine : Fine (emitGo (fnBody ptrParams (ctxLoop (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 open HProgStaticChecks (args) in
 /-- **A generator that opens, uses and closes a context never misuses a
@@ -245,11 +246,11 @@ abbrev Scratch : World → Prop :=
   Contracts.TState.holds [.part .frozen false, .part .idle true, .room .arena 0xC0, .room .data 8,
     .room .out 8]
 
-theorem fillTable_fine : Fine (emitGo (fillTable (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem fillTable_fine : Fine (emitGo (fnBody ptrParams (fillTable (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
-theorem sumTrips_fine : Fine (emitGo (sumTrips (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem sumTrips_fine : Fine (emitGo (fnBody ptrParams (sumTrips (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 open HProgStaticChecks (args) in
 set_option maxRecDepth 20000 in
@@ -288,8 +289,8 @@ def usbSession {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} 
 abbrev OutRoom : World → Prop :=
   Contracts.TState.holds [.part .frozen false, .room .out 18]
 
-theorem usbSession_fine : Fine (emitGo (usbSession (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem usbSession_fine : Fine (emitGo (fnBody ptrParams (usbSession (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 open HProgStaticChecks (args) in
 /-- **A USB session never misuses the library**, whatever devices the
@@ -330,8 +331,8 @@ def heapSession {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 abbrev OutRoom16 : World → Prop :=
   Contracts.TState.holds [.part .frozen false, .room .out 16]
 
-theorem heapSession_fine : Fine (emitGo (heapSession (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem heapSession_fine : Fine (emitGo (fnBody ptrParams (heapSession (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 open HProgStaticChecks (args) in
 /-- **A heap session never misuses the C library**: the block freed is one

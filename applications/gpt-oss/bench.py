@@ -72,7 +72,7 @@ def main():
         struct.pack_into("<I", buf, D_CTX, args.context)
         for off, p in paths.items():
             buf[off:off + len(p)] = p
-        base.execute("main", bytes(buf), out)
+        base.function("main")(bytes(buf), out)
         return struct.unpack_from("<Ii", bytes(out), 0)
 
     rng = np.random.default_rng(args.seed)

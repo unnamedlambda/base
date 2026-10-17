@@ -9,14 +9,14 @@ N = int(sys.argv[3]) if len(sys.argv) > 3 else 20
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
 base = py_base.Driver(art)
-base.execute("main", blob)
-base.execute("capture")
-base.execute("captureStep")
-base.execute("reload", blob)
+base.function("main")(blob)
+base.function("capture")()
+base.function("captureStep")()
+base.function("reload")(blob)
 
 for _ in range(5):
-    base.execute("replay")
-    base.execute("replayStep")
+    base.function("replay")()
+    base.function("replayStep")()
 for _ in range(N):
-    base.execute("replay")
-    base.execute("replayStep")
+    base.function("replay")()
+    base.function("replayStep")()

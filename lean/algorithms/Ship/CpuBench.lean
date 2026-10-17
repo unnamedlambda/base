@@ -30,7 +30,7 @@ abbrev Load (dl ol : UInt64) : World → Prop := Contracts.TState.holds
 theorem mem_size : CpuBench.MEM_SIZE = 1536 := by native_decide
 theorem loads_eq : CpuBench.loads = [(704, 656, 0), (1408, 119, 1)] := by native_decide
 
-theorem asmLoad_fine : Fine (emitGo (CpuBench.asmLoad : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem asmLoad_fine : Fine (emitGo (fnBody ptrParams (CpuBench.asmLoad : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -45,7 +45,7 @@ theorem asmLoad_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
   simp only [CpuBench.asmLoad, loads_eq]
   check_body
 
-theorem hist_fine : Fine (emitGo (do CpuBench.answer CpuBench.outHist (CpuBench.histUnr8 (← CpuBench.array 0)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem hist_fine : Fine (emitGo (fnBody ptrParams (do CpuBench.answer CpuBench.outHist (CpuBench.histUnr8 (← CpuBench.array 0)) : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -58,7 +58,7 @@ theorem hist_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Ru
 
 ship_entry mandel : (do CpuBench.answer CpuBench.outAnswer (CpuBench.mandelUnr 8 (← CpuBench.nothing))) under Run dataLen outLen
 
-theorem chase_fine : Fine (emitGo (do CpuBench.answer CpuBench.outAnswer (CpuBench.chaseLoop (← CpuBench.array 2)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem chase_fine : Fine (emitGo (fnBody ptrParams (do CpuBench.answer CpuBench.outAnswer (CpuBench.chaseLoop (← CpuBench.array 2)) : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in

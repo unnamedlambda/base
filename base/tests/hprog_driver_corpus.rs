@@ -40,7 +40,7 @@ fn interpreter_and_driver_agree() {
     )
     .expect("artifact shape");
 
-    let mut b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
     b.execute("main", &[], &mut out).expect("execute");
 

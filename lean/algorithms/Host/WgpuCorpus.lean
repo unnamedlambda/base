@@ -160,7 +160,7 @@ def program : Except String (List FuncData) :=
 def env : FnEnv := (Prog.run body).2.1
 
 def entryArgVals : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  [.sc .i64 (Sem.regionBase .data),
    .sc .i64 8, .sc .i64 (Sem.regionBase .out), .sc .i64 OUT.toUInt64]
 
 /-- What the one shader here computes: `2x + 1` on each `u32`. -/

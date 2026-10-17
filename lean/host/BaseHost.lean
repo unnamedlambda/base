@@ -23,25 +23,24 @@ Results come back four ways:
   thing the program stored it to;
 * the out buffer `execute` answers, which the program is handed as its fourth
   and fifth arguments and writes through, and
-* `readMemory`, for an address no field describes.
+* `read`, for an address no field describes.
 
 An artifact whose effects are files, sockets or the GPU needs none of them: it
 has already done its work by the time `execute` returns.
 
 ## Threads
 
-`execute` may be called from any thread: it installs the driver's compiled
-functions on the calling thread first, which is how the FFI entry points a
-program calls find them. Two drivers used from one thread are fine for the
-same reason. A window program is the exception — on macOS its event loop must
-be on the main thread.
+`execute` may be called from any thread, and from several at once: an entry
+point is a native function with the driver's arena compiled into it, so no
+thread holds any state of a driver's. A window program is the exception — on
+macOS its event loop must be on the main thread.
 -/
 
 namespace Base
 
 open AlgorithmLib
 
-/-- A live driver: a compiled program and the memory it runs in.
+/-- A live driver: a compiled program and the arena it runs in.
 
 `raw` is the driver's own pointer. It is private because the only safe
 lifetime for it is the one `withDriver` gives. -/
@@ -58,15 +57,15 @@ private opaque freeRaw (handle : USize) : IO Unit
 private opaque executeRaw (handle : USize) (name : @& String)
     (input : @& ByteArray) (outputLen : USize) : IO (ByteArray × Int64)
 
-@[extern "lean_base_driver_read_memory"]
-private opaque readMemoryRaw (handle : USize) (offset len : USize) : IO ByteArray
+@[extern "lean_base_driver_read"]
+private opaque readRaw (handle : USize) (offset len : USize) : IO ByteArray
 
-@[extern "lean_base_driver_memory_size"]
-private opaque memorySizeRaw (handle : USize) : IO USize
+@[extern "lean_base_driver_arena_size"]
+private opaque arenaSizeRaw (handle : USize) : IO USize
 
 namespace Driver
 
-/-- Compile an artifact and take its memory. Release it with `Driver.close`,
+/-- Compile an artifact and allocate its arena. Release it with `Driver.close`,
 or let `withDriver` do it. -/
 def load (artifact : Artifact) : IO Driver := do
   match Cbor.encode artifact with
@@ -82,7 +81,7 @@ def close (drv : Driver) : IO Unit :=
 the status.
 
 The status is what an entry point answers without a host and a program having
-agreed on a place in memory to leave it: an entry whose `return` carries a
+agreed on a place in the arena to leave it: an entry whose `return` carries a
 value answers with it, one whose `return` carries nothing answers `0`. -/
 def executeStatus (drv : Driver) (name : String)
     (input : ByteArray := .empty) (outputLen : Nat := 0) : IO (ByteArray × Int64) :=
@@ -98,17 +97,17 @@ def execute (drv : Driver) (name : String)
     (input : ByteArray := .empty) (outputLen : Nat := 0) : IO ByteArray :=
   return (← executeStatus drv name input outputLen).1
 
-/-- `len` bytes of the driver's shared memory from `offset`.
+/-- `len` bytes of the driver's arena from `offset`.
 
-This is how a host reads what a program left in its own memory, at an address
+This is how a host reads what a program left in its arena, at an address
 the generator says it writes. A range reaching past the end is an error rather
 than a short answer, so a truncated read cannot be mistaken for a result. -/
-def readMemory (drv : Driver) (offset len : Nat) : IO ByteArray :=
-  readMemoryRaw drv.raw (USize.ofNat offset) (USize.ofNat len)
+def read (drv : Driver) (offset len : Nat) : IO ByteArray :=
+  readRaw drv.raw (USize.ofNat offset) (USize.ofNat len)
 
-/-- How much shared memory the driver holds, which bounds `readMemory`. -/
-def memorySize (drv : Driver) : IO Nat :=
-  return (← memorySizeRaw drv.raw).toNat
+/-- How many bytes the driver's arena holds, which bounds `read`. -/
+def arenaSize (drv : Driver) : IO Nat :=
+  return (← arenaSizeRaw drv.raw).toNat
 
 end Driver
 
@@ -149,7 +148,7 @@ instance : IsHostField .i64 UInt64 where
 instance : IsHostField (.bytes n) ByteArray where
   decode bs := bs
 
-/-- The value at `f`, read from the driver's memory.
+/-- The value at `f`, read from the driver's arena.
 
 This is what makes a host stop carrying offsets and widths of its own: the
 `Fld` handed in is the same one the program was compiled against, so there is
@@ -157,7 +156,7 @@ no second place for the layout to be written down and no way for the two to
 disagree. -/
 def Driver.readField (drv : Driver) (f : Fld t) [inst : IsHostField t α] :
     IO α :=
-  return inst.decode (← drv.readMemory f.offset t.size)
+  return inst.decode (← drv.read f.offset t.size)
 
 /-- Open a driver for `artifact`, hand it to `f`, and close it however `f`
 ends. -/

@@ -10,6 +10,31 @@ pub(crate) mod usb;
 pub(crate) mod wgpu;
 pub(crate) mod window;
 
+/// The engine's own functions, the `Ffi` entries a program calls as the
+/// built-in library `base`, at the signatures `Ffi.sig` states.
+pub(crate) fn linked(symbol: &str) -> Option<usize> {
+    Some(match symbol {
+        "cl_native_load" => native::cl_native_load as usize,
+        "cl_native_free" => native::cl_native_free as usize,
+        "cl_native_arch" => native::cl_native_arch as usize,
+        "cl_cpu_has" => native::cl_cpu_has as usize,
+        "cl_file_read" => file::cl_file_read as usize,
+        "cl_file_read_to_ptr" => file::cl_file_read_to_ptr as usize,
+        "cl_file_write" => file::cl_file_write as usize,
+        "cl_file_write_from_ptr" => file::cl_file_write_from_ptr as usize,
+        "cl_file_create_dir_all" => file::cl_file_create_dir_all as usize,
+        "cl_stdin_readline" => stdio::cl_stdin_readline as usize,
+        "cl_stdout_write" => stdio::cl_stdout_write as usize,
+        "cl_thread_start" => thread::cl_thread_start as usize,
+        "cl_thread_finish" => thread::cl_thread_finish as usize,
+        "cl_mem_lock" => os::cl_mem_lock as usize,
+        "cl_mem_unlock" => os::cl_mem_unlock as usize,
+        "cl_mem_advise_huge" => os::cl_mem_advise_huge as usize,
+        "cl_thread_priority" => os::cl_thread_priority as usize,
+        _ => return None,
+    })
+}
+
 /// Longest filesystem path or kernel name a caller reads.
 pub(super) const CSTR_NAME_MAX: usize = 4096;
 

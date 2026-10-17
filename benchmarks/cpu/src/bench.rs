@@ -77,8 +77,8 @@ fn time(cols: &[Col], mut run: impl FnMut(&Col)) -> Vec<f64> {
 
 pub fn main() {
     let art = Artifact::from_bytes(lean_artifacts::CPU_BENCH).expect("the build checked this artifact");
-    let names: Vec<String> = art.functions.iter().filter_map(|f| f.entry_name.clone()).collect();
-    let mut drv = Driver::load(art).expect("cpu_bench loads");
+    let names: Vec<String> = art.functions.iter().filter_map(|f| f.name.clone()).collect();
+    let drv = Driver::load(art).expect("cpu_bench loads");
     // Map the machine code, once, as a program would at startup; every body
     // must have loaded, or an `_asm` row would be timing its fallback.
     let mut slots = vec![0u8; 8 * 64];

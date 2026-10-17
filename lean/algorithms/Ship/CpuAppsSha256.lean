@@ -24,7 +24,7 @@ theorem sha256_size : Sha256.layoutMeta.totalSize = 4202624 := by decide +kernel
 abbrev Sha256Main (dl ol : UInt64) : World → Prop := Contracts.TState.holds
   [.part .frozen false, .room .arena 4202624, .roomArg .data dl, .roomArg .out ol]
 
-theorem Sha256_fine : Fine (emitGo (Sha256.mainCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem Sha256_fine : Fine (emitGo (fnBody ptrParams (Sha256.mainCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in

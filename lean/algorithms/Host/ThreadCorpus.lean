@@ -19,9 +19,10 @@ import all Init.Data.List.Sort.Basic
 What the model says `cl_thread_*` do, run through `base/tests/hprog_thread_corpus.rs`
 and compared byte for byte. A worker is one of the program's own functions,
 taking one pointer; the model runs it at the spawn and keeps host memory frozen
-until the join, so `main` records what it learned only after joining. Refused
-spawns --- a null context, a function that answers a value --- answer `-1` on
-both sides; a second join of the same handle does too.
+until the join, so `main` records what it learned only after joining. A spawn
+with a null context answers `-1` on both sides, and a second join of the same
+handle does too. A function that answers a value is no worker, and a program
+taking its address is refused before it ships (`Prog.checkShapes`).
 -/
 
 open Lean
@@ -43,7 +44,8 @@ def worker : Body := do
   storeI64 (← iconst64 77) arg
   storeI64 (← iadd (← load64 arg) (← iconst64 5)) (← iadd arg (← iconst64 8))
 
-/-- `u0:3`: answers a value, so it is no worker. -/
+/-- `u0:3`: answers a value, so it is no worker, and taking its address is
+    refused. -/
 def answers : StatusBody := do
   let (_ ::ᵥ .nil) ← entryParams [.i64]
   iconst64 1
@@ -55,19 +57,26 @@ def body : Prog V L Unit := do
   ffiVoid .threadInit %[slot]
   let c ← load64 slot
   let arg ← iadd out (← iconst64 64)
-  let h ← ffi .threadSpawn %[c, ← iconst64 2, arg]
+  let h ← ffi .threadSpawn %[c, ← funcAddr 2, arg]
   let j ← ffi .threadJoin %[c, h]
   -- memory is the host's again
   storeI64 h out
   storeI64 j (← iadd out (← iconst64 8))
   storeI64 (← ffi .threadJoin %[c, h]) (← iadd out (← iconst64 16))
-  storeI64 (← ffi .threadSpawn %[c, ← iconst64 3, arg]) (← iadd out (← iconst64 24))
-  storeI64 (← ffi .threadSpawn %[← iconst64 0, ← iconst64 2, arg]) (← iadd out (← iconst64 32))
+  storeI64 (← ffi .threadSpawn %[← iconst64 0, ← funcAddr 2, arg]) (← iadd out (← iconst64 32))
   ffiVoid .threadCleanup %[slot]
 
 def program : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 body),
     Prog.compileProg 2 worker [.i64], Prog.compileProgStatus 3 answers [.i64]]
+
+/-- Taking the address of `answers`, to start a thread on it. -/
+def spawnsAnswers : Prog V L Unit := do
+  let _ ← funcAddr 3
+
+-- …is refused: the program does not ship.
+#guard (Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 spawnsAnswers),
+    Prog.compileProg 2 worker [.i64], Prog.compileProgStatus 3 answers [.i64]]).toOption.isNone
 
 def fns : Nat → Option Fn
   | 2 => let (_, c, e, _) := runAns worker [.i64]
@@ -81,7 +90,7 @@ def checked : Except String Code := Prog.emitChecked body
 def env : FnEnv := (Prog.run body).2.1
 
 def entryArgVals : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  [.sc .i64 (Sem.regionBase .data),
    .sc .i64 0, .sc .i64 (Sem.regionBase .out), .sc .i64 OUT.toUInt64]
 
 def startWorld : Sem.World :=
@@ -101,7 +110,7 @@ def racy : Prog V L Unit := do
   let slot ← iadd ptr (← iconst64 SLOT)
   ffiVoid .threadInit %[slot]
   let c ← load64 slot
-  let h ← ffi .threadSpawn %[c, ← iconst64 2, ← iadd out (← iconst64 64)]
+  let h ← ffi .threadSpawn %[c, ← funcAddr 2, ← iadd out (← iconst64 64)]
   storeI64 h out
   let _ ← ffi .threadJoin %[c, h]
 

@@ -26,7 +26,7 @@ namespace CpuAppsSafe
 abbrev SatMain : World → Prop := Contracts.TState.holds
   [.part .frozen false, .room .arena Sat.totalMemory]
 
-theorem Sat_fine : Fine (emitGo (Sat.mainCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem Sat_fine : Fine (emitGo (fnBody ptrParams (Sat.mainCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in

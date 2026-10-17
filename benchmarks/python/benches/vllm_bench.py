@@ -68,7 +68,7 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         out = bytearray(m * 4)
 
         load_data = struct.pack("<QQ", m, n) + a_np.tobytes()
-        engine.execute(load_alg, load_data)
+        engine.function(load_alg)(load_data)
         x_bytes = x_np.tobytes()
 
         if _TORCH_OK:
@@ -78,19 +78,19 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         else:
             torch_ms = None
 
-        engine.execute(prep_alg, x_bytes)
-        engine.execute(infer_alg, b"", out)
+        engine.function(prep_alg)(x_bytes)
+        engine.function(infer_alg)(b"", out)
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
-                engine.execute(prep_alg, x_bytes),
-                harness.time_ms(lambda: engine.execute(infer_alg)),
+                engine.function(prep_alg)(x_bytes),
+                harness.time_ms(lambda: engine.function(infer_alg)()),
             )[1],
         )
 
         if _TORCH_OK:
-            engine.execute(prep_alg, x_bytes)
-            engine.execute(infer_alg, b"", out)
+            engine.function(prep_alg)(x_bytes)
+            engine.function(infer_alg)(b"", out)
             ref = torch.mv(a_t, x_t).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
@@ -124,7 +124,7 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         w_np = rng.standard_normal(n).astype(np.float32) * 0.5 + 1.0
         out = bytearray(n * 4)
         load_data = struct.pack("<Q", n) + w_np.tobytes()
-        engine.execute(load_alg, load_data)
+        engine.function(load_alg)(load_data)
         x_bytes = x_np.tobytes()
 
         if _TORCH_OK:
@@ -138,19 +138,19 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         else:
             torch_ms = None
 
-        engine.execute(prep_alg, x_bytes)
-        engine.execute(infer_alg)
+        engine.function(prep_alg)(x_bytes)
+        engine.function(infer_alg)()
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
-                engine.execute(prep_alg, x_bytes),
-                harness.time_ms(lambda: engine.execute(infer_alg)),
+                engine.function(prep_alg)(x_bytes),
+                harness.time_ms(lambda: engine.function(infer_alg)()),
             )[1],
         )
 
         if _TORCH_OK:
-            engine.execute(prep_alg, x_bytes)
-            engine.execute(infer_alg, b"", out)
+            engine.function(prep_alg)(x_bytes)
+            engine.function(infer_alg)(b"", out)
             ref = rms(x_t, w_t).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
@@ -182,7 +182,7 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         x_np = rng.standard_normal(n).astype(np.float32)
         out = bytearray(n * 4)
         load_data = struct.pack("<Q", n)
-        engine.execute(load_alg, load_data)
+        engine.function(load_alg)(load_data)
         x_bytes = x_np.tobytes()
 
         if _TORCH_OK:
@@ -203,21 +203,21 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         # a measurement.
         def _infer_many() -> None:
             for _ in range(SOFTMAX_INNER_ITERS):
-                engine.execute(infer_alg)
+                engine.function(infer_alg)()
 
-        engine.execute(prep_alg, x_bytes)
+        engine.function(prep_alg)(x_bytes)
         _infer_many()
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
-                engine.execute(prep_alg, x_bytes),
+                engine.function(prep_alg)(x_bytes),
                 harness.time_ms(_infer_many),
             )[1],
         ) / SOFTMAX_INNER_ITERS
 
         if _TORCH_OK:
-            engine.execute(prep_alg, x_bytes)
-            engine.execute(infer_alg, b"", out)
+            engine.function(prep_alg)(x_bytes)
+            engine.function(infer_alg)(b"", out)
             ref = torch.softmax(x_t, dim=0).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             verified = bool(np.max(np.abs(got - ref)) < 1e-5)
@@ -253,7 +253,7 @@ def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.Bench
         out = bytearray(D_MODEL * 4)
 
         load_data = struct.pack("<Q", seq_len) + k_np.tobytes() + v_np.tobytes()
-        engine.execute(load_alg, load_data)
+        engine.function(load_alg)(load_data)
         q_bytes = q_np.reshape(-1).tobytes()
 
         if _TORCH_OK:
@@ -281,21 +281,21 @@ def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.Bench
         # against that many separate torch calls.
         def _infer_many() -> None:
             for _ in range(ATTN_INNER_ITERS):
-                engine.execute(infer_alg)
+                engine.function(infer_alg)()
 
-        engine.execute(prep_alg, q_bytes)
+        engine.function(prep_alg)(q_bytes)
         _infer_many()
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
-                engine.execute(prep_alg, q_bytes),
+                engine.function(prep_alg)(q_bytes),
                 harness.time_ms(_infer_many),
             )[1],
         ) / ATTN_INNER_ITERS
 
         if _TORCH_OK:
-            engine.execute(prep_alg, q_bytes)
-            engine.execute(infer_alg, b"", out)
+            engine.function(prep_alg)(q_bytes)
+            engine.function(infer_alg)(b"", out)
             ref = decode_attn().cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)

@@ -1085,7 +1085,7 @@ theorem evalOp_congr (m₁ m₂ : Mem) (Γ₁ Γ₂ : Env) (o : Op) (hl : ∀ op
     (h : ∀ r ∈ o.regs, Γ₁[r]? = Γ₂[r]?) : evalOp m₁ Γ₁ o = evalOp m₂ Γ₂ o := by
   cases o with
   | load op p => exact absurd rfl (hl op p)
-  | iconst | fconst => rfl
+  | iconst | fconst | memory | funcAddr => rfl
   | iadd a b | isub a b | imul a b | udiv a b | ishl a b | ushr a b | band a b | bandNot a b
   | bor a b | bxor a b | icmp _ a b | fadd a b | fsub a b | fmul a b | fmax a b | fmin a b
   | fcmp _ a b | ibin _ a b | ishift _ a b | fbin _ a b =>
@@ -1106,6 +1106,8 @@ theorem evalOp_congr (m₁ m₂ : Mem) (Γ₁ Γ₂ : Env) (o : Op) (hl : ∀ op
 def _root_.AlgorithmLib.HProg.Op.positional : Op → Op
   | .iconst t k => .iconst t k
   | .fconst t b => .fconst t b
+  | .memory => .memory
+  | .funcAddr i => .funcAddr i
   | .iadd _ _ => .iadd 0 1 | .isub _ _ => .isub 0 1 | .imul _ _ => .imul 0 1
   | .udiv _ _ => .udiv 0 1 | .ishl _ _ => .ishl 0 1 | .ushr _ _ => .ushr 0 1
   | .band _ _ => .band 0 1 | .bandNot _ _ => .bandNot 0 1 | .bor _ _ => .bor 0 1
@@ -1126,7 +1128,7 @@ def _root_.AlgorithmLib.HProg.Op.positional : Op → Op
 theorem evalOp_positional (m : Mem) (Γ Γ' : Env) (o : Op)
     (h : ∀ i (hi : i < o.regs.length), Γ'[i]? = Γ[o.regs[i]]?) : evalOp m Γ' o.positional = evalOp m Γ o := by
   cases o with
-  | iconst | fconst => rfl
+  | iconst | fconst | memory | funcAddr => rfl
   | iadd a b | isub a b | imul a b | udiv a b | ishl a b | ushr a b | band a b | bandNot a b
   | bor a b | bxor a b | icmp _ a b | fadd a b | fsub a b | fmul a b | fmax a b | fmin a b
   | fcmp _ a b | ibin _ a b | ishift _ a b | fbin _ a b =>

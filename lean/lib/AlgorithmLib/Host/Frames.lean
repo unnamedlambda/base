@@ -194,6 +194,8 @@ def calleeFrame : IR.Callee → Option (String × Option Frame)
   | .ffi f   => some (f.cname, frameOf f.cname)
   | .local _ => none
   | .native  => some ("native code", some .anywhere)
+  -- A host's function likewise: nothing here reads what it does.
+  | .host _ _ => some ("host function", some .anywhere)
   -- An atomic is the program's own memory access, like a load or a store.
   | .atomic _ => none
   -- A C library function is foreign code, with its frame from the table.

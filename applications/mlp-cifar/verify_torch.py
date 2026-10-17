@@ -83,9 +83,9 @@ def main() -> None:
     blob = w1.tobytes() + w2.tobytes()
     HOST_LEN_OFF = 0x0080
     base = py_base.Driver(art)
-    assert len(blob) == struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
+    assert len(blob) == struct.unpack_from("<I", base.read(HOST_LEN_OFF, 4))[0]
 
-    base.execute("main", blob)
+    base.function("main")(blob)
 
     # The identical network in PyTorch: no biases, silu, and the *padded* output
     # width, so the two models have the same parameter count and the padding
@@ -133,13 +133,13 @@ def main() -> None:
     # first, so -inf there is what makes it a 10-class distribution.  Forgetting
     # it trains a 32-class model that still looks plausible.
     bias = np.where(np.arange(C) < CLASSES, 0.0, -1.0e30).astype(np.float32)
-    base.execute("uploadBias", bias.tobytes())
+    base.function("uploadBias")(bias.tobytes())
 
-    base.execute("uploadX", xb.tobytes())
-    base.execute("uploadOneHot", onehot(yb).tobytes())
-    base.execute("runFwd")
+    base.function("uploadX")(xb.tobytes())
+    base.function("uploadOneHot")(onehot(yb).tobytes())
+    base.function("runFwd")()
     lbuf = bytearray(BATCH * C * 4)
-    base.execute("fetchLogits", b"", lbuf)
+    base.function("fetchLogits")(b"", lbuf)
     got = np.frombuffer(bytes(lbuf), dtype="<f4").reshape(BATCH, C)
 
     xt = torch.from_numpy(xb).to(dev)
@@ -159,16 +159,16 @@ def main() -> None:
     dlog[:, :CLASSES] = p
     dlog[np.arange(BATCH), yb] -= 1.0
     dlbuf = bytearray(BATCH * C * 4)
-    base.execute("fetchDlog", b"", dlbuf)
+    base.function("fetchDlog")(b"", dlbuf)
     agree("dlog", np.frombuffer(bytes(dlbuf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES],
           dlog[:, :CLASSES])
-    base.execute("runBwd")
+    base.function("runBwd")()
 
     dw1_buf = bytearray(H * IN * 4)
     dw2_buf = bytearray(C * H * 4)
     # `runBwd` ends with the optimiser, so the gradients are still resident.
-    base.execute("fetchDw1", b"", dw1_buf)
-    base.execute("fetchDw2", b"", dw2_buf)
+    base.function("fetchDw1")(b"", dw1_buf)
+    base.function("fetchDw2")(b"", dw2_buf)
     dw1 = np.frombuffer(bytes(dw1_buf), dtype="<f4").reshape(H, IN)
     dw2 = np.frombuffer(bytes(dw2_buf), dtype="<f4").reshape(C, H)
 
@@ -192,9 +192,9 @@ def main() -> None:
         n -= n % BATCH
         loss, right = 0.0, 0
         for i in range(0, n, BATCH):
-            base.execute("uploadX", np.ascontiguousarray(xte[i:i + BATCH]).tobytes())
-            base.execute("runFwd")
-            base.execute("fetchLogits", b"", lbuf)
+            base.function("uploadX")(np.ascontiguousarray(xte[i:i + BATCH]).tobytes())
+            base.function("runFwd")()
+            base.function("fetchLogits")(b"", lbuf)
             lg = np.frombuffer(bytes(lbuf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES]
             q = np.exp(lg - lg.max(axis=1, keepdims=True))
             q /= q.sum(axis=1, keepdims=True)
@@ -217,10 +217,10 @@ def main() -> None:
     print(f"\ntraining both for {STEPS * BATCH} samples on the same data order")
     t0 = time.perf_counter()
     for step in order:
-        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes())
-        base.execute("uploadOneHot", onehot(ytr[step]).tobytes())
-        base.execute("runFwd")
-        base.execute("runBwd")
+        base.function("uploadX")(np.ascontiguousarray(xtr[step]).tobytes())
+        base.function("uploadOneHot")(onehot(ytr[step]).tobytes())
+        base.function("runFwd")()
+        base.function("runBwd")()
     t_base = (time.perf_counter() - t0) / (STEPS * BATCH)
 
     # The same model lowered to cuBLAS for its five GEMMs — identical vendor
@@ -247,10 +247,10 @@ def main() -> None:
     # run by mistake, only the undisplayed digits would say so.
     t0 = time.perf_counter()
     for step in order[:BLAS_STEPS]:
-        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes())
-        base.execute("uploadOneHot", onehot(ytr[step]).tobytes())
-        base.execute("runFwdBlas")
-        base.execute("runBwdBlas")
+        base.function("uploadX")(np.ascontiguousarray(xtr[step]).tobytes())
+        base.function("uploadOneHot")(onehot(ytr[step]).tobytes())
+        base.function("runFwdBlas")()
+        base.function("runBwdBlas")()
     t_blas = (time.perf_counter() - t0) / (BLAS_STEPS * BATCH)
 
     print(f"\nbase, cuBLAS lowering: {t_blas * 1e6:.1f} us/sample "

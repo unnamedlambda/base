@@ -40,7 +40,7 @@ fn main() {
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
     let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-    let mut base = Driver::load(artifact).expect("Driver::load");
+    let base = Driver::load(artifact).expect("Driver::load");
     let run = "run";
     let fetch = "fetch";
 

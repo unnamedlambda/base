@@ -82,7 +82,7 @@ def main():
         struct.pack_into("<I", buf, D_CTX, args.context)
         for off, p in paths.items():
             buf[off:off + len(p)] = p
-        base.execute("main", bytes(buf), out)
+        base.function("main")(bytes(buf), out)
 
     print(f"  context {args.context}; {args.reps} steps timed at each position",
           flush=True)

@@ -24,11 +24,16 @@ def SumChain (L : Sem.Locals) (args : List V) : TState → List Nat → Prop
   | _, [] => True
   | S, c :: cs => ∃ S' : TState, Summary L c args S.holds S'.holds ∧ SumChain L args S' cs
 
-/-- The calls a body that calls `cs` in turn on its own arguments is made of. -/
-def seqCalls (cs : List Nat) : List Stmt := cs.map fun c => .callVoid (.local c) [0, 1, 2, 3, 4]
+/-- The calls an entry point that calls `cs` in turn on its own arguments makes,
+    after taking its memory's address. -/
+def seqCalls (cs : List Nat) : List Stmt := cs.map fun c => .callVoid (.local c) [0, 1, 2, 3]
+
+/-- What an entry point's environment holds once it has taken its memory's
+    address: its arguments, then the address. -/
+def entryEnv (dl ol : UInt64) : Env := (runArgs dl ol).toArray.push (.sc .i64 (regionBase .arena))
 
 theorem runArgs_mapM (dl ol : UInt64) :
-    [0, 1, 2, 3, 4].mapM (fun r => (runArgs dl ol).toArray[r]?) = some (runArgs dl ol) := rfl
+    [0, 1, 2, 3].mapM (fun r => (entryEnv dl ol)[r]?) = some (runArgs dl ol) := rfl
 
 /-- A straight run's statements from the one state `At` names. -/
 theorem stmts_conseq_at {cfg : Cfg} {P Q : Env → World → Prop} {ss : List Stmt} {fo : Bool}
@@ -37,7 +42,7 @@ theorem stmts_conseq_at {cfg : Cfg} {P Q : Env → World → Prop} {ss : List St
 
 theorem seqCalls_sound {cfg : Cfg} {dl ol : UInt64} :
     ∀ {cs : List Nat} {S : TState}, SumChain cfg.locals (runArgs dl ol) S cs →
-      Stmts cfg (fun Γ w => Γ = (runArgs dl ol).toArray ∧ S.holds w) (seqCalls cs) (fun _ _ => True) false
+      Stmts cfg (fun Γ w => Γ = entryEnv dl ol ∧ S.holds w) (seqCalls cs) (fun _ _ => True) false
   | [], _, _ => fun _ _ _ => trivial
   | c :: cs, S, ⟨S', hs, hrest⟩ => by
       refine stmts_cons (callVoidL_rule fun Γ w vs ⟨e, hw⟩ hvs => ?_) (seqCalls_sound hrest)
@@ -70,16 +75,22 @@ theorem summary_weaken {L : Sem.Locals} {i : Nat} {args : List V} {S T : TState}
     (h : Summary L i args S.holds W') (hs : ∀ f ∈ S, f ∈ T) : Summary L i args T.holds W' :=
   fun w hw => h w fun f hf => hw f (hs f hf)
 
-/-- **A body calling the program's own functions in turn**, on its own
+/-- **An entry point calling the program's own functions in turn**, on its own
     arguments, neither misuses a call nor faults where their summaries chain. -/
 theorem seqCalls_run {cfg : Cfg} {dl ol : UInt64} {cs : List Nat} {S : TState}
     (hc : SumChain cfg.locals (runArgs dl ol) S cs) {w : World} (hw : S.holds w) (m : String) :
-    run cfg (runArgs dl ol) w [.straight (seqCalls cs)] ≠ .misuse m ∧
-      run cfg (runArgs dl ol) w [.straight (seqCalls cs)] ≠ .fault m := by
-  have ht : Triple cfg (At (runArgs dl ol).toArray w) [.straight (seqCalls cs)]
+    run cfg (runArgs dl ol) w [.straight (.op .memory :: seqCalls cs)] ≠ .misuse m ∧
+      run cfg (runArgs dl ol) w [.straight (.op .memory :: seqCalls cs)] ≠ .fault m := by
+  have hm : Stmt1 cfg (fun Γ w => Γ = (runArgs dl ol).toArray ∧ S.holds w) (.op .memory)
+      (fun Γ w => Γ = entryEnv dl ol ∧ S.holds w) false :=
+    op_rule (fun Γ w v ⟨e, hw⟩ hv => by
+        simp only [evalOp, Option.some.injEq] at hv
+        subst e hv; exact ⟨rfl, hw⟩)
+      (fun _ _ _ hv => by simp [evalOp] at hv)
+  have ht : Triple cfg (At (runArgs dl ol).toArray w) [.straight (.op .memory :: seqCalls cs)]
       { ok := fun _ _ => True, faultOk := false } :=
     cons_rule (R := fun _ _ => True)
-      (straight_rule (stmts_conseq_at (seqCalls_sound hc) w ⟨rfl, hw⟩))
+      (straight_rule (stmts_conseq_at (stmts_cons hm (seqCalls_sound hc)) w ⟨rfl, hw⟩))
       (nil_rule fun _ _ _ => trivial)
   exact run_sound ht rfl m
 

@@ -28,8 +28,8 @@ open AlgorithmLib.HProg
 
 /-- A shipped body as a term function: the code and callee table it folds to. -/
 def qwenFn (body : Prog.Body) : Fn :=
-  let (c, e, _) := Prog.run body
-  { params := ptrParams, code := c, status := none, env := e }
+  let (a, c, e, _) := Prog.runAns (do body; Prog.iconst64 0)
+  { params := ptrParams, code := c, status := a, env := e }
 
 /-- The artifact's functions by index: the shipped bodies from `u0:1`, and the
     orchestrator at `u0:38`. -/

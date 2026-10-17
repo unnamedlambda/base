@@ -47,7 +47,7 @@ def _run_binary(
     rng = np.random.default_rng(2026)
 
     for n in SIZES:
-        engine.execute(load_alg, struct.pack("<Q", n))
+        engine.function(load_alg)(struct.pack("<Q", n))
 
         x_np = rng.standard_normal(n).astype(np.float32)
         y_np = rng.standard_normal(n).astype(np.float32)
@@ -63,19 +63,19 @@ def _run_binary(
         else:
             torch_ms = None
 
-        engine.execute(prep_alg, prep)
-        engine.execute(infer_alg)
+        engine.function(prep_alg)(prep)
+        engine.function(infer_alg)()
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
-                engine.execute(prep_alg, prep),
-                harness.time_ms(lambda: engine.execute(infer_alg)),
+                engine.function(prep_alg)(prep),
+                harness.time_ms(lambda: engine.function(infer_alg)()),
             )[1],
         )
 
         if _TORCH_OK:
-            engine.execute(prep_alg, prep)
-            engine.execute(infer_alg, b"", out)
+            engine.function(prep_alg)(prep)
+            engine.function(infer_alg)(b"", out)
             ref = torch_ref(x_t, y_t).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)

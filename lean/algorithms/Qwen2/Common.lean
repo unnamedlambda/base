@@ -1188,7 +1188,7 @@ def cliFn : Prog V L Unit := do
       let tok ← load32 (← iadd (← iaddImm ptr SYSTEM_TOKENS_OFF) off)
       storeI32 tok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 i) (← absAddr ptr (INFER_IN_OFF + 4))
-      callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
+      callLocalVoid q.fnInfer %[inferInAddr, stepLen, inferOutAddr, stepLen]
       return %[← iaddImm i 1])
 
   -- One turn per iteration; an empty read ends the session.
@@ -1267,7 +1267,7 @@ def cliFn : Prog V L Unit := do
           let absPos ← iadd runningPos i
           storeI32 tok (← absAddr ptr INFER_IN_OFF)
           storeI32 (← ireduce32 absPos) (← absAddr ptr (INFER_IN_OFF + 4))
-          callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
+          callLocalVoid q.fnInfer %[inferInAddr, stepLen, inferOutAddr, stepLen]
           return %[← iaddImm i 1])
 
       -- decode until an end-of-turn token or the budget
@@ -1290,7 +1290,7 @@ def cliFn : Prog V L Unit := do
           storeI32 tok (← iadd tokBuf (← ishlImm nOut 2))
           storeI32 tok (← absAddr ptr INFER_IN_OFF)
           storeI32 (← ireduce32 pos) (← absAddr ptr (INFER_IN_OFF + 4))
-          callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
+          callLocalVoid q.fnInfer %[inferInAddr, stepLen, inferOutAddr, stepLen]
           let nextTok ← load32 (← absAddr ptr INFER_OUT_OFF)
           return %[← iaddImm pos 1, nextTok, ← iaddImm nOut 1])
       let wrNOut := dec.head
@@ -1304,11 +1304,11 @@ def cliFn : Prog V L Unit := do
       let endImPos ← iadd runningPos (← iadd nPrompt wrNOut)
       storeI32 imEndTok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 endImPos) (← absAddr ptr (INFER_IN_OFF + 4))
-      callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
+      callLocalVoid q.fnInfer %[inferInAddr, stepLen, inferOutAddr, stepLen]
       let endNlPos ← iaddImm endImPos 1
       storeI32 nlTok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 endNlPos) (← absAddr ptr (INFER_IN_OFF + 4))
-      callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
+      callLocalVoid q.fnInfer %[inferInAddr, stepLen, inferOutAddr, stepLen]
       storeI64 (← iaddImm endNlPos 1) (← absAddr ptr RUNNING_POS_OFF)
       return %[])
 
@@ -1719,10 +1719,10 @@ set_option maxHeartbeats 2000000
   handles to buffer numbers.
 -/
 
-/-- The descriptor pointer.  `entryBlock` returns `v0` in every generated
-    function, so a fixed layout slot is `near k` and a per-layer weight, whose
-    base is a runtime-computed address, is `far`. -/
-def ROOT : Nat := 0
+/-- The descriptor pointer: the memory's address, `v4`, which an entry point's
+    first statement takes, so a fixed layout slot is `near k` and a per-layer
+    weight, whose base is a runtime-computed address, is `far`. -/
+def ROOT : Nat := 4
 
 /-- A launch, in the form `Clif.deviceOpsOf` produces. -/
 def klOp (ptx nb bo grid : Nat) (bs : List BufDesc) : DeviceOp :=

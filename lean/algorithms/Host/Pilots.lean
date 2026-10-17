@@ -447,7 +447,7 @@ def openFrag (k : Int) : Code :=
     `with_unfolding_all`. `emit` carries no type map --- the types are the
     term's --- so there is nothing to unfold. -/
 theorem openFrag_eq (k : Int) :
-    openFrag k = [.straight [.op (.iconst .i64 k), .op (.iadd 0 5),
+    openFrag k = [.straight [.op .memory, .op (.iconst .i64 k), .op (.iadd 4 5),
                              .op (.load { ty := .i64 } 6), .store .i64 7 6]] := by
   rfl
 
@@ -472,11 +472,10 @@ def histCompileSound : Except String (Nat × Nat) :=
   | none => .error "could not place the payload"
   | some m =>
       let w : Sem.World := { mem := m, fs := { files := [("in.bin", input)] } }
-      -- The five an entry point is called with: the arena, then the caller's
-      -- input and output buffers with their lengths.
+      -- The four an entry point is called with: the caller's input and output
+      -- buffers with their lengths.
       let args : List Sem.V :=
-        [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
-         .sc .i64 64, .sc .i64 (Sem.regionBase .out), .sc .i64 8]
+        [.sc .i64 (Sem.regionBase .data), .sc .i64 64, .sc .i64 (Sem.regionBase .out), .sc .i64 8]
       let (c, cenv, _) := Prog.run Hist.code
       match Prog.compileProg 2 Hist.code with
       | .error e => .error e

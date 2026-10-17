@@ -1,67 +1,107 @@
 //! Builds `cranelift_codegen::ir::Function` from the program an artifact
 //! carries.
 //!
-//! The text path this replaces went through `cranelift-reader`, a crate meant
-//! for Cranelift's own filetests. Two of its behaviours had to be worked around
-//! rather than used: `%name` parses to `ExternalName::TestCase`, so every
-//! callee had to be rewritten after the fact, and `u0:N` resolves by treating
-//! the parsed index as a `FuncId`, so declaration order had to accidentally
-//! match. Constructing the function directly makes both questions disappear —
-//! callees are declared as they are built, and indices are assigned rather than
-//! recovered.
+//! The artifact is CLIF as data: an instruction is a Cranelift instruction
+//! format, an opcode of it by CLIF's name, and the format's fields, so this is
+//! one rule per format rather than one per opcode. Every name is parsed by
+//! Cranelift's own parser and printed back, and one that does not come back as
+//! it was written is refused, so a name has CLIF's spelling and no other.
+//! Everything Cranelift could panic on rather than refuse — an opcode of
+//! another format, a type the opcode is not defined at — is checked before
+//! the instruction is built, so a load answers an error or a function, and
+//! never stops the process.
 
 use base_types::clif;
 use cranelift_codegen::cursor::{Cursor, FuncCursor};
+use cranelift_codegen::ir::instructions::InstructionFormat;
 use cranelift_codegen::ir::{
-    self, AbiParam, ExtFuncData, ExternalName, InstBuilder, MemFlags, Signature, UserExternalName,
-    UserFuncName,
+    self, ArgumentExtension, ArgumentPurpose, ExtFuncData, ExternalName, InstBuilder, InstBuilderBase,
+    MemFlags, Opcode, Signature, TrapCode, UserExternalName, UserFuncName,
 };
 use cranelift_codegen::isa::CallConv;
 use std::collections::HashMap;
+use std::str::FromStr;
 
-fn ty(t: clif::ClifTy) -> ir::Type {
-    match t {
-        clif::ClifTy::I8 => ir::types::I8,
-        clif::ClifTy::I16 => ir::types::I16,
-        clif::ClifTy::I32 => ir::types::I32,
-        clif::ClifTy::I64 => ir::types::I64,
-        clif::ClifTy::F32 => ir::types::F32,
-        clif::ClifTy::F64 => ir::types::F64,
-        clif::ClifTy::F32x4 => ir::types::F32X4,
-        clif::ClifTy::I8x16 => ir::types::I8X16,
-    }
+/// The type CLIF spells `t`: a lane type, and `x` and a lane count for a
+/// vector, printed back to check it was CLIF's spelling.
+fn ty(t: &clif::ClifTy) -> Result<ir::Type, String> {
+    use ir::types::*;
+    let name = &*t.0;
+    let (lane, lanes) = match name.split_once('x') {
+        Some((lane, n)) => (lane, Some(n)),
+        None => (name, None),
+    };
+    let lane = match lane {
+        "i8" => I8,
+        "i16" => I16,
+        "i32" => I32,
+        "i64" => I64,
+        "i128" => I128,
+        "f16" => F16,
+        "f32" => F32,
+        "f64" => F64,
+        "f128" => F128,
+        _ => return Err(format!("{name:?} is not a CLIF type")),
+    };
+    let t = match lanes {
+        None => Some(lane),
+        Some(n) => n.parse().ok().and_then(|n| lane.by(n)),
+    };
+    t.filter(|t| t.to_string() == name).ok_or_else(|| format!("{name:?} is not a CLIF type"))
 }
 
-fn int_cc(c: clif::IntCC) -> ir::condcodes::IntCC {
-    use ir::condcodes::IntCC as C;
-    match c {
-        clif::IntCC::Eq => C::Equal,
-        clif::IntCC::Ne => C::NotEqual,
-        clif::IntCC::Uge => C::UnsignedGreaterThanOrEqual,
-        clif::IntCC::Ugt => C::UnsignedGreaterThan,
-        clif::IntCC::Ule => C::UnsignedLessThanOrEqual,
-        clif::IntCC::Ult => C::UnsignedLessThan,
-        clif::IntCC::Slt => C::SignedLessThan,
-        clif::IntCC::Sle => C::SignedLessThanOrEqual,
-        clif::IntCC::Sgt => C::SignedGreaterThan,
-        clif::IntCC::Sge => C::SignedGreaterThanOrEqual,
+/// A parameter: its type, and CLIF's words for how it is passed.
+fn abi_param(p: &clif::AbiParam) -> Result<ir::AbiParam, String> {
+    let mut a = ir::AbiParam::new(ty(&p.0)?);
+    for w in &p.1 {
+        match w.as_str() {
+            "uext" => a.extension = ArgumentExtension::Uext,
+            "sext" => a.extension = ArgumentExtension::Sext,
+            w => {
+                a.purpose =
+                    ArgumentPurpose::from_str(w).map_err(|_| format!("{w:?} is not a CLIF parameter attribute"))?
+            }
+        }
     }
+    let stated: Vec<&str> = std::iter::once(&*p.0 .0).chain(p.1.iter().map(String::as_str)).collect();
+    let stated = stated.join(" ");
+    if a.to_string() != stated {
+        return Err(format!("{stated:?} is not a parameter as CLIF writes one; it writes {a}"));
+    }
+    Ok(a)
 }
 
-fn float_cc(c: clif::FloatCC) -> ir::condcodes::FloatCC {
-    use ir::condcodes::FloatCC as C;
-    match c {
-        clif::FloatCC::Eq => C::Equal,
-        clif::FloatCC::Ne => C::NotEqual,
-        clif::FloatCC::Lt => C::LessThan,
-        clif::FloatCC::Le => C::LessThanOrEqual,
-        clif::FloatCC::Gt => C::GreaterThan,
-        clif::FloatCC::Ge => C::GreaterThanOrEqual,
+/// A signature, under the convention it names: `Host` is `host`, the
+/// convention of the machine this runs on, and `Arch` is Cranelift's System V,
+/// which is the architecture's on every OS.
+pub(crate) fn signature(s: &clif::Signature, host: CallConv) -> Result<Signature, String> {
+    let mut sig = Signature::new(match s.convention {
+        clif::Convention::Host => host,
+        clif::Convention::Arch => CallConv::SystemV,
+    });
+    for p in &s.params {
+        sig.params.push(abi_param(p)?);
     }
+    for r in &s.returns {
+        sig.returns.push(abi_param(r)?);
+    }
+    Ok(sig)
 }
 
-/// The value each `Val` names, and the error when a program names one it never
-/// defined — a generator bug, and one the text path reported as a parse error.
+/// The signature of function `index`. A named function's is `BaseFunction`,
+/// since a host calls it as one; a body that does not take those arguments or
+/// answer that status is ill-typed CLIF, which Cranelift's verifier refuses as
+/// it would any other.
+pub fn signature_of(f: &clif::Function, index: usize, host: CallConv) -> Result<Signature, String> {
+    if f.name.is_some() && f.signature != clif::Signature::base_function() {
+        return Err(format!("u0:{index} has a name, so a host calls it, and its signature is not BaseFunction's"));
+    }
+    signature(&f.signature, host)
+}
+
+/// The value each `Val` names: the error when a program names one it never
+/// defined, or defines one twice, which SSA does not allow and which would
+/// otherwise leave the later uses to whichever definition came last.
 ///
 /// Indexed rather than hashed: generators number values densely from zero, so
 /// the id is the position.
@@ -79,91 +119,16 @@ impl Vals {
     fn get_all(&self, vs: &[clif::Val]) -> Result<Vec<ir::Value>, String> {
         vs.iter().map(|v| self.get(*v)).collect()
     }
-    fn set(&mut self, v: clif::Val, val: ir::Value) {
+    fn set(&mut self, v: clif::Val, val: ir::Value) -> Result<(), String> {
         let i = v.0 as usize;
         if i >= self.0.len() {
             self.0.resize(i + 1, None);
         }
-        self.0[i] = Some(val);
-    }
-}
-
-/// Branch destinations take `BlockArg`, which is wider than a value — it also
-/// spans the exception-table forms this fragment does not use.
-fn block_args(vs: &[ir::Value]) -> Vec<ir::BlockArg> {
-    vs.iter().map(|v| ir::BlockArg::Value(*v)).collect()
-}
-
-/// A function's signature, read off its body.
-///
-/// The entry block is `blocks[0]` and its parameters are exactly the values a
-/// caller supplies; a `Ret` carrying a value is a function that answers an
-/// `i64`. So the signature is not a second fact that has to be kept in
-/// agreement with the body.
-///
-/// Declaring a function and defining it are separate calls into Cranelift and
-/// both need this. Reading it from the same place twice is what makes them
-/// agree.
-///
-/// `cc` is the host's C convention, never a fixed one: the artifact names no
-/// convention, and the other side of every boundary — the host calling an
-/// entry point, a program calling the FFI — is Rust `extern "C"` compiled for
-/// the machine running it.
-pub fn signature_of(f: &clif::Function, index: usize, cc: CallConv) -> Result<Signature, String> {
-    let entry = f.blocks.first().ok_or_else(|| {
-        format!(
-            "u0:{index} defines no blocks, so there is no entry to take its signature from"
-        )
-    })?;
-    let mut sig = Signature::new(cc);
-    for (_, t) in &entry.params {
-        sig.params.push(AbiParam::new(ty(*t)));
-    }
-    // Whether the function answers is one fact about it, so its returns have
-    // to agree with each other. They are refused here rather than left to the
-    // verifier, which reports the mismatch against a signature this derived
-    // from them and so cannot say which half is wrong.
-    let mut rets = f
-        .blocks
-        .iter()
-        .flat_map(|b| &b.insts)
-        .filter_map(|i| match i {
-            clif::Inst::Ret(v) => Some(v.is_some()),
-            _ => None,
-        });
-    let answers = match rets.next() {
-        None => false,
-        Some(first) => {
-            if rets.any(|a| a != first) {
-                return Err(format!(
-                    "u0:{index} returns a value on some paths and nothing on others, so \
-                     there is no one signature to give it"
-                ));
-            }
-            first
+        if self.0[i].replace(val).is_some() {
+            return Err(format!("v{} is defined twice", v.0));
         }
-    };
-    if answers {
-        sig.returns.push(AbiParam::new(ir::types::I64));
+        Ok(())
     }
-    Ok(sig)
-}
-
-/// The Cranelift signature of a callee taking `params` and answering `result`.
-pub(crate) fn signature(params: &[clif::ClifTy], result: Option<clif::ClifTy>, cc: CallConv) -> Signature {
-    let mut sig = Signature::new(cc);
-    sig.params.extend(params.iter().map(|p| AbiParam::new(ty(*p))));
-    sig.returns.extend(result.map(|r| AbiParam::new(ty(r))));
-    sig
-}
-
-/// What machine code a program placed itself is called as (`Callee::Native`):
-/// four `i64`s in, one out, under the convention the code was written to. On
-/// x86-64 that is System V on every OS, so a body is the same bytes on Windows
-/// as on Linux; on AArch64 the host's C convention is the architecture's one.
-pub(crate) fn native_signature(cc: CallConv) -> Signature {
-    let cc = if cfg!(target_arch = "x86_64") { CallConv::SystemV } else { cc };
-    signature(&[clif::ClifTy::I64; 4], Some(clif::ClifTy::I64), cc)
 }
 
 /// Where a callee resolved: the `FuncId` it is declared under, and whether it
@@ -178,147 +143,245 @@ pub struct Resolved {
     pub colocated: bool,
 }
 
+/// What the decoder knows of the module a function is in: what its callees
+/// resolve to, and where the arena is declared.
+pub struct Module<'a> {
+    /// The artifact's primitives, which a call names by position.
+    pub primitives: &'a [clif::Primitive],
+    /// The `DataId` the arena is declared under.
+    pub arena: u32,
+    /// The `FuncId` a callee is declared under, and the signature it has —
+    /// from the primitive's declaration, or the function's own.
+    pub resolve: &'a mut dyn FnMut(clif::Callee) -> Result<(Resolved, Signature), String>,
+}
+
 /// Builds one function.
-///
-/// `declare_callee` is called once per callee and must return the `FuncId` the
-/// runtime will resolve it to, so the reference is correct when it is created
-/// rather than patched afterward, together with the signature that callee
-/// actually has — from base's import table, or from the callee's own body.
-/// Nothing here compares that against a declared one, because the artifact
-/// declares none.
 pub fn decode_function(
     f: &clif::Function,
     index: usize,
-    cc: CallConv,
-    declare_callee: &mut dyn FnMut(&clif::Callee) -> Result<(Resolved, Signature), String>,
+    host: CallConv,
+    module: &mut Module,
 ) -> Result<ir::Function, String> {
-    let sig = signature_of(f, index, cc)?;
-
+    let sig = signature_of(f, index, host)?;
     let mut func = ir::Function::with_name_signature(UserFuncName::user(0, index as u32), sig);
 
-    // Cranelift wants each callee declared once, up front, and a call naming
-    // that declaration. The artifact carries the callee in the call instead, so
-    // the prologue is built here by walking the body and interning on first
-    // use. Nothing chooses anything: `FuncRef` numbering never leaves this
-    // struct, and any order gives the same machine code.
-    let mut fn_refs: HashMap<clif::Callee, ir::FuncRef> = HashMap::new();
-    let mut callees: HashMap<clif::Callee, (String, Signature)> = HashMap::new();
-    let mut native_sig = None;
-    for callee in f.blocks.iter().flat_map(|b| b.insts.iter()).filter_map(|i| match i {
-        // An atomic is emitted in place and declares nothing.
-        clif::Inst::Call(_, clif::Callee::Atomic(_), _) => None,
-        clif::Inst::Call(_, c, _) | clif::Inst::FuncAddr(_, c) => Some(c),
-        _ => None,
-    }) {
-        if fn_refs.contains_key(callee) || callees.contains_key(callee) {
-            continue;
+    let slots = f
+        .stack_slots
+        .iter()
+        .map(|s| {
+            if !s.align.is_power_of_two() {
+                return Err(format!("u0:{index} has a stack slot aligned to {}, not a power of two", s.align));
+            }
+            Ok(func.create_sized_stack_slot(ir::StackSlotData::new(
+                ir::StackSlotKind::ExplicitSlot,
+                s.size,
+                s.align.trailing_zeros() as u8,
+            )))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    // Cranelift wants each callee, signature and global declared once in the
+    // function, and an instruction naming that declaration. The artifact
+    // carries the thing itself in the instruction instead, so the declarations
+    // are made here, on first use. Nothing chooses anything: the numbering
+    // never leaves this function, and any order gives the same machine code.
+    let mut callees: HashMap<clif::Callee, (ir::FuncRef, String, Signature)> = HashMap::new();
+    let mut sigs: HashMap<&clif::Signature, (ir::SigRef, Signature)> = HashMap::new();
+    let mut arena = None;
+    for inst in f.blocks.iter().flat_map(|b| &b.insts) {
+        match inst {
+            clif::Inst::Call(_, _, _, c, _) | clif::Inst::FuncAddr(_, _, _, c) if !callees.contains_key(c) => {
+                let (resolved, sig) = (module.resolve)(*c)?;
+                let name = match c {
+                    clif::Callee::Function(n) => format!("u0:{n}"),
+                    clif::Callee::Primitive(i) => module
+                        .primitives
+                        .get(*i as usize)
+                        .map(|p| format!("{}!{}", p.lib, p.symbol))
+                        .unwrap_or_else(|| format!("primitive {i}")),
+                };
+                let sr = func.import_signature(sig.clone());
+                let user = func.declare_imported_user_function(UserExternalName { namespace: 0, index: resolved.id });
+                let fr = func.import_function(ExtFuncData {
+                    name: ExternalName::user(user),
+                    signature: sr,
+                    colocated: resolved.colocated,
+                });
+                callees.insert(*c, (fr, name, sig));
+            }
+            clif::Inst::CallIndirect(_, _, _, s, _, _) if !sigs.contains_key(s) => {
+                let sig = signature(s, host)?;
+                sigs.insert(s, (func.import_signature(sig.clone()), sig));
+            }
+            clif::Inst::UnaryGlobalValue(_, _, _, clif::Global::Arena) if arena.is_none() => {
+                // Data is namespace 1 of a module's names, as functions are 0.
+                let name =
+                    func.declare_imported_user_function(UserExternalName { namespace: 1, index: module.arena });
+                arena = Some(func.create_global_value(ir::GlobalValueData::Symbol {
+                    name: ExternalName::user(name),
+                    offset: ir::immediates::Imm64::new(0),
+                    colocated: false,
+                    tls: false,
+                }));
+            }
+            _ => {}
         }
-        // Machine code resolves to nothing: the call is indirect, through the
-        // address it is handed, so only its signature is declared. It is
-        // checked as five `i64`s, the address first.
-        if *callee == clif::Callee::Native {
-            let sig = native_signature(cc);
-            native_sig = Some(func.import_signature(sig.clone()));
-            let mut checked = sig;
-            checked.params.insert(0, AbiParam::new(ir::types::I64));
-            callees.insert(clif::Callee::Native, ("native code".into(), checked));
-            continue;
-        }
-        let (resolved, sig) = declare_callee(callee)?;
-        callees.insert(
-            callee.clone(),
-            (
-                match callee {
-                    clif::Callee::Import(n) => n.clone(),
-                    clif::Callee::Local(n) => format!("u0:{n}"),
-                    clif::Callee::Extern(e) => format!("{}!{}", e.lib, e.symbol),
-                    clif::Callee::Native | clif::Callee::Atomic(_) => unreachable!("declared above"),
-                },
-                sig.clone(),
-            ),
-        );
-        let sr = func.import_signature(sig);
-        let user_ref = func.declare_imported_user_function(UserExternalName {
-            namespace: 0,
-            index: resolved.id,
-        });
-        fn_refs.insert(
-            callee.clone(),
-            func.import_function(ExtFuncData {
-                name: ExternalName::user(user_ref),
-                signature: sr,
-                colocated: resolved.colocated,
-            }),
-        );
     }
 
-    // Blocks are created before any body is emitted, so a forward branch has a
-    // target to name.
+    // Blocks are created, in the order they are laid out, before any body is
+    // emitted, so a forward branch has a target to name; and their parameters
+    // before any instruction can use one.
     let mut blocks: HashMap<u32, ir::Block> = HashMap::new();
-    let mut vals = Vals::default();
+    let mut order = Vec::with_capacity(f.blocks.len());
     for b in &f.blocks {
         let blk = func.dfg.make_block();
         func.layout.append_block(blk);
-        blocks.insert(b.reference.0, blk);
+        if blocks.insert(b.reference.0, blk).is_some() {
+            return Err(format!("u0:{index} names two blocks block{}", b.reference.0));
+        }
+        order.push(blk);
     }
-    let block_of = |r: clif::BlockRef| -> Result<ir::Block, String> {
-        blocks
-            .get(&r.0)
-            .copied()
-            .ok_or_else(|| format!("branch to undeclared block{}", r.0))
-    };
-
-    // Block parameters, all of them, before any instruction can use one.
-    for b in &f.blocks {
-        let blk = blocks[&b.reference.0];
+    let mut vals = Vals::default();
+    for (b, blk) in f.blocks.iter().zip(&order) {
         for (v, t) in &b.params {
-            vals.set(*v, func.dfg.append_block_param(blk, ty(*t)));
+            vals.set(*v, func.dfg.append_block_param(*blk, ty(t)?)).map_err(|e| format!("u0:{index}: {e}"))?;
         }
     }
 
-    for b in &f.blocks {
-        let blk = blocks[&b.reference.0];
+    let ctx = Ctx { callees: &callees, sigs: &sigs, arena, slots: &slots, blocks: &blocks };
+    for (b, blk) in f.blocks.iter().zip(&order) {
         for inst in &b.insts {
-            check_call(index, inst, &vals, &func, &callees)?;
-            emit(&mut func, blk, inst, &mut vals, &fn_refs, native_sig, &block_of)?;
+            emit(&mut func, *blk, inst, &mut vals, &ctx).map_err(|e| format!("u0:{index}: {e}"))?;
         }
     }
-
     Ok(func)
 }
 
-/// A call against the signature its callee actually has.
+/// The declarations a function's instructions name.
+struct Ctx<'a> {
+    callees: &'a HashMap<clif::Callee, (ir::FuncRef, String, Signature)>,
+    sigs: &'a HashMap<&'a clif::Signature, (ir::SigRef, Signature)>,
+    arena: Option<ir::GlobalValue>,
+    slots: &'a [ir::StackSlot],
+    blocks: &'a HashMap<u32, ir::Block>,
+}
+
+/// A call against the signature its callee has.
 ///
 /// Cranelift's verifier refuses the same programs a step later, reporting the
 /// instruction it could not type. This says which callee was called with what
-/// instead, which is the fact a generator has to act on. The signature is the
-/// callee's own, so this compares the body against the callee rather than
-/// against a declaration the artifact could have got wrong.
-fn check_call(
-    index: usize,
-    inst: &clif::Inst,
-    vals: &Vals,
-    func: &ir::Function,
-    callees: &HashMap<clif::Callee, (String, Signature)>,
-) -> Result<(), String> {
-    let clif::Inst::Call(_, c, args) = inst else { return Ok(()) };
-    let Some((name, sig)) = callees.get(c) else { return Ok(()) };
+/// instead, which is the fact a generator has to act on.
+fn check_call(name: &str, sig: &Signature, args: &[ir::Value], dfg: &ir::DataFlowGraph) -> Result<(), String> {
     if args.len() != sig.params.len() {
         return Err(format!(
-            "u0:{index} calls {name} with {} argument{}, and {name} takes {}",
+            "{name} is called with {} argument{}, and takes {}",
             args.len(),
             if args.len() == 1 { "" } else { "s" },
             sig.params.len(),
         ));
     }
     for (n, (a, p)) in args.iter().zip(&sig.params).enumerate() {
-        let got = func.dfg.value_type(vals.get(*a)?);
+        let got = dfg.value_type(*a);
         if got != p.value_type {
-            return Err(format!(
-                "u0:{index} calls {name} with {got} as argument {n}, and {name} takes {} there",
-                p.value_type
-            ));
+            return Err(format!("{name} is called with {got} as argument {n}, and takes {} there", p.value_type));
         }
+    }
+    Ok(())
+}
+
+/// The opcode CLIF spells `name`, which must be of `format`: the builder
+/// Cranelift offers for a format checks that only in debug builds.
+fn opcode(name: &str, format: InstructionFormat) -> Result<Opcode, String> {
+    let op = Opcode::from_str(name).map_err(|_| format!("{name:?} is not a CLIF opcode"))?;
+    if op.format() != format {
+        return Err(format!("{name} is a {:?} instruction, not a {format:?} one", op.format()));
+    }
+    Ok(op)
+}
+
+/// The controlling type `op` is built at: the type of the operand CLIF takes
+/// it from, or the one the instruction names where CLIF takes it from none.
+/// Exactly one of the two, so an instruction has one spelling; and a type in
+/// the set the opcode is defined at, checked before building, since building
+/// at another can panic inside Cranelift rather than fail.
+fn ctrl_type(
+    op: Opcode,
+    named: Option<&clif::ClifTy>,
+    data: &ir::InstructionData,
+    dfg: &ir::DataFlowGraph,
+) -> Result<ir::Type, String> {
+    let c = op.constraints();
+    let Some(set) = c.ctrl_typeset() else {
+        return match named {
+            None => Ok(ir::types::INVALID),
+            Some(t) => Err(format!("{op} has no type to name, and names {t}")),
+        };
+    };
+    let t = match (c.use_typevar_operand(), named) {
+        (true, None) => {
+            let v = data
+                .typevar_operand(&dfg.value_lists)
+                .ok_or_else(|| format!("{op} has no operand to take its type from"))?;
+            dfg.value_type(v)
+        }
+        (false, Some(t)) => ty(t)?,
+        (true, Some(t)) => return Err(format!("{op} takes its type from an operand, and names {t}")),
+        (false, None) => return Err(format!("{op} names the type it is at, and names none")),
+    };
+    if !set.contains(t) {
+        return Err(format!("{op} is not defined at {t}"));
+    }
+    Ok(t)
+}
+
+/// The flags of a memory access: CLIF's words, in the order CLIF prints them,
+/// and `notrap` on every access, which the engine sets and a program does not
+/// state.
+///
+/// `notrap` everywhere because base installs no trap handler: an access that
+/// faults ends the process whether or not Cranelift was told it could. Saying
+/// so everywhere is what keeps the load and the store of a read-modify-write
+/// under identical flags, which x64 requires before it fuses them into one
+/// `add [mem], x` (`store_x64_add_mem`); a counter bumped in memory is
+/// otherwise three instructions. An instruction of a memory format that
+/// touches no memory (`bitcast`) takes only what it states.
+fn flags(op: Opcode, words: &[String]) -> Result<MemFlags, String> {
+    let mut m = MemFlags::new();
+    for w in words {
+        if w == "notrap" || TrapCode::from_str(w).is_ok() {
+            return Err(format!("{op} states {w:?}, and whether an access traps is the engine's to say"));
+        }
+        match m.set_by_name(w) {
+            Ok(true) => {}
+            Ok(false) => return Err(format!("{w:?} is not a CLIF memory flag")),
+            Err(e) => return Err(format!("{op} states {w:?}: {e}")),
+        }
+    }
+    let stated: String = words.iter().map(|w| format!(" {w}")).collect();
+    if m.to_string() != stated {
+        return Err(format!("{op} states the flags{stated}, which CLIF writes as{m}"));
+    }
+    if op.can_load() || op.can_store() {
+        m.set_notrap();
+    }
+    Ok(m)
+}
+
+/// Binds every result of `inst` to the values the program names for them,
+/// which must be all of them, as CLIF text names them.
+fn bind(vals: &mut Vals, names: &[clif::Val], inst: ir::Inst, dfg: &ir::DataFlowGraph) -> Result<(), String> {
+    let results = dfg.inst_results(inst);
+    if results.len() != names.len() {
+        return Err(format!(
+            "{} answers {} result{}, and the program names {}",
+            dfg.insts[inst].opcode(),
+            results.len(),
+            if results.len() == 1 { "" } else { "s" },
+            names.len()
+        ));
+    }
+    for (n, r) in names.iter().zip(results) {
+        vals.set(*n, *r)?;
     }
     Ok(())
 }
@@ -328,317 +391,202 @@ fn emit(
     blk: ir::Block,
     inst: &clif::Inst,
     vals: &mut Vals,
-    fn_refs: &HashMap<clif::Callee, ir::FuncRef>,
-    native_sig: Option<ir::SigRef>,
-    block_of: &dyn Fn(clif::BlockRef) -> Result<ir::Block, String>,
+    ctx: &Ctx,
 ) -> Result<(), String> {
     use clif::Inst as I;
+    use ir::InstructionData as D;
+    use InstructionFormat as F;
     let mut cur = FuncCursor::new(func).at_bottom(blk);
 
-    /// Binds the result of a one-result instruction to its declared value.
-    macro_rules! def {
-        ($dst:expr, $e:expr) => {{
-            let r = $e;
-            vals.set($dst, r);
+    // Each format the same way: its opcode, checked against the format; its
+    // controlling type, from the data it is made of; then the instruction,
+    // built by the format's own builder where that masks an immediate to the
+    // type and from the data itself otherwise; and its results bound.
+    macro_rules! build {
+        ($res:expr, $name:expr, $named:expr, $format:ident, |$op:ident| $data:expr, |$t:ident, $d:ident| $make:expr) => {{
+            let $op = opcode($name, F::$format)?;
+            let $d = $data;
+            let $t = ctrl_type($op, $named.as_ref(), &$d, &cur.func.dfg)?;
+            let (inst, dfg) = $make;
+            bind(vals, $res, inst, dfg)?;
         }};
     }
+    fn list(cur: &mut FuncCursor<'_>, vs: &[ir::Value]) -> ir::ValueList {
+        ir::ValueList::from_slice(vs, &mut cur.func.dfg.value_lists)
+    }
+    fn block_call(cur: &mut FuncCursor<'_>, ctx: &Ctx, vals: &Vals, c: &clif::BlockCall) -> Result<ir::BlockCall, String> {
+        let n = c.0 .0;
+        let blk = *ctx.blocks.get(&n).ok_or_else(|| format!("a branch to block{n}, which there is not"))?;
+        let args: Vec<ir::BlockArg> = vals.get_all(&c.1)?.into_iter().map(ir::BlockArg::Value).collect();
+        Ok(ir::BlockCall::new(blk, args, &mut cur.func.dfg.value_lists))
+    }
+    let slot = |s: u32| ctx.slots.get(s as usize).copied().ok_or_else(|| format!("stack slot {s}, which there is not"));
+    let cond = |c: &str| ir::condcodes::IntCC::from_str(c).map_err(|_| format!("{c:?} is not an integer condition"));
+    let fcond = |c: &str| ir::condcodes::FloatCC::from_str(c).map_err(|_| format!("{c:?} is not a float condition"));
 
     match inst {
-        I::Iconst(d, t, n) => def!(*d, cur.ins().iconst(ty(*t), *n)),
-        I::Iadd(d, a, b) => def!(*d, cur.ins().iadd(vals.get(*a)?, vals.get(*b)?)),
-        I::IaddImm(d, a, k) => def!(*d, cur.ins().iadd_imm(vals.get(*a)?, *k)),
-        I::Isub(d, a, b) => def!(*d, cur.ins().isub(vals.get(*a)?, vals.get(*b)?)),
-        I::Imul(d, a, b) => def!(*d, cur.ins().imul(vals.get(*a)?, vals.get(*b)?)),
-        I::Udiv(d, a, b) => def!(*d, cur.ins().udiv(vals.get(*a)?, vals.get(*b)?)),
-        I::Ineg(d, a) => def!(*d, cur.ins().ineg(vals.get(*a)?)),
-        I::Ishl(d, a, b) => def!(*d, cur.ins().ishl(vals.get(*a)?, vals.get(*b)?)),
-        I::Ushr(d, a, b) => def!(*d, cur.ins().ushr(vals.get(*a)?, vals.get(*b)?)),
-        I::Band(d, a, b) => def!(*d, cur.ins().band(vals.get(*a)?, vals.get(*b)?)),
-        I::BandNot(d, a, b) => def!(*d, cur.ins().band_not(vals.get(*a)?, vals.get(*b)?)),
-        I::Bor(d, a, b) => def!(*d, cur.ins().bor(vals.get(*a)?, vals.get(*b)?)),
-        I::Bxor(d, a, b) => def!(*d, cur.ins().bxor(vals.get(*a)?, vals.get(*b)?)),
-        I::Ireduce32(d, a) => def!(*d, cur.ins().ireduce(ir::types::I32, vals.get(*a)?)),
-        I::Uextend64(d, a) => def!(*d, cur.ins().uextend(ir::types::I64, vals.get(*a)?)),
-        I::Sextend64(d, a) => def!(*d, cur.ins().sextend(ir::types::I64, vals.get(*a)?)),
-
-        I::Store(v, addr, off) => {
-            cur.ins().store(access(false), vals.get(*v)?, vals.get(*addr)?, *off);
+        I::Unary(r, n, t, a) => {
+            let a = vals.get(*a)?;
+            build!(r, n, t, Unary, |op| D::Unary { opcode: op, arg: a }, |ct, _d| cur.ins().Unary(op, ct, a))
         }
-        I::Istore8(v, addr, off) => {
-            cur.ins().istore8(access(false), vals.get(*v)?, vals.get(*addr)?, *off);
+        I::UnaryImm(r, n, t, k) => {
+            let imm: ir::immediates::Imm64 = (*k).into();
+            build!(r, n, t, UnaryImm, |op| D::UnaryImm { opcode: op, imm }, |ct, _d| cur.ins().UnaryImm(op, ct, imm))
         }
-        I::StoreTyped(_, v, addr, off) => {
-            // The type is carried by the stored value.
+        I::UnaryIeee32(r, n, t, bits) => {
+            let imm = ir::immediates::Ieee32::with_bits(*bits);
+            build!(r, n, t, UnaryIeee32, |op| D::UnaryIeee32 { opcode: op, imm }, |ct, _d| {
+                cur.ins().UnaryIeee32(op, ct, imm)
+            })
+        }
+        I::UnaryIeee64(r, n, t, bits) => {
+            let imm = ir::immediates::Ieee64::with_bits(*bits);
+            build!(r, n, t, UnaryIeee64, |op| D::UnaryIeee64 { opcode: op, imm }, |ct, _d| {
+                cur.ins().UnaryIeee64(op, ct, imm)
+            })
+        }
+        I::UnaryGlobalValue(r, n, t, clif::Global::Arena) => {
+            let gv = ctx.arena.ok_or("the arena is not declared")?;
+            build!(r, n, t, UnaryGlobalValue, |op| D::UnaryGlobalValue { opcode: op, global_value: gv }, |ct, d| {
+                cur.ins().build(d, ct)
+            })
+        }
+        I::Binary(r, n, t, a, b) => {
+            let (a, b) = (vals.get(*a)?, vals.get(*b)?);
+            build!(r, n, t, Binary, |op| D::Binary { opcode: op, args: [a, b] }, |ct, _d| cur.ins().Binary(op, ct, a, b))
+        }
+        I::BinaryImm8(r, n, t, a, k) => {
+            let a = vals.get(*a)?;
+            build!(r, n, t, BinaryImm8, |op| D::BinaryImm8 { opcode: op, arg: a, imm: *k }, |ct, _d| {
+                cur.ins().BinaryImm8(op, ct, *k, a)
+            })
+        }
+        I::BinaryImm64(r, n, t, a, k) => {
+            let a = vals.get(*a)?;
+            let imm: ir::immediates::Imm64 = (*k).into();
+            build!(r, n, t, BinaryImm64, |op| D::BinaryImm64 { opcode: op, arg: a, imm }, |ct, _d| {
+                cur.ins().BinaryImm64(op, ct, imm, a)
+            })
+        }
+        I::Ternary(r, n, t, a, b, c) => {
+            let (a, b, c) = (vals.get(*a)?, vals.get(*b)?, vals.get(*c)?);
+            build!(r, n, t, Ternary, |op| D::Ternary { opcode: op, args: [a, b, c] }, |ct, _d| {
+                cur.ins().Ternary(op, ct, a, b, c)
+            })
+        }
+        I::MultiAry(r, n, t, args) => {
+            let args = vals.get_all(args)?;
+            let args = list(&mut cur, &args);
+            build!(r, n, t, MultiAry, |op| D::MultiAry { opcode: op, args }, |ct, d| cur.ins().build(d, ct))
+        }
+        I::NullAry(r, n, t) => {
+            build!(r, n, t, NullAry, |op| D::NullAry { opcode: op }, |ct, _d| cur.ins().NullAry(op, ct))
+        }
+        I::IntCompare(r, n, t, c, a, b) => {
+            let (c, a, b) = (cond(c)?, vals.get(*a)?, vals.get(*b)?);
+            build!(r, n, t, IntCompare, |op| D::IntCompare { opcode: op, args: [a, b], cond: c }, |ct, _d| {
+                cur.ins().IntCompare(op, ct, c, a, b)
+            })
+        }
+        I::FloatCompare(r, n, t, c, a, b) => {
+            let (c, a, b) = (fcond(c)?, vals.get(*a)?, vals.get(*b)?);
+            build!(r, n, t, FloatCompare, |op| D::FloatCompare { opcode: op, args: [a, b], cond: c }, |ct, _d| {
+                cur.ins().FloatCompare(op, ct, c, a, b)
+            })
+        }
+        I::Jump(r, n, t, dest) => {
+            let destination = block_call(&mut cur, ctx, vals, dest)?;
+            build!(r, n, t, Jump, |op| D::Jump { opcode: op, destination }, |ct, d| cur.ins().build(d, ct))
+        }
+        I::Brif(r, n, t, c, then, els) => {
+            let arg = vals.get(*c)?;
+            let blocks = [block_call(&mut cur, ctx, vals, then)?, block_call(&mut cur, ctx, vals, els)?];
+            build!(r, n, t, Brif, |op| D::Brif { opcode: op, arg, blocks }, |ct, d| cur.ins().build(d, ct))
+        }
+        I::Call(r, n, t, c, args) => {
+            let (func_ref, name, sig) = ctx.callees.get(c).ok_or_else(|| format!("a call to {c:?}, undeclared"))?;
+            let args = vals.get_all(args)?;
+            check_call(name, sig, &args, &cur.func.dfg)?;
+            let args = list(&mut cur, &args);
+            build!(r, n, t, Call, |op| D::Call { opcode: op, func_ref: *func_ref, args }, |ct, d| {
+                cur.ins().build(d, ct)
+            })
+        }
+        I::CallIndirect(r, n, t, s, callee, args) => {
+            let (sig_ref, sig) = ctx.sigs.get(s).ok_or("an indirect call to an undeclared signature")?;
+            let args = vals.get_all(args)?;
+            check_call("an indirect callee", sig, &args, &cur.func.dfg)?;
+            let args = list(&mut cur, &[&[vals.get(*callee)?][..], &args].concat());
+            build!(r, n, t, CallIndirect, |op| D::CallIndirect { opcode: op, sig_ref: *sig_ref, args }, |ct, d| {
+                cur.ins().build(d, ct)
+            })
+        }
+        I::FuncAddr(r, n, t, c) => {
+            let (func_ref, _, _) = ctx.callees.get(c).ok_or_else(|| format!("func_addr of {c:?}, undeclared"))?;
+            build!(r, n, t, FuncAddr, |op| D::FuncAddr { opcode: op, func_ref: *func_ref }, |ct, d| {
+                cur.ins().build(d, ct)
+            })
+        }
+        I::AtomicRmw(r, n, t, f, rmw, a, x) => {
+            let rmw = ir::AtomicRmwOp::from_str(rmw).map_err(|_| format!("{rmw:?} is not an atomic operation"))?;
+            let (a, x) = (vals.get(*a)?, vals.get(*x)?);
+            let flags = flags(opcode(n, F::AtomicRmw)?, f)?;
+            build!(r, n, t, AtomicRmw, |op| D::AtomicRmw { opcode: op, args: [a, x], flags, op: rmw }, |ct, _d| {
+                cur.ins().AtomicRmw(op, ct, flags, rmw, a, x)
+            })
+        }
+        I::AtomicCas(r, n, t, f, a, e, x) => {
+            let (a, e, x) = (vals.get(*a)?, vals.get(*e)?, vals.get(*x)?);
+            let flags = flags(opcode(n, F::AtomicCas)?, f)?;
+            build!(r, n, t, AtomicCas, |op| D::AtomicCas { opcode: op, args: [a, e, x], flags }, |ct, _d| {
+                cur.ins().AtomicCas(op, ct, flags, a, e, x)
+            })
+        }
+        I::Load(r, n, t, f, a, off) => {
+            let a = vals.get(*a)?;
+            let off = ir::immediates::Offset32::new(*off);
+            let flags = flags(opcode(n, F::Load)?, f)?;
+            build!(r, n, t, Load, |op| D::Load { opcode: op, arg: a, flags, offset: off }, |ct, _d| {
+                cur.ins().Load(op, ct, flags, off, a)
+            })
+        }
+        I::LoadNoOffset(r, n, t, f, a) => {
+            let a = vals.get(*a)?;
+            let flags = flags(opcode(n, F::LoadNoOffset)?, f)?;
+            build!(r, n, t, LoadNoOffset, |op| D::LoadNoOffset { opcode: op, arg: a, flags }, |ct, _d| {
+                cur.ins().LoadNoOffset(op, ct, flags, a)
+            })
+        }
+        I::Store(r, n, t, f, v, a, off) => {
+            let (v, a) = (vals.get(*v)?, vals.get(*a)?);
+            let off = ir::immediates::Offset32::new(*off);
+            let flags = flags(opcode(n, F::Store)?, f)?;
+            build!(r, n, t, Store, |op| D::Store { opcode: op, args: [v, a], flags, offset: off }, |ct, _d| {
+                cur.ins().Store(op, ct, flags, off, v, a)
+            })
+        }
+        I::StoreNoOffset(r, n, t, f, v, a) => {
+            let (v, a) = (vals.get(*v)?, vals.get(*a)?);
+            let flags = flags(opcode(n, F::StoreNoOffset)?, f)?;
+            build!(r, n, t, StoreNoOffset, |op| D::StoreNoOffset { opcode: op, args: [v, a], flags }, |ct, _d| {
+                cur.ins().StoreNoOffset(op, ct, flags, v, a)
+            })
+        }
+        I::StackLoad(r, n, t, s, off) => {
+            let stack_slot = slot(*s)?;
+            let offset = ir::immediates::Offset32::new(*off);
+            build!(r, n, t, StackLoad, |op| D::StackLoad { opcode: op, stack_slot, offset }, |ct, _d| {
+                cur.ins().StackLoad(op, ct, stack_slot, offset)
+            })
+        }
+        I::StackStore(r, n, t, v, s, off) => {
             let v = vals.get(*v)?;
-            let vector = cur.func.dfg.value_type(v).is_vector();
-            cur.ins().store(access(vector), v, vals.get(*addr)?, *off);
-        }
-        I::Load(d, op, addr, off) => {
-            let flags = access(op.notrap_aligned && ty(op.ty).is_vector());
-            let a = vals.get(*addr)?;
-            let r = match op.kind {
-                clif::LoadKind::Plain => cur.ins().load(ty(op.ty), flags, a, *off),
-                clif::LoadKind::Uload8 => cur.ins().uload8(ty(op.ty), flags, a, *off),
-                clif::LoadKind::Sload8 => cur.ins().sload8(ty(op.ty), flags, a, *off),
-                clif::LoadKind::Uload32 => cur.ins().uload32(flags, a, *off),
-                clif::LoadKind::Uload16 => cur.ins().uload16(ty(op.ty), flags, a, *off),
-                clif::LoadKind::Sload16 => cur.ins().sload16(ty(op.ty), flags, a, *off),
-                clif::LoadKind::Sload32 => cur.ins().sload32(flags, a, *off),
-            };
-            vals.set(*d, r);
-        }
-
-        I::Icmp(d, c, a, b) => {
-            def!(*d, cur.ins().icmp(int_cc(*c), vals.get(*a)?, vals.get(*b)?))
-        }
-        I::Fcmp(d, c, a, b) => {
-            def!(*d, cur.ins().fcmp(float_cc(*c), vals.get(*a)?, vals.get(*b)?))
-        }
-        I::Select(d, c, a, b) => def!(
-            *d,
-            cur.ins().select(vals.get(*c)?, vals.get(*a)?, vals.get(*b)?)
-        ),
-        I::Bitselect(d, c, a, b) => def!(
-            *d,
-            cur.ins()
-                .bitselect(vals.get(*c)?, vals.get(*a)?, vals.get(*b)?)
-        ),
-
-        I::Call(d, clif::Callee::Atomic(k), args) => {
-            let a = vals.get_all(args)?;
-            let r = atomic(&mut cur, *k, &a)?;
-            match (d, r) {
-                (Some(dst), Some(r)) => vals.set(*dst, r),
-                (None, _) => {}
-                (Some(_), None) => return Err(format!("{k:?} has no result to bind")),
-            }
-        }
-        I::Call(d, c, args) => {
-            let a = vals.get_all(args)?;
-            let call = if *c == clif::Callee::Native {
-                let sig = native_sig.ok_or("a native call the prologue did not declare")?;
-                let (addr, rest) = a.split_first().ok_or("a native call without its address")?;
-                cur.ins().call_indirect(sig, *addr, rest)
-            } else {
-                let f = *fn_refs
-                    .get(c)
-                    .ok_or_else(|| format!("call to {c:?}, which the prologue does not name"))?;
-                cur.ins().call(f, &a)
-            };
-            if let Some(dst) = d {
-                let results = cur.func.dfg.inst_results(call);
-                let r = *results
-                    .first()
-                    .ok_or_else(|| format!("{c:?} has no result to bind"))?;
-                vals.set(*dst, r);
-            }
-        }
-        I::Jump(t, args) => {
-            let a = block_args(&vals.get_all(args)?);
-            cur.ins().jump(block_of(*t)?, &a);
-        }
-        I::Brif(c, tb, ta, eb, ea) => {
-            let c = vals.get(*c)?;
-            let ta = block_args(&vals.get_all(ta)?);
-            let ea = block_args(&vals.get_all(ea)?);
-            cur.ins().brif(c, block_of(*tb)?, &ta, block_of(*eb)?, &ea);
-        }
-        I::Ret(v) => {
-            let vs = match v {
-                Some(v) => vec![vals.get(*v)?],
-                None => vec![],
-            };
-            cur.ins().return_(&vs);
-        }
-
-        I::Fconst(d, t, bits) => {
-            let r = match t {
-                clif::ClifTy::F32 => cur.ins().f32const(f32::from_bits(*bits as u32)),
-                clif::ClifTy::F64 => cur.ins().f64const(f64::from_bits(*bits)),
-                other => return Err(format!("fconst of non-float type {other:?}")),
-            };
-            vals.set(*d, r);
-        }
-        I::Fadd(d, a, b) => def!(*d, cur.ins().fadd(vals.get(*a)?, vals.get(*b)?)),
-        I::Fsub(d, a, b) => def!(*d, cur.ins().fsub(vals.get(*a)?, vals.get(*b)?)),
-        I::Fmul(d, a, b) => def!(*d, cur.ins().fmul(vals.get(*a)?, vals.get(*b)?)),
-        I::Fmax(d, a, b) => def!(*d, cur.ins().fmax(vals.get(*a)?, vals.get(*b)?)),
-        I::Fmin(d, a, b) => def!(*d, cur.ins().fmin(vals.get(*a)?, vals.get(*b)?)),
-        I::Fneg(d, a) => def!(*d, cur.ins().fneg(vals.get(*a)?)),
-        I::Fpromote(d, a) => def!(*d, cur.ins().fpromote(ir::types::F64, vals.get(*a)?)),
-        I::FcvtFromSint(d, t, s) => {
-            def!(*d, cur.ins().fcvt_from_sint(ty(*t), vals.get(*s)?))
-        }
-        I::FcvtToUint(d, t, s) => {
-            def!(*d, cur.ins().fcvt_to_uint_sat(ty(*t), vals.get(*s)?))
-        }
-        I::Splat(d, t, s) => def!(*d, cur.ins().splat(ty(*t), vals.get(*s)?)),
-        I::Extractlane(d, s, lane) => def!(*d, cur.ins().extractlane(vals.get(*s)?, *lane)),
-        I::Bitcast(d, t, s) => {
-            def!(*d, cur.ins().bitcast(ty(*t), MemFlags::new(), vals.get(*s)?))
-        }
-        I::FuncAddr(d, c) => {
-            let f = *fn_refs.get(c).ok_or_else(|| {
-                format!("func_addr of {c:?}, which the prologue does not name")
-            })?;
-            def!(*d, cur.ins().func_addr(ir::types::I64, f))
-        }
-        I::Ctz(d, a) => def!(*d, cur.ins().ctz(vals.get(*a)?)),
-        I::Popcnt(d, a) => def!(*d, cur.ins().popcnt(vals.get(*a)?)),
-        I::VhighBits(d, a) => def!(*d, cur.ins().vhigh_bits(ir::types::I32, vals.get(*a)?)),
-        I::Ibin(d, k, a, b) => {
-            let (x, y) = (vals.get(*a)?, vals.get(*b)?);
-            let r = match k {
-                clif::IBin::Sdiv => cur.ins().sdiv(x, y),
-                clif::IBin::Urem => cur.ins().urem(x, y),
-                clif::IBin::Srem => cur.ins().srem(x, y),
-                clif::IBin::Smin => cur.ins().smin(x, y),
-                clif::IBin::Smax => cur.ins().smax(x, y),
-                clif::IBin::Umin => cur.ins().umin(x, y),
-                clif::IBin::Umax => cur.ins().umax(x, y),
-                clif::IBin::Umulhi => cur.ins().umulhi(x, y),
-                clif::IBin::Smulhi => cur.ins().smulhi(x, y),
-            };
-            vals.set(*d, r);
-        }
-        I::Ishift(d, k, a, b) => {
-            let (x, y) = (vals.get(*a)?, vals.get(*b)?);
-            let r = match k {
-                clif::IShift::Sshr => cur.ins().sshr(x, y),
-                clif::IShift::Rotl => cur.ins().rotl(x, y),
-                clif::IShift::Rotr => cur.ins().rotr(x, y),
-            };
-            vals.set(*d, r);
-        }
-        I::Iun(d, k, a) => {
-            let x = vals.get(*a)?;
-            let r = match k {
-                clif::IUn::Bnot => cur.ins().bnot(x),
-                clif::IUn::Iabs => cur.ins().iabs(x),
-                clif::IUn::Clz => cur.ins().clz(x),
-                clif::IUn::Bswap => cur.ins().bswap(x),
-                clif::IUn::Bitrev => cur.ins().bitrev(x),
-            };
-            vals.set(*d, r);
-        }
-        I::Fbin(d, k, a, b) => {
-            let (x, y) = (vals.get(*a)?, vals.get(*b)?);
-            let r = match k {
-                clif::FBin::Fdiv => cur.ins().fdiv(x, y),
-                clif::FBin::Fcopysign => cur.ins().fcopysign(x, y),
-            };
-            vals.set(*d, r);
-        }
-        I::Fun1(d, k, a) => {
-            let x = vals.get(*a)?;
-            let r = match k {
-                clif::FUn::Sqrt => cur.ins().sqrt(x),
-                clif::FUn::Fabs => cur.ins().fabs(x),
-                clif::FUn::Ceil => cur.ins().ceil(x),
-                clif::FUn::Floor => cur.ins().floor(x),
-                clif::FUn::Trunc => cur.ins().trunc(x),
-                clif::FUn::Nearest => cur.ins().nearest(x),
-            };
-            vals.set(*d, r);
-        }
-        I::Fconv(d, k, t, a) => {
-            let x = vals.get(*a)?;
-            let r = match k {
-                clif::FConv::ToSint => cur.ins().fcvt_to_sint_sat(ty(*t), x),
-                clif::FConv::FromUint => cur.ins().fcvt_from_uint(ty(*t), x),
-                clif::FConv::Demote => cur.ins().fdemote(ty(*t), x),
-            };
-            vals.set(*d, r);
-        }
-        I::Iext(d, k, t, a) => {
-            let x = vals.get(*a)?;
-            let r = match k {
-                clif::IExt::Reduce => cur.ins().ireduce(ty(*t), x),
-                clif::IExt::Uextend => cur.ins().uextend(ty(*t), x),
-                clif::IExt::Sextend => cur.ins().sextend(ty(*t), x),
-            };
-            vals.set(*d, r);
-        }
-        I::Fma(d, a, b, c) => {
-            def!(*d, cur.ins().fma(vals.get(*a)?, vals.get(*b)?, vals.get(*c)?))
+            let stack_slot = slot(*s)?;
+            let offset = ir::immediates::Offset32::new(*off);
+            build!(r, n, t, StackStore, |op| D::StackStore { opcode: op, arg: v, stack_slot, offset }, |ct, _d| {
+                cur.ins().StackStore(op, ct, stack_slot, offset, v)
+            })
         }
     }
     Ok(())
-}
-
-/// An atomic instruction on its arguments, the address first; its result, if
-/// it answers one.
-///
-/// `trusted` flags: `notrap`, as every access here carries, and `aligned`,
-/// which the model requires of an atomic because AArch64 faults on one that
-/// is not.
-fn atomic(
-    cur: &mut FuncCursor,
-    k: clif::Atomic,
-    a: &[ir::Value],
-) -> Result<Option<ir::Value>, String> {
-    use ir::AtomicRmwOp as Op;
-    let f = MemFlags::trusted();
-    let arity = |n: usize| {
-        if a.len() == n { Ok(()) } else { Err(format!("{k:?} takes {n} arguments, given {}", a.len())) }
-    };
-    Ok(match k {
-        clif::Atomic::Fence => {
-            arity(0)?;
-            cur.ins().fence();
-            None
-        }
-        clif::Atomic::Load(t) => {
-            arity(1)?;
-            Some(cur.ins().atomic_load(ty(t), f, a[0]))
-        }
-        clif::Atomic::Store(_) => {
-            arity(2)?;
-            cur.ins().atomic_store(f, a[0], a[1]);
-            None
-        }
-        clif::Atomic::Rmw(t, op) => {
-            arity(2)?;
-            let op = match op {
-                clif::AtomicRmw::Add => Op::Add,
-                clif::AtomicRmw::Sub => Op::Sub,
-                clif::AtomicRmw::And => Op::And,
-                clif::AtomicRmw::Nand => Op::Nand,
-                clif::AtomicRmw::Or => Op::Or,
-                clif::AtomicRmw::Xor => Op::Xor,
-                clif::AtomicRmw::Xchg => Op::Xchg,
-                clif::AtomicRmw::Umin => Op::Umin,
-                clif::AtomicRmw::Umax => Op::Umax,
-                clif::AtomicRmw::Smin => Op::Smin,
-                clif::AtomicRmw::Smax => Op::Smax,
-            };
-            Some(cur.ins().atomic_rmw(ty(t), f, op, a[0], a[1]))
-        }
-        clif::Atomic::Cas(_) => {
-            arity(3)?;
-            Some(cur.ins().atomic_cas(f, a[0], a[1], a[2]))
-        }
-    })
-}
-
-/// The flags every load and store carries: `notrap`, and `aligned` on the
-/// vector accesses that assert it.
-///
-/// `notrap` on every access, because base installs no trap handler: an access
-/// that faults ends the process whether or not Cranelift was told it could.
-/// Saying so everywhere is what keeps the load and the store of a
-/// read-modify-write under identical flags, which x64 requires before it fuses
-/// them into one `add [mem], x` (`store_x64_add_mem`); a counter bumped in
-/// memory is otherwise three instructions.
-///
-/// `aligned` only on vectors, the one place it changes code: a legacy-SSE
-/// instruction takes a memory operand only when it is aligned. On a scalar it
-/// changes nothing on x64 except whether the flags match.
-fn access(aligned_vector: bool) -> MemFlags {
-    let mut f = MemFlags::new();
-    f.set_notrap();
-    if aligned_vector {
-        f.set_aligned();
-    }
-    f
 }

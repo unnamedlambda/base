@@ -129,24 +129,24 @@ def main() -> None:
     # The published layout, read from the image the artifact starts from.
     HOST_LEN_OFF = 0x0080
     base = py_base.Driver(art)
-    want = struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
+    want = struct.unpack_from("<I", base.read(HOST_LEN_OFF, 4))[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean's hostIn {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's hostIn")
 
-    base.execute("main", blob)
+    base.function("main")(blob)
 
     logit_buf = bytearray(BATCH * C * 4)
     onehot = np.zeros((BATCH, C), dtype=np.float32)
     # Padding classes are masked here, once: `exp` underflows them to zero, so
     # they never enter the sum and their gradient is zero.
     bias = np.where(np.arange(C) < CLASSES, 0.0, -1.0e30).astype(np.float32)
-    base.execute("uploadBias", bias.tobytes())
+    base.function("uploadBias")(bias.tobytes())
 
     def forward(xb: np.ndarray) -> np.ndarray:
         """`xb` is (BATCH, IN); returns (BATCH, CLASSES) logits."""
-        base.execute("uploadX", xb.tobytes())
-        base.execute("runFwd")
-        base.execute("fetchLogits", b"", logit_buf)
+        base.function("uploadX")(xb.tobytes())
+        base.function("runFwd")()
+        base.function("fetchLogits")(b"", logit_buf)
         return np.frombuffer(bytes(logit_buf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES]
 
     def softmax(lg: np.ndarray) -> np.ndarray:
@@ -190,9 +190,9 @@ def main() -> None:
             # gradient the forward pass already computed on the device.
             onehot[:] = 0.0
             onehot[np.arange(BATCH), ytr[idx]] = 1.0
-            base.execute("uploadOneHot", onehot.tobytes())
+            base.function("uploadOneHot")(onehot.tobytes())
             forward(xb)
-            base.execute("runBwd")
+            base.function("runBwd")()
         dt = time.perf_counter() - t0
         seen += CHUNK
         t_train += dt

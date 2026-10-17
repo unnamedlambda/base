@@ -124,25 +124,21 @@ inductive Atomic where
     layouts on each target, so an artifact calls it identically everywhere.
     It is loaded when a program first names it; a library that is not there
     makes its functions absent rather than the program unloadable. The C
-    library, wgpu and the engine's window, CPU, serial and USB libraries are
-    built into it (`Lib.builtin`): always there, bound to the functions the
-    engine links. -/
+    library, wgpu, the engine's own functions (`base`, the `Ffi` entries) and
+    its window, CPU, serial and USB libraries are built into it
+    (`Lib.builtin`): always there, bound to the functions the engine links. -/
 inductive Lib where
-  | c | cuda | cublas | usb | window | cpu | wgpu | serial
+  | c | cuda | cublas | usb | window | cpu | wgpu | serial | base
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 def Lib.name : Lib → String
   | .c => "c" | .cuda => "cuda" | .cublas => "cublas" | .usb => "usb"
   | .window => "window" | .cpu => "cpu" | .wgpu => "wgpu" | .serial => "serial"
-
-def Lib.files : Lib → List (String × List String)
-  | .cuda => [("linux", ["libcuda.so.1", "libcuda.so"]), ("windows", ["nvcuda.dll"])]
-  | .cublas => [("linux", ["libcublas.so.12", "libcublas.so"]), ("windows", ["cublas64_12.dll"])]
-  | .c | .usb | .window | .cpu | .wgpu | .serial => []
+  | .base => "base"
 
 /-- Built into the engine: present on every platform, with no file to find. -/
 def Lib.builtin : Lib → Bool
-  | .c | .usb | .window | .cpu | .wgpu | .serial => true
+  | .c | .usb | .window | .cpu | .wgpu | .serial | .base => true
   | _ => false
 
 /-- The C library's memory functions: pointers and sizes only, so the same
@@ -914,8 +910,8 @@ end Ffi
     An import that the engine does not provide is unrepresentable rather than
     refused at load: `Ffi` is the only way to name one. -/
 inductive Callee where
-  /-- An entry point of the engine, resolved by its `cname` through the JIT's
-      symbol table. -/
+  /-- A function of the engine's own, `Lib.base`'s `cname`, called at the
+      signature `Ffi.sig` states, as any built-in library's is. -/
   | ffi (f : Ffi)
   /-- Another function of this same program, by its `u0:N` position. -/
   | local (index : Nat)
@@ -925,6 +921,11 @@ inductive Callee where
       answering an `i64`. A plain indirect call: nothing of the engine's runs
       between the caller and the code. -/
   | native
+  /-- The host's function at the address in the call's first argument, called
+      on the rest at `params`, answering `result`, under the host's C
+      convention: how a host hands a program a callback, or a C function of
+      its own. A plain indirect call. -/
+  | host (params : List ClifTy) (result : Option ClifTy)
   /-- A CLIF atomic instruction, which the engine emits in place of a call. -/
   | atomic (a : Atomic)
   /-- A function of a C library, called directly. -/
@@ -934,6 +935,10 @@ inductive Callee where
 /-- A single CLIF instruction -/
 inductive Inst where
   | iconst (dst : Val) (ty : ClifTy) (value : Int)
+  /-- The address of the program's memory (`symbol_value` of `memory`). -/
+  | memory (dst : Val)
+  /-- The address of a function (`func_addr`), without calling it. -/
+  | funcAddr (dst : Val) (callee : Callee)
   | iadd (dst : Val) (a b : Val)
   | isub (dst : Val) (a b : Val)
   | imul (dst : Val) (a b : Val)
@@ -1014,20 +1019,21 @@ structure BlockData where
 
     `index` is the `u0:N` it was compiled at, which is its position in the
     artifact and is not written out: `Prog.program` checks the two agree.
-    `entryName` is the name a host calls it by, and a function without one is
+    `name` is the name a host calls it by, and a function without one is
     the program's own. -/
 structure FuncData where
   index : Nat
   blocks : List BlockData
-  entryName : Option String := none
+  name : Option String := none
 
 -- ---------------------------------------------------------------------------
 -- Serialization
 --
--- The CBOR `base_types::clif` reads (see `Cbor`): externally tagged enums,
--- tuple variants whose fields are in constructor order, newtypes as their
--- number. Field names and their order are the Rust ones; a disagreement is a
--- build failure, because the build re-encodes every artifact it decodes.
+-- The CBOR `base_types::clif` reads (see `Cbor`): externally tagged enums, an
+-- instruction's fields in the order its Cranelift format gives them, newtypes
+-- as their number. Field names and their order are the Rust ones; a
+-- disagreement is a build failure, because the build re-encodes every
+-- artifact it decodes.
 -- ---------------------------------------------------------------------------
 
 open Cbor
@@ -1039,177 +1045,339 @@ instance : ToCbor BlockRef where
 
 instance : ToCbor ClifTy where
   cbor t := text <| match t with
-    | .i8 => "I8" | .i16 => "I16" | .i32 => "I32" | .i64 => "I64"
-    | .f32 => "F32" | .f64 => "F64" | .f32x4 => "F32x4" | .i8x16 => "I8x16"
+    | .i8 => "i8" | .i16 => "i16" | .i32 => "i32" | .i64 => "i64"
+    | .f32 => "f32" | .f64 => "f64" | .f32x4 => "f32x4" | .i8x16 => "i8x16"
 
-instance : ToCbor ICmpCond where
-  cbor c := text <| match c with
-    | .eq => "Eq" | .ne => "Ne" | .uge => "Uge" | .ugt => "Ugt" | .ule => "Ule"
-    | .ult => "Ult" | .slt => "Slt" | .sle => "Sle" | .sgt => "Sgt" | .sge => "Sge"
+/-! CLIF's own names. An instruction travels as a Cranelift instruction format
+    and an opcode of it, spelled as CLIF spells it, with its controlling type
+    named only where CLIF does not take it from an operand; condition codes and
+    atomic operations by CLIF's names too. `base_types::clif::Inst` reads it. -/
 
-instance : ToCbor FloatCC where
-  cbor c := text <| match c with
-    | .eq => "Eq" | .ne => "Ne" | .lt => "Lt" | .le => "Le" | .gt => "Gt" | .ge => "Ge"
+def ICmpCond.clif : ICmpCond → String
+  | .eq => "eq" | .ne => "ne" | .uge => "uge" | .ugt => "ugt" | .ule => "ule"
+  | .ult => "ult" | .slt => "slt" | .sle => "sle" | .sgt => "sgt" | .sge => "sge"
 
-instance : ToCbor LoadKind where
-  cbor k := text <| match k with
-    | .plain => "Plain" | .uload8 => "Uload8" | .uload16 => "Uload16"
-    | .uload32 => "Uload32" | .sload8 => "Sload8" | .sload16 => "Sload16"
-    | .sload32 => "Sload32"
+def FloatCC.clif : FloatCC → String
+  | .eq => "eq" | .ne => "ne" | .lt => "lt" | .le => "le" | .gt => "gt" | .ge => "ge"
 
-instance : ToCbor IBin where
-  cbor k := text <| match k with
-    | .sdiv => "Sdiv" | .urem => "Urem" | .srem => "Srem" | .smin => "Smin"
-    | .smax => "Smax" | .umin => "Umin" | .umax => "Umax" | .umulhi => "Umulhi"
-    | .smulhi => "Smulhi"
+def LoadKind.clif : LoadKind → String
+  | .plain => "load" | .uload8 => "uload8" | .uload16 => "uload16" | .uload32 => "uload32"
+  | .sload8 => "sload8" | .sload16 => "sload16" | .sload32 => "sload32"
 
-instance : ToCbor IShift where
-  cbor k := text <| match k with
-    | .sshr => "Sshr" | .rotl => "Rotl" | .rotr => "Rotr"
+def IBin.clif : IBin → String
+  | .sdiv => "sdiv" | .urem => "urem" | .srem => "srem" | .smin => "smin" | .smax => "smax"
+  | .umin => "umin" | .umax => "umax" | .umulhi => "umulhi" | .smulhi => "smulhi"
 
-instance : ToCbor IUn where
-  cbor k := text <| match k with
-    | .bnot => "Bnot" | .iabs => "Iabs" | .clz => "Clz"
-    | .bswap => "Bswap" | .bitrev => "Bitrev"
+def IShift.clif : IShift → String
+  | .sshr => "sshr" | .rotl => "rotl" | .rotr => "rotr"
 
-instance : ToCbor FBin where
-  cbor k := text <| match k with
-    | .fdiv => "Fdiv" | .fcopysign => "Fcopysign"
+def IUn.clif : IUn → String
+  | .bnot => "bnot" | .iabs => "iabs" | .clz => "clz" | .bswap => "bswap" | .bitrev => "bitrev"
 
-instance : ToCbor FUn where
-  cbor k := text <| match k with
-    | .sqrt => "Sqrt" | .fabs => "Fabs" | .ceil => "Ceil" | .floor => "Floor"
-    | .trunc => "Trunc" | .nearest => "Nearest"
+def FBin.clif : FBin → String
+  | .fdiv => "fdiv" | .fcopysign => "fcopysign"
 
-instance : ToCbor IExt where
-  cbor k := text <| match k with
-    | .reduce => "Reduce" | .uextend => "Uextend" | .sextend => "Sextend"
+def FUn.clif : FUn → String
+  | .sqrt => "sqrt" | .fabs => "fabs" | .ceil => "ceil" | .floor => "floor"
+  | .trunc => "trunc" | .nearest => "nearest"
 
-instance : ToCbor FConv where
-  cbor k := text <| match k with
-    | .toSint => "ToSint" | .fromUint => "FromUint" | .demote => "Demote"
+def IExt.clif : IExt → String
+  | .reduce => "ireduce" | .uextend => "uextend" | .sextend => "sextend"
 
-instance : ToCbor LoadOp where
-  cbor op := struct
-    [("kind", cbor op.kind),
-     ("ty", cbor op.ty),
-     ("notrap_aligned", bool op.notrapAligned)]
+def FConv.clif : FConv → String
+  | .toSint => "fcvt_to_sint_sat" | .fromUint => "fcvt_from_uint" | .demote => "fdemote"
 
-/-- An import travels as the symbol the engine resolves, which is the name
-    `Ffi` already fixes; a defined function as its position. The constructor
-    does not travel: the wire says what the engine needs to resolve, and the
-    restriction to entry points the engine has belongs on this side of it. -/
-instance : ToCbor AtomicRmw where
-  cbor k := text <| match k with
-    | .add => "Add" | .sub => "Sub" | .and => "And" | .nand => "Nand" | .or => "Or"
-    | .xor => "Xor" | .xchg => "Xchg" | .umin => "Umin" | .umax => "Umax"
-    | .smin => "Smin" | .smax => "Smax"
+def AtomicRmw.clif : AtomicRmw → String
+  | .add => "add" | .sub => "sub" | .and => "and" | .nand => "nand" | .or => "or"
+  | .xor => "xor" | .xchg => "xchg" | .umin => "umin" | .umax => "umax"
+  | .smin => "smin" | .smax => "smax"
 
-instance : ToCbor Atomic where
-  cbor
-    | .load t => newtypeVariant "Load" (cbor t)
-    | .store t => newtypeVariant "Store" (cbor t)
-    | .rmw t k => variant "Rmw" [cbor t, cbor k]
-    | .cas t => newtypeVariant "Cas" (cbor t)
-    | .fence => text "Fence"
+/-- The value a definition binds, if it binds one. -/
+def Inst.dst? : Inst → Option Val
+  | .iconst d .. | .iadd d .. | .isub d .. | .imul d .. | .udiv d .. | .ineg d ..
+  | .ishl d .. | .ushr d .. | .band d .. | .bandNot d .. | .bor d .. | .bxor d ..
+  | .ireduce32 d .. | .uextend64 d .. | .sextend64 d .. | .load d .. | .icmp d ..
+  | .select d .. | .fconst d .. | .fadd d .. | .fsub d .. | .fmul d .. | .fmax d ..
+  | .fmin d .. | .fpromote d .. | .splat d .. | .extractlane d .. | .fneg d ..
+  | .fcvtFromSint d .. | .fcvtToUint d .. | .fcmp d .. | .bitcast d .. | .bitselect d ..
+  | .ctz d .. | .popcnt d .. | .vhighBits d .. | .ibin d .. | .ishift d .. | .iun d ..
+  | .fbin d .. | .fun1 d .. | .fconv d .. | .fma d .. | .iext d .. | .memory d | .funcAddr d .. => some d
+  | .call d .. => d
+  | .store .. | .istore8 .. | .jump .. | .brif .. | .ret .. | .storeTyped .. => none
 
-/-- A C function travels with everything the engine needs to bind it: the
-    library and its files, the symbol, and the signature to call it at. -/
-def Ext.toCbor (e : Ext) : W Unit :=
+/-- One past the largest value a function binds. -/
+def FuncData.nextVal (f : FuncData) : Nat :=
+  f.blocks.foldl (fun n b =>
+    let n := b.params.foldl (fun n (v, _) => max n (v.id + 1)) n
+    b.insts.foldl (fun n i => match Inst.dst? i with
+      | some v => max n (v.id + 1)
+      | none => n) n) 0
+
+/-- Whether a function answers a value: whether a `ret` of it carries one. -/
+def FuncData.answers (f : FuncData) : Bool :=
+  f.blocks.any fun b => b.insts.any fun | .ret (some _) => true | _ => false
+
+/-- A C function a program calls, as the artifact declares it once: its
+    library, its symbol, and the signature to call it at. -/
+structure Primitive where
+  lib : String
+  symbol : String
+  sig : List ClifTy × Option ClifTy
+  deriving BEq
+
+/-- The primitive a callee is, if it is one. -/
+def Callee.primitive? : Callee → Option Primitive
+  | .ffi f => some ⟨Lib.base.name, f.cname, f.sig⟩
+  | .ext e => some ⟨e.lib.name, e.symbol, e.sig⟩
+  | _ => none
+
+/-- Whether an atomic answers a value. -/
+def Atomic.answers : Atomic → Bool
+  | .load _ | .rmw .. | .cas _ => true
+  | _ => false
+
+/-- Whether calling `c` answers a value, given whether each function of the
+    artifact does. -/
+def Callee.answers (fns : List Bool) : Callee → Bool
+  | .ffi f => f.sig.2.isSome
+  | .ext e => e.sig.2.isSome
+  | .local k => fns.getD k false
+  | .native => true
+  | .host _ r => r.isSome
+  | .atomic a => a.answers
+
+/-- The artifact's primitives, each once, in the order its functions first
+    call them. A symbol two calls give different signatures is two entries,
+    which the engine refuses: it is one function declared twice. -/
+def primitivesOf (fs : List FuncData) : List Primitive :=
+  fs.foldl (fun acc f => f.blocks.foldl (fun acc b => b.insts.foldl (fun acc i =>
+    let c? := match i with
+      | .call _ c _ => some c
+      | .funcAddr _ c => some c
+      | _ => none
+    match c?.bind Callee.primitive? with
+    | some p => if acc.contains p then acc else acc ++ [p]
+    | none => acc) acc) acc) []
+
+/-- What writing a function needs from the artifact around it. -/
+structure Wire where
+  /-- The artifact's primitives, which a call names by position. -/
+  prims : List Primitive
+  /-- Whether each function of the artifact answers a value. -/
+  answers : List Bool
+
+/-- A memory access's flags, as CLIF's words: `aligned` where it states its
+    address aligned. -/
+def flagsCbor (aligned : Bool) : W Unit := array (if aligned then ["aligned"] else []) text
+
+/-- The type an instruction names, where CLIF does not take it from an operand. -/
+def tyCbor (t : Option ClifTy) : W Unit := option cbor t
+
+/-- Every value an instruction binds. -/
+def resultsCbor (rs : List Val) : W Unit := array rs cbor
+
+/-- A one-operand instruction (`Unary`). -/
+def unaryCbor (d : Val) (op : String) (t : Option ClifTy) (a : Val) : W Unit :=
+  variant "Unary" [resultsCbor [d], text op, tyCbor t, cbor a]
+
+/-- A two-operand instruction (`Binary`), its type an operand's. -/
+def binaryCbor (d : Val) (op : String) (a b : Val) : W Unit :=
+  variant "Binary" [resultsCbor [d], text op, tyCbor none, cbor a, cbor b]
+
+/-- A three-operand instruction (`Ternary`), its type an operand's. -/
+def ternaryCbor (d : Val) (op : String) (a b c : Val) : W Unit :=
+  variant "Ternary" [resultsCbor [d], text op, tyCbor none, cbor a, cbor b, cbor c]
+
+/-- A store at no offset (`Store`): the value, then the address. -/
+def storeCbor (op : String) (v a : Val) : W Unit :=
+  variant "Store" [resultsCbor [], text op, tyCbor none, flagsCbor false, cbor v, cbor a, nat 0]
+
+/-- A branch's destination: the block, and what it is passed. -/
+def blockCallCbor (t : BlockRef) (args : List Val) : W Unit := do
+  head 4 2; cbor t; array args cbor
+
+/-- A parameter or return, passed as its type alone. -/
+def paramCbor (t : ClifTy) : W Unit := do
+  head 4 2; cbor t; array ([] : List String) text
+
+/-- A signature: its convention, what it takes, and what it returns. -/
+def sigCbor (convention : String) (params returns : List ClifTy) : W Unit :=
   struct
-    [("lib", text e.lib.name),
-     ("files", array e.lib.files fun (os, fs) => do head 4 2; text os; array fs text),
-     ("symbol", text e.symbol),
-     ("params", array e.sig.1 cbor),
-     ("result", option cbor e.sig.2)]
+    [("convention", text convention),
+     ("params", array params paramCbor),
+     ("returns", array returns paramCbor)]
 
-instance : ToCbor Callee where
-  cbor
-    | .ffi f   => newtypeVariant "Import" (text f.cname)
-    | .local i => newtypeVariant "Local" (nat i)
-    | .native  => text "Native"
-    | .atomic a => newtypeVariant "Atomic" (cbor a)
-    | .ext e => newtypeVariant "Extern" (Ext.toCbor e)
+/-- A primitive, as the artifact's table declares it. -/
+def primitiveCbor (p : Primitive) : W Unit :=
+  struct
+    [("lib", text p.lib),
+     ("symbol", text p.symbol),
+     ("signature", sigCbor "Host" p.sig.1 p.sig.2.toList)]
 
-/-- One instruction, in the shape `base_types::clif::Inst` reads.
+/-- A callee a direct call or a `func_addr` names: a function of the artifact,
+    or a primitive, by position. -/
+def calleeCbor (w : Wire) : Callee → W Unit
+  | .local i => newtypeVariant "Function" (nat i)
+  | c => match c.primitive? with
+    | some p => match w.prims.findIdx? (· == p) with
+      | some i => newtypeVariant "Primitive" (nat i)
+      | none => throw s!"{p.lib}!{p.symbol} is not in the artifact's primitives"
+    | none => throw "an indirect callee or an atomic names no function"
+
+/-- What a call binds: the value the program names, or, where it names none
+    for a callee that answers one, a fresh value, since CLIF names every
+    result. -/
+def callResults (d : Option Val) (answers : Bool) (fresh : Nat) : List Val × Nat :=
+  match d with
+  | some v => ([v], fresh)
+  | none => if answers then ([⟨fresh⟩], fresh + 1) else ([], fresh)
+
+/-- An atomic, which states its address aligned: the model faults one that
+    is not, as AArch64 does. -/
+def atomicCbor (rs : List Val) : Atomic → List Val → W Unit
+  | .load t, [a] =>
+      variant "LoadNoOffset" [resultsCbor rs, text "atomic_load", tyCbor (some t), flagsCbor true, cbor a]
+  | .store _, [v, a] =>
+      variant "StoreNoOffset" [resultsCbor rs, text "atomic_store", tyCbor none, flagsCbor true, cbor v, cbor a]
+  | .rmw t k, [a, x] =>
+      variant "AtomicRmw"
+        [resultsCbor rs, text "atomic_rmw", tyCbor (some t), flagsCbor true, text k.clif, cbor a, cbor x]
+  | .cas _, [a, e, x] =>
+      variant "AtomicCas" [resultsCbor rs, text "atomic_cas", tyCbor none, flagsCbor true, cbor a, cbor e, cbor x]
+  | .fence, [] => variant "NullAry" [resultsCbor rs, text "fence", tyCbor none]
+  -- An atomic on the wrong number of arguments: written under a name that is
+  -- no opcode, which the engine refuses at load.
+  | _, _ => variant "NullAry" [resultsCbor rs, text "atomic on the wrong number of arguments", tyCbor none]
+
+/-- A call through an address: the callee's signature under `convention`,
+    then the address, then the arguments. -/
+def indirectCbor (rs : List Val) (convention : String) (params : List ClifTy) (result : Option ClifTy) :
+    List Val → W Unit
+  | f :: args =>
+      variant "CallIndirect"
+        [resultsCbor rs, text "call_indirect", tyCbor none, sigCbor convention params result.toList,
+         cbor f, array args cbor]
+  | [] => throw "an indirect call without its address"
+
+/-- One instruction other than a call, in the shape `base_types::clif::Inst`
+    reads: a Cranelift format and an opcode of it.
 
     Stores and loads carry a byte offset on the Rust side that no builder here
-    emits yet, so it is written as zero. -/
-def Inst.toCbor : Inst → W Unit
-  | .iconst d t v => variant "Iconst" [cbor d, cbor t, i64 v]
-  | .iadd d a b => variant "Iadd" [cbor d, cbor a, cbor b]
-  | .isub d a b => variant "Isub" [cbor d, cbor a, cbor b]
-  | .imul d a b => variant "Imul" [cbor d, cbor a, cbor b]
-  | .udiv d a b => variant "Udiv" [cbor d, cbor a, cbor b]
-  | .ineg d a => variant "Ineg" [cbor d, cbor a]
-  | .ishl d a b => variant "Ishl" [cbor d, cbor a, cbor b]
-  | .ushr d a b => variant "Ushr" [cbor d, cbor a, cbor b]
-  | .band d a b => variant "Band" [cbor d, cbor a, cbor b]
-  | .bandNot d a b => variant "BandNot" [cbor d, cbor a, cbor b]
-  | .bor d a b => variant "Bor" [cbor d, cbor a, cbor b]
-  | .bxor d a b => variant "Bxor" [cbor d, cbor a, cbor b]
-  | .ireduce32 d a => variant "Ireduce32" [cbor d, cbor a]
-  | .uextend64 d a => variant "Uextend64" [cbor d, cbor a]
-  | .sextend64 d a => variant "Sextend64" [cbor d, cbor a]
-  | .store v a => variant "Store" [cbor v, cbor a, nat 0]
-  | .istore8 v a => variant "Istore8" [cbor v, cbor a, nat 0]
-  | .load d op a => variant "Load" [cbor d, cbor op, cbor a, nat 0]
-  | .icmp d c a b => variant "Icmp" [cbor d, cbor c, cbor a, cbor b]
-  | .select d c a b => variant "Select" [cbor d, cbor c, cbor a, cbor b]
-  | .call d f args =>
-    variant "Call" [option cbor d,
-                   cbor f, array args cbor]
-  | .jump t args => variant "Jump" [cbor t, array args cbor]
+    emits yet, so it is written as zero. The vector accessors and an atomic
+    state their address aligned. -/
+def Inst.plainCbor (w : Wire) : Inst → W Unit
+  | .iconst d t v => variant "UnaryImm" [resultsCbor [d], text "iconst", tyCbor (some t), i64 v]
+  | .memory d => variant "UnaryGlobalValue" [resultsCbor [d], text "symbol_value", tyCbor (some .i64), text "Arena"]
+  | .funcAddr d c => variant "FuncAddr" [resultsCbor [d], text "func_addr", tyCbor (some .i64), calleeCbor w c]
+  | .iadd d a b => binaryCbor d "iadd" a b
+  | .isub d a b => binaryCbor d "isub" a b
+  | .imul d a b => binaryCbor d "imul" a b
+  | .udiv d a b => binaryCbor d "udiv" a b
+  | .ineg d a => unaryCbor d "ineg" none a
+  | .ishl d a b => binaryCbor d "ishl" a b
+  | .ushr d a b => binaryCbor d "ushr" a b
+  | .band d a b => binaryCbor d "band" a b
+  | .bandNot d a b => binaryCbor d "band_not" a b
+  | .bor d a b => binaryCbor d "bor" a b
+  | .bxor d a b => binaryCbor d "bxor" a b
+  | .ireduce32 d a => unaryCbor d "ireduce" (some .i32) a
+  | .uextend64 d a => unaryCbor d "uextend" (some .i64) a
+  | .sextend64 d a => unaryCbor d "sextend" (some .i64) a
+  | .store v a => storeCbor "store" v a
+  | .istore8 v a => storeCbor "istore8" v a
+  -- The vector stores are the ones that state their alignment.
+  | .storeTyped t v a =>
+    variant "Store"
+      [resultsCbor [], text "store", tyCbor none, flagsCbor (t == .f32x4 || t == .i8x16), cbor v, cbor a, nat 0]
+  -- `uload32` and `sload32` answer an `i64` whatever: CLIF takes their type
+  -- from the address.
+  | .load d op a =>
+    let t := match op.kind with | .uload32 | .sload32 => none | _ => some op.ty
+    variant "Load" [resultsCbor [d], text op.kind.clif, tyCbor t, flagsCbor op.notrapAligned, cbor a, nat 0]
+  | .icmp d c a b => variant "IntCompare" [resultsCbor [d], text "icmp", tyCbor none, text c.clif, cbor a, cbor b]
+  | .fcmp d c a b => variant "FloatCompare" [resultsCbor [d], text "fcmp", tyCbor none, text c.clif, cbor a, cbor b]
+  | .select d c a b => ternaryCbor d "select" c a b
+  | .bitselect d c a b => ternaryCbor d "bitselect" c a b
+  | .fma d a b c => ternaryCbor d "fma" a b c
+  | .call .. => throw "a call is written with what it binds"
+  | .jump t args => variant "Jump" [resultsCbor [], text "jump", tyCbor none, blockCallCbor t args]
   | .brif c tb ta eb ea =>
-    variant "Brif" [cbor c, cbor tb, array ta cbor,
-                   cbor eb, array ea cbor]
-  -- A newtype variant, so the payload sits directly under the tag rather than
-  -- in an array the way the tuple variants above do.
-  | .ret v => newtypeVariant "Ret" (option cbor v)
-  | .fconst d t bits => variant "Fconst" [cbor d, cbor t, nat bits.toNat]
-  | .fadd d a b => variant "Fadd" [cbor d, cbor a, cbor b]
-  | .fsub d a b => variant "Fsub" [cbor d, cbor a, cbor b]
-  | .fmul d a b => variant "Fmul" [cbor d, cbor a, cbor b]
-  | .fmax d a b => variant "Fmax" [cbor d, cbor a, cbor b]
-  | .fmin d a b => variant "Fmin" [cbor d, cbor a, cbor b]
-  | .fpromote d a => variant "Fpromote" [cbor d, cbor a]
-  | .splat d t s => variant "Splat" [cbor d, cbor t, cbor s]
-  | .extractlane d s lane => variant "Extractlane" [cbor d, cbor s, nat lane]
-  | .storeTyped t v a => variant "StoreTyped" [cbor t, cbor v, cbor a, nat 0]
-  | .fneg d a => variant "Fneg" [cbor d, cbor a]
-  | .fcvtFromSint d t s => variant "FcvtFromSint" [cbor d, cbor t, cbor s]
-  | .fcvtToUint d t s => variant "FcvtToUint" [cbor d, cbor t, cbor s]
-  | .fcmp d c a b => variant "Fcmp" [cbor d, cbor c, cbor a, cbor b]
-  | .bitcast d t s => variant "Bitcast" [cbor d, cbor t, cbor s]
-  | .bitselect d c a b => variant "Bitselect" [cbor d, cbor c, cbor a, cbor b]
-  | .ctz d a => variant "Ctz" [cbor d, cbor a]
-  | .popcnt d a => variant "Popcnt" [cbor d, cbor a]
-  | .vhighBits d a => variant "VhighBits" [cbor d, cbor a]
-  | .ibin d k a b => variant "Ibin" [cbor d, cbor k, cbor a, cbor b]
-  | .ishift d k a b => variant "Ishift" [cbor d, cbor k, cbor a, cbor b]
-  | .iun d k a => variant "Iun" [cbor d, cbor k, cbor a]
-  | .fbin d k a b => variant "Fbin" [cbor d, cbor k, cbor a, cbor b]
-  | .fun1 d k a => variant "Fun1" [cbor d, cbor k, cbor a]
-  | .fconv d k t a => variant "Fconv" [cbor d, cbor k, cbor t, cbor a]
-  | .fma d a b c => variant "Fma" [cbor d, cbor a, cbor b, cbor c]
-  | .iext d k t a => variant "Iext" [cbor d, cbor k, cbor t, cbor a]
+    variant "Brif" [resultsCbor [], text "brif", tyCbor none, cbor c, blockCallCbor tb ta, blockCallCbor eb ea]
+  | .ret v => variant "MultiAry" [resultsCbor [], text "return", tyCbor none, array v.toList cbor]
+  | .fconst d .f32 bits =>
+    variant "UnaryIeee32" [resultsCbor [d], text "f32const", tyCbor none, nat (bits &&& 0xFFFFFFFF).toNat]
+  | .fconst d _ bits => variant "UnaryIeee64" [resultsCbor [d], text "f64const", tyCbor none, nat bits.toNat]
+  | .fadd d a b => binaryCbor d "fadd" a b
+  | .fsub d a b => binaryCbor d "fsub" a b
+  | .fmul d a b => binaryCbor d "fmul" a b
+  | .fmax d a b => binaryCbor d "fmax" a b
+  | .fmin d a b => binaryCbor d "fmin" a b
+  | .fpromote d a => unaryCbor d "fpromote" (some .f64) a
+  | .splat d t s => unaryCbor d "splat" (some t) s
+  | .extractlane d s lane =>
+    variant "BinaryImm8" [resultsCbor [d], text "extractlane", tyCbor none, cbor s, nat lane]
+  | .fneg d a => unaryCbor d "fneg" none a
+  | .fcvtFromSint d t s => unaryCbor d "fcvt_from_sint" (some t) s
+  | .fcvtToUint d t s => unaryCbor d "fcvt_to_uint_sat" (some t) s
+  | .bitcast d t s =>
+    variant "LoadNoOffset" [resultsCbor [d], text "bitcast", tyCbor (some t), flagsCbor false, cbor s]
+  | .ctz d a => unaryCbor d "ctz" none a
+  | .popcnt d a => unaryCbor d "popcnt" none a
+  | .vhighBits d a => unaryCbor d "vhigh_bits" (some .i32) a
+  | .ibin d k a b => binaryCbor d k.clif a b
+  | .ishift d k a b => binaryCbor d k.clif a b
+  | .iun d k a => unaryCbor d k.clif none a
+  | .fbin d k a b => binaryCbor d k.clif a b
+  | .fun1 d k a => unaryCbor d k.clif none a
+  | .fconv d k t a => unaryCbor d k.clif (some t) a
+  | .iext d k t a => unaryCbor d k.clif (some t) a
 
+/-- One instruction, given the next fresh value, answering the one after
+    what it used: a call binds a fresh value for a result the program does not
+    name. -/
+def Inst.toCbor (w : Wire) (fresh : Nat) : Inst → W Nat
+  | .call d (.atomic k) args => do
+    let (rs, fresh) := callResults d k.answers fresh
+    atomicCbor rs k args
+    pure fresh
+  | .call d .native args => do
+    let (rs, fresh) := callResults d true fresh
+    indirectCbor rs "Arch" [.i64, .i64, .i64, .i64] (some .i64) args
+    pure fresh
+  | .call d (.host ps r) args => do
+    let (rs, fresh) := callResults d r.isSome fresh
+    indirectCbor rs "Host" ps r args
+    pure fresh
+  | .call d c args => do
+    let (rs, fresh) := callResults d (c.answers w.answers) fresh
+    variant "Call" [resultsCbor rs, text "call", tyCbor none, calleeCbor w c, array args cbor]
+    pure fresh
+  | i => do
+    i.plainCbor w
+    pure fresh
 
+/-- A block: its name, its parameters, its instructions. -/
+def BlockData.toCbor (w : Wire) (b : BlockData) (fresh : Nat) : W Nat := do
+  head 5 3
+  text "reference"; cbor b.ref
+  text "params"; array b.params fun (v, t) => do head 4 2; cbor v; cbor t
+  text "insts"; head 4 b.insts.length
+  b.insts.foldlM (fun fresh i => i.toCbor w fresh) fresh
 
-instance : ToCbor Inst where
-  cbor := Inst.toCbor
-
-instance : ToCbor BlockData where
-  cbor b := struct
-    [("reference", cbor b.ref),
-     ("params", array b.params fun (v, t) => do head 4 2; cbor v; cbor t),
-     ("insts", array b.insts cbor)]
-
-
-instance : ToCbor FuncData where
-  cbor f := struct
-    [("entry_name", option text f.entryName),
-     ("blocks", array f.blocks cbor)]
+/-- A function: its name if it is an entry point, its signature, and its
+    blocks. A named function's signature is `BaseFunction`'s; any other function
+    takes what its entry block does and answers an `i64` where a `ret` of it
+    carries one. -/
+def FuncData.toCbor (w : Wire) (f : FuncData) : W Unit := do
+  let params := (f.blocks.head?.map fun b => b.params.map (·.2)).getD []
+  head 5 4
+  text "name"; option text f.name
+  text "signature"
+  if f.name.isSome then sigCbor "Host" [.i64, .i64, .i64, .i64] [.i64]
+  else sigCbor "Host" params (if f.answers then [.i64] else [])
+  text "stack_slots"; array ([] : List Nat) nat
+  text "blocks"; head 4 f.blocks.length
+  let _ ← f.blocks.foldlM (fun fresh b => b.toCbor w fresh) f.nextVal
 
 end IR
 

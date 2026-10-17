@@ -39,8 +39,9 @@ fn main() {
         // The arena and the data segments are replaced rather than carried, so
         // what the JIT is timed on is the functions alone.
         let artifact = Artifact {
+            primitives: artifact.primitives,
             functions: artifact.functions,
-            required_memory: 1 << 20,
+            arena_size: 1 << 20,
             data: Vec::new(),
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();

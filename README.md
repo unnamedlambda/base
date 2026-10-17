@@ -47,8 +47,9 @@ def code : Prog V L Unit := do
 ### Running an artifact
 
 The `lean-artifacts` crate builds every generator with Lake and embeds the
-resulting artifacts. Loading one compiles it once; each `execute` then calls an
-entry point by name with the caller's input and output buffers.
+resulting artifacts. Loading one compiles it once; each entry point is then a
+native function, found by name once and called with the caller's input and
+output buffers (`Driver::execute` does both, for a call made once).
 
 ```rust
 use base::{Artifact, Driver};

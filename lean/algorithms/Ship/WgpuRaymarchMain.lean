@@ -29,7 +29,7 @@ abbrev RaymarchMainOn (d : Bool) : World → Prop := Contracts.TState.holds
    .cstrIn (regionBase .arena + 80) 8192]
 
 theorem Raymarch_main_fine :
-    Fine (emitGo (Raymarch.mainBody : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+    Fine (emitGo (fnBody ptrParams (Raymarch.mainBody : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 ship_entry Raymarch_main_display : Raymarch.mainBody under (RaymarchMainOn true)

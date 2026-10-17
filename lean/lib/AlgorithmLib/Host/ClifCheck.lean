@@ -943,7 +943,7 @@ theorem getV_setV_ne {vs : Vals} {d w : Val} {x u : V}
 theorem evalInst_dest {m : Mem} {vs : Vals} {i : Inst} {d : Val} {x : V}
     (h : evalInst m vs i = some (d, x)) : Inst.destOf? i = some d := by
   cases i <;>
-    simp_all [evalInst, Inst.destOf?, evalInst.bin, evalInst.un,
+    simp_all [evalInst, Inst.destOf?, evalInst.bin, evalInst.un, AlgorithmLib.HProg.Blocks.localIdx?,
               Option.bind_eq_some_iff, Prod.mk.injEq, Option.some.injEq] <;>
     grind
 
@@ -2717,6 +2717,8 @@ theorem typesAgree_empty (vs : Vals) : TypesAgree TyEnv.empty vs := by
     binding. -/
 def tyStep (Θ : TyEnv) : Inst → TyEnv
   | .iconst d t _   => Θ.set d (some t)
+  | .memory d       => Θ.set d (some .i64)
+  | .funcAddr d _   => Θ.set d (some .i64)
   | .iadd d a _ | .isub d a _ | .imul d a _ | .ishl d a _ | .ushr d a _
   | .ineg d a       => Θ.set d (Θ a)
   | .ireduce32 d _  => Θ.set d (some .i32)
@@ -2804,6 +2806,21 @@ theorem tyStep_sound {m : Mem} {Θ : TyEnv} {vs : Vals} {i : Inst} {d : Val} {x 
       obtain ⟨t, w, _, _, _, hdd, hx⟩ := evalInst_sextend64_inv hev
       rw [tyStep, hdd]
       exact typesAgree_dest hta (by rw [hx]; exact ofInt_sc _ _)
+  | memory d' =>
+      have hq : d' = d ∧ x = .sc .i64 (regionBase .arena) := by
+        simp [evalInst, AlgorithmLib.HProg.Blocks.viaOp, evalOp] at hev
+        exact ⟨hev.1, hev.2.symm⟩
+      rw [tyStep, hq.1]
+      exact typesAgree_dest hta hq.2
+  | funcAddr d' c =>
+      cases c
+      case «local» i =>
+        have hq : d' = d ∧ x = .sc .i64 (fnBase + UInt64.ofNat i) := by
+          simp [evalInst, AlgorithmLib.HProg.Blocks.localIdx?, AlgorithmLib.HProg.Blocks.viaOp, evalOp] at hev
+          exact ⟨hev.1, hev.2.symm⟩
+        rw [tyStep, hq.1]
+        exact typesAgree_dest hta hq.2
+      all_goals simp [evalInst, AlgorithmLib.HProg.Blocks.localIdx?] at hev
   | load d' op a =>
       rw [tyStep]
       rcases hl : op.ty.lanes with _ | ln

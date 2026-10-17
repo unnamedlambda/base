@@ -24,9 +24,9 @@ pytestmark = pytest.mark.skipif(
 
 def call(base, entry, data=b""):
     """Ask for the size, then call with a buffer that holds it."""
-    need = base.execute(entry, data)
+    need = base.function(entry)(data)
     out = bytearray(need)
-    assert base.execute(entry, data, out) == need
+    assert base.function(entry)(data, out) == need
     return bytes(out)
 
 

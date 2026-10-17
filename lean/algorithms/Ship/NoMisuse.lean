@@ -27,7 +27,7 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace ShipSafe
 
-theorem bytecount_fine : Fine (emitGo (ByteCount.code (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem bytecount_fine : Fine (emitGo (fnBody ptrParams (ByteCount.code (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 /-- The caller's data and output, of the lengths it passes. -/
@@ -41,7 +41,7 @@ theorem bytecount_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h
     Sem.run cfg (runArgs dataLen outLen) w (emit ByteCount.code) ≠ .fault m := by
   check_body
 
-theorem bytescrub_fine : Fine (emitGo (ByteScrub.code (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem bytescrub_fine : Fine (emitGo (fnBody ptrParams (ByteScrub.code (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in
@@ -51,7 +51,7 @@ theorem bytescrub_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h
     Sem.run cfg (runArgs dataLen outLen) w (emit ByteScrub.code) ≠ .fault m := by
   check_body
 
-theorem clampsum_fine : Fine (emitGo (ClampSumBench.code (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem clampsum_fine : Fine (emitGo (fnBody ptrParams (ClampSumBench.code (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in
@@ -74,7 +74,7 @@ theorem selfDescribing_size : SelfDescribing.layoutMeta.totalSize = 4420 := by n
 theorem schemaBytes_length : SelfDescribing.schemaBytes.length = 186 := by native_decide
 
 theorem selfDescribing_schema_fine :
-    Fine (emitGo (SelfDescribing.schemaCode (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
+    Fine (emitGo (fnBody ptrParams (SelfDescribing.schemaCode (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in
@@ -99,7 +99,7 @@ theorem bulkSize_eq : SelfDescribing.bulkSize = 2056 := by native_decide
 theorem bulkId_size : SelfDescribing.bulkId.utf8ByteSize = 8 := by native_decide
 
 theorem selfDescribing_stats_fine :
-    Fine (emitGo (SelfDescribing.statsCode (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
+    Fine (emitGo (fnBody ptrParams (SelfDescribing.statsCode (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in
@@ -114,7 +114,7 @@ theorem selfDescribing_stats_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w 
   check_body
 
 theorem selfDescribing_bulk_fine :
-    Fine (emitGo (SelfDescribing.bulkCode (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
+    Fine (emitGo (fnBody ptrParams (SelfDescribing.bulkCode (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in

@@ -52,12 +52,12 @@ def main():
     blob = (np.ones(NE, dtype=np.float32).tobytes() + wr.tobytes() + x.tobytes()
             + b"".join(m.astype("<f4").ravel().tobytes() for w in ws for m in w))
     base = py_base.Driver(art)
-    base.execute("main", blob)
+    base.function("main")(blob)
 
     # 1. Route.
-    base.execute("runRouter")
+    base.function("runRouter")()
     g = bytearray(NE * 4)
-    base.execute("fetchGate", b"", g)
+    base.function("fetchGate")(b"", g)
     gate = np.frombuffer(bytes(g), dtype="<f4")
 
     ref_gate = softmax((wr @ x).astype(np.float32))
@@ -66,15 +66,15 @@ def main():
     # 2. Rank, and tell the device which weights the slots are.
     chosen = np.argsort(-gate)[:MUSED].astype("<u4")
     print(f"chosen   : experts {list(chosen)}  gates {gate[chosen]}")
-    base.execute("bindExperts", chosen.tobytes())
+    base.function("bindExperts")(chosen.tobytes())
     packed = np.zeros(32, dtype=np.float32)      # the buffer is a warp wide
     packed[:MUSED] = gate[chosen]
-    base.execute("uploadGates", packed.tobytes())
+    base.function("uploadGates")(packed.tobytes())
 
     # 3. Run the two slots.
-    base.execute("runExperts")
+    base.function("runExperts")()
     o = bytearray(MD * 4)
-    base.execute("fetchOut", b"", o)
+    base.function("fetchOut")(b"", o)
     got = np.frombuffer(bytes(o), dtype="<f4")
 
     ref = np.zeros(MD, dtype=np.float32)
@@ -99,10 +99,10 @@ def main():
     # sequence that ran and the dense reading is an extrapolation, not a guess.
     def t(fn, reps=200):
         for _ in range(5):
-            base.execute(fn)
+            base.function(fn)()
         t0 = time.perf_counter()
         for _ in range(reps):
-            base.execute(fn)
+            base.function(fn)()
         return (time.perf_counter() - t0) / reps * 1e6
 
     t_route = t("runRouter")

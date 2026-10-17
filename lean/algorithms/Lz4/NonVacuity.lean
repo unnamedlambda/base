@@ -201,12 +201,11 @@ theorem warp32_entry_sound {lc : AlgorithmLib.HProg.Sem.Locals}
 
 /-- **The typing hypothesis is satisfied by a concrete entry state**, so the
     theorem above is not true for want of a caller.  The function takes the
-    arena base and the caller's two buffers with their lengths, and
-    `ptrParams` declares every one of them `i64`. -/
+    caller's two buffers with their lengths, and `ptrParams` declares every one
+    of them `i64`. -/
 theorem warp32_entry_arg :
     TypesAgree (entryTys (warpFn (WP.mk 15)))
       #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
-        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
         AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
         AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
         AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
@@ -215,7 +214,6 @@ theorem warp32_entry_arg :
 /-- …and that state has the arity the entry block declares. -/
 theorem warp32_entry_size :
     (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
-       AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size

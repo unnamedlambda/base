@@ -217,6 +217,12 @@ theorem op_mstep (lc : Sem.Locals) (s : CS) (n : Nat) (ha : Aligned s n) (o : Op
   | iconst ty k =>
       rw [instOf_of (emit_iconst s n ha ty k)]
       exact ⟨by simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp], fun _ _ => rfl⟩
+  | memory =>
+      rw [instOf_of (emit_memory s n ha)]
+      exact ⟨by simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp], fun _ _ => rfl⟩
+  | funcAddr i =>
+      rw [instOf_of (emit_funcAddr s n ha i)]
+      exact ⟨by simp [Blocks.evalInst, Blocks.localIdx?, Blocks.viaOp, Sem.evalOp], fun _ _ => rfl⟩
   | iadd a b =>
       have h1 : a < n := hr a (by simp [Op.regs])
       have h2 : b < n := hr b (by simp [Op.regs])

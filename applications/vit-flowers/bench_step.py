@@ -9,10 +9,10 @@ SQ, NC, N = 200, 128, 30
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
 base = py_base.Driver(art)
-base.execute("main", blob)
-base.execute("capture")
-base.execute("captureStep")
-base.execute("reload", blob)
+base.function("main")(blob)
+base.function("capture")()
+base.function("captureStep")()
+base.function("reload")(blob)
 
 buf = bytearray(SQ * NC * 4)
 seed = np.zeros((SQ, NC), np.float32).tobytes()
@@ -20,10 +20,10 @@ seed = np.zeros((SQ, NC), np.float32).tobytes()
 
 def t(fn, arg=b"", out=None):
     for _ in range(5):
-        base.execute(fn, arg, out)
+        base.function(fn)(arg, out)
     s = time.perf_counter()
     for _ in range(N):
-        base.execute(fn, arg, out)
+        base.function(fn)(arg, out)
     return (time.perf_counter() - s) / N * 1e3
 
 

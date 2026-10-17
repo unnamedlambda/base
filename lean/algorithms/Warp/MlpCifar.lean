@@ -982,7 +982,9 @@ theorem bwdPipeline_runs (st : WSt) :
     the bodies `shippedBodies` places at functions 22 and 23, so this is the code
     that runs, not a model of it. -/
 
-def ROOT : Nat := 0
+/-- The memory's address: `v4`, which an entry point's first statement takes,
+    after its four arguments. -/
+def ROOT : Nat := 4
 
 /-- The bind array, as `Clif.bindsOf` recovers it: entry `i` is the handle at
     layout slot `bindOff i`, which is buffer `i`. -/

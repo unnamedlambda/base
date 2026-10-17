@@ -390,7 +390,7 @@ def clifIR : Except String (List FuncData) :=
   let wfns := (workloads.foldl (fun (acc : List (Except String FuncData) × Nat) w =>
     (acc.1 ++ w.fns acc.2, acc.2 + w.count)) ([], FIRST)).1
   Prog.program <|
-    [Prog.entry "noop" (.ok noopFunction),
+    [Prog.entry "noop" (Prog.compileProg 0 (pure ())),
      Prog.entry "asm_load" (Prog.compileProg 1 asmLoad)]
     ++ wfns
 

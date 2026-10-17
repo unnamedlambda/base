@@ -23,7 +23,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     // Looked up by name: this bench selects a kernel by name.
     let bytes = lean_artifacts::by_name(name).unwrap_or_else(|| panic!("no artifact {name}"));
     let art = Artifact::from_bytes(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let mut base = Driver::load(art).expect("compile");
+    let base = Driver::load(art).expect("compile");
 
     // Layout mirrors Lz4Ship.WP in lean/algorithms/Lz4/Comp.lean; asserted against the
     // geometry the program writes after the blocks.

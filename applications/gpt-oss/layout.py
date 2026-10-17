@@ -69,7 +69,7 @@ def ptx_modules(base):
     not a copy that could drift from it.
     """
     import re
-    mem = base.read_memory(0, base.memory_size())
+    mem = base.read(0, len(base.arena))
     out = []
     for m in re.finditer(rb"\.version", mem):
         seg = mem[m.start():]
@@ -82,7 +82,7 @@ def check_layout(base):
 
     `base` is the runtime the artifact was loaded into, before its first call:
     what it holds then is the image the artifact starts from."""
-    want = struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
+    want = struct.unpack_from("<I", base.read(HOST_LEN_OFF, 4))[0]
     assert want == D_IN_BYTES, (
         f"layout drift: the artifact expects {want} input bytes, "
         f"applications/gpt-oss/layout.py says {D_IN_BYTES}")

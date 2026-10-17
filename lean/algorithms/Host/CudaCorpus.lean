@@ -290,7 +290,7 @@ def program : Except String (List FuncData) :=
 def env : FnEnv := (Prog.run body).2.1
 
 def entryArgVals : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  [.sc .i64 (Sem.regionBase .data),
    .sc .i64 8, .sc .i64 (Sem.regionBase .out), .sc .i64 OUT.toUInt64]
 
 /-- The world the run starts from: the artifact's image in the arena, and the
@@ -325,7 +325,7 @@ def hazard (syncFirst : Bool) : Prog V L Unit := do
 
 def hazardStuck (syncFirst : Bool) : Bool :=
   match Sem.run { env := (Prog.run (hazard syncFirst)).2.1 } entryArgVals startWorld
-      (Prog.emit (hazard syncFirst)) with
+      (Prog.emit ((hazard syncFirst))) with
   | .stuck _ | .fault _ => true
   | _ => false
 

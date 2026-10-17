@@ -92,7 +92,7 @@ def main():
         buf[528:528 + len(emb)] = emb
         buf[784:784 + len(tkz)] = tkz
         out = bytearray(D_OUT_BYTES)
-        base.execute("main", bytes(buf), out)
+        base.function("main")(bytes(buf), out)
         b = bytes(out)
         tok_id_out, miss = struct.unpack_from("<Ii", b, 0)
         lg = np.frombuffer(b, np.float32, count=201088, offset=8)

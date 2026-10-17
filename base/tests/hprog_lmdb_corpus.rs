@@ -65,7 +65,7 @@ fn interpreter_and_library_agree() {
     let a = Artifact::from_bytes(lean_artifacts::HPROG_LMDB_CORPUS).expect("artifact shape");
 
     let _ = std::fs::remove_dir_all(Path::new(DIRS));
-    let mut b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
     b.execute("main", &[], &mut out).expect("execute");
     drop(b);

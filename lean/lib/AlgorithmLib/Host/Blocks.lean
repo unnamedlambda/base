@@ -46,9 +46,16 @@ def setV (vs : Vals) (v : Val) (x : V) : Vals :=
 def viaOp (m : Mem) (args : List V) (o : Op) : Option V :=
   evalOp m args.toArray o
 
+/-- The position of one of the program's own functions, as a callee names it. -/
+def localIdx? : Callee → Option Nat
+  | .local i => some i
+  | _ => none
+
 /-- One result-producing instruction: its destination and what it computes. -/
 def evalInst (m : Mem) (vs : Vals) : Inst → Option (Val × V)
   | .iconst d t k => do pure (d, ← viaOp m [] (.iconst t k))
+  | .memory d => do pure (d, ← viaOp m [] .memory)
+  | .funcAddr d c => do let i ← localIdx? c; pure (d, ← viaOp m [] (.funcAddr i))
   | .fconst d t b => do pure (d, ← viaOp m [] (.fconst t b))
   | .iadd d a b => bin d a b .iadd | .isub d a b => bin d a b .isub
   | .imul d a b => bin d a b .imul | .udiv d a b => bin d a b .udiv
@@ -259,6 +266,9 @@ def CompileSound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     = Blocks.run noLocals (compileBody idx c env params) args w fuel
 
 
+/-- Five `i64` parameters: the shape the examples below are stated at. -/
+def five : List ClifTy := [.i64, .i64, .i64, .i64, .i64]
+
 /-- The base case, proved. An empty body compiles to one block that returns,
     and neither side observes anything.
 
@@ -268,10 +278,10 @@ def CompileSound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     at the same indices. Everything else is built on top of that. -/
 theorem empty_sound (idx : Nat) (env : FnEnv) (base data dlen out olen : V)
     (w : World) (fuel : Nat) :
-    CompileSound idx env ptrParams [] [base, data, dlen, out, olen] w (fuel + 1) := by
+    CompileSound idx env five [] [base, data, dlen, out, olen] w (fuel + 1) := by
   have hEmit : ∀ s : CS, emitCode HProg.fuel s [] = s := by
     intro s; simp [emitCode, HProg.fuel]
-  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, compileBody, ptrParams,
+  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, compileBody, five,
         CS.open', CS.open'.go, CS.close, CS.fresh, Blocks.runFrom, Blocks.runInsts,
         Blocks.setV, hEmit]
 
@@ -284,14 +294,14 @@ theorem empty_sound (idx : Nat) (env : FnEnv) (base data dlen out olen : V)
     the straight-line induction generalises. -/
 theorem single_iconst_sound (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
     (base data dlen out olen : V) (w : World) (fuel : Nat) :
-    CompileSound idx env ptrParams [.straight [.op (.iconst t k)]]
+    CompileSound idx env five [.straight [.op (.iconst t k)]]
       [base, data, dlen, out, olen] w (fuel + 2) := by
   have hEmit : ∀ s : CS,
       emitCode HProg.fuel s [Piece.straight [Stmt.op (Op.iconst t k)]]
         = emitStmt s (Stmt.op (Op.iconst t k)) := by
     intro s; simp [emitCode, emitPiece, emitStmts, HProg.fuel]
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
-        Sem.runStmt, compileBody, ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
+        Sem.runStmt, compileBody, five, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
         Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.evalInst, Blocks.viaOp,
         emitStmt, hEmit, Sem.evalOp]
 
@@ -342,13 +352,13 @@ theorem brif_step (lc : Sem.Locals) (s : Blocks.BSt) (flag a b : Val) (cc : ICmp
     entry parameters --- which is where `IteMeta.flag` points. -/
 theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x d dl o ol : UInt64)
     (w : World) (fuel : Nat) :
-    CompileSound idx env ptrParams
+    CompileSound idx env five
       [.straight [.op (.icmp .eq 0 0)], .ite ⟨5, []⟩ [] [] [] []]
       [.sc .i64 x, .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol]
       w (fuel + 6) := by
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
         Sem.runStmt, compileBody,
-        ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
+        five, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
         emitCode, emitPiece, emitIte, emitStmt, emitStmts, termsGo, HProg.fuel,
         Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.getV,
         Sem.get, Sem.bindAt, Sem.slotsOf, Sem.slotsGo, Sem.cmpInt, Sem.boolV, Sem.isTrue,
@@ -367,14 +377,14 @@ theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x d dl o ol : UInt64)
     development has got wrong twice. -/
 theorem ite_exports_sound (idx : Nat) (env : FnEnv) (k1 k2 : Int) (x d dl o ol : UInt64)
     (w : World) (fuel : Nat) :
-    CompileSound idx env ptrParams
+    CompileSound idx env five
       [.straight [.op (.icmp .eq 0 0)],
        .ite ⟨5, [.i64]⟩
         [.straight [.op (.iconst .i64 k1)]] [.straight [.op (.iconst .i64 k2)]] [6] [7]]
       [.sc .i64 x, .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol]
       w (fuel + 8) := by
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
-        Sem.runStmt, compileBody, ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
+        Sem.runStmt, compileBody, five, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
         emitCode, emitPiece, emitIte, emitStmt, emitStmts, termsGo, HProg.fuel,
         Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.getV,
         Sem.get, Sem.bindAt, Sem.slotsOf, Sem.slotsGo, Sem.cmpInt, Sem.boolV, Sem.isTrue,
@@ -1108,6 +1118,26 @@ theorem eval_iconst (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
       = (Sem.evalOp m Γ (.iconst ty k)).map (fun w => (⟨n⟩, w)) := by
   simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp]
 
+theorem emit_funcAddr (s : CS) (n : Nat) (ha : Aligned s n) (i : Nat) :
+    (emitStmt s (.op (.funcAddr i))).cur = .funcAddr ⟨n⟩ (.local i) :: s.cur := by
+  obtain ⟨h1, _, _⟩ := ha
+  simp [emitStmt, CS.fresh, h1]
+
+theorem eval_funcAddr (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n i : Nat) :
+    Blocks.evalInst m vals (.funcAddr ⟨n⟩ (.local i))
+      = (Sem.evalOp m Γ (.funcAddr i)).map (fun w => (⟨n⟩, w)) := by
+  simp [Blocks.evalInst, Blocks.localIdx?, Blocks.viaOp, Sem.evalOp]
+
+theorem emit_memory (s : CS) (n : Nat) (ha : Aligned s n) :
+    (emitStmt s (.op .memory)).cur = .memory ⟨n⟩ :: s.cur := by
+  obtain ⟨h1, _, _⟩ := ha
+  simp [emitStmt, CS.fresh, h1]
+
+theorem eval_memory (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat) :
+    Blocks.evalInst m vals (.memory ⟨n⟩)
+      = (Sem.evalOp m Γ .memory).map (fun w => (⟨n⟩, w)) := by
+  simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp]
+
 theorem emit_fconst (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (b : UInt64) :
     (emitStmt s (.op (.fconst ty b))).cur = .fconst ⟨n⟩ ty b :: s.cur := by
   obtain ⟨h1, _, _⟩ := ha
@@ -1745,7 +1775,7 @@ private theorem opStep_of_emit (lc : Sem.Locals) (s : CS) (n : Nat) (o : Op) (in
 /-- **Every operation satisfies the frame against the instruction it compiles
     to**, given only that its operands are in scope.
 
-    Thirty-six cases and each one names its `emit_X` and `eval_X`: the content
+    One case per operation, and each names its `emit_X` and `eval_X`: the content
     is that the pair exists for every constructor, so no operation is left to be
     supplied later. -/
 theorem op_opStep_emit (lc : Sem.Locals) (s : CS) (n : Nat) (ha : Aligned s n) (o : Op)
@@ -1754,6 +1784,12 @@ theorem op_opStep_emit (lc : Sem.Locals) (s : CS) (n : Nat) (ha : Aligned s n) (
   | iconst ty k =>
         exact opStep_of_emit lc s n _ _ (emit_iconst s n ha ty k)
           (fun m vals Γ _ _ => eval_iconst m vals Γ n ty k) (fun _ _ _ => rfl)
+  | memory =>
+        exact opStep_of_emit lc s n _ _ (emit_memory s n ha)
+          (fun m vals Γ _ _ => eval_memory m vals Γ n) (fun _ _ _ => rfl)
+  | funcAddr i =>
+        exact opStep_of_emit lc s n _ _ (emit_funcAddr s n ha i)
+          (fun m vals Γ _ _ => eval_funcAddr m vals Γ n i) (fun _ _ _ => rfl)
   | iadd a b =>
         have h1 : a < n := hr a (by simp [Op.regs])
         have h2 : b < n := hr b (by simp [Op.regs])
@@ -2475,12 +2511,12 @@ theorem compileSound_toE (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : C
 /-- The base cases at the budget-separated statement. -/
 theorem empty_soundE (idx : Nat) (env : FnEnv) (base data dlen out olen : V)
     (w : World) (fuel : Nat) :
-    CompileSoundE idx env ptrParams [] [base, data, dlen, out, olen] w (fuel + 1) :=
+    CompileSoundE idx env five [] [base, data, dlen, out, olen] w (fuel + 1) :=
   compileSound_toE _ _ _ _ _ _ _ (empty_sound idx env base data dlen out olen w fuel)
 
 theorem single_iconst_soundE (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
     (base data dlen out olen : V) (w : World) (fuel : Nat) :
-    CompileSoundE idx env ptrParams [.straight [.op (.iconst t k)]]
+    CompileSoundE idx env five [.straight [.op (.iconst t k)]]
       [base, data, dlen, out, olen] w (fuel + 2) :=
   compileSound_toE _ _ _ _ _ _ _
     (single_iconst_sound idx env t k base data dlen out olen w fuel)

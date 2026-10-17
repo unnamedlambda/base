@@ -5,67 +5,90 @@
 //! host — a Lean program that builds its own artifact and runs it in-process —
 //! needs no Rust of its own.
 //!
-//! An artifact arrives as the CBOR a generator writes, and an entry
-//! point is called by the name the artifact exports it as. Nothing here decides
-//! anything about a program: it is `Driver::load`, `Driver::execute` and
-//! `Driver::memory` with pointers instead of types.
+//! An artifact arrives as the CBOR a generator writes. Base works like a
+//! shared library: [`base_driver_load`] compiles it, as `dlopen` would load
+//! one; [`base_driver_function`] answers a function by name as a plain C
+//! function pointer, as `dlsym` would; and the host calls that function itself, as
+//! often as it likes, from any thread. Nothing of base runs between the host
+//! and the program on a call.
+//!
+//! Every function a host calls has one C signature:
+//!
+//! ```c
+//! int64_t function(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len);
+//! ```
+//!
+//! It runs the program with `in` and answers in `out`, which it reads and
+//! writes directly, and returns the program's status (`0` from a program that
+//! returns nothing). The arena is not an argument: the function takes its
+//! address itself, from a symbol the engine links to the arena, as a C function
+//! in a shared library reaches the library's data.
+//!
+//! That is all a host needs and nothing it could do itself: load and free a
+//! driver, a function by name, and the arena. Calling by name or copying out
+//! of the arena are a line or two in each host's binding.
+//!
+//! # What stays fixed
+//!
+//! Every function a host calls has the one signature above; what else a call
+//! needs travels in its buffers, laid out by the program. The arena never moves or
+//! grows, since the program's code is linked to its address. What an artifact
+//! runs with is decided when it is built, so a load takes nothing but the
+//! artifact. Anything more a host reaches is a function of the program,
+//! rather than another function here. A trap in a program ends
+//! the process: nothing of base runs on a call to catch one.
 //!
 //! # Results
 //!
 //! A program answers through the out buffer its caller passes, and whatever it
-//! leaves in its own memory stays readable through [`base_driver_memory`]. Base
-//! gives neither a format: the generator that built the program is what knows
-//! what the bytes mean.
+//! leaves in its arena stays there, in [`base_driver_arena`]. Base gives neither
+//! a format: the generator that built the program is what knows what the bytes
+//! mean.
+//!
+//! # Threads
+//!
+//! Functions may be called from any number of threads at once, as any C
+//! functions may: each call runs on its caller's thread against the one
+//! arena, and how calls share it is the program's to decide. The arena is
+//! shared with running programs the way two threads of one C program share
+//! memory: bytes a program may touch while it runs are reached with atomic
+//! operations on both sides, and bytes no running program touches are the
+//! host's to use as it likes.
+//!
+//! [`base_driver_free`] needs the driver to itself: no function of it may
+//! still be running, and none may be called after it, as with a library after
+//! `dlclose`. Keeping that is the host's part, and every host already has the
+//! means: a `std::shared_ptr` in C++, an `Arc` or a borrow in Rust, an object's
+//! reference count in Python.
 //!
 //! # Errors
 //!
-//! A call that fails answers null or `-1` and leaves a message on the calling
-//! thread, which [`base_last_error`] copies out. The message is per-thread and
-//! not allocated for the caller, so there is nothing to free.
+//! Only a load can fail with something to say: it answers null and writes why
+//! into the buffer its caller passes. A lookup of a name the artifact has no
+//! function by answers null, which says all there is. Base keeps no error state.
 //!
-//! A panic inside a call is one of those failures. A panic cannot unwind out
-//! of an `extern "C"` function — Rust aborts the process instead — so every
-//! entry point runs its body under [`guard`], and the host sees `-1` and the
-//! panic's message rather than losing its own process. A trap in generated
-//! code is a signal, not a panic, and still ends the process.
+//! A panic while loading is one of those failures. A panic cannot unwind out
+//! of an `extern "C"` function — Rust aborts the process instead — so the load
+//! runs under [`guard`], and the host sees null and the panic's message rather
+//! than losing its own process. A trap in generated code is a signal, not a
+//! panic, and still ends the process.
 
-use std::cell::RefCell;
-
-use crate::Driver;
+use crate::{Driver, FunctionPtr};
 use base_types::Artifact;
 
-thread_local! {
-    static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
-}
-
-fn set_error(message: impl Into<String>) {
-    LAST_ERROR.with(|e| *e.borrow_mut() = message.into());
-}
-
-fn clear_error() {
-    LAST_ERROR.with(|e| e.borrow_mut().clear());
-}
-
-/// Run `body`, turning a panic into `failed` and a message for
-/// [`base_last_error`].
+/// Run `body`, turning a panic into an error carrying its message.
 ///
-/// `AssertUnwindSafe` is sound here because a panic ends the call: nothing
-/// observes the state `body` was midway through except through the driver,
-/// and a host that keeps using a driver after a failed call gets whatever
-/// that driver's program left in its memory, as it would after any failure.
-fn guard<T>(failed: T, body: impl FnOnce() -> T) -> T {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
-        Ok(v) => v,
-        Err(payload) => {
-            let what = payload
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "a panic with no message".to_string());
-            set_error(format!("panic: {what}"));
-            failed
-        }
-    }
+/// `AssertUnwindSafe` is sound here because a panic ends the load, and
+/// nothing it was midway through is reachable afterwards.
+fn guard<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|payload| {
+        let what = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a panic with no message".to_string());
+        Err(format!("panic: {what}"))
+    })
 }
 
 /// The bytes at `ptr`, or `None` if that is not a region this may read.
@@ -82,183 +105,111 @@ unsafe fn slice_in<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
     }
 }
 
-unsafe fn slice_out<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
-    match (ptr.is_null(), len) {
-        (_, 0) => Some(&mut []),
-        (true, _) => None,
-        (false, _) => Some(std::slice::from_raw_parts_mut(ptr, len)),
-    }
-}
-
-/// Compile an artifact and take its memory. The result is owned by the caller
-/// and released with [`base_driver_free`]; null means the call failed.
+/// Compile an artifact and allocate its arena. The result is owned by the caller
+/// and released with [`base_driver_free`].
 ///
 /// `artifact` is an encoded [`Artifact`] — the `.cbor` file a generator writes.
+///
+/// Null means the load failed, and then why is written to `err` as a
+/// NUL-terminated string, cut to fit its `err_cap` bytes. `err` may be null
+/// when the caller does not want to know.
 ///
 /// # Safety
 ///
 /// `artifact` must point to `len` readable bytes, or be null with `len` zero.
+/// `err` must point to `err_cap` writable bytes, or be null.
 #[no_mangle]
-pub unsafe extern "C" fn base_driver_load(artifact: *const u8, len: usize) -> *mut Driver {
-    guard(std::ptr::null_mut(), || {
-        clear_error();
-        let Some(bytes) = slice_in(artifact, len) else {
-            set_error("artifact is null with a non-zero length");
-            return std::ptr::null_mut();
-        };
-        let artifact = match Artifact::from_bytes(bytes) {
-            Ok(a) => a,
-            Err(e) => {
-                set_error(e);
-                return std::ptr::null_mut();
+pub unsafe extern "C" fn base_driver_load(
+    artifact: *const u8,
+    len: usize,
+    err: *mut u8,
+    err_cap: usize,
+) -> *mut Driver {
+    let loaded = guard(|| {
+        let bytes = slice_in(artifact, len).ok_or("artifact is null with a non-zero length")?;
+        let artifact = Artifact::from_bytes(bytes)?;
+        Driver::load(artifact).map_err(|e| e.to_string())
+    });
+    match loaded {
+        Ok(driver) => Box::into_raw(Box::new(driver)),
+        Err(message) => {
+            if !err.is_null() && err_cap > 0 {
+                let n = message.len().min(err_cap - 1);
+                std::ptr::copy_nonoverlapping(message.as_ptr(), err, n);
+                *err.add(n) = 0;
             }
-        };
-        match Driver::load(artifact) {
-            Ok(driver) => Box::into_raw(Box::new(driver)),
-            Err(e) => {
-                set_error(e.to_string());
-                std::ptr::null_mut()
-            }
+            std::ptr::null_mut()
         }
-    })
+    }
 }
 
-/// Call the entry point this `Driver` exports as `name`. `0` on success, `-1` on
-/// failure — including a name the artifact does not export.
+/// The function of this `Driver` named `name`, as the C function a host calls
+/// (see the module documentation for its signature); null when there is no
+/// driver or no function by that name. `name` is UTF-8 and not
+/// NUL-terminated.
 ///
-/// `name` is UTF-8 and not NUL-terminated. `input` is what the program is
-/// handed and `output` the buffer it answers in; either may be `(null, 0)` when a
-/// program uses neither.
-///
-/// `status` takes the value the program returned, or `0` from one that returns
-/// nothing, and may be null when the caller does not want it. Base passes it
-/// through without reading it: what it means is between the program and the
-/// host. Its own failures are the `-1` and [`base_last_error`].
-///
-/// Both buffers are borrowed only for the duration of the call: the program
-/// sees the caller's memory directly, and nothing retains the pointers
-/// afterwards.
+/// The function stays callable until [`base_driver_free`], from any thread.
 ///
 /// # Safety
 ///
-/// `driver` must be a live pointer from [`base_driver_load`]. `name` and each buffer
-/// must point to as many bytes as their lengths claim, or be null with length
-/// zero. `output` must not alias `input`.
+/// `driver` must be a live pointer from [`base_driver_load`]. `name` must point
+/// to `name_len` bytes, or be null with length zero.
 #[no_mangle]
-pub unsafe extern "C" fn base_driver_execute(
-    driver: *mut Driver,
+pub unsafe extern "C" fn base_driver_function(
+    driver: *const Driver,
     name: *const u8,
     name_len: usize,
-    input: *const u8,
-    input_len: usize,
-    output: *mut u8,
-    output_len: usize,
-    status: *mut i64,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        let Some(driver) = driver.as_mut() else {
-            set_error("driver is null");
-            return -1;
-        };
-        let Some(name) = slice_in(name, name_len) else {
-            set_error("name is null with a non-zero length");
-            return -1;
-        };
-        let Ok(name) = std::str::from_utf8(name) else {
-            set_error("name is not UTF-8");
-            return -1;
-        };
-        let Some(input) = slice_in(input, input_len) else {
-            set_error("input is null with a non-zero length");
-            return -1;
-        };
-        let Some(output) = slice_out(output, output_len) else {
-            set_error("output is null with a non-zero length");
-            return -1;
-        };
-        match driver.execute(name, input, output) {
-            Ok(answered) => {
-                if let Some(status) = status.as_mut() {
-                    *status = answered;
-                }
-                0
-            }
-            Err(e) => {
-                set_error(e.to_string());
-                -1
-            }
-        }
-    })
+) -> Option<FunctionPtr> {
+    let name = std::str::from_utf8(slice_in(name, name_len)?).ok()?;
+    Some(driver.as_ref()?.function(name).ok()?.as_ptr())
 }
 
-/// This `Driver`'s memory, and how many bytes of it, for as long as the caller
-/// does not call [`base_driver_execute`] or [`base_driver_free`] on it.
+/// This `Driver`'s arena, and how many bytes it holds: the arena itself, not a
+/// copy, at an address that stays put until [`base_driver_free`]. Null with
+/// `*len` zero means there is no driver, or an empty arena.
 ///
-/// A program's results are in here, at the addresses its generator says it
-/// writes; base gives the bytes no format. Null with `*len` zero means there is
-/// no driver.
+/// Programs run in this arena as the host uses it, so the host shares it with
+/// them as one thread of a C program shares memory with another. While any
+/// call on the driver runs, bytes a program may touch are reached only with
+/// atomic operations, as the program reaches them (`std::atomic_ref` in C++),
+/// and bytes no running program touches are the host's to read and write as
+/// it likes.
 ///
-/// The pointer is the memory itself, not a copy: reading it after the next
-/// execute reads whatever that call left, and reading it after [`base_driver_free`] is
-/// undefined. A host that needs the bytes to outlive either copies them.
+/// The arena is its own pages, so an offset a program keeps aligned is an
+/// aligned address, to any alignment up to the page.
 ///
 /// # Safety
 ///
-/// `driver` must be a live pointer from [`base_driver_load`], or null. `len` must be
-/// writable, or null when the caller does not want the length.
+/// `driver` must be a live pointer from [`base_driver_load`], or null. `len`
+/// must be writable, or null when the caller does not want the length.
 #[no_mangle]
-pub unsafe extern "C" fn base_driver_memory(driver: *const Driver, len: *mut usize) -> *const u8 {
-    let memory = match driver.as_ref() {
-        Some(driver) => driver.memory(),
-        None => &[],
+pub unsafe extern "C" fn base_driver_arena(driver: *const Driver, len: *mut usize) -> *mut u8 {
+    let (ptr, size) = match driver.as_ref() {
+        Some(driver) => (driver.arena_ptr(), driver.arena_size()),
+        None => (std::ptr::null_mut(), 0),
     };
     if let Some(len) = len.as_mut() {
-        *len = memory.len();
+        *len = size;
     }
-    if memory.is_empty() {
-        std::ptr::null()
+    if size == 0 {
+        std::ptr::null_mut()
     } else {
-        memory.as_ptr()
+        ptr
     }
-}
-
-/// Copy the calling thread's last error into `buf`, answering the message's
-/// full length in bytes — which may exceed `cap`, in which case what was
-/// written is a prefix.
-///
-/// The message belongs to the thread, so this reports the failure of the last
-/// call *this* thread made and there is nothing to free.
-///
-/// # Safety
-///
-/// `buf` must point to `cap` writable bytes, or be null with `cap` zero.
-#[no_mangle]
-pub unsafe extern "C" fn base_last_error(buf: *mut u8, cap: usize) -> usize {
-    LAST_ERROR.with(|e| {
-        let message = e.borrow();
-        let bytes = message.as_bytes();
-        if let Some(buf) = slice_out(buf, cap) {
-            let n = buf.len().min(bytes.len());
-            buf[..n].copy_from_slice(&bytes[..n]);
-        }
-        bytes.len()
-    })
 }
 
 /// Release a `Driver` from [`base_driver_load`]. Null is accepted and does nothing.
 ///
 /// # Safety
 ///
-/// `driver` must come from [`base_driver_load`] and must not be used afterwards.
-/// Freeing the same driver twice is undefined behaviour.
+/// `driver` must come from [`base_driver_load`] and must not be used afterwards:
+/// no other call on it may still be running, and none may start. Freeing the
+/// same driver twice is undefined behaviour.
 #[no_mangle]
 pub unsafe extern "C" fn base_driver_free(driver: *mut Driver) {
-    guard((), || {
-        if !driver.is_null() {
-            drop(Box::from_raw(driver));
-        }
-    })
+    if !driver.is_null() {
+        drop(Box::from_raw(driver));
+    }
 }
 
 #[cfg(test)]
@@ -270,58 +221,58 @@ mod tests {
     /// An artifact with no functions: enough to exercise the ABI without a JIT.
     fn empty_artifact() -> Vec<u8> {
         Artifact {
+            primitives: vec![],
             functions: vec![],
-            required_memory: 64,
+            arena_size: 64,
             data: vec![Segment { offset: 0, bytes: vec![1, 2, 3, 4] }],
         }
         .to_bytes()
     }
 
+    /// The driver, or why there is none.
+    fn try_load(bytes: &[u8]) -> Result<*mut Driver, String> {
+        let mut err = [0xffu8; 256];
+        let driver = unsafe { base_driver_load(bytes.as_ptr(), bytes.len(), err.as_mut_ptr(), err.len()) };
+        if driver.is_null() {
+            let end = err.iter().position(|&b| b == 0).expect("NUL-terminated");
+            Err(String::from_utf8(err[..end].to_vec()).unwrap())
+        } else {
+            Ok(driver)
+        }
+    }
+
     fn load(bytes: &[u8]) -> *mut Driver {
-        unsafe { base_driver_load(bytes.as_ptr(), bytes.len()) }
+        try_load(bytes).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    fn last_error() -> String {
-        let len = unsafe { base_last_error(std::ptr::null_mut(), 0) };
-        let mut buf = vec![0u8; len];
-        unsafe { base_last_error(buf.as_mut_ptr(), buf.len()) };
-        String::from_utf8(buf).unwrap()
-    }
-
-    /// The field `data` replaced. `data` has a default, so without the wire
-    /// format refusing what it does not know, a writer left behind by that
-    /// change would hand over an artifact that builds and starts from zeros —
-    /// a program reading the wrong memory, not a failure anyone would trace
-    /// back to the artifact.
+    /// A field the format does not have is refused, by name: a writer left
+    /// behind by a change to the format fails to load, rather than handing
+    /// over an artifact whose program starts from an arena it did not fill.
     #[test]
-    fn an_artifact_naming_a_field_that_is_gone_is_refused() {
-        // `{"functions": [], "required_memory": 64, "initial_memory": h'01020304'}`
+    fn an_artifact_naming_a_field_the_format_does_not_have_is_refused() {
+        // `{"primitives": [], "functions": [], "memory_size": 64, "data": []}`
         let text = |s: &str| [&[0x60 + s.len() as u8][..], s.as_bytes()].concat();
         let stale = [
-            &[0xa3][..],
+            &[0xa4][..],
+            &text("primitives"),
+            &[0x80],
             &text("functions"),
             &[0x80],
-            &text("required_memory"),
+            &text("memory_size"),
             &[0x18, 64],
-            &text("initial_memory"),
-            &[0x44, 1, 2, 3, 4],
+            &text("data"),
+            &[0x80],
         ]
         .concat();
-        let driver = load(&stale);
-        assert!(driver.is_null(), "a stale artifact should not build");
-        assert!(
-            last_error().contains("initial_memory"),
-            "the message should name the field: {}",
-            last_error()
-        );
+        let e = try_load(&stale).expect_err("a stale artifact should not build");
+        assert!(e.contains("memory_size"), "the message should name the field: {e}");
     }
 
     #[test]
     fn an_artifact_builds_and_frees() {
         let driver = load(&empty_artifact());
-        assert!(!driver.is_null(), "{}", last_error());
         let mut len = 0usize;
-        assert!(!unsafe { base_driver_memory(driver, &mut len) }.is_null());
+        assert!(!unsafe { base_driver_arena(driver, &mut len) }.is_null());
         assert_eq!(len, 64);
         unsafe { base_driver_free(driver) };
     }
@@ -329,82 +280,141 @@ mod tests {
     /// The data segments are what the program starts from, so reading them back
     /// is how a host confirms it got the artifact it sent.
     #[test]
-    fn memory_answers_the_bytes_the_artifact_starts_with() {
+    fn the_arena_answers_the_bytes_the_artifact_starts_with() {
         let driver = load(&empty_artifact());
-        assert!(!driver.is_null(), "{}", last_error());
         let mut len = 0usize;
-        let memory = unsafe { base_driver_memory(driver, &mut len) };
+        let memory = unsafe { base_driver_arena(driver, &mut len) };
         assert_eq!(len, 64);
         assert_eq!(unsafe { std::slice::from_raw_parts(memory, 4) }, [1, 2, 3, 4]);
         assert_eq!(unsafe { std::slice::from_raw_parts(memory, len) }[4..], [0u8; 60]);
         unsafe { base_driver_free(driver) };
     }
 
-    /// Every entry point answers its failure value on a null driver rather than
-    /// dereferencing it, and says so.
+    /// Every function answers its failure value on a null driver rather than
+    /// dereferencing it.
     #[test]
     fn a_null_driver_is_refused_everywhere() {
-        assert_eq!(
-            unsafe {
-                base_driver_execute(
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null_mut(),
-                )
-            },
-            -1
-        );
-        assert!(last_error().contains("null"));
+        let name = "main";
+        assert!(unsafe { base_driver_function(std::ptr::null(), name.as_ptr(), name.len()) }.is_none());
         let mut len = 7usize;
-        assert!(unsafe { base_driver_memory(std::ptr::null(), &mut len) }.is_null());
+        assert!(unsafe { base_driver_arena(std::ptr::null(), &mut len) }.is_null());
         assert_eq!(len, 0);
         // Freeing null is a no-op, not a double free.
         unsafe { base_driver_free(std::ptr::null_mut()) };
     }
 
-    /// A memory no host could hold is a failure with a message, not an abort
+    /// An arena no host could hold is a failure with a message, not an abort
     /// inside the allocator: sizes are 64-bit on the wire whatever the host.
+    /// An image past the arena the artifact states is refused the same way,
+    /// even at an offset no address can reach.
     #[test]
-    fn a_memory_too_large_to_hold_is_refused() {
-        for artifact in [
-            Artifact { functions: vec![], required_memory: u64::MAX, data: vec![] },
-            Artifact {
-                functions: vec![],
-                required_memory: 8,
-                data: vec![Segment { offset: u64::MAX, bytes: vec![1] }],
-            },
+    fn an_arena_too_large_to_hold_is_refused() {
+        let huge = Artifact { primitives: vec![], functions: vec![], arena_size: u64::MAX, data: vec![] };
+        let e = try_load(&huge.to_bytes()).expect_err("should not build");
+        assert!(e.contains("more than this host can hold"), "{e}");
+        let segments = |data| Artifact { primitives: vec![], functions: vec![], arena_size: 8, data }.to_bytes();
+        let e = try_load(&segments(vec![Segment { offset: u64::MAX, bytes: vec![1] }])).expect_err("should not build");
+        assert!(e.contains("ends past the 8 bytes"), "{e}");
+        // Segments out of order, or overlapping, are refused: the image has one
+        // spelling.
+        for data in [
+            vec![Segment { offset: 4, bytes: vec![1] }, Segment { offset: 0, bytes: vec![2] }],
+            vec![Segment { offset: 0, bytes: vec![1, 2] }, Segment { offset: 1, bytes: vec![3] }],
         ] {
-            let driver = load(&artifact.to_bytes());
-            assert!(driver.is_null(), "{artifact:?} should not build");
-            assert!(last_error().contains("more than this host can hold"), "{}", last_error());
+            let e = try_load(&segments(data)).expect_err("should not build");
+            assert!(e.contains("out of order or overlaps"), "{e}");
         }
     }
 
-    /// A name the artifact does not export is a failure that says which name.
+    /// A name the artifact does not export has no function.
     #[test]
-    fn executing_a_name_nothing_exports_is_refused() {
+    fn a_name_no_function_has_answers_null() {
         let driver = load(&empty_artifact());
-        assert!(!driver.is_null(), "{}", last_error());
         let name = "infer";
-        let rc = unsafe {
-            base_driver_execute(
-                driver,
-                name.as_ptr(),
-                name.len(),
-                std::ptr::null(),
-                0,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
+        assert!(unsafe { base_driver_function(driver, name.as_ptr(), name.len()) }.is_none());
+        unsafe { base_driver_free(driver) };
+    }
+
+    /// An entry point is a plain C function: called with the four host
+    /// arguments, answering the program's status.
+    #[test]
+    fn a_function_is_a_plain_c_function() {
+        use base_types::clif::{Block, BlockRef, ClifTy, Function, Inst, Signature, Val};
+        let entry = |name: &str, arity: u32, ret: Option<i64>| Function {
+            name: Some(name.into()),
+            signature: Signature::base_function(),
+            stack_slots: vec![],
+            blocks: vec![Block {
+                reference: BlockRef(0),
+                params: (0..arity).map(|k| (Val(k), ClifTy::I64)).collect(),
+                insts: match ret {
+                    Some(k) => vec![
+                        Inst::UnaryImm(vec![Val(9)], "iconst".into(), Some(ClifTy::I64), k),
+                        Inst::MultiAry(vec![], "return".into(), None, vec![Val(9)]),
+                    ],
+                    None => vec![Inst::MultiAry(vec![], "return".into(), None, vec![])],
+                },
+            }],
         };
-        assert_eq!(rc, -1);
-        assert!(last_error().contains("\"infer\""), "{}", last_error());
+        let artifact = |fs| Artifact { primitives: vec![], functions: fs, arena_size: 64, data: vec![] }.to_bytes();
+        let driver = load(&artifact(vec![entry("seven", 4, Some(7)), entry("three", 4, Some(3))]));
+        for (name, status) in [("seven", 7), ("three", 3)] {
+            let f = unsafe { base_driver_function(driver, name.as_ptr(), name.len()) }
+                .unwrap_or_else(|| panic!("{name} is not exported"));
+            let mut out = [0u8; 4];
+            assert_eq!(unsafe { f(b"in".as_ptr(), 2, out.as_mut_ptr(), out.len()) }, status, "{name}");
+        }
+        unsafe { base_driver_free(driver) };
+        // A function not shaped like one is not exported as one: it would be
+        // called with arguments it does not take, or answer nothing.
+        for f in [entry("five", 5, Some(5)), entry("quiet", 4, None)] {
+            let e = try_load(&artifact(vec![f])).expect_err("not an entry point");
+            assert!(e.contains("so a host calls it"), "{e}");
+        }
+        // Nor is one that states another signature.
+        let mut f = entry("seven", 4, Some(7));
+        f.signature.params.pop();
+        let e = try_load(&artifact(vec![f])).expect_err("not an entry point");
+        assert!(e.contains("not BaseFunction's"), "{e}");
+    }
+
+    /// A program reaches the arena through the symbol the engine links it
+    /// under: the address it takes is the one the host is handed, and what it
+    /// reads there is what the artifact started it with.
+    #[test]
+    fn a_program_takes_the_arena_by_symbol() {
+        use base_types::clif::{Block, BlockRef, ClifTy, Function, Global, Inst, Signature, Val};
+        let entry = |name: &str, insts: Vec<Inst>| Function {
+            name: Some(name.into()),
+            signature: Signature::base_function(),
+            stack_slots: vec![],
+            blocks: vec![Block { reference: BlockRef(0), params: (1..5).map(|k| (Val(k), ClifTy::I64)).collect(), insts }],
+        };
+        let arena = Inst::UnaryGlobalValue(vec![Val(9)], "symbol_value".into(), Some(ClifTy::I64), Global::Arena);
+        let ret = |v| Inst::MultiAry(vec![], "return".into(), None, vec![Val(v)]);
+        let artifact = Artifact {
+            primitives: vec![],
+            functions: vec![
+                entry("addr", vec![arena.clone(), ret(9)]),
+                entry("word", vec![
+                    arena,
+                    Inst::Load(vec![Val(10)], "load".into(), Some(ClifTy::I64), vec![], Val(9), 8),
+                    ret(10),
+                ]),
+            ],
+            arena_size: 64,
+            data: vec![Segment { offset: 8, bytes: 0x1122_3344_5566_7788u64.to_le_bytes().to_vec() }],
+        }
+        .to_bytes();
+        let driver = load(&artifact);
+        let call = |name: &str| {
+            let f = unsafe { base_driver_function(driver, name.as_ptr(), name.len()) }.unwrap();
+            unsafe { f(std::ptr::null(), 0, std::ptr::null_mut(), 0) }
+        };
+        let mut len = 0usize;
+        let memory = unsafe { base_driver_arena(driver, &mut len) };
+        assert_eq!(call("addr") as usize, memory as usize);
+        assert_eq!(call("word") as u64, 0x1122_3344_5566_7788);
         unsafe { base_driver_free(driver) };
     }
 
@@ -412,8 +422,11 @@ mod tests {
     /// it reaches `from_raw_parts`.
     #[test]
     fn a_null_pointer_with_a_length_is_refused() {
-        assert!(unsafe { base_driver_load(std::ptr::null(), 16) }.is_null());
-        assert!(last_error().contains("non-zero length"));
+        let mut err = [0u8; 64];
+        assert!(unsafe { base_driver_load(std::ptr::null(), 16, err.as_mut_ptr(), err.len()) }.is_null());
+        assert!(String::from_utf8_lossy(&err).contains("non-zero length"));
+        // And with nowhere to say why, still null.
+        assert!(unsafe { base_driver_load(std::ptr::null(), 16, std::ptr::null_mut(), 0) }.is_null());
     }
 
     /// A cut-off file and a JSON file are errors with a message, not panics.
@@ -421,24 +434,21 @@ mod tests {
     fn a_malformed_artifact_is_an_error_and_not_a_panic() {
         let whole = empty_artifact();
         for bad in [&whole[..whole.len() - 1], b"{\"functions\": []}".as_slice()] {
-            assert!(load(bad).is_null());
-            assert!(last_error().starts_with("not an artifact"), "{}", last_error());
+            let e = try_load(bad).expect_err("malformed");
+            assert!(e.starts_with("not an artifact"), "{e}");
         }
     }
 
-    /// The message is a prefix when it does not fit, and the answer is always
-    /// the full length so a caller can size a second call.
     #[test]
     fn a_panic_is_an_error_and_not_an_abort() {
-        assert_eq!(guard(-1, || -> i32 { panic!("boom") }), -1);
-        assert_eq!(last_error(), "panic: boom");
+        assert_eq!(guard(|| -> Result<i32, String> { panic!("boom") }), Err("panic: boom".into()));
     }
 
+    /// A message longer than the buffer is cut to fit, and still terminated.
     #[test]
-    fn last_error_reports_the_full_length() {
-        set_error("abcdef");
-        let mut buf = [0u8; 3];
-        assert_eq!(unsafe { base_last_error(buf.as_mut_ptr(), 3) }, 6);
-        assert_eq!(&buf, b"abc");
+    fn the_message_is_cut_to_fit() {
+        let mut err = [0xffu8; 4];
+        assert!(unsafe { base_driver_load(std::ptr::null(), 16, err.as_mut_ptr(), err.len()) }.is_null());
+        assert_eq!(&err, b"art\0");
     }
 }

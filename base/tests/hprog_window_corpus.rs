@@ -48,7 +48,7 @@ fn interpreter_and_runtime_agree_without_a_display() {
     for var in ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"] {
         std::env::remove_var(var);
     }
-    let mut b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
     b.execute("main", &[], &mut out).expect("execute");
 
@@ -114,7 +114,7 @@ fn interpreter_and_runtime_agree_with_a_display() {
     let a = Artifact::from_bytes(&std::fs::read(dir.join("hprog_window_display_corpus.cbor")).expect("read artifact"))
         .expect("artifact shape");
 
-    let mut b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
     b.execute("main", &[], &mut out).expect("execute");
 

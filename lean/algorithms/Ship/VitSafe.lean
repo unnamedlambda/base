@@ -46,7 +46,7 @@ theorem fetch_eq : fetchCode = (do
     let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]) := by
   unfold fetchCode Vit.vFetchFn; rw [bindOut]; rfl
 
-theorem fetch_fine : Fine (emitGo fetchCode ⟨5, 0, [], [], [], none⟩).2 := by
+theorem fetch_fine : Fine (emitGo (fnBody ptrParams fetchCode) ⟨4, 0, [], [], [], none⟩).2 := by
   rw [fetch_eq]; exact ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -68,7 +68,7 @@ theorem seed_eq : seedCode = (do
     let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]) := by
   unfold seedCode Vit.vSeedFn; rw [bindSeed]; rfl
 
-theorem seed_fine : Fine (emitGo seedCode ⟨5, 0, [], [], [], none⟩).2 := by
+theorem seed_fine : Fine (emitGo (fnBody ptrParams seedCode) ⟨4, 0, [], [], [], none⟩).2 := by
   rw [seed_eq]; exact ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -109,7 +109,7 @@ theorem any_eq : anyCode = (do
           let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, nb]) := by
   unfold anyCode Vit.vFetchAnyFn; rw [bindBase, nbuf]; rfl
 
-theorem any_fine : Fine (emitGo anyCode ⟨5, 0, [], [], [], none⟩).2 := by
+theorem any_fine : Fine (emitGo (fnBody ptrParams anyCode) ⟨4, 0, [], [], [], none⟩).2 := by
   rw [any_eq]; exact ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in

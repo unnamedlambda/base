@@ -8,9 +8,9 @@ lake exe upcasehost
 ```
 
 ```
-runtime memory: 1049160 bytes
+arena: 1049160 bytes
 artifact transformed 38 bytes
-in memory: A LEAN HOST, RUNNING ITS OWN ARTIFACT
+in the arena: A LEAN HOST, RUNNING ITS OWN ARTIFACT
 artifact wrote output.txt: A LEAN HOST, RUNNING ITS OWN ARTIFACT
 ```
 
@@ -89,7 +89,7 @@ resolves transitively, which is what makes `require` work at all.
 |---|---|
 | `base/src/capi.rs` | the runtime behind a C calling convention |
 | `c/shim.c` | that, in Lean's `IO` convention |
-| `BaseHost.lean` | `Driver`, `execute`, `executeStatus`, `readMemory`, `withDriver` |
+| `BaseHost.lean` | `Driver`, `execute`, `executeStatus`, `read`, `withDriver` |
 | `Upcase.lean` | the demo artifact — a value, and buildable without any of the above |
 | `UpcaseHost.lean` | the ~15 lines that run it |
 
@@ -115,15 +115,15 @@ Results come back four ways:
   `UpcaseHost` reads it back; neither end knows the number ahead of time.
 * the output buffer `execute` answers, for a program that writes through
   `outPtr`, the entry parameter the caller's buffer arrives in.
-* `readMemory`, for an address no field describes.
+* `read`, for an address no field describes.
 
 An artifact whose effects are files, sockets or the GPU needs none of them.
 
 ## Known gaps
 
-* **Window programs and the main thread.** `execute` installs the runtime's
-  compiled functions on whichever thread calls it, so a `Driver` is usable
-  from any of them. A program that opens a window is the exception: on macOS
+* **Window programs and the main thread.** A `Driver` is usable from any
+  thread, since an entry point is a native function with the driver's memory
+  compiled into it. A program that opens a window is the exception: on macOS
   its event loop has to be created on the main thread.
 * **Two workspaces over one package.** `lake` here and the `lake` that
   `lean-artifacts`' build script runs both build the package in `lean/`. Lake

@@ -128,7 +128,7 @@ ship_entry runRouter : (MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) under 
 
 ship_entry fetchGate : (MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) under ((Run 0 (MlpCifar.NE * 4)))
 
-theorem bindExperts_fine : Fine (emitGo (MlpCifar.mBindExperts : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem bindExperts_fine : Fine (emitGo (fnBody ptrParams (MlpCifar.mBindExperts : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -141,7 +141,7 @@ theorem bindExperts_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
   rw [mem_size] at h
   check_body
 
-theorem uploadGates_fine : Fine (emitGo ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem uploadGates_fine : Fine (emitGo (fnBody ptrParams ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in

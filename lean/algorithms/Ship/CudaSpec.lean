@@ -32,6 +32,7 @@ theorem sync_fine : Fine (emitGo sync ⟨1, 0, [], [], [], none⟩).2 := ⟨by d
 theorem sync_null (cfg : Cfg) (w : World) :
     Ans cfg [.sc .i64 0] w sync [.i64] (fun x w' => x = c64 (-1) ∧ w' = w) := by
   refine ans_of_wp ?_ sync_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [sync, withCtx, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 0] : Env)[0]? = some (.sc .i64 0) := rfl
   apply wp_iconst64
@@ -66,6 +67,7 @@ theorem sync_spec (cfg : Cfg) (w : World) (s : UInt64) (hs : s ≠ 0) (hdef : (d
     Ans cfg [.sc .i64 s] w sync [.i64] (fun x w' =>
       ∃ rc, drvSync w = some (some (.sc .i32 rc), w') ∧ x = if rc = 0 then 0 else c64 (-1)) := by
   refine ans_of_wp ?_ sync_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [sync, withCtx, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 s] : Env)[0]? = some (.sc .i64 s) := rfl
   apply wp_iconst64

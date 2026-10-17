@@ -1040,10 +1040,10 @@ def compareOf (v : Sem.V) : Compare :=
                      (b &&& 0x000fffffffffffff) != 0 then .nanOf 8 else .bits
   | _ => .bits
 
-/-- The five values an entry point is called with, for a corpus run: the arena,
-    then the input and output buffers with their lengths. -/
+/-- The four values an entry point is called with, for a corpus run: the input
+    and output buffers with their lengths. -/
 def entryArgVals : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  [.sc .i64 (Sem.regionBase .data),
    .sc .i64 8, .sc .i64 (Sem.regionBase .out), .sc .i64 outBytes.toUInt64]
 
 /-- The world every run of the corpus starts from. Nothing has to be placed in
@@ -1120,7 +1120,7 @@ def absentOutBytes : Nat := absentNames.length * STRIDE
 def absentExpected : Except String ByteArray := do
   let _ ← Prog.emitChecked absentBody
   let args : List Sem.V :=
-    [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+    [.sc .i64 (Sem.regionBase .data),
      .sc .i64 8, .sc .i64 (Sem.regionBase .out), .sc .i64 absentOutBytes.toUInt64]
   let m : Sem.Mem := { arena := ByteArray.mk (Array.replicate 0x200 0),
                        data := ByteArray.mk (Array.replicate 8 0),

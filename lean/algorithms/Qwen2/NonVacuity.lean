@@ -300,12 +300,11 @@ theorem attn_entry_sound {lc : AlgorithmLib.HProg.Sem.Locals}
       r.1.vals (evalPure Env.empty (entryInsts (stateOf inferLayerAttnFn))) :=
   sound_entry attn_entry_ok hsz hpar hr
 
-/-- …not for want of a caller: the entry parameters — the arena base and the
+/-- …not for want of a caller: the entry parameters — the
     caller's two buffers with their lengths — all declared `i64`. -/
 theorem attn_entry_arg :
     TypesAgree (entryTys (stateOf inferLayerAttnFn))
       #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
-        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
         AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
         AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
         AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
@@ -313,7 +312,6 @@ theorem attn_entry_arg :
 
 theorem attn_entry_size :
     (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
-       AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size

@@ -102,7 +102,7 @@ def env : FnEnv := (Prog.run body).2.1
 def PATH : String := "/dev/pts/corpus"
 
 def entryArgVals : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  [.sc .i64 (Sem.regionBase .data),
    .sc .i64 (PATH.utf8ByteSize + 1).toUInt64, .sc .i64 (Sem.regionBase .out), .sc .i64 OUT.toUInt64]
 
 def startWorld : Sem.World :=

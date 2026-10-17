@@ -74,7 +74,7 @@ fn interpreter_and_terminal_agree() {
 
     let mut input = path.clone().into_bytes();
     input.push(0);
-    let mut b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
     b.execute("main", &input, &mut out).expect("execute");
 

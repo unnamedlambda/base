@@ -138,7 +138,7 @@ def world0 : World :=
              out := ByteArray.mk (Array.replicate 64 0) } }
 
 def args : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data), .sc .i64 8,
+  [.sc .i64 (Sem.regionBase .data), .sc .i64 8,
    .sc .i64 (Sem.regionBase .out), .sc .i64 64]
 
 def results (n : Nat) (api : Api Slot Lvl) : String :=

@@ -59,13 +59,13 @@ theorem blend_scrubs (fuel : Nat) (cfg : Cfg) (w : World)
     (ha : Γ[a]? = some (.vec .i8x16 xs))
     (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
     (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32))) :
-    runCode (fuel + 2) cfg Γ w (Prog.emit (discard (blend a b c)) tys)
+    runCode (fuel + 2) cfg Γ w (Prog.emitTerm (discard (blend a b c)) tys)
       = .ok ((Γ.push (nulMask xs)).push (scrubbedBytes xs)) w := by
   obtain ⟨ha', ha⟩ := Array.getElem?_eq_some_iff.mp ha
   obtain ⟨hb', hb⟩ := Array.getElem?_eq_some_iff.mp hb
   obtain ⟨hc', hc⟩ := Array.getElem?_eq_some_iff.mp hc
   -- compile blend
-  conv in Prog.emit _ _ => reduce
+  conv in Prog.emitTerm _ _ => reduce
   -- run both instructions under the semantics
   simp +decide [nulMask, scrubbedBytes, scrubLanes,
     runCode, runPiece, runStmts, runStmt, evalOp, Sem.get,
@@ -100,7 +100,7 @@ theorem blend_leaves_no_nul
     (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
     (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32))) :
     ∃ ys, ys = xs.map (fun x => if x = 0 then 32 else x)
-          ∧ Answers Γ (Prog.emit (discard (blend a b c)) tys) 2 (.vec .i8x16 ys)
+          ∧ Answers Γ (Prog.emitTerm (discard (blend a b c)) tys) 2 (.vec .i8x16 ys)
           ∧ ∀ y ∈ ys, y ≠ 0 :=
   ⟨scrubLanes xs, rfl,
    fun fuel cfg w =>
@@ -131,8 +131,8 @@ def blendStmts (a b c n : R) : List Stmt :=
   [.op (.icmp .eq a b), .op (.bitselect n c a)]
 
 theorem blend_emits (a b c : R) (tys : List ClifTy) :
-    Prog.emit (discard (blend a b c)) tys = [.straight (blendStmts a b c tys.length)] := by
-  conv in Prog.emit _ _ => reduce
+    Prog.emitTerm (discard (blend a b c)) tys = [.straight (blendStmts a b c tys.length)] := by
+  conv in Prog.emitTerm _ _ => reduce
   rfl
 
 /-- `blend_scrubs`, with the piece wrapper peeled off. -/
@@ -236,10 +236,10 @@ theorem blendInsts_ship :
       = some
         { ref := ⟨8⟩, params := [(⟨16⟩, ClifTy.i64)],
           insts :=
-            [.iconst ⟨17⟩ .i64 4, .ishl ⟨18⟩ ⟨16⟩ ⟨17⟩, .iadd ⟨19⟩ ⟨1⟩ ⟨18⟩,
+            [.iconst ⟨17⟩ .i64 4, .ishl ⟨18⟩ ⟨16⟩ ⟨17⟩, .iadd ⟨19⟩ ⟨0⟩ ⟨18⟩,
              .load ⟨20⟩ { kind := .plain, ty := .i8x16, notrapAligned := true } ⟨19⟩]
             ++ blendInsts
-            ++ [.iadd ⟨23⟩ ⟨3⟩ ⟨18⟩, .storeTyped .i8x16 ⟨22⟩ ⟨23⟩,
+            ++ [.iadd ⟨23⟩ ⟨2⟩ ⟨18⟩, .storeTyped .i8x16 ⟨22⟩ ⟨23⟩,
                 .iconst ⟨24⟩ .i64 1, .iadd ⟨25⟩ ⟨16⟩ ⟨24⟩, .jump ⟨7⟩ [⟨25⟩]] } := by
   conv in Prog.compileProg _ _ => reduce
   simp +decide [emitCode, emitPiece, emitLoop, emitIte, emitStmts, emitStmt,

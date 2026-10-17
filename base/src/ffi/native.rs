@@ -1,5 +1,5 @@
 //! Machine code a program carries as data, loaded at run time and called
-//! directly (`Callee::Native`), for instructions CLIF cannot spell.
+//! directly (`CallIndirect` at the architecture's convention), for instructions CLIF cannot spell.
 //!
 //! A body keeps one convention per architecture, whatever the OS:
 //!

@@ -145,7 +145,7 @@ def main():
     print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
     out = bytearray(D_OUT_BYTES)
     t0 = time.time()
-    base.execute("main", bytes(buf), out)
+    base.function("main")(bytes(buf), out)
     dt = time.time() - t0
     b = bytes(out)
     n, miss = struct.unpack_from("<Ii", b, 0)

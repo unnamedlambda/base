@@ -124,7 +124,7 @@ def wc : Prog V L Unit := do
 
 def clifIR : Except String (List FuncData) :=
   Prog.program
-    [Prog.entry "noop" (.ok noopFunction),
+    [Prog.entry "noop" (Prog.compileProg 0 (pure ())),
      Prog.entry "ht" (Prog.compileProg 1 ht),
      Prog.entry "kv" (Prog.compileProg 2 kv),
      Prog.entry "wc" (Prog.compileProg 3 wc)]

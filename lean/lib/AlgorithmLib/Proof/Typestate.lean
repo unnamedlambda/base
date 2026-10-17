@@ -398,6 +398,24 @@ theorem wp_iconst {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {ty : ClifTy} {k 
   funext Γ w
   simp only [wp_op, Op'.erase, evalOp, Option.some.injEq, forall_eq', reduceCtorEq, false_implies, true_and]
 
+/-- The memory's address binds the arena's base: nothing about the world is
+    asked. -/
+theorem wp_memory {cfg : Cfg} {d : Nat} {J : Post} {α : Type}
+    (c : Slot .i64 → Prog Slot Lvl α) (Q : α → Env → World → Prop) :
+    wp cfg d J (.op .memory c) Q =
+      fun Γ w => wp cfg d J (c Γ.size) Q (Γ.push (.sc .i64 (regionBase .arena))) w := by
+  funext Γ w
+  simp only [wp_op, Op'.erase, evalOp, Option.some.injEq, forall_eq', reduceCtorEq, false_implies, true_and]
+
+/-- A function's address binds where the model places it: nothing about the
+    world is asked. -/
+theorem wp_funcAddr {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {i : Nat}
+    (c : Slot .i64 → Prog Slot Lvl α) (Q : α → Env → World → Prop) :
+    wp cfg d J (.op (.funcAddr i) c) Q =
+      fun Γ w => wp cfg d J (c Γ.size) Q (Γ.push (.sc .i64 (fnBase + UInt64.ofNat i))) w := by
+  funext Γ w
+  simp only [wp_op, Op'.erase, evalOp, Option.some.injEq, forall_eq', reduceCtorEq, false_implies, true_and]
+
 /-- Code a generator unrolls over a list is the code for each element in turn. -/
 theorem wp_forM_cons {cfg : Cfg} {d : Nat} {J : Post} {β : Type} (a : β) (as : List β)
     (f : β → Prog Slot Lvl PUnit) (Q : PUnit → Env → World → Prop) :
@@ -1385,6 +1403,8 @@ def opReadsMem : Op → Bool
 def renumberOp : Op → Op
   | .iconst ty k => .iconst ty k
   | .fconst ty b => .fconst ty b
+  | .memory => .memory
+  | .funcAddr i => .funcAddr i
   | .iadd _ _ => .iadd 0 1
   | .isub _ _ => .isub 0 1
   | .imul _ _ => .imul 0 1
@@ -1466,66 +1486,64 @@ theorem entry_get {Γ arr : Env} {i : Nat} {v : V} (h : Γ = arr) (hi : arr[i]? 
     in `W` the body's weakest precondition holds, no run of what `emit` ships
     misuses anything, for any input. -/
 theorem safe_of_wp {cfg : Cfg} {p : Body} {params : List ClifTy} (W : World → Prop)
-    (hwp : ∀ Γ w, W w → wp cfg 0 { ok := fun _ _ => True } p (fun _ _ _ => True) Γ w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+    (hwp : ∀ Γ w, W w → wp cfg 0 { ok := fun _ _ => True } (fnBody params p) (fun _ _ _ => True) Γ w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     {args : List V} {w : World} (hargs : args.length = params.length) (hw : W w) (m : String) :
     Sem.run cfg args w (emit p params) ≠ .misuse m :=
   run_safe (emit_triple (P := fun _ w => W w)
-    (PT.conseq (wp_sound cfg 0 _ p _) (fun Γ w h => hwp Γ w h) (fun _ _ _ h => h)) hf
+    (PT.conseq (wp_sound cfg 0 _ (fnBody params p) _) (fun Γ w h => hwp Γ w h) (fun _ _ _ h => h)) hf
     (fun Γ w' ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs], hw⟩)) m
 
-/-- The arguments the runtime hands an entry point: the arena's, the data's and
-    the output's bases, and the data's and the output's lengths as the caller
-    gives them. -/
+/-- The arguments a host hands an entry point: the data's and the output's
+    bases and lengths as the caller gives them. -/
 def runArgs (dataLen outLen : UInt64) : List V :=
-  [.sc .i64 (regionBase .arena), .sc .i64 (regionBase .data), .sc .i64 dataLen,
-   .sc .i64 (regionBase .out), .sc .i64 outLen]
+  [.sc .i64 (regionBase .data), .sc .i64 dataLen, .sc .i64 (regionBase .out), .sc .i64 outLen]
 
 /-- The same, for a body whose safety depends on what it is handed: the
     environment it starts from holds the arguments, so a body may use what it
     knows of them, such as which region a pointer points into. -/
 theorem safe_of_wp_entry {cfg : Cfg} {p : Body} {params : List ClifTy} (W : World → Prop) (args : List V)
-    (hwp : ∀ Γ w, Γ = args.toArray → W w → wp cfg 0 { ok := fun _ _ => True } p (fun _ _ _ => True) Γ w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+    (hwp : ∀ Γ w, Γ = args.toArray → W w → wp cfg 0 { ok := fun _ _ => True } (fnBody params p) (fun _ _ _ => True) Γ w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     {w : World} (hargs : args.length = params.length) (hw : W w) (m : String) :
     Sem.run cfg args w (emit p params) ≠ .misuse m :=
   run_safe (emit_triple (P := fun Γ w => Γ = args.toArray ∧ W w)
-    (PT.conseq (wp_sound cfg 0 _ p _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
+    (PT.conseq (wp_sound cfg 0 _ (fnBody params p) _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
     (fun Γ w' ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs], rfl, hw⟩)) m
 
 /-- `safe_of_wp_entry` under a post that allows no fault: every load and store
     the body makes finds its memory, and every call it makes answers. -/
 theorem sound_of_wp_entry {cfg : Cfg} {p : Body} {params : List ClifTy} (W : World → Prop) (args : List V)
     (hwp : ∀ Γ w, Γ = args.toArray → W w →
-      wp cfg 0 { ok := fun _ _ => True, faultOk := false } p (fun _ _ _ => True) Γ w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+      wp cfg 0 { ok := fun _ _ => True, faultOk := false } (fnBody params p) (fun _ _ _ => True) Γ w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     {w : World} (hargs : args.length = params.length) (hw : W w) (m : String) :
     Sem.run cfg args w (emit p params) ≠ .misuse m ∧ Sem.run cfg args w (emit p params) ≠ .fault m :=
   run_sound (emit_triple (P := fun Γ w => Γ = args.toArray ∧ W w)
-    (PT.conseq (wp_sound cfg 0 _ p _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
+    (PT.conseq (wp_sound cfg 0 _ (fnBody params p) _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
     (fun Γ w' ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs], rfl, hw⟩)) rfl m
 
 /-- `safe_of_wp_entry`, for a body that answers a status. -/
 theorem safe_of_wp_entry_ans {cfg : Cfg} {α : Type} {p : Prog Slot Lvl α} {params : List ClifTy}
     (W : World → Prop) (args : List V)
-    (hwp : ∀ Γ w, Γ = args.toArray → W w → wp cfg 0 { ok := fun _ _ => True } p (fun _ _ _ => True) Γ w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+    (hwp : ∀ Γ w, Γ = args.toArray → W w → wp cfg 0 { ok := fun _ _ => True } (fnBody params p) (fun _ _ _ => True) Γ w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     {w : World} (hargs : args.length = params.length) (hw : W w) (m : String) :
     Sem.run cfg args w (emitAns p params) ≠ .misuse m :=
   run_safe (emitAns_triple (P := fun Γ w => Γ = args.toArray ∧ W w)
-    (PT.conseq (wp_sound cfg 0 _ p _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
+    (PT.conseq (wp_sound cfg 0 _ (fnBody params p) _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
     (fun Γ w' ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs], rfl, hw⟩)) m
 
 /-- `sound_of_wp_entry`, for a body that answers a status. -/
 theorem sound_of_wp_entry_ans {cfg : Cfg} {α : Type} {p : Prog Slot Lvl α} {params : List ClifTy}
     (W : World → Prop) (args : List V)
     (hwp : ∀ Γ w, Γ = args.toArray → W w →
-      wp cfg 0 { ok := fun _ _ => True, faultOk := false } p (fun _ _ _ => True) Γ w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+      wp cfg 0 { ok := fun _ _ => True, faultOk := false } (fnBody params p) (fun _ _ _ => True) Γ w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     {w : World} (hargs : args.length = params.length) (hw : W w) (m : String) :
     Sem.run cfg args w (emitAns p params) ≠ .misuse m ∧ Sem.run cfg args w (emitAns p params) ≠ .fault m :=
   run_sound (emitAns_triple (P := fun Γ w => Γ = args.toArray ∧ W w)
-    (PT.conseq (wp_sound cfg 0 _ p _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
+    (PT.conseq (wp_sound cfg 0 _ (fnBody params p) _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
     (fun Γ w' ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs], rfl, hw⟩)) rfl m
 
 -- ---------------------------------------------------------------------------
@@ -2051,12 +2069,12 @@ theorem wp_local_void {ps : List ClifTy} {res : Option ClifTy} {i : Nat} {args :
     answers it leaves a world `W'` holds. `summary_succ` takes it. -/
 theorem triple_of_wp_entry {cfg : Cfg} {p : Body} {params : List ClifTy} (W W' : World → Prop) (args : List V)
     (hwp : ∀ Γ w, Γ = args.toArray → W w →
-      wp cfg 0 { ok := fun _ _ => True, faultOk := false } p (fun _ _ w => W' w) Γ w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+      wp cfg 0 { ok := fun _ _ => True, faultOk := false } (fnBody params p) (fun _ _ w => W' w) Γ w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     (hargs : args.length = params.length) (w : World) (hw : W w) :
     Triple cfg (At args.toArray w) (emit p params) { ok := fun _ w' => W' w', faultOk := false } :=
   emit_triple (P := fun Γ w => Γ = args.toArray ∧ W w)
-    (PT.conseq (wp_sound cfg 0 _ p _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
+    (PT.conseq (wp_sound cfg 0 _ (fnBody params p) _) (fun Γ w h => hwp Γ w h.1 h.2) (fun _ _ _ h => h)) hf
     (fun Γ w' ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs], rfl, hw⟩)
 
 /-- The branch an environment takes keeps what it had. -/

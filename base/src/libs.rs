@@ -1,19 +1,24 @@
 //! The C libraries a program calls directly.
 //!
-//! A program names each function with its library, the library's files per
-//! operating system, the symbol and the signature (`ExternFn`). This binds the
-//! symbol to an address. The C library, wgpu and the window, CPU, serial and
-//! USB libraries are built into the engine, so their symbols bind to the
-//! linked-in functions. Any other library is opened the first time any
-//! program names it and stays open for the life of the process, so an address
-//! handed out is never unmapped under code that calls it. What is not there
-//! binds to a stub, so the program still loads and can ask whether the
-//! library is present.
+//! A program declares each primitive by its library, its symbol and its
+//! signature ([`Primitive`]), and this binds the symbol to an address. The engine's own
+//! functions (`base`), the C library, wgpu and the window, CPU, serial and USB
+//! libraries are built into it, so their symbols bind to the linked-in
+//! functions. The others are the system libraries this engine knows how to
+//! find, each under the file names its vendor gives it on each operating
+//! system ([`files`]), listing only releases the corpora have run against,
+//! newest first: which file a library is, is how the system packages it, not
+//! what a program means, so a new release is a change here and to no
+//! artifact. Such a library is opened the first time any program names it and
+//! stays open for the life of the process, so an address handed out is never
+//! unmapped under code that calls it. A library this engine does not know, or
+//! one not installed, binds to a stub, so the program still loads and can ask
+//! whether the library is present.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use base_types::clif::ExternFn;
+use base_types::clif::Primitive;
 
 /// What every function of a missing library, or a missing symbol, answers.
 /// Returning an integer in the return register is well defined whatever the
@@ -38,17 +43,30 @@ fn opened() -> &'static Mutex<HashMap<String, Option<&'static libloading::Librar
     LIBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The library `f` names, opened on first use from the files this operating
-/// system names it with, in order.
-fn library(f: &ExternFn) -> Option<&'static libloading::Library> {
+/// The files the system library `lib` is on this operating system, newest
+/// release first; none for a library this engine does not open.
+fn files(lib: &str) -> &'static [&'static str] {
+    match lib {
+        #[cfg(target_os = "linux")]
+        "cuda" => &["libcuda.so.1"],
+        #[cfg(target_os = "linux")]
+        "cublas" => &["libcublas.so.12"],
+        #[cfg(windows)]
+        "cuda" => &["nvcuda.dll"],
+        #[cfg(windows)]
+        "cublas" => &["cublas64_12.dll"],
+        _ => &[],
+    }
+}
+
+/// The library `f` names, opened on first use from its files, in order.
+fn library(f: &Primitive) -> Option<&'static libloading::Library> {
     let mut libs = opened().lock().unwrap_or_else(|e| e.into_inner());
     *libs.entry(f.lib.clone()).or_insert_with(|| {
-        let os = std::env::consts::OS;
-        let files = f.files.iter().find(|(o, _)| o == os).map(|(_, fs)| fs.as_slice());
-        files.unwrap_or(&[]).iter().find_map(|file| {
-            // SAFETY: opening a library runs its initialisers. The libraries
-            // a program may name are the portable C APIs `Lib` lists, whose
-            // initialisers have no preconditions on the caller.
+        files(&f.lib).iter().find_map(|file| {
+            // SAFETY: opening a library runs its initialisers. The files are
+            // the system libraries listed above, whose initialisers have no
+            // preconditions on the caller; an artifact cannot name another.
             let lib = unsafe { libloading::Library::new(file) }.ok()?;
             Some(&*Box::leak(Box::new(lib)))
         })
@@ -58,6 +76,7 @@ fn library(f: &ExternFn) -> Option<&'static libloading::Library> {
 /// A library built into the engine: how to find its symbols.
 fn builtin(lib: &str) -> Option<fn(&str) -> Option<usize>> {
     match lib {
+        "base" => Some(crate::ffi::linked),
         "c" => Some(crate::ffi::libc::linked),
         "wgpu" => Some(crate::ffi::wgpu::linked),
         "window" => Some(crate::ffi::window::linked),
@@ -69,7 +88,7 @@ fn builtin(lib: &str) -> Option<fn(&str) -> Option<usize>> {
 }
 
 /// The address a call to `f` jumps to.
-pub(crate) fn bind(f: &ExternFn) -> usize {
+pub(crate) fn bind(f: &Primitive) -> usize {
     if let Some(find) = builtin(&f.lib) {
         return if f.symbol.is_empty() { present_yes as usize } else { find(&f.symbol).unwrap_or(absent as usize) };
     }
@@ -90,22 +109,24 @@ pub(crate) fn bind(f: &ExternFn) -> usize {
 
 /// The name a bound function is declared under in the JIT module: unique per
 /// library and symbol, and not a name anything else can declare.
-pub(crate) fn link_name(f: &ExternFn) -> String {
+pub(crate) fn link_name(f: &Primitive) -> String {
     format!("extern:{}:{}", f.lib, f.symbol)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::clif::ClifTy;
+    use base_types::clif::{ClifTy, Convention, Signature};
 
-    fn missing(symbol: &str) -> ExternFn {
-        ExternFn {
+    fn missing(symbol: &str) -> Primitive {
+        Primitive {
             lib: "base-test-missing".into(),
-            files: vec![(std::env::consts::OS.into(), vec!["libbase-test-missing.so.0".into()])],
             symbol: symbol.into(),
-            params: vec![ClifTy::I64],
-            result: Some(ClifTy::I64),
+            signature: Signature {
+                convention: Convention::Host,
+                params: vec![ClifTy::I64.into()],
+                returns: vec![ClifTy::I64.into()],
+            },
         }
     }
 

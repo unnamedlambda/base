@@ -34,7 +34,7 @@ abbrev FallingSandMainOn (d : Bool) : World → Prop := Contracts.TState.holds
    .cstrIn (regionBase .arena + 10304) 2048]
 
 theorem FallingSand_main_fine :
-    Fine (emitGo (FallingSand.mainBody : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+    Fine (emitGo (fnBody ptrParams (FallingSand.mainBody : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 

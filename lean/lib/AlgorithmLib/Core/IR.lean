@@ -58,6 +58,7 @@ def FnEnv.sigOf (e : FnEnv) : Callee → Option CalleeSig
   | .ffi f   => some { params := f.params, result := f.result }
   | .local k => (e.find? (·.1 == k)).map (·.2)
   | .native  => some { params := [.i64, .i64, .i64, .i64, .i64], result := some .i64 }
+  | .host ps r => some { params := .i64 :: ps, result := r }
   | .ext e => some { params := e.sig.1, result := e.sig.2 }
   -- An atomic at an integer width: the address first, then the operands.
   | .atomic a => match a with

@@ -138,17 +138,20 @@ structure Cfg where
   steps : Nat := 100000000
   locals : Locals := noLocals
 
-/-- `cl_thread_spawn`: run function `fn` on the argument pointer, as a worker.
-    A worker takes one pointer and answers nothing; one that answers is refused,
-    as the runtime refuses it. The worker runs to completion here, and memory
-    stays frozen until it is joined. -/
+/-- `cl_thread_spawn`: run the function at address `fn` on the argument
+    pointer, as a worker: function `u0:i` is at `fnBase + i`. A worker takes
+    one pointer and answers nothing, which `Prog.program` makes true of every
+    function whose address a program takes; one that answers is refused here.
+    The worker runs to completion here, and memory stays frozen until it is
+    joined. -/
 def spawnWorker (locals : Locals) (vs : List V) (w : World) : Option (Option V × World) :=
   match vs with
   | [.sc _ ctx, .sc _ fn, .sc _ arg] =>
       if ctx == 0 then some (some (ofInt .i64 (-1)), w)
       else if !(ctx == threadCtx && w.thread.live) || w.thread.outstanding.isSome then none
       else
-        match locals fn.toNat [.sc .i64 arg] w with
+        if fn < fnBase then none else
+        match locals (fn - fnBase).toNat [.sc .i64 arg] w with
         | .error _ => none
         | .ok (some _, _) => some (some (ofInt .i64 (-1)), w)
         | .ok (none, w') =>
@@ -322,6 +325,7 @@ def callOf (locals : Locals) (c : Callee) (vs : List V) (w : World) : Option (Op
       else callImport f.cname vs w
   | .local i => (locals i vs w).toOption
   | .native => none
+  | .host _ _ => none
   | .atomic a => atomicCall a vs w
   | .ext e => extCall e vs w
 
@@ -330,6 +334,7 @@ def uncalled : Callee → String
   | .ffi f => s!"{f.cname} has no executable contract"
   | .local i => s!"calls u0:{i}, whose meaning is not given"
   | .native => "calls machine code, which the model does not read"
+  | .host _ _ => "calls a function of the host's, which the model does not read"
   | .atomic _ => "an atomic on an unaligned, unmapped or frozen address"
   | .ext e => s!"{e.lib.name}!{e.symbol} on arguments it does not define"
 

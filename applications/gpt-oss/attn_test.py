@@ -79,7 +79,7 @@ def main():
 
     art = py_base.load_artifact(args.artifact)
     base = py_base.Driver(art)
-    want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
+    want = struct.unpack_from("<I", base.read(0x80, 4))[0]
 
     # ---- the weights, exactly as the buffers want them ----
     anorm = bank.f32(ent["attn_norm"], (H,))
@@ -106,7 +106,7 @@ def main():
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
 
-    base.execute("main", blob)
+    base.function("main")(blob)
 
     # ---- the reference, written the way the model defines it ----
     def project(row, narrow):
@@ -163,11 +163,11 @@ def main():
             # M_KVSTRIDE: the cache depth, published rather than emitted
             meta[7] = CAP * HD
             step = rows[pos].tobytes() + meta.tobytes()
-            base.execute("uploadStep", step)
-            base.execute("step", step)
+            base.function("uploadStep")(step)
+            base.function("step")(step)
             if pos in readback:
                 out = bytearray(H * 4)
-                base.execute("fetchX", b"", out)
+                base.function("fetchX")(b"", out)
                 kept[pos] = np.frombuffer(bytes(out), np.float32).copy()
             if pos % 100 == 0:
                 print(f"    position {pos}/{len(rows)-1}", end="\r", flush=True)
@@ -195,7 +195,7 @@ def main():
 
     # ---- the rotation and the packing, read straight out of the row ----
     qkv_out = bytearray(QKV * 4)
-    base.execute("fetchQkv", b"", qkv_out)
+    base.function("fetchQkv")(b"", qkv_out)
     gq = np.frombuffer(bytes(qkv_out), np.float32)
     rq, rk, rv = kv[T - 1]
     parts = [("Q, rotated", gq[:QO], rq.reshape(QO)),

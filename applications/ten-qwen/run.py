@@ -93,15 +93,15 @@ def main():
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in order)
 
     base = py_base.Driver(art)
-    want = struct.unpack_from("<I", base.read_memory(QHOST_LEN_OFF, 4))[0]
+    want = struct.unpack_from("<I", base.read(QHOST_LEN_OFF, 4))[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean layout {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's qHostIn ({want})")
 
-    base.execute("main", blob)
-    base.execute("runFwd")
+    base.function("main")(blob)
+    base.function("runFwd")()
 
     out = bytearray(DM * 4)
-    base.execute("fetchOut", b"", out)
+    base.function("fetchOut")(b"", out)
     got = np.frombuffer(bytes(out), dtype="<f4")
 
     ref = block(w, w["x"])
@@ -118,9 +118,9 @@ def main():
     # buffer but 33, the temporary fusion removes — so this is bit equality,
     # not a tolerance. Without it, `runFwdFused` would be an emitted function
     # nothing runs, and the theorem would be about a program nothing runs.
-    base.execute("runFwdFused")
+    base.function("runFwdFused")()
     fused_out = bytearray(DM * 4)
-    base.execute("fetchOut", b"", fused_out)
+    base.function("fetchOut")(b"", fused_out)
     fused = np.frombuffer(bytes(fused_out), dtype="<f4")
     fused_ok = bool((fused == got).all())
     print(f"fused    : 27 kernels, second norm's scale and gain in one")

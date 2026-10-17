@@ -313,7 +313,8 @@ macro_rules
 /-- Read a slot of an environment built by pushes and joins: the slot's name
     is the size of the environment it was pushed onto, so the walk compares
     names as written. -/
-macro "slot" : tactic => `(tactic| ((try simp only [Vals.head]); slot_walk))
+macro "slot" : tactic => `(tactic| ((try simp only [Vals.head, Vals.tail, Vals.snd, Vals.thd, Vals.fth,
+  Vals.fif, Nat.zero_add, Nat.reduceAdd]); slot_walk))
 
 -- ---------------------------------------------------------------------------
 -- Values
@@ -454,15 +455,15 @@ def Ans (cfg : Cfg) (args : List V) (w : World) (p : StatusBody) (params : List 
 
 theorem ans_of_wp {cfg : Cfg} {p : StatusBody} {params : List ClifTy} {args : List V} {w : World}
     {Q : UInt64 → World → Prop}
-    (hwp : wp cfg 0 { ok := fun _ _ => True, faultOk := false } p (AnsQ Q) args.toArray w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2) (hargs : args.length = params.length) :
+    (hwp : wp cfg 0 { ok := fun _ _ => True, faultOk := false } (fnBody params p) (AnsQ Q) args.toArray w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2) (hargs : args.length = params.length) :
     Ans cfg args w p params Q := by
-  have h1 := (PT.conseq (P' := fun Γ' w' => Γ' = args.toArray ∧ w' = w) (wp_sound cfg 0 _ p _)
+  have h1 := (PT.conseq (P' := fun Γ' w' => Γ' = args.toArray ∧ w' = w) (wp_sound cfg 0 _ (fnBody params p) _)
     (fun Γ' w' h => by obtain ⟨rfl, rfl⟩ := h; exact hwp) (fun _ _ _ h => h))
     ⟨params.length, 0, [], [], [], none⟩ (At args.toArray w) rfl hf
     (nil_rule fun Γ' w' h => ⟨by rw [h.1]; simp [hargs], h⟩)
   unfold Ans
-  show Triple cfg _ (emitGo p ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse _
+  show Triple cfg _ (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse _
   rw [St.out_eq_flush]
   exact Hoare.conseq h1 (fun _ _ h => h) (fun Γ w' ⟨a, ha, _, x, hx, hq⟩ => ⟨a, x, ha, hx, hq⟩)
     (fun _ _ _ _ h => h) (fun _ _ _ h => h)
@@ -813,13 +814,16 @@ def Does (cfg : Cfg) (args : List V) (w : World) (p : Body) (params : List ClifT
   Triple cfg (At args.toArray w) (emit p params) { ok := fun _ w' => Q w', faultOk := false }
 
 theorem does_of_wp {cfg : Cfg} {p : Body} {params : List ClifTy} {args : List V} {w : World} {Q : World → Prop}
-    (hwp : wp cfg 0 { ok := fun _ _ => True, faultOk := false } p (fun _ _ w' => Q w') args.toArray w)
-    (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2) (hargs : args.length = params.length) :
+    (hwp : wp cfg 0 { ok := fun _ _ => True, faultOk := false } (fnBody params p) (fun _ _ w' => Q w')
+      args.toArray w)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
+    (hargs : args.length = params.length) :
     Does cfg args w p params Q := by
   have h1 := emit_triple (cfg := cfg) (J := { ok := fun _ _ => True, faultOk := false })
     (P := fun Γ' w' => Γ' = args.toArray ∧ w' = w) (Q := fun _ _ w' => Q w') (params := params)
     (P0 := At args.toArray w)
-    (PT.conseq (wp_sound cfg 0 _ p _) (fun Γ' w' h => by obtain ⟨rfl, rfl⟩ := h; exact hwp) (fun _ _ _ h => h)) hf
+    (PT.conseq (wp_sound cfg 0 _ (fnBody params p) _) (fun Γ' w' h => by obtain ⟨rfl, rfl⟩ := h; exact hwp)
+      (fun _ _ _ h => h)) hf
     (fun Γ' w' h => ⟨by rw [h.1]; simp [hargs], h⟩)
   exact Hoare.conseq h1 (fun _ _ h => h) (fun _ _ h => h) (fun _ _ _ _ h => h) (fun _ _ _ h => h)
 

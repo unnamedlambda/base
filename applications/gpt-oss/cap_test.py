@@ -70,7 +70,7 @@ def main():
         for off, p in paths.items():
             buf[off:off + len(p)] = p
         out = bytearray(D_OUT_BYTES)
-        base.execute("main", bytes(buf), out)
+        base.function("main")(bytes(buf), out)
         b = bytes(out)
         nxt = struct.unpack_from("<I", b, 0)[0]
         return nxt, np.frombuffer(b, np.float32, count=VOCAB, offset=D_OUT_LOGITS).copy()

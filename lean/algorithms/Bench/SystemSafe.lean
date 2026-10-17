@@ -30,8 +30,8 @@ abbrev HtStart : World → Prop :=
   Contracts.TState.holds [.part .frozen false, .part .idle true, .room .arena 0xC0, .room .data 8,
     .room .out 8]
 
-theorem ht_fine : Fine (emitGo (ht (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem ht_fine : Fine (emitGo (fnBody ptrParams (ht (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in
 /-- **`ht`, linked with `Lib.Ht`, never misuses a call**, however many
@@ -50,8 +50,8 @@ abbrev WcStart : World → Prop :=
   Contracts.TState.holds [.part .frozen false, .cstr (regionBase .data), .room .arena (BUF + WC_MAX),
     .room .out 8]
 
-theorem wc_fine : Fine (emitGo (wc (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem wc_fine : Fine (emitGo (fnBody ptrParams (wc (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in
 /-- **`wc` never misuses the file adapter**, whatever file its input names:
@@ -62,7 +62,7 @@ theorem wc_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WcSt
 
 /-- The arguments `kv` is run with: the output has room for the scan. -/
 def kvArgs : List V :=
-  [.sc .i64 (regionBase .arena), .sc .i64 (regionBase .data), .sc .i64 64, .sc .i64 (regionBase .out),
+  [.sc .i64 (regionBase .data), .sc .i64 64, .sc .i64 (regionBase .out),
    .sc .i64 0x100000]
 
 /-- Where `kv` may start: memory not frozen, no LMDB context live, the input
@@ -72,8 +72,8 @@ abbrev KvStart : World → Prop :=
   Contracts.TState.holds [.part .frozen false, .part .lmdb false, .cstr (regionBase .data + 8),
     .room .arena 0xC0, .room .data 8, .room .out 0x100000]
 
-theorem kv_fine : Fine (emitGo (kv (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨rfl, by decide⟩
+theorem kv_fine : Fine (emitGo (fnBody ptrParams (kv (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
+  ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 20000 in
 /-- **`kv` never misuses the ordered store**, whatever the directory already

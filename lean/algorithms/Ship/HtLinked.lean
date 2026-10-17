@@ -1,3 +1,4 @@
+import AlgorithmLib.Proof.Typestate
 import Ship.HtSpec
 import Ship.HtRuns
 
@@ -40,7 +41,8 @@ def roundTrip (api : HtDiff.Api V L) : Prog V L Unit := do
   let _ ← api.lookup c key k8 out
   api.cleanup base
 
-theorem roundTrip_fine : Fine (emitGo (roundTrip HtDiff.lib : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+theorem roundTrip_fine :
+    Fine (emitGo (fnBody ptrParams (roundTrip HtDiff.lib : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 /-- The program's own memory: no worker running, its key and value, and room
@@ -48,19 +50,21 @@ theorem roundTrip_fine : Fine (emitGo (roundTrip HtDiff.lib : Prog Slot Lvl Unit
 def Mine (w : World) (base : UInt64) (kb vb : List UInt8) : Prop :=
   Calm w ∧ Bytes w (base + c64 16) kb ∧ Bytes w (base + c64 32) vb ∧ Room w (base + c64 128) 8
 
-set_option maxHeartbeats 1600000 in
+set_option maxHeartbeats 6400000 in
 /-- **The linked program neither misuses a call nor faults, and leaves its
     slot null**: the table's functions are the library's, called at any call
     depth, from any world with no worker running and 256 bytes of arena. -/
 theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
     (hsz : 256 ≤ (w.mem.region .arena).size) (d dl o ol : UInt64) :
     Does { env, steps, locals := termLocals HtDiff.fns env steps k }
-      [.sc .i64 (regionBase .arena), .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
+      [.sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
       (roundTrip HtDiff.lib) ptrParams (fun w' => w'.mem.load (regionBase .arena) 8 = some 0) := by
   refine does_of_wp ?_ roundTrip_fine rfl
+  simp only [fnBody, show (ptrParams == ptrParams) = true from rfl, if_true, withMemory, wp_memory]
   simp only [roundTrip, HtDiff.lib, HtDiff.lo32, basePtr, AlgorithmLib.Prog.callLocal,
-    AlgorithmLib.Prog.callLocalVoid, wp_bind, wp_params, ptrParams, carriesFrom, wp_ret, wp_pure]
-  have h0 : (#[V.sc .i64 (regionBase .arena), .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] : Env)[0]? =
+    AlgorithmLib.Prog.callLocalVoid, wp_bind, wp_params, ptrParams, carriesFrom, wp_ret, wp_pure,
+    List.cons_append, List.nil_append]
+  have h0 : ((#[V.sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] : Env).push (.sc .i64 (regionBase .arena)))[4]? =
     some (.sc .i64 (regionBase .arena)) := rfl
   generalize hbase : regionBase .arena = base at h0 ⊢
   have hsp : ∀ j, j < 256 → j < regionSpan.toNat := fun j hj => by rw [Sem.regionSpan_toNat]; omega
@@ -178,10 +182,10 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
 theorem roundTrip_no_misuse (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
     (hsz : 256 ≤ (w.mem.region .arena).size) (d dl o ol : UInt64) (m : String) :
     Sem.run { env, steps, locals := termLocals HtDiff.fns env steps k }
-        [.sc .i64 (regionBase .arena), .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
+        [.sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
         (emit (roundTrip HtDiff.lib) ptrParams) ≠ .misuse m ∧
       Sem.run { env, steps, locals := termLocals HtDiff.fns env steps k }
-        [.sc .i64 (regionBase .arena), .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
+        [.sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
         (emit (roundTrip HtDiff.lib) ptrParams) ≠ .fault m :=
   (roundTrip_linked env steps k w hc hsz d dl o ol).sound m
 

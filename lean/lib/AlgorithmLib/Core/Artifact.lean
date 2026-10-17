@@ -10,18 +10,21 @@ open Lean
 
 namespace AlgorithmLib
 
-/-- The board's control, as data: the functions a host compiles, the memory
-    they run in, and the bytes that memory starts with. This is the whole of
-    the wire format, written as the CBOR `base_types::Artifact` reads.
+/-- The board's control, as data: the functions a host compiles, the arena
+    they run in, and the bytes the arena starts with. This is the whole of the
+    wire format, written as the CBOR `base_types::Artifact` reads, with the
+    primitives its functions call declared once.
 
-    A host calls a function by its `entryName`. -/
+    A host calls a function by its `name`. -/
 structure Artifact where
   functions : List IR.FuncData
-  /-- How much the program needs. The runtime allocates it and cannot check
-      it, so what a generator proved its layout fits in is what belongs here. -/
+  /-- How much arena the program needs. The runtime allocates it and cannot
+      check it, so what a generator proved its layout fits in is what belongs
+      here. What is written out is this or the image's length, whichever is
+      more (`Artifact.memorySize`), so the image always fits. -/
   required_memory : Nat
-  /-- The image memory starts with, built here as one flat list and written out
-      as the segments of it that are not zero. -/
+  /-- The image the arena starts with, built here as one flat list and written
+      out as the segments of it that are not zero. -/
   initial_memory : List UInt8 := []
 
 namespace ContextSlots
@@ -68,13 +71,20 @@ def segmentsOf (image : List UInt8) (gap : Nat := 32) : List (Nat × List UInt8)
           | some (off, run) => go (i + 1) rest (some (off, b :: run)) 0 acc
   go 0 image none 0 []
 
+/-- The arena an artifact's runtime allocates: what the program needs, and at
+    least its image. -/
+def Artifact.memorySize (a : Artifact) : Nat := max a.required_memory a.initial_memory.length
+
 open Cbor in
 instance : ToCbor Artifact where
-  cbor a := struct
-    [("functions", array a.functions cbor),
-     ("required_memory", nat a.required_memory),
-     ("data", array (segmentsOf a.initial_memory) fun (off, bs) =>
-        struct [("offset", nat off), ("bytes", bytes ⟨bs.toArray⟩)])]
+  cbor a :=
+    let w : IR.Wire := { prims := IR.primitivesOf a.functions, answers := a.functions.map (·.answers) }
+    struct
+      [("primitives", array w.prims IR.primitiveCbor),
+       ("functions", array a.functions (·.toCbor w)),
+       ("arena_size", nat a.memorySize),
+       ("data", array (segmentsOf a.initial_memory) fun (off, bs) =>
+          struct [("offset", nat off), ("bytes", bytes ⟨bs.toArray⟩)])]
 
 /-- An artifact and the file name it is written under. -/
 abbrev ArtifactEntry := String × Artifact
@@ -112,7 +122,7 @@ open IR
 def sample : Artifact where
   functions := [{
     index := 0
-    entryName := some "main"
+    name := some "main"
     blocks := [{
       ref := ⟨0⟩
       params := [(⟨0⟩, .i64)]
@@ -121,22 +131,33 @@ def sample : Artifact where
         .iconst ⟨2⟩ .i64 (2 ^ 63 - 1),
         .fconst ⟨3⟩ .f64 0xFFFFFFFFFFFFFFFF,
         .load ⟨4⟩ { kind := .uload8, ty := .i32 } ⟨0⟩,
-        -- Both arms of `Callee`: a call takes one, so the sample makes two.
+        -- A primitive, whose result nothing reads, and a function.
         .call none (.ffi .sinf) [⟨0⟩],
         .call none (.local 1) [⟨0⟩],
+        -- An indirect one, at a signature and a convention.
+        .call (some ⟨5⟩) .native [⟨0⟩, ⟨0⟩, ⟨0⟩, ⟨0⟩, ⟨0⟩],
         .ret none] }] }]
   required_memory := 2 ^ 40
   initial_memory := [0, 0, 0, 0xff, 0, 1]
 
 def expected : String :=
-  "a36966756e6374696f6e7381a26a656e7472795f6e616d65646d61696e66626c6f636b73" ++
-  "81a3697265666572656e63650066706172616d738182006349363465696e73747387a166" ++
-  "49636f6e73748301634936343b7fffffffffffffffa16649636f6e73748302634936341b" ++
-  "7fffffffffffffffa16646636f6e73748303634636341bffffffffffffffffa1644c6f61" ++
-  "648404a3646b696e6466556c6f616438627479634933326e6e6f747261705f616c69676e" ++
-  "6564f40000a16443616c6c83f6a166496d706f727467636c5f73696e668100a16443616c" ++
-  "6c83f6a1654c6f63616c018100a163526574f66f72657175697265645f6d656d6f72791b" ++
-  "0000010000000000646461746181a2666f66667365740365627974657343ff0001"
+  "a46a7072696d69746976657381a3636c696264626173656673796d626f6c67636c5f7369" ++
+  "6e66697369676e6174757265a36a636f6e76656e74696f6e64486f737466706172616d73" ++
+  "818263663332806772657475726e73818263663332806966756e6374696f6e7381a4646e" ++
+  "616d65646d61696e697369676e6174757265a36a636f6e76656e74696f6e64486f737466" ++
+  "706172616d73848263693634808263693634808263693634808263693634806772657475" ++
+  "726e73818263693634806b737461636b5f736c6f74738066626c6f636b7381a369726566" ++
+  "6572656e63650066706172616d738182006369363465696e73747388a168556e61727949" ++
+  "6d6d8481016669636f6e7374636936343b7fffffffffffffffa168556e617279496d6d84" ++
+  "81026669636f6e7374636936341b7fffffffffffffffa16b556e61727949656565363484" ++
+  "810368663634636f6e7374f61bffffffffffffffffa1644c6f616486810466756c6f6164" ++
+  "3863693332800000a16443616c6c8581066463616c6cf6a1695072696d69746976650081" ++
+  "00a16443616c6c85806463616c6cf6a16846756e6374696f6e018100a16c43616c6c496e" ++
+  "6469726563748681056d63616c6c5f696e646972656374f6a36a636f6e76656e74696f6e" ++
+  "644172636866706172616d73848263693634808263693634808263693634808263693634" ++
+  "806772657475726e7381826369363480008400000000a1684d756c746941727984806672" ++
+  "657475726ef6806a6172656e615f73697a651b0000010000000000646461746181a2666f" ++
+  "66667365740365627974657343ff0001"
 
 def hexOf (b : ByteArray) : String :=
   b.foldl (init := "") fun s x =>

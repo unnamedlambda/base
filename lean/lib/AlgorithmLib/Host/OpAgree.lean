@@ -119,6 +119,12 @@ theorem agree_iconst (ty : ClifTy) (k : Int) : Agree m Δ Γ (.iconst ty k) := b
 theorem agree_fconst (ty : ClifTy) (b : UInt64) : Agree m Δ Γ (.fconst ty b) := by
   agree_unfold; cases ty <;> agree_simp
 
+theorem agree_memory : Agree m Δ Γ .memory := by
+  agree_unfold; agree_simp
+
+theorem agree_funcAddr (i : Nat) : Agree m Δ Γ (.funcAddr i) := by
+  agree_unfold; agree_simp
+
 theorem agree_ineg (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a : R) : Agree m Δ Γ (.ineg a) := by
   agree_unfold; rw [hΔ a]
   slot a with ha <;> agree_simp
@@ -409,6 +415,8 @@ theorem agree (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (o : Op) : Agree m Δ Γ 
   cases o with
   | iconst ty k => exact agree_iconst ty k
   | fconst ty b => exact agree_fconst ty b
+  | memory => exact agree_memory
+  | funcAddr i => exact agree_funcAddr i
   | iadd a b => exact agree_iadd hΔ hΓ a b
   | isub a b => exact agree_isub hΔ hΓ a b
   | imul a b => exact agree_imul hΔ hΓ a b

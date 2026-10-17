@@ -3,39 +3,27 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::Module;
 
 use crate::clif_decode::Resolved;
-use std::sync::Arc;
 use tracing::info;
 
-/// One compiled function: where it starts, how many arguments it takes, and
-/// whether it answers a status.
-///
-/// Deliberately not an `fn` pointer: the shape is the one the function's own
-/// body declared (see `clif_decode::signature_of`), so it travels with the
-/// address and a caller checks it before transmuting rather than assuming.
-///
-/// A raw pointer is neither `Send` nor `Sync`, and the table crosses into
-/// spawned threads. It is code, mapped for the life of the module and never
-/// written, so sharing the address is sound; that is what these assert.
-#[derive(Copy, Clone)]
-pub(crate) struct Compiled {
-    pub(crate) addr: *const u8,
-    pub(crate) arity: usize,
-    pub(crate) answers: bool,
+/// What a host calls a function as: the input, its length, the output, its
+/// length, answering the status. The arena is not an argument: a function
+/// takes its address itself, from the symbol [`ARENA`] the engine links it to.
+pub type FunctionPtr = unsafe extern "C" fn(*const u8, usize, *mut u8, usize) -> i64;
+
+/// The symbol the arena is linked under: what `symbol_value` of
+/// [`base_types::clif::Global::Arena`] answers.
+pub(crate) const ARENA: &str = "arena";
+
+/// A compiled program: its code, and each named function as the C function a
+/// host calls.
+pub(crate) struct Program {
+    pub(crate) module: cranelift_jit::JITModule,
+    pub(crate) exports: std::collections::HashMap<String, FunctionPtr>,
 }
 
-unsafe impl Send for Compiled {}
-unsafe impl Sync for Compiled {}
-
-thread_local! {
-    pub(crate) static THREAD_COMPILED_FNS: std::cell::RefCell<Option<Arc<Vec<Compiled>>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Every function a program may import, registered under its name.
-fn register_symbols(builder: &mut JITBuilder, externs: &[(String, usize)]) {
-    for import in crate::imports::imports() {
-        builder.symbol(import.name, import.addr as *const u8);
-    }
-    for (name, addr) in externs {
+/// Every symbol a program links to, registered under its link name.
+fn register_symbols(builder: &mut JITBuilder, symbols: &[(String, usize)]) {
+    for (name, addr) in symbols {
         builder.symbol(name.clone(), *addr as *const u8);
     }
 }
@@ -62,7 +50,7 @@ const CODE_RESERVE_MAX: usize = 128 << 20;
 /// between.
 fn new_module(
     insts: usize,
-    externs: &[(String, usize)],
+    symbols: &[(String, usize)],
 ) -> Result<cranelift_jit::JITModule, String> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -71,7 +59,7 @@ fn new_module(
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    register_symbols(&mut builder, externs);
+    register_symbols(&mut builder, symbols);
     let reserve = CODE_RESERVE_MIN
         .saturating_add(insts.saturating_mul(CODE_RESERVE_PER_INST))
         .min(CODE_RESERVE_MAX);
@@ -81,35 +69,35 @@ fn new_module(
     Ok(cranelift_jit::JITModule::new(builder))
 }
 
-/// Finalizes a module whose functions have all been defined, and hands back
-/// pointers to them.
-fn finalize(
-    mut module: cranelift_jit::JITModule,
-    func_ids: Vec<cranelift_module::FuncId>,
-    shapes: Vec<(usize, bool)>,
-) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
-    module.finalize_definitions().map_err(|e| format!("{e}"))?;
-    let compiled_fns: Vec<Compiled> = func_ids
-        .iter()
-        .zip(shapes)
-        .map(|(&id, (arity, answers))| Compiled {
-            addr: module.get_finalized_function(id),
-            arity,
-            answers,
-        })
-        .collect();
-    info!(count = compiled_fns.len(), "CLIF compiled successfully");
-    Ok((module, Arc::new(compiled_fns)))
+/// Each named function by its name, and its position.
+///
+/// A name given twice is refused: which function a host reached would
+/// depend on the order a map was filled. That each takes what [`FunctionPtr`]
+/// passes is not checked here: a named function is declared at that
+/// signature (`signature_of`), and the verifier refuses a body that is not.
+pub(crate) fn exports_of(functions: &[base_types::clif::Function]) -> Result<Vec<(String, usize)>, String> {
+    let mut exports: Vec<(String, usize)> = Vec::new();
+    let mut named: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, f) in functions.iter().enumerate() {
+        let Some(name) = &f.name else { continue };
+        if let Some(prev) = named.insert(name, i) {
+            return Err(format!("u0:{prev} and u0:{i} are both named {name:?}"));
+        }
+        exports.push((name.clone(), i));
+    }
+    Ok(exports)
 }
 
 /// Compiles the functions an artifact carries.
 ///
-/// A call carries its callee, so the prologue Cranelift wants is interned from
-/// the body as it is built: there is no name to rewrite afterward and no
-/// declaration order for anything to depend on.
+/// Its primitives are declared first, each once, as the module's imports, and
+/// its functions after, so a call resolves by position to either.
 pub(crate) fn compile(
+    primitives: &[base_types::clif::Primitive],
     functions: &[base_types::clif::Function],
-) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
+    arena: *mut u8,
+) -> Result<Program, String> {
+    let exports = exports_of(functions)?;
     info!(functions = functions.len(), "compiling CLIF functions");
     let insts = functions
         .iter()
@@ -117,20 +105,33 @@ pub(crate) fn compile(
         .map(|b| b.insts.len())
         .sum();
     // The C functions the program calls, bound before the module is built so
-    // each resolves like any other import.
-    let mut externs: Vec<(String, usize)> = Vec::new();
-    for f in functions.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts) {
-        if let base_types::clif::Inst::Call(_, base_types::clif::Callee::Extern(e), _) = f {
-            let name = crate::libs::link_name(e);
-            if !externs.iter().any(|(n, _)| *n == name) {
-                externs.push((name, crate::libs::bind(e)));
-            }
+    // each resolves like any other import. A primitive is declared once: a
+    // second declaration of the same symbol is the same fact stated twice.
+    let mut symbols: Vec<(String, usize)> = Vec::with_capacity(primitives.len() + 1);
+    for p in primitives {
+        let name = crate::libs::link_name(p);
+        if symbols.iter().any(|(n, _)| *n == name) {
+            return Err(format!("the primitive {}!{} is declared twice", p.lib, p.symbol));
         }
+        symbols.push((name, crate::libs::bind(p)));
     }
-    let mut module = new_module(insts, &externs)?;
+    symbols.push((ARENA.into(), arena as usize));
+    let mut module = new_module(insts, &symbols)?;
     let cc = module.isa().default_call_conv();
+    let arena_data = module
+        .declare_data(ARENA, cranelift_module::Linkage::Import, true, false)
+        .map_err(|e| format!("declaring {ARENA}: {e}"))?;
 
-    // Declared before any body is built, so `u0:N` resolves to FuncId(N).
+    let mut prims = Vec::with_capacity(primitives.len());
+    for p in primitives {
+        let sig = crate::clif_decode::signature(&p.signature, cc)
+            .map_err(|e| format!("the primitive {}!{}: {e}", p.lib, p.symbol))?;
+        let name = crate::libs::link_name(p);
+        let id = module
+            .declare_function(&name, cranelift_module::Linkage::Import, &sig)
+            .map_err(|e| format!("declaring {name}: {e}"))?;
+        prims.push((id, sig));
+    }
     let sigs = functions
         .iter()
         .enumerate()
@@ -144,50 +145,22 @@ pub(crate) fn compile(
                 .map_err(|e| format!("declaring fn_{i}: {e}"))?,
         );
     }
-    let shapes = sigs.iter().map(|s| (s.params.len(), !s.returns.is_empty())).collect();
 
     let mut decoded = Vec::with_capacity(functions.len());
     for (i, f) in functions.iter().enumerate() {
-        let mut declare = |callee: &base_types::clif::Callee| match callee {
-            // Only what base provides, at the signature it provides it at. A
-            // name outside the table would otherwise be looked up in whatever
-            // the process has loaded, and be called with arguments in the
-            // wrong registers.
-            base_types::clif::Callee::Import(name) => {
-                let import = crate::imports::lookup(name).ok_or_else(|| {
-                    format!("u0:{i} imports {name}, which base does not provide")
-                })?;
-                let sig = crate::clif_decode::signature(&import.params, import.result, cc);
-                let id = module
-                    .declare_function(name, cranelift_module::Linkage::Import, &sig)
-                    .map_err(|e| format!("declaring import {name}: {e}"))?;
-                Ok((Resolved { id: id.as_u32(), colocated: false }, sig))
-            }
-            // A local callee's signature is the one its own body declares,
-            // read once here and used for both the call site and the
-            // definition, so the two cannot disagree.
-            base_types::clif::Callee::Local(n) => {
-                let (id, sig) = func_ids
-                    .get(*n as usize)
-                    .zip(sigs.get(*n as usize))
-                    .ok_or_else(|| format!("call to u0:{n}, which the program does not define"))?;
-                Ok((Resolved { id: id.as_u32(), colocated: true }, sig.clone()))
-            }
-            // Called through its address; `decode_function` never resolves it.
-            base_types::clif::Callee::Native => Err("machine code has no symbol to resolve".into()),
-            // Emitted in place; `decode_function` never resolves it.
-            base_types::clif::Callee::Atomic(_) => Err("an atomic has no symbol to resolve".into()),
-            // Bound above, at the signature the program declares.
-            base_types::clif::Callee::Extern(e) => {
-                let sig = crate::clif_decode::signature(&e.params, e.result, cc);
-                let name = crate::libs::link_name(e);
-                let id = module
-                    .declare_function(&name, cranelift_module::Linkage::Import, &sig)
-                    .map_err(|err| format!("declaring {name}: {err}"))?;
-                Ok((Resolved { id: id.as_u32(), colocated: false }, sig))
-            }
+        let mut resolve = |callee: base_types::clif::Callee| match callee {
+            base_types::clif::Callee::Function(n) => func_ids
+                .get(n as usize)
+                .zip(sigs.get(n as usize))
+                .map(|(id, sig)| (Resolved { id: id.as_u32(), colocated: true }, sig.clone()))
+                .ok_or_else(|| format!("a call to u0:{n}, which the program does not define")),
+            base_types::clif::Callee::Primitive(n) => prims
+                .get(n as usize)
+                .map(|(id, sig)| (Resolved { id: id.as_u32(), colocated: false }, sig.clone()))
+                .ok_or_else(|| format!("a call to primitive {n}, which the program does not declare")),
         };
-        decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut declare)?);
+        let mut m = crate::clif_decode::Module { primitives, arena: arena_data.as_u32(), resolve: &mut resolve };
+        decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut m)?);
     }
 
     let dump = std::env::var("BASE_DISASM").is_ok();
@@ -203,11 +176,18 @@ pub(crate) fn compile(
         if dump {
             ctx.set_disasm(true);
         }
+        let exported = match &functions[i].name {
+            Some(name) => format!(
+                " (named {name:?}, so a host calls it: it takes the input and output \
+                 buffers and answers a status)"
+            ),
+            None => String::new(),
+        };
         module
             .define_function(func_ids[i], &mut ctx)
             // Debug rather than Display: a verifier rejection names the
             // offending instructions only in the former.
-            .map_err(|e| format!("compiling u0:{i}: {e:?}"))?;
+            .map_err(|e| format!("compiling u0:{i}{exported}: {e:?}"))?;
         if dump {
             if let Some(vc) = ctx.compiled_code().and_then(|c| c.vcode.as_deref()) {
                 eprintln!("=== fn {i} ===\n{vc}");
@@ -215,6 +195,17 @@ pub(crate) fn compile(
         }
     }
 
-    finalize(module, func_ids, shapes)
+    module.finalize_definitions().map_err(|e| format!("{e}"))?;
+    info!(count = func_ids.len(), "CLIF compiled successfully");
+    let exports = exports
+        .into_iter()
+        // SAFETY: each was declared at `FunctionPtr`'s signature and its body
+        // verified against it, and is mapped for as long as the module is.
+        .map(|(name, k)| {
+            let addr = module.get_finalized_function(func_ids[k]);
+            (name, unsafe { std::mem::transmute::<*const u8, FunctionPtr>(addr) })
+        })
+        .collect();
+    Ok(Program { module, exports })
 }
 

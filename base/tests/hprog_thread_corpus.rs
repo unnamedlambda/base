@@ -31,7 +31,7 @@ fn interpreter_and_runtime_agree_on_threads() {
         .collect();
     let a = Artifact::from_bytes(lean_artifacts::HPROG_THREAD_CORPUS).expect("artifact shape");
 
-    let mut b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
     b.execute("main", &[], &mut out).expect("execute");
 

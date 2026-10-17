@@ -34,23 +34,23 @@ def main():
 
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER)
     base = py_base.Driver(art)
-    base.execute("main", blob)
+    base.function("main")(blob)
 
     dout = np.ones(DM, dtype=np.float32)
-    base.execute("uploadDOut", dout.tobytes())
+    base.function("uploadDOut")(dout.tobytes())
 
     def loss(w2: np.ndarray) -> float:
-        base.execute("uploadW2", w2.astype("<f4").ravel().tobytes())
-        base.execute("runFwd")
+        base.function("uploadW2")(w2.astype("<f4").ravel().tobytes())
+        base.function("runFwd")()
         o = bytearray(DM * 4)
-        base.execute("fetchOut", b"", o)
+        base.function("fetchOut")(b"", o)
         return float(np.sum(np.frombuffer(bytes(o), dtype="<f4"), dtype=np.float64))
 
     # The derived gradient, from the run that also does the forward pass.
-    base.execute("uploadW2", w["w2"].astype("<f4").ravel().tobytes())
-    base.execute("runBlock")
+    base.function("uploadW2")(w["w2"].astype("<f4").ravel().tobytes())
+    base.function("runBlock")()
     g = bytearray(DM * DFF * 4)
-    base.execute("fetchDW2", b"", g)
+    base.function("fetchDW2")(b"", g)
     dW2 = np.frombuffer(bytes(g), dtype="<f4").reshape(DM, DFF)
 
     rng = np.random.default_rng(3)

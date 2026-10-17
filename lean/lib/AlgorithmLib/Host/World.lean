@@ -96,6 +96,11 @@ def regionBase : Region → UInt64
 
 def regionSpan : UInt64 := 0x1000000000
 
+/-- Where the program's functions are, as values: function `u0:i` is at
+    `fnBase + i`, apart from every region, so an address a program takes of a
+    function is never one it can load or store through. -/
+def fnBase : UInt64 := 0x5000000000
+
 def addrOf (r : Region) (off : Nat) : UInt64 := regionBase r + UInt64.ofNat off
 
 /-- Which region an address names, and how far into it. -/
@@ -556,6 +561,8 @@ def satToSint (ty : ClifTy) (x : Float) : V :=
     (`Host.OpAgree`). -/
 def evalOp (m : Mem) (Γ : Env) : Op → Option V
   | .iconst ty k => some (ofInt ty k)
+  | .memory => some (.sc .i64 (regionBase .arena))
+  | .funcAddr i => some (.sc .i64 (fnBase + UInt64.ofNat i))
   | .fconst ty b => some (.sc ty (b &&& widthMask ty))
   | .iadd a b => bin Γ a b fun t x y => some (norm t (x + y))
   | .isub a b => bin Γ a b fun t x y => some (norm t (x - y))

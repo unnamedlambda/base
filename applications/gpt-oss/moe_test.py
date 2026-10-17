@@ -48,7 +48,7 @@ def main():
 
     # The host region Lean declared, read back rather than restated: if the
     # packing here and the layout there disagreed, this is where it shows.
-    want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
+    want = struct.unpack_from("<I", base.read(0x80, 4))[0]
 
     # ---- pack: the activation, the gates, then all thirty-two experts ----
     rng = np.random.default_rng(7)
@@ -72,13 +72,13 @@ def main():
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
 
-    base.execute("main", blob)
-    base.execute("bindExperts", chosen.tobytes())
-    base.execute("uploadX", x.tobytes())
-    base.execute("uploadGates", gates.tobytes())
-    base.execute("runExperts")
+    base.function("main")(blob)
+    base.function("bindExperts")(chosen.tobytes())
+    base.function("uploadX")(x.tobytes())
+    base.function("uploadGates")(gates.tobytes())
+    base.function("runExperts")()
     out = bytearray(H * 4)
-    base.execute("fetchOut", b"", out)
+    base.function("fetchOut")(b"", out)
     got = np.frombuffer(bytes(out), np.float32)
 
     # ---- the reference: the same four experts, mixed by the same gates ----
@@ -98,10 +98,10 @@ def main():
 
     # ---- the binding is load-bearing: a different choice must differ ----
     other = np.array([11, 24, 2, 30], dtype=np.uint32)
-    base.execute("bindExperts", other.tobytes())
-    base.execute("runExperts")
+    base.function("bindExperts")(other.tobytes())
+    base.function("runExperts")()
     out2 = bytearray(H * 4)
-    base.execute("fetchOut", b"", out2)
+    base.function("fetchOut")(b"", out2)
     got2 = np.frombuffer(bytes(out2), np.float32)
     ref2 = mixture(other, g4)
     rel2 = np.abs(got2 - ref2).max() / max(np.abs(ref2).max(), 1e-6)

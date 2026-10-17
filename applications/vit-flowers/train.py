@@ -30,22 +30,22 @@ ref = np.load(D + "/losses.npy")
 
 art = py_base.load_artifact(ART)
 base = py_base.Driver(art)
-base.execute("main", blob)
+base.function("main")(blob)
 
 # Capture both graphs first.  Capturing runs its sequence once eagerly to make
 # every module resident, so the step graph's capture applies two updates; the
 # reload puts the parameters back before the run that is being compared.
-base.execute("capture")
-base.execute("captureStep")
-base.execute("reload", blob)
+base.function("capture")()
+base.function("captureStep")()
+base.function("reload")(blob)
 
 logit_buf = bytearray(SQ * NC * 4)
 seed = np.zeros((SQ, NC), np.float32)
 
 
 def forward_logits():
-    base.execute("replay")
-    base.execute("fetch", b"", logit_buf)
+    base.function("replay")()
+    base.function("fetch")(b"", logit_buf)
     return np.frombuffer(bytes(logit_buf), "<f4")[:NC].astype(np.float64)
 
 
@@ -57,8 +57,8 @@ for _ in range(STEPS):
     losses.append(float(-np.log(max(p[LABEL], 1e-30))))
     seed[0] = p
     seed[0, LABEL] -= 1.0
-    base.execute("seed", seed.tobytes())
-    base.execute("replayStep")
+    base.function("seed")(seed.tobytes())
+    base.function("replayStep")()
 ms = (time.perf_counter() - t0) / STEPS * 1e3
 
 n = min(len(losses), len(ref))

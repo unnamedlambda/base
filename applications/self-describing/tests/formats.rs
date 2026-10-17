@@ -150,7 +150,7 @@ fn a_stale_bulk_reader_refuses() {
 /// that cannot hold it.
 #[test]
 fn a_buffer_too_small_is_left_alone() {
-    let mut base = driver();
+    let base = driver();
     for entry in ["schema", "stats", "bulk"] {
         let need = base.execute(entry, INPUT, &mut []).expect("execute");
         let mut out = vec![0xaau8; need as usize - 1];

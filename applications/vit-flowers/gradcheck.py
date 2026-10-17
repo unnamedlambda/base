@@ -30,17 +30,17 @@ def pbase(i):
 art = py_base.load_artifact(ART)
 base = py_base.Driver(art)
 # The map is the last region Lean writes: VMEM_SIZE = VGMAP_OFF + 4*VBASE + 0x100.
-GMAP = base.memory_size() - 0x100 - 4 * VBASE
-gmap = np.frombuffer(base.read_memory(GMAP, 4 * VBASE), "<u4")
+GMAP = len(base.arena) - 0x100 - 4 * VBASE
+gmap = np.frombuffer(base.read(GMAP, 4 * VBASE), "<u4")
 
 blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy")
 ref = np.load(D + "/grads.npz")
 
-base.execute("main", blob)
-base.execute("run")
-base.execute("seed", seed.astype("<f4").tobytes())
-base.execute("bwd")
+base.function("main")(blob)
+base.function("run")()
+base.function("seed")(seed.astype("<f4").tobytes())
+base.function("bwd")()
 
 fetch = "fetchAny"
 
@@ -50,7 +50,7 @@ def grad(inp, n):
     g = int(gmap[inp])
     assert g != 0, f"input {inp} has no gradient buffer"
     out = bytearray(n * 4)
-    base.execute(fetch, struct.pack("<II", g, n * 4), out)
+    base.function(fetch)(struct.pack("<II", g, n * 4), out)
     return np.frombuffer(bytes(out), "<f4").copy()
 
 

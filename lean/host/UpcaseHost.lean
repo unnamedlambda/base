@@ -14,7 +14,7 @@ this program could equally have written to disk for a Rust or Python host.
 
 Nothing here knows how long the file was. The artifact read it, so the artifact
 is what knows, and it says so twice: as the status `execute` answers with, and
-in memory at `Upcase.f.size`, which `readField` reads back from the same field
+in the arena at `Upcase.f.size`, which `readField` reads back from the same field
 handle the artifact was built from. That is the shape to copy — a host that
 hardcodes a length has written the layout down twice.
 
@@ -27,15 +27,15 @@ def main : IO Unit := do
 
   let artifact ← AlgorithmLib.Prog.orDie Upcase.shipped
   Base.withDriver artifact fun drv => do
-    IO.println s!"driver memory: {← drv.memorySize} bytes"
+    IO.println s!"arena: {← drv.arenaSize} bytes"
     let (_, status) ← drv.executeStatus "main"
     IO.println s!"artifact answered {status}"
 
     -- Both of these name a field rather than an offset, and the second's
     -- length came from the first.
     let size ← drv.readField Upcase.f.size
-    let transformed ← drv.readMemory Upcase.f.fileData.offset size.toNat
+    let transformed ← drv.read Upcase.f.fileData.offset size.toNat
     IO.println s!"artifact transformed {size} bytes"
-    IO.println s!"in memory: {(String.fromUTF8! transformed).trim}"
+    IO.println s!"in the arena: {(String.fromUTF8! transformed).trim}"
 
   IO.println s!"artifact wrote output.txt: {(← IO.FS.readFile "output.txt").trim}"

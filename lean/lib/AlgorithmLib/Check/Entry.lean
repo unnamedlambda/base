@@ -7,8 +7,8 @@ public meta import AlgorithmLib.Check.Reflect
 /-!
 # `Check.Entry` — a shipped body's no-misuse theorem, by the checker
 
-A body is called with `runArgs`: the arena's, the data's and the output's
-addresses, and the data's and output's lengths. Its typestate names the facts
+A body is called with `runArgs`: the data's and the output's addresses and
+lengths; it takes the arena's address itself, as its first statement. Its typestate names the facts
 the world starts with; a `.roomArg` fact among them says a length is no larger
 than its region. `entryOf` is the checker's state at entry: the addresses
 known, each length a number bounded by its region where the typestate says
@@ -37,7 +37,7 @@ def isRoomArg : Fact → Bool
 /-- The checker's state where a body is called with `runArgs`, `P` what it
     knows of the program's parameters. -/
 def entryOf (S : TState) (dLen oLen : Bool) (P : Par) : AS :=
-  (AS.ofList [.known (.sc .i64 (regionBase .arena)), .known (.sc .i64 (regionBase .data)),
+  (AS.ofList [.known (.sc .i64 (regionBase .data)),
     if dLen then AV.len .data else .sc .i64, .known (.sc .i64 (regionBase .out)),
     if oLen then AV.len .out else .sc .i64] S).withPar P
 
@@ -127,15 +127,14 @@ theorem entryOf_holds {L S : TState} {dLen oLen : Bool} {P : Par} {dataLen outLe
   simp only [List.length_cons, List.length_nil] at hi
   match i, hi with
   | 0, _ => exact ⟨_, rfl, rfl⟩
-  | 1, _ => exact ⟨_, rfl, rfl⟩
-  | 2, _ =>
+  | 1, _ =>
       refine ⟨_, rfl, ?_⟩
       show AV.Desc _ _ (if dLen then AV.len .data else .sc .i64) _
       split
       · rename_i e; exact len_desc (by decide) (h _ (hd e))
       · exact TyV.sc (t := .i64) rfl
-  | 3, _ => exact ⟨_, rfl, rfl⟩
-  | 4, _ =>
+  | 2, _ => exact ⟨_, rfl, rfl⟩
+  | 3, _ =>
       refine ⟨_, rfl, ?_⟩
       show AV.Desc _ _ (if oLen then AV.len .out else .sc .i64) _
       split
@@ -644,7 +643,7 @@ macro_rules
   | `($[$doc:docComment]? ship_entry $n:ident : $code:term under $P:term) => do
     let fine := mkIdent (n.getId.appendAfter "_fine")
     let safe := mkIdent (n.getId.appendAfter "_no_misuse")
-    `(theorem $fine : Fine (emitGo ($code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+    `(theorem $fine : Fine (emitGo (fnBody ptrParams ($code : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
         ⟨by decide +kernel, by decide +kernel⟩
       set_option maxRecDepth 200000 in
       set_option maxHeartbeats 4000000 in

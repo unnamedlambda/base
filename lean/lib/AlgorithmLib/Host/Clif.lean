@@ -447,7 +447,7 @@ def stepPure (e : Env) : Inst → Env
   | .fneg d _ | .fcvtFromSint d _ _ | .fcvtToUint d _ _
   | .fcmp d _ _ _ | .bitcast d _ _ | .ctz d _ | .popcnt d _ | .vhighBits d _
   | .ibin d _ _ _ | .ishift d _ _ _ | .iun d _ _ | .fbin d _ _ _ | .fun1 d _ _
-  | .fconv d _ _ _ | .fma d _ _ _ | .iext d _ _ _ =>
+  | .fconv d _ _ _ | .fma d _ _ _ | .iext d _ _ _ | .memory d | .funcAddr d _ =>
       e.set d .unknown
   | .call (some d) _ _ => e.set d .unknown
   | _ => e
@@ -469,7 +469,7 @@ def Inst.destOf? : Inst → Option Val
   | .fcvtFromSint d _ _ | .fcvtToUint d _ _ | .bitcast d _ _ => some d
   | .icmp d _ _ _ | .select d _ _ _ | .fcmp d _ _ _ | .bitselect d _ _ _ => some d
   | .ibin d _ _ _ | .ishift d _ _ _ | .iun d _ _ | .fbin d _ _ _ | .fun1 d _ _
-  | .fconv d _ _ _ | .fma d _ _ _ | .iext d _ _ _ => some d
+  | .fconv d _ _ _ | .fma d _ _ _ | .iext d _ _ _ | .memory d | .funcAddr d _ => some d
   | .call d _ _ => d
   | _ => none
 
@@ -574,7 +574,7 @@ structure LaunchRec where
     has none, and is not what any caller of this is looking for. -/
 def fnNameOf : Callee → Option String
   | .ffi f   => some f.cname
-  | .local _ | .native | .atomic _ | .ext _ => none
+  | .local _ | .native | .host _ _ | .atomic _ | .ext _ => none
 
 /-- **Primitives that write device memory without being a modelled launch.**
 

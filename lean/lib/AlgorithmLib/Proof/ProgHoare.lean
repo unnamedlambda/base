@@ -762,6 +762,14 @@ theorem PT.op {ty} {P : Env → World → Prop} {o : Op' Slot ty} {k : Slot ty �
   rintro Γ w v ⟨hn, hP⟩ hv
   exact ⟨by simp [hn], Γ, v, rfl, hn, hP, hv⟩
 
+/-- An entry point's body, after it takes its memory's address, does what the
+    body does, for a precondition that a slot more does not change. -/
+theorem PT.withMemory {P : Env → World → Prop} {p : Prog Slot Lvl α} {Q : α → Env → World → Prop}
+    (h : PT cfg d J P p Q) (hP : ∀ Γ v w, P Γ w → P (Γ.push v) w) :
+    PT cfg d J P (withMemory p) Q :=
+  PT.op (fun _ => PT.conseq h (fun _ _ ⟨_, _, e, _, hp, _⟩ => e ▸ hP _ _ _ hp) (fun _ _ _ h => h))
+    (fun _ _ _ hv => by simp [Op'.erase, evalOp] at hv)
+
 /-- A statement that binds nothing. -/
 theorem PT.stmt {P R : Env → World → Prop} {st : Stmt} {k : Prog Slot Lvl α}
     {Q : α → Env → World → Prop}
@@ -2061,11 +2069,12 @@ theorem wp_mono (cfg : Cfg) {α : Type} (p : Prog Slot Lvl α) :
 /-- **What a proof about a generator says about the code it ships.** -/
 theorem emit_triple {cfg : Cfg} {J : Post} {P : Env → World → Prop} {p : Body}
     {Q : Unit → Env → World → Prop} {params : List ClifTy} {P0 : Env → World → Prop}
-    (h : PT cfg 0 J P p Q) (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+    (h : PT cfg 0 J P (fnBody params p) Q)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     (h0 : ∀ Γ w, P0 Γ w → Γ.size = params.length ∧ P Γ w) :
     Triple cfg P0 (emit p params) { J with ok := fun Γ w => Q () Γ w } := by
   have h1 := h ⟨params.length, 0, [], [], [], none⟩ P0 rfl hf (nil_rule h0)
-  show Triple cfg P0 (emitGo p ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse _
+  show Triple cfg P0 (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse _
   rw [St.out_eq_flush]
   exact Hoare.conseq h1 (fun _ _ h => h) (fun Γ w ⟨_, _, _, hq⟩ => hq)
     (fun _ _ _ _ h => h) (fun _ _ _ h => h)
@@ -2073,17 +2082,18 @@ theorem emit_triple {cfg : Cfg} {J : Post} {P : Env → World → Prop} {p : Bod
 /-- The code a body that answers ships: its pieces, the answer being the
     function's return. -/
 def emitAns {α : Type} (p : Prog Slot Lvl α) (params : List ClifTy := ptrParams) : Code :=
-  (emitGo p ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse
+  (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse
 
 /-- `emit_triple`, for a body that answers. -/
 theorem emitAns_triple {cfg : Cfg} {J : Post} {P : Env → World → Prop} {α : Type}
     {p : Prog Slot Lvl α} {Q : α → Env → World → Prop} {params : List ClifTy}
     {P0 : Env → World → Prop}
-    (h : PT cfg 0 J P p Q) (hf : Fine (emitGo p ⟨params.length, 0, [], [], [], none⟩).2)
+    (h : PT cfg 0 J P (fnBody params p) Q)
+    (hf : Fine (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2)
     (h0 : ∀ Γ w, P0 Γ w → Γ.size = params.length ∧ P Γ w) :
     Triple cfg P0 (emitAns p params) { J with ok := fun _ _ => True } := by
   have h1 := h ⟨params.length, 0, [], [], [], none⟩ P0 rfl hf (nil_rule h0)
-  show Triple cfg P0 (emitGo p ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse _
+  show Triple cfg P0 (emitGo (fnBody params p) ⟨params.length, 0, [], [], [], none⟩).2.flush.pieces.reverse _
   rw [St.out_eq_flush]
   exact Hoare.conseq h1 (fun _ _ h => h) (fun _ _ _ => trivial)
     (fun _ _ _ _ h => h) (fun _ _ _ h => h)

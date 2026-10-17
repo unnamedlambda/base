@@ -170,6 +170,7 @@ theorem create_fine : Fine (emitGo create ⟨1, 0, [], [], [], none⟩).2 := ⟨
 theorem create_null (cfg : Cfg) (w : World) :
     Ans cfg [.sc .i64 0] w create [.i64] (fun x w' => x = 0xFFFFFFFF ∧ w' = w) := by
   refine ans_of_wp ?_ create_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [create, entryParams, wp_bind, wp_params, carriesFrom, wp_ret, wp_pure]
   have h0 : (#[V.sc .i64 0] : Env)[0]? = some (.sc .i64 0) := rfl
   apply wp_iconst64
@@ -191,6 +192,7 @@ theorem create_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (h : Rep w s T
       Rep w' s { T with handles := T.handles ++ [T.handles.length] } ∧
       ∀ e i a, Owned w s e i a → Owned w' s e i a) := by
   refine ans_of_wp ?_ create_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [create, entryParams, wp_bind, wp_params, carriesFrom, wp_ret, wp_pure]
   have h0 : (#[V.sc .i64 s] : Env)[0]? = some (.sc .i64 s) := rfl
   apply wp_iconst64
@@ -266,6 +268,7 @@ theorem count_fine : Fine (emitGo count ⟨1, 0, [], [], [], none⟩).2 := ⟨rf
 theorem count_null (cfg : Cfg) (w : World) :
     Ans cfg [.sc .i64 0] w count [.i64] (fun x w' => x = 0 ∧ w' = w) := by
   refine ans_of_wp ?_ count_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [count, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 0] : Env)[0]? = some (.sc .i64 0) := rfl
   refine wp_at (by slot) ?_
@@ -280,6 +283,7 @@ theorem count_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (h : Rep w s T)
     Ans cfg [.sc .i64 s] w count [.i64] (fun x w' =>
       x = (if T.hasTable then UInt64.ofNat T.entries.length else 0) ∧ w' = w) := by
   refine ans_of_wp ?_ count_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [count, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 s] : Env)[0]? = some (.sc .i64 s) := rfl
   refine wp_at (by slot) ?_
@@ -356,6 +360,7 @@ theorem cleanup_spec (cfg : Cfg) (w : World) (slot s : UInt64) (r : Region) (off
     Does cfg [.sc .i64 slot] w cleanup [.i64] (fun w' =>
       w'.mem.load slot 8 = some 0 ∧ Outside w w' (Misses slot)) := by
   refine does_of_wp ?_ cleanup_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [cleanup, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 slot] : Env)[0]? = some (.sc .i64 slot) := rfl
   have hroom := (load_some hd hl).1
@@ -509,6 +514,7 @@ theorem getEntry_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h
     Ans cfg [.sc .i64 s, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] w getEntry [.i64, .i32, .i64, .i64]
       (GetQ w s T L index kout vout) := by
   refine ans_of_wp ?_ getEntry_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [getEntry, entryOf, keyAt, valAt, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 s, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] : Env)[0]? = some (.sc .i64 s) := rfl
   have h1 : (#[V.sc .i64 s, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] : Env)[0 + 1]? = some (.sc .i32 index) := rfl
@@ -1224,6 +1230,7 @@ theorem lookup_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h :
     Ans cfg [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 out] w lookup [.i64, .i64, .i32, .i64]
       (LookQ w s T L kb out) := by
   refine ans_of_wp ?_ lookup_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [lookup, entryOf, valAt, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 out] : Env)[0]? = some (.sc .i64 s) := rfl
   have h1 : (#[V.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 out] : Env)[0 + 1]? = some (.sc .i64 key) := rfl
@@ -1393,6 +1400,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
       ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ ∃ L, Tab w' s {} L ∧ Idx w' L []) ∧
         Outside w w' (Misses slot)) := by
   refine does_of_wp ?_ init_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [init, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 slot] : Env)[0]? = some (.sc .i64 slot) := rfl
   have z0 : c64 0 = 0 := by decide
@@ -3541,6 +3549,7 @@ theorem insert_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h :
     Does cfg [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 val, .sc .i32 vlen] w LibHt.insert
       [.i64, .i64, .i32, .i64, .i32] (InsertQ w s T L kb vb) := by
   refine does_of_wp ?_ insert_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [LibHt.insert, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 val, .sc .i32 vlen] : Env)[0]? =
     some (.sc .i64 s) := rfl
@@ -3592,6 +3601,7 @@ theorem insert_null (cfg : Cfg) (w : World) (key klen val vlen : UInt64) :
     Does cfg [.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 val, .sc .i32 vlen] w LibHt.insert
       [.i64, .i64, .i32, .i64, .i32] (fun w' => w' = w) := by
   refine does_of_wp ?_ insert_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [LibHt.insert, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 val, .sc .i32 vlen] : Env)[0]? =
     some (.sc .i64 0) := rfl
@@ -3659,6 +3669,7 @@ theorem increment_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (
     Ans cfg [.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] w increment [.i64, .i64, .i32, .i64]
       (IncQ w s T L kb addend) := by
   refine ans_of_wp ?_ increment_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [increment, entryOf, valAt, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] : Env)[0]? = some (.sc .i64 s) := rfl
   have h1 : (#[V.sc .i64 s, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] : Env)[0 + 1]? =
@@ -3808,6 +3819,7 @@ theorem increment_null (cfg : Cfg) (w : World) (key klen addend : UInt64) :
     Ans cfg [.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] w increment [.i64, .i64, .i32, .i64]
       (fun x w' => x = addend ∧ w' = w) := by
   refine ans_of_wp ?_ increment_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [increment, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] : Env)[0]? = some (.sc .i64 0) := rfl
   have h3 : (#[V.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 addend] : Env)[0 + 1 + 1 + 1]? =
@@ -3942,6 +3954,7 @@ theorem create_tab (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h : 
       Tab w' s { T with handles := T.handles ++ [T.handles.length] } L ∧ Idx w' L (keysOf T) ∧
       Kept w w' s L L) := by
   refine ans_of_wp ?_ create_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [create, entryParams, wp_bind, wp_params, carriesFrom, wp_ret, wp_pure]
   have h0 : (#[V.sc .i64 s] : Env)[0]? = some (.sc .i64 s) := rfl
   apply wp_iconst64
@@ -3979,6 +3992,7 @@ theorem lookup_null (cfg : Cfg) (w : World) (key klen out : UInt64) :
     Ans cfg [.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 out] w lookup [.i64, .i64, .i32, .i64]
       (fun x w' => x = c64 0xFFFFFFFF ∧ w' = w) := by
   refine ans_of_wp ?_ lookup_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [lookup, entryOf, valAt, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 0, .sc .i64 key, .sc .i32 klen, .sc .i64 out] : Env)[0]? = some (.sc .i64 0) := rfl
   refine wp_withTable (x := 0) (c := 0) (by slot) (fun h => absurd rfl h) ?_ (fun h => absurd rfl h)
@@ -3991,6 +4005,7 @@ theorem getEntry_null (cfg : Cfg) (w : World) (index kout vout : UInt64) :
     Ans cfg [.sc .i64 0, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] w getEntry [.i64, .i32, .i64, .i64]
       (fun x w' => x = c64 (-1) ∧ w' = w) := by
   refine ans_of_wp ?_ getEntry_fine rfl
+  rw [fnBody_of (by decide +kernel)]
   simp only [getEntry, entryOf, keyAt, valAt, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .i64 0, .sc .i32 index, .sc .i64 kout, .sc .i64 vout] : Env)[0]? = some (.sc .i64 0) := rfl
   refine wp_withTable (x := 0) (c := 0) (by slot) (fun h => absurd rfl h) ?_ (fun h => absurd rfl h)

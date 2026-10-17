@@ -39,32 +39,11 @@ def implOf (blas : Bool) (f : Ffi) : Option Impl :=
   [LibCuda.implOf blas f, LibHt.implOf f, LibMath.implOf f, LibLmdb.implOf f,
     LibThread.implOf f, LibWgpu.implOf f, LibWindow.implOf f].findSome? id
 
-/-- The value a definition binds, if it binds one. -/
-def Inst.dst? : Inst → Option Val
-  | .iconst d .. | .iadd d .. | .isub d .. | .imul d .. | .udiv d .. | .ineg d ..
-  | .ishl d .. | .ushr d .. | .band d .. | .bandNot d .. | .bor d .. | .bxor d ..
-  | .ireduce32 d .. | .uextend64 d .. | .sextend64 d .. | .load d .. | .icmp d ..
-  | .select d .. | .fconst d .. | .fadd d .. | .fsub d .. | .fmul d .. | .fmax d ..
-  | .fmin d .. | .fpromote d .. | .splat d .. | .extractlane d .. | .fneg d ..
-  | .fcvtFromSint d .. | .fcvtToUint d .. | .fcmp d .. | .bitcast d .. | .bitselect d ..
-  | .ctz d .. | .popcnt d .. | .vhighBits d .. | .ibin d .. | .ishift d .. | .iun d ..
-  | .fbin d .. | .fun1 d .. | .fconv d .. | .fma d .. | .iext d .. => some d
-  | .call d .. => d
-  | .store .. | .istore8 .. | .jump .. | .brif .. | .ret .. | .storeTyped .. => none
-
-/-- One past the largest value a function binds. -/
-def nextVal (f : FuncData) : Nat :=
-  f.blocks.foldl (fun n b =>
-    let n := b.params.foldl (fun n (v, _) => max n (v.id + 1)) n
-    b.insts.foldl (fun n i => match Inst.dst? i with
-      | some v => max n (v.id + 1)
-      | none => n) n) 0
-
 /-- Point every call to an entry point in `table` at its library function. A
     function answers an `i64`, so an `i32` answer is the low half of it and an
     `f32` answer those bits. -/
 def relink (table : List (Ffi × Nat)) (f : FuncData) : FuncData := Id.run do
-  let mut next := nextVal f
+  let mut next := f.nextVal
   let mut blocks := []
   for b in f.blocks do
     let mut insts := []
@@ -115,11 +94,19 @@ def link (fs : List FuncData) : Except String (List FuncData) := do
         table := table ++ [(g, k)]
   return fs.map (relink table) ++ lib
 
+/-- **A program as it ships**: its libraries linked, and its shapes checked.
+    A host reaches nothing but its exports: waiting on its memory and reading
+    its clock are the system's own calls, which a host makes itself. -/
+def withHost (fs : List FuncData) : Except String (List FuncData) := do
+  let fs ← link fs
+  Prog.checkShapes fs
+  return fs
+
 /-- **Write each artifact, linked.** Every artifact is written here, so none
     reaches a host still calling an entry point a library implements. -/
 def emitArtifacts (dir : String) (entries : Array ArtifactEntry) : IO Unit := do
   let linked ← entries.mapM fun (name, a) => do
-    match link a.functions with
+    match withHost a.functions with
     | .ok fs => pure (name, { a with functions := fs })
     | .error e => throw (IO.userError s!"{name}: {e}")
   AlgorithmLib.writeArtifacts dir linked

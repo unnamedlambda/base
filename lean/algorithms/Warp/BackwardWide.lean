@@ -1005,7 +1005,9 @@ theorem bwdPipelineFull_exclusive : bwdPipelineFull.Exclusive := by
     What follows recovers the launches from `runBwdAllFn`'s own instruction
     stream and matches them against `bwdPipelineFull`. -/
 
-def ROOT : Nat := 0
+/-- The memory's address: `v4`, which an entry point's first statement takes,
+    after its four arguments. -/
+def ROOT : Nat := 4
 
 /-- The bind array as `Clif.bindsOf` recovers it — entry `i` is the handle at
     layout slot `bindOff i`, which is buffer `i`. -/

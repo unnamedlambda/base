@@ -93,7 +93,7 @@ def checked : Except String Code := Prog.emitChecked body
 def env : FnEnv := (Prog.run body).2.1
 
 def entryArgVals : List Sem.V :=
-  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+  [.sc .i64 (Sem.regionBase .data),
    .sc .i64 0, .sc .i64 (Sem.regionBase .out), .sc .i64 OUT.toUInt64]
 
 def startWorld : Sem.World :=

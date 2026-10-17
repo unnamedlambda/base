@@ -18,24 +18,24 @@ TORCH_MS = 1.42          # batch 1, torch.compile(max-autotune), bench_torch_ste
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
 base = py_base.Driver(art)
-base.execute("main", blob)
+base.function("main")(blob)
 run, replay, fetch = "run", "replay", "fetch"
 
 
 def timed(fn, n=50, warm=10):
     for _ in range(warm):
-        base.execute(fn)
+        base.function(fn)()
     out = bytearray(SQ * NC * 4)
-    base.execute(fetch, b"", out)
+    base.function(fetch)(b"", out)
     t = time.perf_counter()
     for _ in range(n):
-        base.execute(fn)
+        base.function(fn)()
     ms = (time.perf_counter() - t) / n * 1e3
     return ms, np.frombuffer(bytes(out), "<f4")
 
 
 ms_run, out_run = timed(run)
-base.execute("capture")
+base.function("capture")()
 ms_rep, out_rep = timed(replay)
 
 same = bool((out_run == out_rep).all())

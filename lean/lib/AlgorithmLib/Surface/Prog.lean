@@ -245,6 +245,8 @@ inductive Op' (V : ClifTy → Type) : ClifTy → Type where
       (h : k.admits ta ty = true := by decide) : Op' V ty
   | iext (k : IExt) (ty : ClifTy) {ta} (a : V ta)
       (h : k.admits ta ty = true := by decide) : Op' V ty
+  | memory : Op' V .i64
+  | funcAddr (i : Nat) : Op' V .i64
 
 /-- The first-order operation, once slots are what the values are. -/
 def Op'.erase {ty : ClifTy} : Op' (fun _ => R) ty → Op
@@ -292,6 +294,8 @@ def Op'.erase {ty : ClifTy} : Op' (fun _ => R) ty → Op
   | .fma a b c _ => .fma a b c
   | .fconv k t a _ => .fconv k t a
   | .iext k t a _ => .iext k t a
+  | .memory => .memory
+  | .funcAddr i => .funcAddr i
 
 -- ---------------------------------------------------------------------------
 -- The term
@@ -484,7 +488,7 @@ def St.leave (outer inner : St) : List Piece × St :=
     (args : Vals Slot ps) (k : ResV Slot res → St → Option α × St) (s : St) : Option α × St :=
   let s := match r.callee with
     | .local i => s.useLocal i ps res
-    | .ffi _ | .native | .atomic _ | .ext _ => s
+    | .ffi _ | .native | .host _ _ | .atomic _ | .ext _ => s
   let as := args.slots
   if res.isSome then
     let (v, s) := s.bind1 (.call r.callee as)
@@ -703,11 +707,35 @@ end emitGo_eqns
       emitGo_call, emitGo_callLocal, emitGo_loop, emitGo_dloop, emitGo_ite, emitGo_params,
       emitGo_br, emitGo_cont, emitGoS, *]
 
-/-- The term a body denotes. Total: an ill-formed body compiles to pieces `wf`
-    rejects, which is what `emitChecked` is for. -/
-def emit (p : Body) (params : List ClifTy := ptrParams) : Code :=
+/-- An entry point's body, after the statement every entry point begins with:
+    taking the address of the program's memory, into the slot after its four
+    arguments. That is how an entry point reaches its memory without being
+    handed it, as a C function reaches its library's data. -/
+def withMemory {α} (p : Prog V L α) : Prog V L α := .op .memory (fun _ => p)
+
+/-- The function a body is, taking `params`: an entry point's body after
+    `withMemory`, any other as it is. -/
+def fnBody {α} (params : List ClifTy) (p : Prog V L α) : Prog V L α :=
+  if params == ptrParams then withMemory p else p
+
+theorem fnBody_entry {α} (p : Prog V L α) : fnBody ptrParams p = withMemory p :=
+  if_pos (show (ptrParams == ptrParams) = true from rfl)
+
+theorem fnBody_of {α} {params : List ClifTy} (h : (params == ptrParams) = false) (p : Prog V L α) :
+    fnBody params p = p := by
+  simp only [fnBody, h, Bool.false_eq_true, if_false]
+
+/-- The term a fragment denotes, in a function whose first `params.length`
+    slots are bound: the body as written, with nothing added. -/
+def emitTerm (p : Body) (params : List ClifTy := ptrParams) : Code :=
   let (_, s) := emitGo p { n := params.length, depth := 0 }
   s.flush.pieces.reverse
+
+/-- The term a body denotes, as the function it is (`fnBody`). Total: an
+    ill-formed body compiles to pieces `wf` rejects, which is what
+    `emitChecked` is for. -/
+def emit (p : Body) (params : List ClifTy := ptrParams) : Code :=
+  emitTerm (fnBody params p) params
 
 instance {ps res} : Inhabited (LocalRef ps res) := ⟨{ callee := .local 0 }⟩
 
@@ -732,8 +760,10 @@ theorem cmpTy_width {ty : ClifTy} (h : ty.isFloatVec = true) :
 section Surface
 variable {α : Type}
 
-/-- The entry block's base pointer. Reading it is not a statement. -/
-def basePtr : Prog V L (V .i64) := .params ptrParams (fun vs => .ret vs.head)
+/-- The address of the program's memory, which an entry point takes as its
+    first statement (`withMemory`), in the slot after its four arguments.
+    Reading it is not a statement. -/
+def basePtr : Prog V L (V .i64) := .params (ptrParams ++ [.i64]) (fun vs => .ret vs.fif)
 
 /-- Every argument of the entry block, in order, for a call that hands a callee
     exactly what this function was handed. -/
@@ -741,19 +771,19 @@ def entryArgs : Prog V L (Vals V ptrParams) := .params ptrParams .ret
 
 /-- The caller's input buffer. -/
 def dataPtr : Prog V L (V .i64) :=
-  .params ptrParams (fun vs => .ret vs.snd)
+  .params ptrParams (fun vs => .ret vs.head)
 
 /-- How many bytes of input the caller supplied. -/
 def dataLen : Prog V L (V .i64) :=
-  .params ptrParams (fun vs => .ret vs.thd)
+  .params ptrParams (fun vs => .ret vs.snd)
 
 /-- The caller's output buffer. -/
 def outPtr : Prog V L (V .i64) :=
-  .params ptrParams (fun vs => .ret vs.fth)
+  .params ptrParams (fun vs => .ret vs.thd)
 
 /-- How much room the caller left for the answer. -/
 def outLen : Prog V L (V .i64) :=
-  .params ptrParams (fun vs => .ret vs.fif)
+  .params ptrParams (fun vs => .ret vs.fth)
 
 /-- Read the entry block's parameters, for a body whose signature is not an
     entry point's `ptrParams` — a thread worker's spawn argument, say. -/
@@ -765,6 +795,10 @@ def entryParams (tys : List ClifTy) : Prog V L (Vals V tys) :=
 def iconst (ty : ClifTy) (k : Int) (h : ty.isInt = true := by decide) :
     Prog V L (V ty) := op (.iconst ty k h)
 def iconst64 (k : Int) : Prog V L (V .i64) := iconst .i64 k
+/-- The address of the program's own function `u0:i`, to start a thread
+    running it (`Lib.Thread.spawn`); `program` refuses one not shaped like a
+    worker. -/
+def funcAddr (i : Nat) : Prog V L (V .i64) := op (.funcAddr i)
 def iconst32 (k : Int) : Prog V L (V .i32) := iconst .i32 k
 def fconst (ty : ClifTy) (bits : UInt64) (h : ty.isFloat = true := by decide) :
     Prog V L (V ty) := op (.fconst ty bits h)
@@ -1189,7 +1223,7 @@ def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat :=
     as one that names nothing --- only the terminator differs. -/
 def runAns {α} (p : Prog Slot Lvl α) (params : List ClifTy := ptrParams) :
     Option α × Code × FnEnv × Option String :=
-  let (a, s) := emitGo p { n := params.length, depth := 0 }
+  let (a, s) := emitGo (fnBody params p) { n := params.length, depth := 0 }
   let s := s.flush
   (a, s.pieces.reverse, s.callees, s.err)
 
@@ -1210,6 +1244,7 @@ def callNames (p : Body) (params : List ClifTy := ptrParams) : List String :=
     | .ffi f   => f.cname
     | .local k => s!"u0:{k}"
     | .native  => "native"
+    | .host _ _ => "host"
     | .atomic _ => "atomic"
     | .ext e => s!"{e.lib.name}!{e.symbol}"
 
@@ -1230,6 +1265,31 @@ def emitChecked (p : Body) (params : List ClifTy := ptrParams) :
         "the body reads a slot that is not bound on every path to the read"
       else .ok c
 
+/-- A body that answers.
+
+    The `i64` it names is the status `execute` hands back to a host --- the one
+    value a program returns without agreeing on a place in memory to leave it.
+    Bodies that answer nothing stay `Body`, which is why adopting this costs a
+    generator nothing until it wants to. -/
+abbrev StatusBody : Type 1 := Prog Slot Lvl (Slot .i64)
+
+/-- `compile`, for a body that answers: the slot its fold ends on becomes the
+    function's `return`, and with it the `i64` in its signature. -/
+def compileStatus (idx : Nat) (p : StatusBody) (params : List ClifTy := ptrParams) :
+    FuncData × Option String :=
+  let (a, c, env, err) := runAns p params
+  (HProg.compileBody idx c env params a,
+   match err with
+   | some e => some s!"function {idx}: {e}"
+   | none =>
+       if a.isNone then some s!"function {idx} leaves its own body --- by a \
+         `br` or a `cont` --- rather than reaching a status"
+       else if !wf env params c then some s!"function {idx} is not well-formed, from piece \
+         {firstBadPiece env params c} on"
+       else if !retOk params c a then some s!"function {idx} reads a slot that is not \
+         bound on every path to the read, or answers with one"
+       else none)
+
 /-- **The function a body compiles to, and why it must not ship, if it must
     not.**
 
@@ -1240,6 +1300,9 @@ def emitChecked (p : Body) (params : List ClifTy := ptrParams) :
     same subterm rather than being provably equal, so they cannot drift. -/
 def compile (idx : Nat) (p : Body) (params : List ClifTy := ptrParams) :
     FuncData × Option String :=
+  -- A function a host may call is a C function answering `int64_t`: one whose
+  -- body names no status answers `0`.
+  if params == ptrParams then compileStatus idx (do p; iconst64 0) params else
   let (c, env, err) := run p params
   (HProg.compileBody idx c env params,
    match err with
@@ -1274,30 +1337,6 @@ def compileProg (idx : Nat) (p : Body) (params : List ClifTy := ptrParams) :
   | none   => .ok r.1
   | some e => .error e
 
-/-- A body that answers.
-
-    The `i64` it names is the status `execute` hands back to a host --- the one
-    value a program returns without agreeing on a place in memory to leave it.
-    Bodies that answer nothing stay `Body`, which is why adopting this costs a
-    generator nothing until it wants to. -/
-abbrev StatusBody : Type 1 := Prog Slot Lvl (Slot .i64)
-
-/-- `compile`, for a body that answers: the slot its fold ends on becomes the
-    function's `return`, and with it the `i64` in its signature. -/
-def compileStatus (idx : Nat) (p : StatusBody) (params : List ClifTy := ptrParams) :
-    FuncData × Option String :=
-  let (a, c, env, err) := runAns p params
-  (HProg.compileBody idx c env params a,
-   match err with
-   | some e => some s!"function {idx}: {e}"
-   | none =>
-       if a.isNone then some s!"function {idx} leaves its own body --- by a \
-         `br` or a `cont` --- rather than reaching a status"
-       else if !wf env params c then some s!"function {idx} is not well-formed, from piece \
-         {firstBadPiece env params c} on"
-       else if !retOk params c a then some s!"function {idx} reads a slot that is not \
-         bound on every path to the read, or answers with one"
-       else none)
 
 /-- Compile a body that answers to the function an artifact ships. The checked
     door for `StatusBody`, beside `compileProg`. -/
@@ -1307,6 +1346,35 @@ def compileProgStatus (idx : Nat) (p : StatusBody)
   match r.2 with
   | none   => .ok r.1
   | some e => .error e
+
+/-- The types a function's entry block takes. -/
+def entryTys (f : FuncData) : List ClifTy :=
+  ((f.blocks.find? (·.ref.id == 0)).map (·.params.map (·.2))).getD []
+
+/-- Whether a function answers a value. -/
+def answers (f : FuncData) : Bool :=
+  f.blocks.any (·.insts.any fun | .ret (some _) => true | _ => false)
+
+/-- **What a host and a thread are handed is what they call.** A function a
+    host can name is a C function taking the input and output buffers and
+    answering a status, and a function whose address a program takes is a
+    worker, taking one pointer and answering nothing: what `symbol` and
+    `cl_thread_start` call them as. -/
+def checkShapes (fs : List FuncData) : Except String Unit := do
+  for f in fs do
+    if let some n := f.name then
+      unless entryTys f == ptrParams && answers f do
+        throw s!"u0:{f.index} is exported as {n} but is not shaped like an entry point, which \
+          takes the input and output buffers and answers a status"
+    for b in f.blocks do
+      for inst in b.insts do
+        if let .funcAddr _ (.local k) := inst then
+          match fs[k]? with
+          | none => throw s!"u0:{f.index} takes the address of u0:{k}, which the program does not define"
+          | some g =>
+              unless entryTys g == [.i64] && !answers g do
+                throw s!"u0:{f.index} takes the address of u0:{k}, which is not shaped like a \
+                  worker: one pointer in, nothing out"
 
 /-- The functions of an artifact, in `u0:N` order, or the first failure.
 /-- **The view is the shipped function.** True by `rfl` on the projection;
@@ -1348,15 +1416,15 @@ def program (fs : List (Except String FuncData)) : Except String (List FuncData)
   for (f, i) in fs.zipIdx do
     if f.index != i then
       throw s!"the function at position {i} was compiled as u0:{f.index}"
-  let names := fs.filterMap (·.entryName)
+  let names := fs.filterMap (·.name)
   match names.find? (fun n => names.count n > 1) with
   | some n => throw s!"more than one function is exported as {n}"
-  | none => pure fs
+  | none => do checkShapes fs; pure fs
 
 /-- `f`, exported as `name`: the name a host calls it by, which stays put
     wherever the function is placed. -/
 def entry (name : String) (f : Except String FuncData) : Except String FuncData :=
-  f.map fun d => { d with entryName := some name }
+  f.map fun d => { d with name := some name }
 
 /-- Unwrap in a generator's `main`: an ill-formed body is a build failure with
     a message, not an artifact. -/

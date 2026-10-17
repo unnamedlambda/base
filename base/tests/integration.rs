@@ -10,13 +10,10 @@ use tempfile::TempDir;
 /// A function the test did not name is exported as its `u0:N`, so a test can
 /// call any of them by index; the ones about naming name their own.
 fn cranelift_config(memory: Vec<u8>, functions: Vec<Function>) -> Artifact {
-    let functions = exported(functions);
-    dump(&functions);
-    Artifact {
-        functions,
-        required_memory: memory.len() as u64,
-        data: image(memory),
-    }
+    let size = memory.len() as u64;
+    let a = artifact(exported(functions), size, image(memory));
+    dump(&a);
+    a
 }
 
 /// One segment holding the whole of `bytes`, for a test that writes an image
@@ -30,7 +27,9 @@ fn image(bytes: Vec<u8>) -> Vec<base_types::Segment> {
 
 /// The i64 a program left at `offset` of its memory.
 fn read_i64(base: &Driver, offset: usize) -> i64 {
-    i64::from_le_bytes(base.memory()[offset..offset + 8].try_into().unwrap())
+    let mut word = [0u8; 8];
+    base.read(offset, &mut word).unwrap();
+    i64::from_le_bytes(word)
 }
 
 /// The artifact, and the name its function at `fn_idx` is called by.
@@ -40,7 +39,7 @@ fn create_cranelift_algorithm(
     functions: Vec<Function>,
 ) -> (Artifact, String) {
     let config = cranelift_config(memory, functions);
-    let name = config.functions[fn_idx as usize].entry_name.clone().unwrap();
+    let name = config.functions[fn_idx as usize].name.clone().unwrap();
     (config, name)
 }
 
@@ -52,9 +51,20 @@ fn run(artifact: Artifact, name: impl AsRef<str>) -> Result<i64, base::Error> {
 /// `functions`, each one the test did not name exported as its `u0:N`.
 fn exported(mut functions: Vec<Function>) -> Vec<Function> {
     for (i, f) in functions.iter_mut().enumerate() {
-        f.entry_name.get_or_insert_with(|| at(i as u32));
+        f.name.get_or_insert_with(|| at(i as u32));
     }
     functions
+}
+
+/// The memory is the size the artifact states: an image that runs past it is
+/// refused, not made room for.
+#[test]
+fn a_segment_past_the_stated_memory_is_refused() {
+    let data = vec![base_types::Segment { offset: 200, bytes: vec![1; 100] }];
+    let Err(e) = Driver::load(artifact(vec![], 256, data)) else {
+        panic!("expected the artifact to be refused");
+    };
+    assert!(e.to_string().contains("ends past the 256 bytes"), "{e}");
 }
 
 /// The name `exported` gives an unnamed function at `i`.
@@ -216,7 +226,7 @@ fn test_cranelift_conditional_logic() {
                 load64(v(2), v(0), 2008),
                 load64(v(3), v(0), 2016),
                 iconst64(v(9001), 0),
-                icmp(v(4), IntCC::Eq, v(1), v(9001)),
+                icmp(v(4), "eq", v(1), v(9001)),
                 brif(v(4), 2, &[], 1, &[]),
             ])
             .block(1, &[], vec![
@@ -365,7 +375,7 @@ fn test_clif_call_multiple_functions() {
 
     // Demonstrates JIT-once, run-many: one Base, two execute() calls picking different
     // fn_idx into the same compiled module.
-    let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
+    let base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     base.execute(&at(1), &[], &mut []).unwrap();
 
@@ -462,7 +472,7 @@ fn test_clif_call_sequential_mutations() {
     let mut memory = vec![0u8; 4096];
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
+    let base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     base.execute(&at(1), &[], &mut []).unwrap();
     base.execute(&at(2), &[], &mut []).unwrap();
@@ -562,7 +572,7 @@ fn test_clif_call_file_read_write() {
     memory[2256..2256 + output_str.len()].copy_from_slice(output_str.as_bytes());
 
     // Two execute() calls on one Base: fn0 reads input file, fn1 writes output file.
-    let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
+    let base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     base.execute(&at(1), &[], &mut []).unwrap();
 
@@ -591,12 +601,8 @@ fn test_base_multi_execute_different_data() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // First execute: input = 10, expect 30
     let data1 = 10i64.to_le_bytes();
@@ -639,12 +645,8 @@ fn test_base_multi_execute_different_actions() {
             ]),
     ]);
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // First execute: call fn0 only
     let alg1 = at(0);
@@ -677,12 +679,8 @@ fn test_base_multi_execute_accumulates_in_memory() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // Execute 1: add 10 → total = 10
     let d1 = 10i64.to_le_bytes();
@@ -728,12 +726,8 @@ fn test_base_multi_execute_with_file_io() {
     let mut mem1 = vec![0u8; 4096];
     mem1[256..256 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
     mem1[512..520].copy_from_slice(&42u64.to_le_bytes());
-    let config1 = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: image(mem1),
-    };
-    let mut base = Driver::load(config1).unwrap();
+    let config1 = artifact(exported(clif_prog.clone()), 4096, image(mem1));
+    let base = Driver::load(config1).unwrap();
     base.execute(&at(0), &[], &mut [])
     .unwrap();
     assert!(file1.exists());
@@ -744,12 +738,8 @@ fn test_base_multi_execute_with_file_io() {
     let mut mem2 = vec![0u8; 4096];
     mem2[256..256 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
     mem2[512..520].copy_from_slice(&99u64.to_le_bytes());
-    let config2 = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: image(mem2),
-    };
-    let mut base2 = Driver::load(config2).unwrap();
+    let config2 = artifact(exported(clif_prog.clone()), 4096, image(mem2));
+    let base2 = Driver::load(config2).unwrap();
     base2
         .execute(&at(0), &[], &mut [])
         .unwrap();
@@ -773,12 +763,8 @@ fn test_base_multi_execute_varying_cranelift_units() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // Execute with 0 units
     base.execute(&at(0), &vec![0u8; 4096], &mut [])
@@ -814,12 +800,8 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     let mut mem = vec![0u8; 4096];
     mem[100..108].copy_from_slice(&11i64.to_le_bytes());
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: image(mem),
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, image(mem));
+    let base = Driver::load(config).unwrap();
 
     let data = 99i64.to_le_bytes();
     base.execute(&at(0), &data, &mut [])
@@ -853,12 +835,8 @@ fn test_base_persistent_memory_survives_across_executes() {
             ]),
     ]);
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // Execute 1: seed 77 at offset 200
     base.execute(&at(0), &[], &mut [])
@@ -890,12 +868,8 @@ fn test_base_empty_data_leaves_memory_intact() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // Three executes with empty memory — counter should increment each time
     for expected in 1..=3 {
@@ -923,12 +897,8 @@ fn test_base_data_pointer_updates_each_execute() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // Execute 1: 10 + 20 = 30
     let mut d1 = vec![0u8; 16];
@@ -972,12 +942,8 @@ fn test_base_output_in_persistent_region() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     // Execute 3 times with values 100, 200, 300
     for &val in &[100i64, 200, 300] {
@@ -1009,7 +975,7 @@ fn a_program_answers_the_status_it_returns() {
         vec![0u8; 256],
         program(function().entry(vec![iconst64(v(1), 7), ret_status(v(1))])),
     );
-    let mut base = Driver::load(cfg).unwrap();
+    let base = Driver::load(cfg).unwrap();
     assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 7);
 }
 
@@ -1022,27 +988,33 @@ fn a_program_that_returns_nothing_has_status_zero() {
         vec![0u8; 256],
         program(function().entry(vec![ret()])),
     );
-    let mut base = Driver::load(cfg).unwrap();
+    let base = Driver::load(cfg).unwrap();
     assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 0);
 }
 
-/// Whether a function answers is one fact about it, so returns that disagree
-/// are a malformed body rather than a signature base has to guess at.
+/// What a function answers is its signature's, so a return answering anything
+/// else is a malformed body, which the verifier refuses. An exported one
+/// answers a status by what exporting it means, so a return that answers
+/// nothing is refused the same way.
 #[test]
 fn clif_error_returns_disagree() {
-    let config = cranelift_config(
-        vec![0u8; 256],
-        program(
-            function()
-                .entry(vec![iconst64(v(1), 1), brif(v(1), 1, &[], 2, &[])])
-                .block(1, &[], vec![ret_status(v(1))])
-                .block(2, &[], vec![ret()]),
-        ),
-    );
-    let Err(base::Error::Clif(msg)) = Driver::load(config) else {
+    let disagreeing = |params: &[(Val, ClifTy)]| {
+        function()
+            .block(0, params, vec![iconst64(v(1), 1), brif(v(1), 1, &[], 2, &[])])
+            .block(1, &[], vec![ret_status(v(1))])
+            .block(2, &[], vec![ret()])
+    };
+    let Err(base::Error::Clif(msg)) =
+        Driver::load(named(programs(vec![answering(0).export("main"), disagreeing(&[(v(5), I64)])])))
+    else {
         panic!("expected a function whose returns disagree to be refused");
     };
-    assert!(msg.contains("some paths"), "message should say what is wrong: {msg}");
+    assert!(msg.contains("return must match"), "message should say what is wrong: {msg}");
+    let Err(base::Error::Clif(msg)) = Driver::load(named(programs(vec![disagreeing(&[(v(5), I64), (v(6), I64), (v(7), I64), (v(8), I64)]).export("main")])))
+    else {
+        panic!("expected an entry point that returns nothing to be refused");
+    };
+    assert!(msg.contains("so a host calls it") && msg.contains("return"), "{msg}");
 }
 
 #[test]
@@ -1083,11 +1055,7 @@ fn clif_error_branch_to_undeclared_block() {
 #[test]
 fn clif_parse_error_empty_ir_no_error() {
     // Empty string should NOT error — it skips compilation entirely
-    let config = Artifact {
-        functions: Default::default(),
-        required_memory: 256,
-        data: vec![],
-    };
+    let config = artifact(Default::default(), 256, vec![]);
     let base = Driver::load(config);
     assert!(base.is_ok());
 }
@@ -1119,12 +1087,8 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     let mut data = vec![0u8; 16];
     data[0..8].copy_from_slice(&100i64.to_le_bytes());
@@ -1159,15 +1123,11 @@ fn test_data_ptr_written_even_when_data_empty() {
     let mut initial = vec![0u8; 4096];
     initial[16..24].copy_from_slice(&0xCAFEBABEu64.to_le_bytes());
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: image(initial),
-    };
+    let config = artifact(exported(clif_prog.clone()), 4096, image(initial));
 
     let alg = at(0);
 
-    let mut base = Driver::load(config).unwrap();
+    let base = Driver::load(config).unwrap();
     base.execute(&alg, &[], &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
@@ -1194,15 +1154,11 @@ fn test_out_ptr_written_even_when_out_empty() {
     let mut initial = vec![0u8; 4096];
     initial[32..40].copy_from_slice(&0x22222222u64.to_le_bytes());
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: image(initial),
-    };
+    let config = artifact(exported(clif_prog.clone()), 4096, image(initial));
 
     let alg = at(0);
 
-    let mut base = Driver::load(config).unwrap();
+    let base = Driver::load(config).unwrap();
     base.execute(&alg, &[], &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
@@ -1231,12 +1187,8 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     let mut data = vec![0u8; 8];
     data[0..8].copy_from_slice(&6i64.to_le_bytes());
@@ -1268,12 +1220,8 @@ fn test_execute_into_multiple_calls_different_data() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -1295,7 +1243,7 @@ fn test_execute_into_multiple_calls_different_data() {
 
 #[test]
 fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
-    // Data buffer is larger than required_memory. The data pointer gives CLIF
+    // Data buffer is larger than the arena. The data pointer gives CLIF
     // access to the full buffer without copying it into shared memory.
     let clif_prog = program(
         function()
@@ -1316,14 +1264,10 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 256,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 256, vec![]);
+    let base = Driver::load(config).unwrap();
 
-    // Data is 1KB — much larger than required_memory (256)
+    // Data is 1KB — much larger than the arena (256)
     let mut data = vec![0u8; 1024];
     // Write sentinel at the very end
     data[1016..1024].copy_from_slice(&999i64.to_le_bytes());
@@ -1365,12 +1309,8 @@ fn test_initial_memory_and_data_coexist() {
     // Static multiplier = 13
     initial[100..108].copy_from_slice(&13i64.to_le_bytes());
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: image(initial),
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, image(initial));
+    let base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -1386,7 +1326,7 @@ fn test_initial_memory_and_data_coexist() {
 
 #[test]
 fn test_execute_into_out_buffer_larger_than_memory() {
-    // Out buffer can be any size — it's caller-owned, not bounded by required_memory.
+    // Out buffer can be any size — it's caller-owned, not bounded by the arena.
     // CLIF writes multiple values into a large out buffer.
     let clif_prog = program(
         function()
@@ -1406,12 +1346,8 @@ fn test_execute_into_out_buffer_larger_than_memory() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 64,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 64, vec![]);
+    let base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -1446,16 +1382,12 @@ fn test_run_with_data_argument() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
 
     let alg = at(0);
 
     let data = 777i64.to_le_bytes().to_vec();
-    let mut base = Driver::load(config).unwrap();
+    let base = Driver::load(config).unwrap();
     base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
@@ -1479,16 +1411,12 @@ fn test_data_single_byte_still_writes_pointer() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
 
     let alg = at(0);
 
     let data = vec![42u8]; // single byte
-    let mut base = Driver::load(config).unwrap();
+    let base = Driver::load(config).unwrap();
     base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 1, "data_len should be 1 for single-byte data");
 }
@@ -1511,12 +1439,8 @@ fn test_data_ptr_survives_across_multi_execute() {
             ]),
     );
 
-    let config = Artifact {
-        functions: exported(clif_prog.clone()),
-        required_memory: 4096,
-        data: vec![],
-    };
-    let mut base = Driver::load(config).unwrap();
+    let config = artifact(exported(clif_prog.clone()), 4096, vec![]);
+    let base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -1633,7 +1557,7 @@ fn instr_bit_counting_and_select() {
             iconst64(v(5), 222),
             iconst64(v(6), 1),
             iconst64(v(7), 2),
-            icmp(v(8), IntCC::Ult, v(6), v(7)),
+            icmp(v(8), "ult", v(6), v(7)),
             select(v(9), v(8), v(4), v(5)),
             store(v(9), v(0), 2016),
             iconst64(v(10), 0xFF00),
@@ -1651,7 +1575,7 @@ fn instr_bit_counting_and_select() {
 
 #[test]
 fn instr_width_conversions() {
-    // ireduce32, uextend64, sextend64, istore8, store_typed
+    // ireduce32, uextend64, sextend64, istore8, an aligned store
     let bytes = compute(
         vec![
             // sign extension differs from zero extension for a negative i32
@@ -1665,11 +1589,11 @@ fn instr_width_conversions() {
             ireduce32(v(5), v(4)),
             uextend64(v(6), v(5)),
             store(v(6), v(0), 2016),
-            // istore8 writes one byte; store_typed carries `notrap aligned`
+            // istore8 writes one byte; an aligned store states its alignment
             iconst64(v(7), 0xAB),
             istore8(v(7), v(0), 2024),
             iconst64(v(8), 77),
-            store_typed(I64, v(8), v(0), 2032),
+            store_aligned(v(8), v(0), 2032),
         ],
         40,
     );
@@ -1678,7 +1602,7 @@ fn instr_width_conversions() {
     assert_eq!(got[1], 0xFFFF_FFFB, "uextend64(-5i32)");
     assert_eq!(got[2], 0x2A, "ireduce32 keeps the low word");
     assert_eq!(got[3] & 0xFF, 0xAB, "istore8");
-    assert_eq!(got[4], 77, "store_typed");
+    assert_eq!(got[4], 77, "aligned store");
 }
 
 #[test]
@@ -1730,10 +1654,10 @@ fn instr_float_conversions_and_compare() {
             bitcast(v(6), I64, v(3)),
             store(v(6), v(0), 2016),
             // fcmp yields a one-byte flag, widened here so it can be read back
-            fcmp(v(7), FloatCC::Gt, v(2), v(3)),
+            fcmp(v(7), "gt", v(2), v(3)),
             uextend64(v(70), v(7)),
             store(v(70), v(0), 2024),
-            fcmp(v(8), FloatCC::Lt, v(2), v(3)),
+            fcmp(v(8), "lt", v(2), v(3)),
             uextend64(v(80), v(8)),
             store(v(80), v(0), 2032),
         ],
@@ -1799,7 +1723,7 @@ fn instr_vector_lanes() {
 fn local_calls_dispatch_to_other_functions() {
     // A wrapper function calling two others by `u0:N` index, which is the shape
     // `clifSequenceWrapper` emits for every multi-stage artifact. Resolution
-    // goes through `Callee::Local`, not the symbol table.
+    // goes through `Callee::Function`, not the symbol table.
     let temp_dir = TempDir::new().unwrap();
     let out = temp_dir.path().join("locals.bin");
     let path = format!("{}\0", out.to_str().unwrap());
@@ -1820,8 +1744,8 @@ fn local_calls_dispatch_to_other_functions() {
         // u0:2 calls both, then writes the pair out
         function()
             .entry(vec![
-                call(None, loc(0), &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
-                call(None, loc(1), &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
+                call(Some(v(30)), loc(0), &[data_ptr(), data_len(), out_ptr(), out_len()]),
+                call(Some(v(31)), loc(1), &[data_ptr(), data_len(), out_ptr(), out_len()]),
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
@@ -1877,22 +1801,23 @@ fn refusal(functions: Vec<Function>) -> String {
     }
 }
 
-/// A name base does not provide is refused, even one the process has loaded:
-/// `abort` is in libc, and the JIT would otherwise have found it there.
+/// A symbol `base` does not have answers -1, as a missing library's do, and
+/// is never looked up in what else the process has loaded: `abort` is in libc,
+/// and `fn_0` is what the JIT names the program's first function.
 #[test]
-fn clif_error_import_base_does_not_provide() {
-    let msg = refusal(program(
-        function()
-            .entry(vec![call(None, imp("abort"), &[]), ret()]),
-    ));
-    assert!(msg.contains("abort") && msg.contains("does not provide"), "{msg}");
+fn a_symbol_base_does_not_have_answers_minus_one() {
+    for symbol in ["abort", "fn_0"] {
+        let f = function()
+            .entry(vec![call(Some(v(10)), base_fn(symbol, &[], Some(I64)), &[]), ret_status(v(10))])
+            .export("main");
+        assert_eq!(run(named(program(f)), "main").unwrap(), -1, "{symbol}");
+    }
 }
 
-/// A program calling `cl_native_arch`, which takes nothing, with an argument
-/// would hand it a value it never reads. The artifact declares no signature,
-/// so the call is checked against the one base's table gives that import.
+/// A call is checked against the signature its callee declares: passing
+/// `cl_native_arch`, declared to take nothing, an argument is refused.
 #[test]
-fn clif_error_import_at_the_wrong_signature() {
+fn clif_error_call_at_the_wrong_signature() {
     let msg = refusal(program(
         function()
             .entry(vec![call(None, imp("cl_native_arch"), &[v(0)]), ret()]),
@@ -1900,21 +1825,9 @@ fn clif_error_import_at_the_wrong_signature() {
     assert!(msg.contains("cl_native_arch") && msg.contains("takes"), "{msg}");
 }
 
-/// A program's own functions are reached by index, never by the name the JIT
-/// happens to give them: that name is a numbering, and would move with it.
-#[test]
-fn clif_error_import_naming_an_own_function() {
-    let msg = refusal(programs(vec![
-        noop(),
-        function()
-            .entry(vec![call(None, imp("fn_0"), &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]), ret()]),
-    ]));
-    assert!(msg.contains("fn_0") && msg.contains("does not provide"), "{msg}");
-}
-
 /// A call passing fewer arguments than its callee takes would leave the rest to
-/// whatever the registers held. What the callee takes is read off its own entry
-/// block, so a call cannot be checked against anything else.
+/// whatever the registers held, so it is checked against the callee's own
+/// signature.
 #[test]
 fn clif_error_local_call_at_the_wrong_signature() {
     let msg = refusal(programs(vec![
@@ -1929,7 +1842,7 @@ fn clif_error_local_call_at_the_wrong_signature() {
 
 /// An artifact whose functions are exactly `functions`, named as they say.
 fn named(functions: Vec<Function>) -> Artifact {
-    Artifact { functions, required_memory: 256, data: vec![] }
+    artifact(functions, 256, vec![])
 }
 
 /// Answers `k` as its status.
@@ -1939,7 +1852,7 @@ fn answering(k: i64) -> Func {
 
 #[test]
 fn an_entry_point_is_called_by_its_name() {
-    let mut base = Driver::load(named(programs(vec![
+    let base = Driver::load(named(programs(vec![
         noop(),
         answering(7).export("seven"),
         answering(9).export("nine"),
@@ -1954,10 +1867,10 @@ fn an_entry_point_is_called_by_its_name() {
 /// even the `u0:N` a host might guess from the artifact.
 #[test]
 fn an_unexported_function_is_not_callable() {
-    let mut base = Driver::load(named(programs(vec![answering(1), answering(2).export("two")])))
+    let base = Driver::load(named(programs(vec![answering(1), answering(2).export("two")])))
         .unwrap();
     for name in ["u0:0", "one", ""] {
-        let Err(base::Error::NoSuchEntry(msg)) = base.execute(name, &[], &mut []) else {
+        let Err(base::Error::NoSuchFunction(msg)) = base.execute(name, &[], &mut []) else {
             panic!("{name:?} is not exported and should not be callable");
         };
         assert!(msg.contains(&format!("{name:?}")), "{msg}");
@@ -1986,7 +1899,7 @@ fn clif_error_exported_function_not_shaped_like_an_entry() {
     let Err(base::Error::Clif(msg)) = Driver::load(named(programs(vec![two]))) else {
         panic!("a two-parameter function should not be exportable");
     };
-    assert!(msg.contains("pair") && msg.contains("2 parameters"), "{msg}");
+    assert!(msg.contains("u0:0 has a name, so a host calls it, and its signature is not BaseFunction's"), "{msg}");
 }
 
 /// The functions in a new order, each local call renumbered to follow its
@@ -2001,11 +1914,11 @@ fn reordered(functions: &[Function], order: &[u32]) -> Vec<Function> {
             for b in &mut f.blocks {
                 for inst in &mut b.insts {
                     let c = match inst {
-                        Inst::Call(_, c, _) | Inst::FuncAddr(_, c) => c,
+                        Inst::Call(_, _, _, c, _) | Inst::FuncAddr(_, _, _, c) => c,
                         _ => continue,
                     };
-                    if let Callee::Local(i) = *c {
-                        *c = Callee::Local(new_index(i));
+                    if let Callee::Function(i) = *c {
+                        *c = Callee::Function(new_index(i));
                     }
                 }
             }
@@ -2031,49 +1944,106 @@ fn names_survive_a_reordering() {
     let before = programs(vec![noop(), times_ten, tens, answering(7).export("seven")]);
     let after = reordered(&before, &[3, 2, 0, 1]);
 
-    let Inst::Call(_, Callee::Local(callee), _) = after[1].blocks[0].insts[1] else {
+    // After the entry's `arena`, the constant, then the call.
+    let Inst::Call(_, _, _, Callee::Function(callee), _) = after[1].blocks[0].insts[2] else {
         panic!("a local call")
     };
     assert_eq!(callee, 3, "the call follows its callee");
-    assert_eq!(before[3].entry_name.as_deref(), Some("seven"));
-    assert_eq!(after[3].entry_name, None, "position 3 is now the unexported helper");
+    assert_eq!(before[3].name.as_deref(), Some("seven"));
+    assert_eq!(after[3].name, None, "position 3 is now the unexported helper");
 
     for functions in [before, after] {
-        let mut base = Driver::load(named(functions)).unwrap();
+        let base = Driver::load(named(functions)).unwrap();
         assert_eq!(base.execute("tens", &[], &mut []).unwrap(), 40);
         assert_eq!(base.execute("seven", &[], &mut []).unwrap(), 7);
     }
 }
 
-/// A callee naming a signature the function never declared was a refusal of
-/// its own. It has no test because it has no spelling: an artifact declares no
-/// signatures, so a callee cannot name one that is missing — base's table gives
-/// an import its signature and a local callee's own entry block gives its.
+/// An instruction is a format and an opcode of it, at a type CLIF defines it
+/// at, with the type named exactly where CLIF does not take it from an operand.
+/// Anything else is refused at load with what is wrong, never built: building
+/// an instruction at a type its opcode is not defined at can panic inside
+/// Cranelift.
+#[test]
+fn an_instruction_cranelift_does_not_define_is_refused() {
+    let refused = |insts: Vec<Inst>, says: &str| {
+        let Err(base::Error::Clif(msg)) = Driver::load(cranelift_config(vec![0u8; 64], program(function().entry(insts))))
+        else {
+            panic!("expected a refusal saying {says:?}");
+        };
+        assert!(msg.contains(says), "{msg}");
+    };
+    // No such opcode.
+    refused(vec![Inst::Binary(vec![v(1)], "iadd_frobnicate".into(), None, v(0), v(0)), ret()], "not a CLIF opcode");
+    // An opcode of another format.
+    refused(vec![Inst::Binary(vec![v(1)], "ineg".into(), None, v(0), v(0)), ret()], "Unary instruction");
+    // A type CLIF does not take from an operand, left out.
+    refused(vec![Inst::Unary(vec![v(1)], "uextend".into(), None, v(0)), ret()], "names none");
+    // A type CLIF takes from an operand, named.
+    refused(vec![Inst::Binary(vec![v(1)], "iadd".into(), Some(I64), v(0), v(0)), ret()], "takes its type from an operand");
+    // A type the opcode is not defined at.
+    refused(vec![Inst::Binary(vec![v(1)], "fadd".into(), None, v(0), v(0)), ret()], "not defined at i64");
+    // A type not as CLIF spells it.
+    refused(vec![iconst(v(1), ClifTy("i32x01".into()), 0), ret()], "not a CLIF type");
+    // Results not named, or named for an instruction that has none.
+    refused(vec![Inst::Binary(vec![], "iadd".into(), None, v(0), v(0)), ret()], "answers 1 result");
+    refused(vec![Inst::Store(vec![v(1)], "store".into(), None, vec![], v(0), v(0), 0), ret()], "answers 0 results");
+    // A value defined twice.
+    refused(vec![iconst64(v(1), 1), iconst64(v(1), 2), ret()], "v1 is defined twice");
+    // Flags: one CLIF does not have, one that is the engine's, two out of CLIF's order.
+    let load_with = |flags: &[&str]| Inst::Load(vec![v(1)], "load".into(), Some(I64), flags.iter().map(|f| f.to_string()).collect(), v(0), 0);
+    refused(vec![load_with(&["fast"]), ret()], "not a CLIF memory flag");
+    refused(vec![load_with(&["notrap"]), ret()], "the engine's to say");
+    refused(vec![load_with(&["readonly", "aligned"]), ret()], "CLIF writes as aligned readonly");
+    // A parameter attribute CLIF does not write.
+    let normal = Signature { convention: Convention::Host, params: vec![AbiParam(I64, vec!["normal".into()])], returns: vec![] };
+    refused(vec![call_indirect(None, normal, v(0), &[v(0)]), ret()], "not a parameter as CLIF writes one");
+}
 
-/// Binding the result of an import that answers nothing has no test for the
-/// same reason: every import in base's table answers a value.
+/// Everything an artifact declares is declared once and found where it is
+/// named: a primitive past the table, one declared twice, and two blocks of
+/// one name are refused.
+#[test]
+fn what_an_artifact_names_resolves_once() {
+    let refusal_of = |a: Artifact| match Driver::load(a) {
+        Err(base::Error::Clif(msg)) => msg,
+        _ => panic!("expected a refusal"),
+    };
+    let calls = |c: Callee| program(function().entry(vec![call(None, c, &[]), ret()]));
+    let msg = refusal_of(artifact(exported(calls(Callee::Primitive(1000))), 64, vec![]));
+    assert!(msg.contains("primitive 1000, which the program does not declare"), "{msg}");
+
+    let f = calls(base_fn("cl_twice", &[], None));
+    let mut a = artifact(exported(f), 64, vec![]);
+    a.primitives.push(a.primitives[0].clone());
+    assert!(refusal_of(a).contains("declared twice"));
+
+    let f = function().entry(vec![jump(1, &[])]).block(1, &[], vec![ret()]).block(1, &[], vec![ret()]);
+    let msg = refusal_of(artifact(exported(program(f)), 64, vec![]));
+    assert!(msg.contains("names two blocks block1"), "{msg}");
+}
 
 #[test]
-fn clif_error_float_constant_of_integer_type() {
+fn clif_error_a_float_constant_names_no_type() {
     let config = cranelift_config(
         vec![0u8; 256],
         program(function().entry(vec![
-            base_types::clif::Inst::Fconst(v(1), I64, 0),
+            base_types::clif::Inst::UnaryIeee64(vec![v(1)], "f64const".into(), Some(I64), 0),
             ret(),
         ])),
     );
     let Err(err) = Driver::load(config) else {
-        panic!("expected an error for a float constant of a non-float type");
+        panic!("expected an error for a float constant naming a type");
     };
     let base::Error::Clif(msg) = err else {
         panic!("expected Error::Clif");
     };
-    assert!(msg.contains("fconst"), "message should say what is wrong: {msg}");
+    assert!(msg.contains("f64const"), "message should say what is wrong: {msg}");
 }
 
 /// Machine code carried as data: the program keeps `a + b` as bytes in its own
 /// memory, asks the runtime to make them executable, and calls the address it
-/// gets back itself (`Callee::Native`, an indirect call), all as CLIF. The same
+/// gets back itself (`call_indirect` at the architecture's convention), all as CLIF. The same
 /// program answers the same way on every OS of the architecture, because the
 /// code is called under one convention per architecture.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -2095,7 +2065,7 @@ fn a_program_runs_machine_code_it_carries_as_data() {
         iconst64(v(5), 40),
         iconst64(v(6), 2),
         iconst64(v(7), 0),
-        call(Some(v(8)), Callee::Native, &[v(4), v(5), v(6), v(7), v(7)]),
+        call_indirect(Some(v(8)), sig(Convention::Arch, &[I64; 4], Some(I64)), v(4), &[v(5), v(6), v(7), v(7)]),
         store(v(8), v(0), 200),
         call(Some(v(9)), imp("cl_native_free"), &[v(4)]),
         store(v(9), v(0), 208),
@@ -2104,18 +2074,47 @@ fn a_program_runs_machine_code_it_carries_as_data() {
     let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 42);
-    assert_eq!(base.memory()[300] as i64, arch);
-    assert_eq!(i32::from_le_bytes(base.memory()[208..212].try_into().unwrap()), 0);
+    assert_eq!(base.arena()[300] as i64, arch);
+    assert_eq!(i32::from_le_bytes(base.arena()[208..212].try_into().unwrap()), 0);
 }
 
-/// A native call is checked like any other: an address and four `i64`s, or the
-/// load says what is wrong instead of compiling a call with arguments in the
-/// wrong registers.
+/// A callback: the host hands the program a function of its own, an entry
+/// point's shape, by its address in the input, and the program calls it
+/// (`call_indirect` at the host's convention) on the rest of the input and its own output, answering
+/// what it answered. Nothing of the engine's runs between the two.
+#[test]
+fn a_program_calls_back_a_host_function_it_is_handed() {
+    unsafe extern "C" fn double(input: *const u8, len: usize, out: *mut u8, cap: usize) -> i64 {
+        let n = len.min(cap);
+        for i in 0..n {
+            unsafe { *out.add(i) = (*input.add(i)).wrapping_mul(2) };
+        }
+        n as i64 + 100
+    }
+    let clif_prog = program(function().entry(vec![
+        load64(v(1), data_ptr(), 0),
+        iadd_imm(v(2), data_ptr(), 8),
+        iadd_imm(v(3), data_len(), -8),
+        call_indirect(Some(v(4)), sig(Convention::Host, &[I64; 4], Some(I64)), v(1), &[v(2), v(3), out_ptr(), out_len()]),
+        ret_status(v(4)),
+    ]));
+    let base = Driver::load(cranelift_config(vec![0u8; 64], clif_prog)).unwrap();
+    let f: base::FunctionPtr = double;
+    let mut input = (f as usize as u64).to_le_bytes().to_vec();
+    input.extend_from_slice(&[1, 2, 3]);
+    let mut out = [0u8; 3];
+    assert_eq!(base.execute(&at(0), &input, &mut out).unwrap(), 103);
+    assert_eq!(out, [2, 4, 6]);
+}
+
+/// An indirect call is checked like any other: an address and the arguments its
+/// signature declares, or the load says what is wrong instead of compiling a
+/// call with arguments in the wrong registers.
 #[test]
 fn a_native_call_with_the_wrong_arguments_is_refused() {
     let clif_prog = program(function().entry(vec![
         iconst64(v(1), 0),
-        call(Some(v(2)), Callee::Native, &[v(1), v(1)]),
+        call_indirect(Some(v(2)), sig(Convention::Arch, &[I64; 4], Some(I64)), v(1), &[v(1)]),
         ret(),
     ]));
     let Err(err) = Driver::load(cranelift_config(vec![0u8; 4096], clif_prog)) else {
@@ -2124,5 +2123,5 @@ fn a_native_call_with_the_wrong_arguments_is_refused() {
     let base::Error::Clif(msg) = err else {
         panic!("expected Error::Clif");
     };
-    assert!(msg.contains("native code") && msg.contains("2 arguments"), "{msg}");
+    assert!(msg.contains("indirect callee") && msg.contains("1 argument"), "{msg}");
 }

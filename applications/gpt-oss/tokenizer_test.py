@@ -65,7 +65,7 @@ def main():
         buf[D_PATH:D_PATH + len(path)] = path
         buf[D_TEXT:D_TEXT + len(raw)] = raw
         out = bytearray(4 + TEXT_MAX * 4)
-        base.execute("main", bytes(buf), out)
+        base.function("main")(bytes(buf), out)
         (n,) = struct.unpack_from("<I", bytes(out), 0)
         return list(struct.unpack_from(f"<{n}I", bytes(out), 4))
 

@@ -156,7 +156,7 @@ fn cstr(p: &Path) -> Vec<u8> {
 
 fn main() {
     let art = Artifact::from_bytes(lean_artifacts::SYSTEM_BENCH).expect("the build checked this artifact");
-    let mut drv = Driver::load(art).expect("system_bench loads");
+    let drv = Driver::load(art).expect("system_bench loads");
     let mut out = vec![0u8; OUT_BYTES];
     let work = std::env::temp_dir().join(format!("base-system-bench-{}", std::process::id()));
     std::fs::create_dir_all(&work).unwrap();
