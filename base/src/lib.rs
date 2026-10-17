@@ -72,7 +72,7 @@ impl Arena {
 /// A function of a [`Driver`], as the C function it is, borrowing the driver.
 #[derive(Clone, Copy)]
 pub struct Function<'d> {
-    f: jit::FunctionPtr,
+    f: jit::BaseFunction,
     _driver: std::marker::PhantomData<&'d Driver>,
 }
 
@@ -94,12 +94,12 @@ impl Function<'_> {
     }
 
     /// The C function itself.
-    pub fn as_ptr(&self) -> FunctionPtr {
+    pub fn as_ptr(&self) -> BaseFunction {
         self.f
     }
 }
 
-pub use jit::FunctionPtr;
+pub use jit::BaseFunction;
 
 /// Waiting on a word, waking, and the clock: the calls programs make, for hosts.
 pub use ffi::sync::{now, wait, wake};
@@ -107,7 +107,7 @@ pub use ffi::sync::{now, wait, wake};
 pub struct Driver {
     arena: Arena,
     /// The named functions.
-    exports: HashMap<String, FunctionPtr>,
+    exports: HashMap<String, BaseFunction>,
     /// Taken only by `drop`, which frees its code.
     module: Option<cranelift_jit::JITModule>,
 }

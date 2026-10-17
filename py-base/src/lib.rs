@@ -69,7 +69,7 @@ impl Drop for PyDriver {
 #[pyclass(name = "Function", frozen)]
 struct PyFunction {
     _driver: Py<PyDriver>,
-    f: base::FunctionPtr,
+    f: base::BaseFunction,
 }
 
 #[pymethods]

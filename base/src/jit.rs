@@ -4,7 +4,7 @@ use cranelift_module::{Linkage, Module};
 
 
 /// A function a host calls: input, its length, output, its length; a status.
-pub type FunctionPtr = unsafe extern "C" fn(*const u8, usize, *mut u8, usize) -> i64;
+pub type BaseFunction = unsafe extern "C" fn(*const u8, usize, *mut u8, usize) -> i64;
 
 /// The symbol the arena is linked under.
 pub(crate) const ARENA: &str = "arena";
@@ -12,7 +12,7 @@ pub(crate) const ARENA: &str = "arena";
 /// A compiled program and its named functions.
 pub(crate) struct Program {
     pub(crate) module: cranelift_jit::JITModule,
-    pub(crate) exports: std::collections::HashMap<String, FunctionPtr>,
+    pub(crate) exports: std::collections::HashMap<String, BaseFunction>,
 }
 
 /// Every symbol a program links to, under its link name.
@@ -122,11 +122,11 @@ pub(crate) fn compile(
     module.finalize_definitions().map_err(|e| format!("{e}"))?;
     let exports = exports
         .into_iter()
-        // SAFETY: each was declared at `FunctionPtr`'s signature and its body
+        // SAFETY: each was declared at `BaseFunction`'s signature and its body
         // verified against it, and is mapped for as long as the module is.
         .map(|(name, k)| {
             let addr = module.get_finalized_function(ids[k]);
-            (name, unsafe { std::mem::transmute::<*const u8, FunctionPtr>(addr) })
+            (name, unsafe { std::mem::transmute::<*const u8, BaseFunction>(addr) })
         })
         .collect();
     Ok(Program { module, exports })

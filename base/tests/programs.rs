@@ -85,7 +85,7 @@ fn a_program_calls_back_a_host_function() {
         call_indirect(Some(v(4)), sig(Convention::Host, &[I64; 4], Some(I64)), v(1), &[v(2), v(3), output(), output_len()]),
         ret_status(v(4)),
     ]));
-    let f: base::FunctionPtr = double;
+    let f: base::BaseFunction = double;
     let mut input = (f as usize as u64).to_le_bytes().to_vec();
     input.extend_from_slice(&[1, 2, 3]);
     let mut out = [0u8; 3];

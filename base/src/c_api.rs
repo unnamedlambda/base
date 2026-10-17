@@ -5,7 +5,7 @@
 //! Only a load can fail with something to say; a panic during it is reported
 //! as its error rather than unwinding into C.
 
-use crate::{Driver, FunctionPtr};
+use crate::{Driver, BaseFunction};
 use base_types::Artifact;
 
 /// `body`, with a panic as an error carrying its message. Nothing a panicking
@@ -74,7 +74,7 @@ pub unsafe extern "C" fn base_driver_function(
     driver: *const Driver,
     name: *const u8,
     name_len: usize,
-) -> Option<FunctionPtr> {
+) -> Option<BaseFunction> {
     let name = std::str::from_utf8(slice_in(name, name_len)?).ok()?;
     Some(driver.as_ref()?.function(name).ok()?.as_ptr())
 }
