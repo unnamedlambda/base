@@ -302,15 +302,23 @@ def extCall (e : Ext) (vs : List V) (w : World) : Option (Option V × World) :=
       usbCall f bits w
   | _, _ => none
 
+/-- What a library function's 64-bit answer is to the caller of the entry
+    point it implements: the low bits, at the entry point's type. -/
+def libAnswer (f : Ffi) : Option V → Option V
+  | some (.sc _ x) => f.result.map fun t => norm t x
+  | _ => none
+
 /-- What a call does, by what it names: an import by its contract, one of the
-    program's own functions by `locals`, machine code not at all. Both
-    interpreters make every call through this. -/
+    program's own functions by `locals` — an entry point a library implements
+    is one, at `Ffi.libSlot` — machine code not at all. Both interpreters make
+    every call through this. -/
 def callOf (locals : Locals) (c : Callee) (vs : List V) (w : World) : Option (Option V × World) :=
   match c with
   | .ffi f =>
       -- an outstanding worker may touch anything: only joining is defined
       if w.mem.frozen && f != .threadJoin && f != .threadCleanup then none
       else if f == .threadSpawn then spawnWorker locals vs w
+      else if f.inLib then (locals f.libSlot vs w).toOption.map fun (r, w') => (libAnswer f r, w')
       else callImport f.cname vs w
   | .local i => (locals i vs w).toOption
   | .native => none
@@ -343,6 +351,12 @@ def failOf {α : Type} (locals : Locals) (c : Callee) (vs : List V) (w : World) 
       match locals i vs w with
       | .error f => f.out
       | .ok _ => .stuck (uncalled (.local i))
+  | .ffi f =>
+      if f.inLib && !w.mem.frozen then
+        match locals f.libSlot vs w with
+        | .error e => e.out
+        | .ok _ => refused (.ffi f)
+      else refused (.ffi f)
   | c => refused c
 
 theorem failOf_ne_ok {α : Type} {lc : Locals} {c : Callee} {vs : List V} {w : World} {a : α} {w' : World} :
@@ -352,6 +366,11 @@ theorem failOf_ne_ok {α : Type} {lc : Locals} {c : Callee} {vs : List V} {w : W
   · split
     · rename_i f _; cases f <;> simp [Fail.out]
     · simp
+  · split
+    · split
+      · rename_i f _; cases f <;> simp [Fail.out]
+      · exact refused_ne_ok
+    · exact refused_ne_ok
   · exact refused_ne_ok
 
 def runStmt (cfg : Cfg) (Γ : Env) (w : World) : Stmt → Outcome Env

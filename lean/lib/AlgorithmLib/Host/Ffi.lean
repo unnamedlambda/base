@@ -44,11 +44,6 @@ def copyOut (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray :=
       pure (acc.push b.toUInt8))
     ByteArray.empty
 
-/-- The hash-table context, which is a Rust allocation rather than anything in
-    the three regions. `decodeAddr` rejects it, so it can be stored and passed
-    but never loaded through. -/
-def htCtx : UInt64 := 0x5000000000
-
 /-- An `i64` as the eight bytes the implementation stores it in. -/
 def le64 (x : UInt64) : ByteArray :=
   ((List.range 8).map (fun i => ((x >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8)).toByteArray
@@ -243,94 +238,6 @@ def ffiPowf (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
   | [b, e] => some (some (.sc .f32 (Libm.powf b.toUInt32 e.toUInt32).toUInt64), w)
 
-  | _ => none
-
--- ht.rs — the context is not addressable memory, so `init` writes a sentinel
--- that no region decodes: a program that dereferences the handle or does
--- arithmetic on it goes stuck here rather than quietly agreeing with a run
--- that would have faulted.
-def ffiHtInit (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [slot] => do
-      let m ← w.mem.store slot 8 htCtx
-      some (none, { w with mem := m, ht := {} })
-  | _ => none
-
-def ffiHtCleanup (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [slot] => do
-      let m ← w.mem.store slot 8 0
-      some (none, { w with mem := m, ht := {} })
-  | _ => none
-
-def ffiHtCreate (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [ctx] =>
-      if ctx != htCtx then some (some (ofInt .i32 0xFFFFFFFF), w)
-      else
-        let handle := w.ht.handles.length
-        some (some (ofInt .i32 handle),
-              { w with ht := { w.ht with handles := w.ht.handles ++ [handle] } })
-  | _ => none
-
-def ffiHtCount (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [ctx] =>
-      if ctx != htCtx || !w.ht.hasTable then some (some (ofInt .i32 0), w)
-      else some (some (ofInt .i32 w.ht.entries.length), w)
-  | _ => none
-
-def ffiHtLookup (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [ctx, keyPtr, keyLen, resultPtr] => do
-      let key ← readBytes w.mem keyPtr keyLen.toNat
-      if ctx != htCtx || !w.ht.hasTable then some (some (ofInt .i32 0xFFFFFFFF), w)
-      else match w.ht.get key with
-        | none => some (some (ofInt .i32 0xFFFFFFFF), w)
-        | some val => do
-            let m ← copyIn w.mem resultPtr val
-            some (some (ofInt .i32 val.size), { w with mem := m })
-  | _ => none
-
-def ffiHtInsert (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [ctx, keyPtr, keyLen, valPtr, valLen] => do
-      let key ← readBytes w.mem keyPtr keyLen.toNat
-      let val ← readBytes w.mem valPtr valLen.toNat
-      if ctx != htCtx || !w.ht.hasTable then some (none, w)
-      else some (none, { w with ht := w.ht.set key val })
-  | _ => none
-
-def ffiHtIncrement (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [ctx, keyPtr, keyLen, addend] => do
-      let key ← readBytes w.mem keyPtr keyLen.toNat
-      if ctx != htCtx || !w.ht.hasTable then some (some (.sc .i64 addend), w)
-      else match w.ht.get key with
-        | none =>
-            some (some (.sc .i64 addend), { w with ht := w.ht.set key (le64 addend) })
-        | some existing =>
-            -- The counter is the first eight bytes; anything the value carries
-            -- past them is left alone. A value shorter than eight bytes indexes
-            -- out of range in the Rust, so there is nothing here to transcribe.
-            if existing.size < 8 then none
-            else
-              let next := ofLe64 existing + addend
-              let updated := le64 next ++
-                ((List.range (existing.size - 8)).map (fun i => existing.get! (8 + i))).toByteArray
-              some (some (.sc .i64 next), { w with ht := w.ht.set key updated })
-  | _ => none
-
-def ffiHtGetEntry (bits : List UInt64) (w : World) : Option (Option V × World) :=
-  match bits with
-  | [ctx, index, keyOut, valOut] =>
-      if ctx != htCtx || !w.ht.hasTable then some (some (ofInt .i32 (-1)), w)
-      else match w.ht.entries[index.toNat]? with
-        | none => some (some (ofInt .i32 (-1)), w)
-        | some (k, v) => do
-            let m ← copyIn w.mem keyOut k
-            let m ← copyIn m valOut v
-            some (some (ofInt .i32 k.size), { w with mem := m })
   | _ => none
 
 -- lmdb.rs — each environment is one directory holding one unnamed database.
@@ -1871,7 +1778,7 @@ def ffiThreadJoin (bits : List UInt64) (w : World) : Option (Option V × World) 
 
     One definition per entry point with a contract, and this dispatch. The
     families are the ones whose behavior the model can state: files, standard
-    streams, the hash table and the libm shims, whose results the bytes
+    streams and the libm shims, whose results the bytes
     determine; and CUDA with cuBLAS on the default stream and wgpu on its one
     queue, whose data
     movement the bytes determine and whose arithmetic comes from the world's
@@ -1893,14 +1800,6 @@ def callBits (f : IR.Ffi) (bits : List UInt64) (w : World) : Option (Option V ×
   | .sinf => ffiSinf bits w
   | .cosf => ffiCosf bits w
   | .powf => ffiPowf bits w
-  | .htInit => ffiHtInit bits w
-  | .htCleanup => ffiHtCleanup bits w
-  | .htCreate => ffiHtCreate bits w
-  | .htCount => ffiHtCount bits w
-  | .htLookup => ffiHtLookup bits w
-  | .htInsert => ffiHtInsert bits w
-  | .htIncrement => ffiHtIncrement bits w
-  | .htGetEntry => ffiHtGetEntry bits w
   | .cudaInit => ffiCudaInit bits w
   | .cudaCleanup => ffiCudaCleanup bits w
   | .cudaCreateBuffer => ffiCudaCreateBuffer bits w

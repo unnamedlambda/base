@@ -23,19 +23,24 @@ namespace SystemBench
 
 open AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 
-/-- Where `ht` may start: memory not frozen, the arena holding the context slot
-    and the key and value scratch, the input its count, the output its sum. -/
+/-- Where `ht` may start: no worker running and no copy in flight, the arena
+    holding the context slot and the key and value scratch, the input its
+    count, the output its sum. -/
 abbrev HtStart : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .room .arena 0xC0, .room .data 8, .room .out 8]
+  Contracts.TState.holds [.part .frozen false, .part .idle true, .room .arena 0xC0, .room .data 8,
+    .room .out 8]
 
 theorem ht_fine : Fine (emitGo (ht (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨rfl, by decide⟩
 
 set_option maxRecDepth 20000 in
-/-- **`ht` never misuses the hash table**, however many entries the input asks
-    for: each lookup's value fits the eight bytes it is read into, because
-    every value inserted is eight bytes. -/
-theorem ht_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : HtStart w) (m : String) :
+/-- **`ht`, linked with `Lib.Ht`, never misuses a call**, however many
+    entries the input asks for: each lookup's value fits the eight bytes it is
+    read into, because every value inserted is eight bytes. Its calls to the
+    hash table are calls to the library's functions, read by their statements
+    (`Check.Linked`). -/
+theorem ht_no_misuse (cfg : Cfg) [Check.Linked true cfg] (dataLen outLen : UInt64) (w : World) (h : HtStart w)
+    (m : String) :
     run cfg (runArgs dataLen outLen) w (emit ht) ≠ .misuse m := by
   check_body
 

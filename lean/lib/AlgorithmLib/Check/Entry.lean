@@ -61,7 +61,8 @@ theorem AS.ofList_fits (l : List AV) (S : TState) (Γ : Env) (w : World) :
 theorem AS.ofList_par_at (l : List AV) (S : TState) (Γ : Env) (w : World) :
     (AS.ofList l S).par.At vals Γ w := by
   unfold AS.ofList; rw [AS.pushAll_par]
-  exact ⟨rfl, fun _ e => by simp at e, fun _ e => by simp [Par.facts, bufFacts] at e, fun _ e => by simp at e⟩
+  exact ⟨rfl, fun _ e => by simp at e, fun _ e => by simp [Par.facts, bufFacts] at e, fun _ e => by simp at e,
+    fun _ e => by simp at e⟩
 
 theorem AS.ofList_get (l : List AV) (S : TState) (i : Nat) : (AS.ofList l S).get i = l.getD i .any := by
   unfold AS.ofList; rw [AS.pushAll_get]; simp
@@ -76,20 +77,21 @@ def accepts (cert : Cert) (A : AS) (c : Code) : Bool :=
 /-- What a proof hands the kernel, found by running the checker natively: the
     invariant each loop settles at, then the state each piece starts from in a
     run that checks each loop once against it; or why the checker refuses the
-    body. -/
-def certOrRefusal (fo : Bool) (A : AS) (c : Code) : Except String Cert :=
-  match execC { fo } [] 0 A c with
+    body. `lib` says calls into the libraries the program is linked with are
+    read by the libraries' statements. -/
+def certOrRefusal (fo : Bool) (A : AS) (c : Code) (lib : Bool := false) : Except String Cert :=
+  match execC { fo, lib } [] 0 A c with
   | .ok o =>
-      let loops : Cert := { loops := o.certs.loops, fo }
+      let loops : Cert := { loops := o.certs.loops, fo, lib }
       match execC loops [] 0 A c with
-      | .ok o' => .ok { loops := o.certs.loops, states := o'.certs.states, fo }
+      | .ok o' => .ok { loops := o.certs.loops, states := o'.certs.states, fo, lib }
       | .error _ => .ok loops
   | .error e => .error e
 
 /-- The calls whose preconditions the parameters decide, gathered by a run of
     the checker that gathers them; or why it refuses the body. -/
-def oblsOf (fo : Bool) (A : AS) (c : Code) : Except String (List Obl) :=
-  match execC { fo } [] 0 (A.withPar { A.par with collect := true }) c with
+def oblsOf (fo : Bool) (A : AS) (c : Code) (lib : Bool := false) : Except String (List Obl) :=
+  match execC { fo, lib } [] 0 (A.withPar { A.par with collect := true }) c with
   | .ok o =>
       let states := o.ok.toList ++ o.brk.map (·.2.1) ++ o.cont.map (·.2.1)
       .ok (states.flatMap (·.par.obls)).eraseDups
@@ -114,12 +116,12 @@ theorem entryOf_holds {L S : TState} {dLen oLen : Bool} {P : Par} {dataLen outLe
     (h : L.holds w) (idx : List Nat) (hS : idx.filterMap (L[·]?) = S)
     (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L)
     (pidx : List Nat) (hP : pidx.filterMap (L[·]?) = P.facts vals) (hc : P.collect = false) (hs : P.slots = [])
-    (hob : ∀ o ∈ P.obls, o.Holds vals) :
+    (hx : P.ctxs = []) (hob : ∀ o ∈ P.obls, o.Holds vals) :
     (entryOf S dLen oLen P).Holds vals (runArgs dataLen outLen).toArray w := by
   unfold entryOf
   refine AS.Holds.withPar ⟨⟨by rw [AS.ofList_len]; rfl, AS.ofList_fits _ _ _ _, AS.ofList_par_at _ _ _ _⟩,
     fun i hi => ?_, by rw [AS.ofList_facts, ← hS]; exact holds_pick h idx⟩
-    ⟨hc, by simp [hs], by rw [← hP]; exact holds_pick h pidx, hob⟩
+    ⟨hc, by simp [hs], by rw [← hP]; exact holds_pick h pidx, hob, by simp [hx]⟩
   rw [AS.ofList_len] at hi
   rw [AS.ofList_get]
   simp only [List.length_cons, List.length_nil] at hi
@@ -165,7 +167,7 @@ theorem Obl.holds_of_preB {o : Obl}
 
 /-- **A body the checker accepts never misuses a call and never faults**, run
     from any arguments and world its state describes. -/
-theorem check_run {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} (hc : accepts cert A c = true)
+theorem check_run {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {A : AS} {c : Code} (hc : accepts cert A c = true)
     (hfo : cert.fo = false) {args : List V} {w : World} (hA : A.Holds vals args.toArray w) (m : String) :
     run cfg args w c ≠ .misuse m ∧ run cfg args w c ≠ .fault m := by
   unfold accepts at hc
@@ -176,7 +178,7 @@ theorem check_run {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} (hc : accepts ce
 
 /-- **A body the checker accepts, as one that may fault, never misuses a
     call**, run from any arguments and world its state describes. -/
-theorem check_safe {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} (hc : accepts cert A c = true)
+theorem check_safe {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {A : AS} {c : Code} (hc : accepts cert A c = true)
     {args : List V} {w : World} (hA : A.Holds vals args.toArray w) (m : String) : run cfg args w c ≠ .misuse m := by
   unfold accepts at hc
   split at hc
@@ -194,7 +196,7 @@ def traceOf (cert : Cert) (A : AS) (c : Code) : Option Tr :=
 /-- **A body the checker accepts makes calls its pattern admits**: run from
     any arguments and world its state describes, where it ends the calls it
     observed are those made before it and then ones the pattern admits. -/
-theorem check_calls_of {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} {t : Tr} (ht : traceOf cert A c = some t)
+theorem check_calls_of {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {A : AS} {c : Code} {t : Tr} (ht : traceOf cert A c = some t)
     {args : List V} {w : World} (hA : A.Holds vals args.toArray w) {obs : List Obs} {w' : World}
     (hr : run cfg args w c = .ok obs w') : t.Covers w obs := by
   unfold traceOf at ht
@@ -286,7 +288,7 @@ theorem post_of {L L' S' T : TState} {w w' : World} (h : L.holds w) (hk : Contra
 /-- **A body the checker accepts reaches a typestate**: run from arguments and
     a world its state describes, it neither misuses a call nor faults, and
     where it ends, the world satisfies `L'`. -/
-theorem check_triple {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} {S' : TState} {P' : Par}
+theorem check_triple {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {A : AS} {c : Code} {S' : TState} {P' : Par}
     (hc : acceptsTo cert A c S' P' = true) (hfo : cert.fo = false) {args : List V} {w : World}
     (hA : A.Holds vals args.toArray w) {L' : TState}
     (hpost : ∀ w', Contracts.KeepsRooms w w' → S'.holds w' → (P'.facts vals).holds w' → L'.holds w') :
@@ -386,18 +388,18 @@ meta def readTypestate (L : Expr) (vs0 : Array Expr) :
 open Lean Meta Elab Tactic in
 /-- Run the checker natively: the obligations the parameters leave, gathered,
     then the certificate; or why the checker refuses the body. -/
-meta def runChecker (who : String) (fo : Bool) (S : Expr) (dLen oLen : Bool) (P : Par) (code : Expr) :
-    MetaM (Par × Cert) := do
+meta def runChecker (who : String) (fo : Bool) (S : Expr) (dLen oLen : Bool) (P : Par) (code : Expr)
+    (lib : Bool := false) : MetaM (Par × Cert) := do
   let mkA (P : Par) := mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P)
   let P ← if P.cells.isEmpty && P.bufs.isEmpty then pure P else
     match ← unsafe evalExpr (Except String (List Obl))
         (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkApp (mkConst ``List [0]) (mkConst ``Obl)))
-        (mkApp3 (mkConst ``oblsOf) (toExpr fo) (mkA P) code) with
+        (mkApp4 (mkConst ``oblsOf) (toExpr fo) (mkA P) code (toExpr lib)) with
     | .ok os => pure { P with obls := os }
     | .error e => throwError "{who}: the checker refuses this body:\n{e}"
   match ← unsafe evalExpr (Except String Cert)
       (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
-      (mkApp3 (mkConst ``certOrRefusal) (toExpr fo) (mkA P) code) with
+      (mkApp4 (mkConst ``certOrRefusal) (toExpr fo) (mkA P) code (toExpr lib)) with
   | .ok c => return (P, c)
   | .error e => throwError "{who}: the checker refuses this body:\n{e}"
 
@@ -411,6 +413,16 @@ meta def findTypestate (who : String) : TacticM (Expr × Expr) := do
     if t.isAppOfArity ``Contracts.TState.holds 2 then found := some (d.toExpr, t.getArg! 0)
   let some r := found | throwError "{who}: no hypothesis that a typestate holds"
   return r
+
+open Lean Meta Elab Tactic in
+/-- Whether the goal's program is linked with the libraries: a hypothesis or
+    an instance `Linked true cfg` is in scope. -/
+meta def findLinked : TacticM Bool := do
+  for d in ← getLCtx do
+    if d.isImplementationDetail then continue
+    let t ← whnfR (← instantiateMVars d.type)
+    if t.isAppOfArity ``Linked 2 && (t.getArg! 0).isConstOf ``Bool.true then return true
+  return false
 
 open Lean Meta Elab Tactic in
 /-- The proof that the entry state describes the call, its obligations left
@@ -429,14 +441,16 @@ meta def entryProof (h S : Expr) (idx : List Nat) (dLen oLen : Bool) (P : Par) (
     let holes ← (List.range P.obls.length).mapM fun _ => `(?_)
     `(obls_of ⟨$(holes.toArray),*, trivial⟩)
   `((entryOf_holds (vals := $sv) (S := $sS) (dLen := $sd) (oLen := $so) (P := $sP) $sh $si (by rfl)
-      (by simp) (by simp) $sp (by rfl) rfl rfl $hob))
+      (by simp) (by simp) $sp (by rfl) rfl rfl rfl $hob))
 
 open Lean Meta Elab Tactic in
 /-- Prove `run cfg args w c ≠ .misuse m` (and `≠ .fault m`) from the
     hypothesis that the world satisfies a typestate, by the checker: `args`
     `runArgs`, or a list it knows exactly. A goal that asks only for no misuse
     is checked as a body that may fault. Where the typestate names variables,
-    the calls whose preconditions they decide are left as goals. -/
+    the calls whose preconditions they decide are left as goals. Where
+    `Linked true cfg` is in scope, calls into the libraries are read by the
+    libraries' statements. -/
 elab "check_body" : tactic => do
   let g ← getMainGoal
   g.withContext do
@@ -449,6 +463,8 @@ elab "check_body" : tactic => do
     let args := runE.getArg! 1
     -- a goal that a run does not misuse a call, and no more: the body may fault
     let fo := !tgt.consumeMData.isAppOf ``And
+    -- a program linked with the libraries: calls into them are read
+    let lib ← findLinked
     -- arguments the goal names exactly: each slot known, the typestate whole
     unless args.isAppOf ``runArgs do
       if args.hasFVar then throwError "check_body: the arguments name a variable"
@@ -457,7 +473,7 @@ elab "check_body" : tactic => do
       let A := mkApp2 (mkConst ``entryKnown) L args
       let cert ← match ← unsafe evalExpr (Except String Cert)
           (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
-          (mkApp3 (mkConst ``certOrRefusal) (toExpr fo) A code) with
+          (mkApp4 (mkConst ``certOrRefusal) (toExpr fo) A code (toExpr lib)) with
         | .ok c => pure c
         | .error e => throwError "check_body: the checker refuses this body:\n{e}"
       let sCert ← Term.exprToSyntax (toExpr cert)
@@ -470,7 +486,7 @@ elab "check_body" : tactic => do
       return
     let (keep, idx, dLen, oLen, P, pidx, _, vs) ← readTypestate L #[]
     let S ← mkListLit (mkConst ``Fact) keep
-    let (P, cert) ← runChecker "check_body" fo S dLen oLen P code
+    let (P, cert) ← runChecker "check_body" fo S dLen oLen P code lib
     let sCert ← Term.exprToSyntax (toExpr cert)
     let sA ← Term.exprToSyntax (mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P))
     let sc ← Term.exprToSyntax code
@@ -606,7 +622,7 @@ elab "check_lib " avs:term : tactic => do
     let A := mkApp2 (mkConst ``entryWith) L avsE
     let cert ← match ← unsafe evalExpr (Except String Cert)
         (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
-        (mkApp3 (mkConst ``certOrRefusal) (toExpr false) A code) with
+        (mkApp4 (mkConst ``certOrRefusal) (toExpr false) A code (toExpr false)) with
       | .ok c => pure c
       | .error e => throwError "check_lib: the checker refuses this body:\n{e}"
     let sCert ← Term.exprToSyntax (toExpr cert)

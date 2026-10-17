@@ -9,7 +9,7 @@ import all Init.Data.List.Sort.Basic
 # The world a term runs in
 
 Values, memory, the operations `evalOp` defines, and the `World` that holds
-memory, files, standard streams, the hash table and the devices. `Ffi.lean`
+memory, files, standard streams and the devices. `Ffi.lean`
 says what the foreign calls do to it and `Sem.lean` runs terms over it.
 -/
 
@@ -887,11 +887,11 @@ inductive Obs where
   | store (addr : UInt64) (width : Nat) (bits : UInt64)
   deriving Repr, BEq
 
-/-- The hash table `Lib.Ht` keeps, which the program reaches only through its
-    entry points. Every accessor reads table `0`, so the handle `ht_create`
-    returns only counts, and the accessors work once the first has been made;
-    entries are kept, and `ht_get_entry` walks them, in the order they were
-    first inserted. -/
+/-- A hash table, as `Lib.Ht`'s statements speak of the one a context holds.
+    Every accessor reads table `0`, so the handle `ht_create` returns only
+    counts, and the accessors work once the first has been made; entries are
+    kept, and `ht_get_entry` walks them, in the order they were first
+    inserted. -/
 structure Ht where
   /-- Handles handed out by `ht_create`, so the table `0` the accessors read is
       present exactly when one of them was `0`. -/
@@ -910,8 +910,8 @@ def Ht.set (h : Ht) (k v : ByteArray) : Ht :=
     { h with entries := h.entries.map (fun e => if e.1.toList == k.toList then (e.1, v) else e) }
   else { h with entries := h.entries ++ [(k, v)] }
 
-/-- The CUDA context: a Rust allocation, like the hash table's, so it can be
-    stored and passed but never loaded through. -/
+/-- The CUDA context: a Rust allocation, so it can be stored and passed but
+    never loaded through. -/
 def cudaCtx : UInt64 := 0x6000000000
 
 /-- One kernel launch as the host requests it: the kernel text, its entry
@@ -1315,7 +1315,6 @@ structure World where
   stdin : List ByteArray := []
   /-- What `cl_stdout_write` has written so far. -/
   stdout : ByteArray := ByteArray.empty
-  ht : Ht := {}
   /-- The C library's live heap allocations, as `(offset, length)` in the
       host-allocation region, which holds every allocation the host makes,
       page-locked or not: these are the ones `free` may release. -/

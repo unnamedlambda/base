@@ -1,6 +1,7 @@
 module
 public import AlgorithmLib.Check.PreSound
 public import AlgorithmLib.Check.Exec
+public import AlgorithmLib.Check.Lib
 @[expose] public section
 
 /-!
@@ -16,7 +17,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
-variable {vals : List UInt64}
+variable {vals : List UInt64} {lb : Bool}
 
 open AlgorithmLib.HProg.Contracts (Fact TState holds_of_mem Part afterStore afterStore_sound storeKeeps
   storeKeeps_sound storeKeeps_cell_of storeKeeps_cstrIn_of cellOk cellOk_spec nonCell_kept store_sizes_eq
@@ -86,6 +87,11 @@ theorem rangeKeeps_store {lo hi n : Nat} {a : UInt64} {x : Fact} (hx : rangeKeep
   | cstrIn c k =>
       simp only [rangeKeeps, Bool.or_eq_true, decide_eq_true_eq] at hx
       exact storeKeeps_cstrIn_of (by omega)
+  | htAt c m m' =>
+      simp only [rangeKeeps, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at hx
+      have hc := storeKeeps_cell_of (v := 0) hx.1.2 (by omega) hw (cellOk_toNat hx.1.2)
+      simp only [storeKeeps, Bool.and_eq_true, decide_eq_true_eq] at hc ⊢
+      exact ⟨⟨by omega, hc.1⟩, hc.2⟩
   | _ => rfl
 
 theorem afterStore_ne8 {a : UInt64} {vo : Option UInt64} {n : Nat} {S : TState} (hn : n ≠ 8) :
@@ -247,10 +253,10 @@ theorem absStore_vec {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = .ok
         | contradiction
         | (cases h
            refine AS.Holds.withPar (hA.keep (nonCell_kept hA.2.2 (store_parts hz) (fun kk _ => by cases kk <;> rfl)
-             rfl ⟨rfl, rfl, rfl⟩ hsz) hsz (fun kk _ hk => by cases kk <;> exact hk) (fun _ _ hk => hk.stored hsz hl))
+             ⟨rfl, rfl, rfl⟩ hsz) hsz (fun kk _ hk => by cases kk <;> exact hk) (fun _ _ hk => hk.stored hsz hl))
              (hA.1.2.2.keepWorld (fun _ _ => rfl) (fun _ _ => rfl) fun f hf hx =>
                nonCell_kept (S := [f]) (fun g hg => by rw [List.mem_singleton.mp hg]; exact hx) (store_parts hz)
-                 (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl⟩ hsz f
+                 (fun kk _ => by cases kk <;> rfl) ⟨rfl, rfl, rfl⟩ hsz f
                  (List.mem_filter.mpr ⟨List.mem_singleton_self _, hf⟩)))
 
 /-- Lanes inside bytes that fit all store. -/
@@ -359,7 +365,7 @@ theorem wild_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {x c
     (hsz : m.sizes = w.mem.sizes) (hz : m.frozen = w.mem.frozen ∧ m.busy = w.mem.busy)
     (hl : m.pinnedLive = w.mem.pinnedLive) :
     (A.withFacts (A.facts.filter (!·.isCell))).Holds vals Γ { obsStore w x k c with mem := m } :=
-  hA.keep (nonCell_kept hA.2.2 (store_parts hz) (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl⟩ hsz) hsz
+  hA.keep (nonCell_kept hA.2.2 (store_parts hz) (fun kk _ => by cases kk <;> rfl) ⟨rfl, rfl, rfl⟩ hsz) hsz
     (fun kk _ hk => by cases kk <;> exact hk) (fun _ _ hk => hk.stored hsz hl)
 
 theorem wild_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} :
@@ -651,13 +657,13 @@ theorem ffi_result_lanes (f : Ffi) : (f.result.getD .i64).lanes = none := by
   cases f <;> rfl
 
 theorem ffiCall_ok {A B : AS} {f : Ffi} {args : List R} (h : A.ffiCall f args = .ok B) :
-    f ≠ .threadSpawn ∧ A.facts.contains (.part .frozen false) = true ∧
+    f.engine = true ∧ A.facts.contains (.part .frozen false) = true ∧
       (args.map A.get).all (fun a => a.scTy.isSome) = true ∧
       ∃ P, ffiPre A f args = some P ∧
         B = (A.forgetHands.withFacts (postA f (args.map A.get) A.facts)).withPar
           (P.keepWorld (keepA f (args.map A.get))) := by
   unfold AS.ffiCall at h
-  by_cases hc : (f != .threadSpawn && A.facts.contains (.part .frozen false) &&
+  by_cases hc : (f.engine && A.facts.contains (.part .frozen false) &&
       (args.map A.get).all (·.scTy.isSome)) = true
   · rw [if_pos hc] at h
     simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hc
@@ -728,7 +734,7 @@ theorem ffiPre_pre {A : AS} {f : Ffi} {args : List R} {P : Par} (hP : ffiPre A f
       · rw [if_pos hc] at hP
         cases hP
         refine ⟨?_, rfl⟩
-        have hpre := hv.2.2.2 _ (List.contains_iff_mem.mp hc) w (fun x hx =>
+        have hpre := hv.2.2.2.1 _ (List.contains_iff_mem.mp hc) w (fun x hx =>
           (List.mem_append.mp hx).elim (hA.2.2 x) fun hx => hv.2.2.1 x (List.mem_append_right _ hx))
         simp only [oblOf] at hpre
         rw [parArgs_bits hA hv hpas hvs hb] at hpre
@@ -889,14 +895,15 @@ theorem extCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} (ha : e.asid
       · exact .inr (st.opens k x hk (by simp [asBits]) h0)
     · trivial
 
-theorem callee_ffi {A B : AS} {f : Ffi} {args : List R} {av : AV} (h : A.callee (.ffi f) args = .ok (B, av)) :
+theorem callee_ffi {A B : AS} {f : Ffi} {args : List R} {av : AV} (h : A.callee lb (.ffi f) args = .ok (B, av))
+    (hn : f.inLib = false) :
     A.ffiCall f args = .ok B ∧ av = ffiAnswer A.facts f (args.map A.get) := by
-  simp only [AS.callee] at h
+  simp only [AS.callee, hn, Bool.false_eq_true, if_false] at h
   split at h
   · rename_i B' hB; cases h; exact ⟨hB, rfl⟩
   · cases h
 
-theorem callee_ext {A B : AS} {e : Ext} {args : List R} {av : AV} (h : A.callee (.ext e) args = .ok (B, av)) :
+theorem callee_ext {A B : AS} {e : Ext} {args : List R} {av : AV} (h : A.callee lb (.ext e) args = .ok (B, av)) :
     e.aside = true ∧ (args.map A.get).all (fun a => a.scTy.isSome) = true ∧
       preExt A.facts e (args.map A.get) = true ∧
       B = (A.forgetExt e).withFacts (A.facts.filter (extKeepsA e (args.map A.get))) ∧
@@ -909,16 +916,17 @@ theorem callee_ext {A B : AS} {e : Ext} {args : List R} {av : AV} (h : A.callee 
     exact ⟨hc.1.1, hc.1.2, hc.2, rfl, rfl⟩
   · cases h
 
-/-- **A call the checker accepts answers**, ends where the rule's state says,
-    and its answer is the one the rule gives. -/
-theorem callee_core {cfg : Cfg} {A B : AS} {c : Callee} {args : List R} {av : AV}
-    (h : A.callee c args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V} (hA : A.Holds vals Γ w)
+/-- **A call the checker accepts that is no library's answers**, ends where
+    the rule's state says, and its answer is the one the rule gives. -/
+theorem callee_total {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args : List R} {av : AV}
+    (h : A.callee lb c args = .ok (B, av)) (hn : ∀ f, c = .ffi f → f.inLib = false)
+    {Γ : Env} {w : World} {vs : List V} (hA : A.Holds vals Γ w)
     (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
     ∃ r w', callOf cfg.locals c vs (obsCall w c vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
       ∀ v, r = some v → av.Desc (Γ.push v) w' v := by
   cases c with
   | ffi f =>
-      obtain ⟨hB, rfl⟩ := callee_ffi h
+      obtain ⟨hB, rfl⟩ := callee_ffi h (hn f rfl)
       obtain ⟨r, w', _bits, hcall, hA', -, hr⟩ := ffiCall_core hB hA hvs
       refine ⟨r, w', hcall, hA', fun v hv => ?_⟩
       obtain ⟨x, rfl, -, hdn⟩ := hr v hv
@@ -931,36 +939,407 @@ theorem callee_core {cfg : Cfg} {A B : AS} {c : Callee} {args : List R} {av : AV
       exact extCall_core (cfg := cfg) ha hsc hp hA hvs
   | _ => simp [AS.callee] at h
 
-theorem call_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo fa : Bool}
-    (h : absStmt fa A (.call c args) = .ok A') : Stmt1 cfg (A.Holds vals) (.call c args) (A'.Holds vals) fo := by
-  simp only [absStmt] at h
+-- ---------------------------------------------------------------------------
+-- Calls into a library
+-- ---------------------------------------------------------------------------
+
+/-- An entry point a library implements, called with no worker running, is
+    the program's function at its place. -/
+theorem callOf_lib {L : Locals} {f : Ffi} {vs : List V} {w : World} (hin : f.inLib = true)
+    (hts : (f == .threadSpawn) = false) (hz : w.mem.frozen = false) :
+    callOf L (.ffi f) vs w = (L f.libSlot vs w).toOption.map fun (r, w') => (libAnswer f r, w') := by
+  simp only [callOf, hz, hts, hin, Bool.false_and, Bool.false_eq_true, if_false, if_true]
+
+theorem failOf_lib {L : Locals} {f : Ffi} {vs : List V} {w : World} (hin : f.inLib = true)
+    (hz : w.mem.frozen = false) :
+    (failOf L (.ffi f) vs w : Outcome Env) =
+      match L f.libSlot vs w with
+      | .error e => e.out
+      | .ok _ => refused (.ffi f) := by
+  cases hL : L f.libSlot vs w <;> simp [failOf, hin, hz, hL]
+
+/-- **A call into a library that meets its statement** returns to a world the
+    statement describes, or ends with neither a misuse nor a fault. -/
+theorem lib_outcome {L : Locals} {f : Ffi} {vs : List V} {w : World} {Q : World → Prop} (hin : f.inLib = true)
+    (hts : (f == .threadSpawn) = false) (hz : w.mem.frozen = false) (hc : LibCall L f vs w Q) :
+    (∃ r w', callOf L (.ffi f) vs w = some (libAnswer f r, w') ∧ Q w') ∨
+      (callOf L (.ffi f) vs w = none ∧ FailOk (failOf L (.ffi f) vs w : Outcome Env) false) := by
+  rw [callOf_lib hin hts hz, failOf_lib hin hz]
+  unfold LibCall at hc
+  cases hl : L f.libSlot vs w with
+  | error e => rw [hl] at hc; exact .inr ⟨rfl, hc⟩
+  | ok p => obtain ⟨r, w'⟩ := p; rw [hl] at hc; exact .inl ⟨r, w', rfl, hc⟩
+
+/-- What `libKeeps` keeps, a call into a library leaves. -/
+theorem libKeeps_sound {w w' : World} {lo hi : Nat} (hs : LibStep w w' lo hi) {x : Fact}
+    (hk : libKeeps lo hi x = true) (hx : x.holds w) : x.holds w' := by
+  cases x with
+  | part p b =>
+      simp only [libKeeps, Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq, Bool.not_eq_true'] at hk
+      rcases hk with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩
+      · exact hs.frozen
+      · exact hs.idle
+  | room r n =>
+      have hr : r ≠ .pinned := by rintro rfl; exact absurd (show (Region.pinned != Region.pinned) = true from hk) (by decide)
+      show n ≤ w'.mem.sizes r
+      rw [hs.rooms r hr]; exact hx
+  | roomArg r y =>
+      have hr : r ≠ .pinned := by rintro rfl; exact absurd (show (Region.pinned != Region.pinned) = true from hk) (by decide)
+      show y.toNat ≤ w'.mem.sizes r ∧ _
+      rw [hs.rooms r hr]; exact hx
+  | cell c v =>
+      simp only [libKeeps, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at hk
+      exact hs.cell c v hk.1 hk.2 hx
+  | _ => simp [libKeeps] at hk
+
+/-- **The state after a call into a library** describes the world the call
+    left, where what it left new holds there. -/
+theorem libDone_holds {A : AS} {Γ : Env} {w w' : World} {lo hi : Nat} {new : TState} (hA : A.Holds vals Γ w)
+    (hs : LibStep w w' lo hi) (hnew : new.holds w') : (A.libDone lo hi new).Holds vals Γ w' := by
+  have hk : ∀ x, libKeeps lo hi x = true → x.holds w → x.holds w' := fun x hk hx => libKeeps_sound hs hk hx
+  refine (hA.forgetHands.worldNH (AS.forgetHands_noHands A) (fun x hx => ?_) hs.rooms).withPar
+    (hA.1.2.2.keepWorld (fun _ _ => rfl) (fun _ _ => rfl) hk)
+  rcases List.mem_append.mp hx with h | h
+  · exact hnew x h
+  · obtain ⟨hm, hkx⟩ := List.mem_filter.mp h
+    exact hk x hkx (hA.2.2 x hm)
+
+/-- The calls a library call leaves observed, from before it was made. -/
+theorem lib_calls {w w' : World} {c : Callee} {vs : List V} {lo hi : Nat} (hs : LibStep (obsCall w c vs) w' lo hi) :
+    ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs := by
+  obtain ⟨cs, hcs⟩ := hs.calls
+  exact ⟨(c, vs) :: cs, by rw [hcs]; simp [callsOf, obsCall]⟩
+
+/-- A slot the state says holds what a cell holds does. -/
+theorem ctxOf_spec {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {c : R} {x : UInt64}
+    (h : ctxOf A c = some x) : ∃ s, Γ[c]? = some (.sc .i64 s) ∧ w.mem.load x 8 = some s := by
+  unfold ctxOf at h
+  obtain ⟨e, he, rfl⟩ := Option.map_eq_some_iff.mp h
+  have hm := List.mem_of_find?_eq_some he
+  have hc : e.1 = c := by simpa using List.find?_some he
+  obtain ⟨s, hs, hl⟩ := hA.1.2.2.2.2.2.2 e hm
+  exact ⟨s, by rw [← hc]; exact hs, hl⟩
+
+theorem mapM_cons_inv {Γ : Env} {r : R} {rs : List R} {vs : List V}
+    (h : (r :: rs).mapM (fun r => Γ[r]?) = some vs) :
+    ∃ v vs', Γ[r]? = some v ∧ rs.mapM (fun r => Γ[r]?) = some vs' ∧ vs = v :: vs' := by
+  simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+    Option.some.injEq] at h
+  obtain ⟨v, hv, vs', hvs, rfl⟩ := h
+  exact ⟨v, vs', hv, hvs, rfl⟩
+
+theorem mapM_nil_inv {Γ : Env} {vs : List V} (h : ([] : List R).mapM (fun r => Γ[r]?) = some vs) : vs = [] := by
+  simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h
+  exact h.symm
+
+/-- A 32-bit entry point's answer, as its library function gave it. -/
+theorem libAnswer_i32 {f : Ffi} {r : Option V} {v : V} (hf : f.result = some .i32) (h : libAnswer f r = some v) :
+    TyV .i32 v := by
+  unfold libAnswer at h
   split at h
-  · rename_i B av hB
+  · rw [hf] at h
+    simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    exact TyV.sc (t := .i32) rfl
+  · cases h
+
+/-- Room `memN` shows at a 64-bit slot, outside pinned memory. -/
+theorem npRoom_of {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {r : R} {k : Nat}
+    (ht : (A.get r).scTy = some .i64) (hm : memN A.facts (A.get r) k = true) :
+    ∃ x, Γ[r]? = some (.sc .i64 x) ∧ NPRoom w x k ∧ (A.get r).Desc Γ w (.sc .i64 x) := by
+  obtain ⟨x, hx, hd⟩ := hA.getSc ht
+  obtain ⟨rg, off, hdec, hp, hs, -, h36⟩ := memN_spec hA.2.2 ⟨_, hd⟩ hm
+  exact ⟨x, hx, ⟨rg, off, hdec, hp, hs, h36⟩, hd⟩
+
+/-- A slot known exactly holds what it is known to. -/
+theorem known_of {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {r : R} {u v : V}
+    (hk : A.get r = .known u) (hr : Γ[r]? = some v) : v = u := by
+  have hd := hA.desc hr
+  rw [hk] at hd
+  exact hd
+
+theorem libInit_core {cfg : Cfg} (hH : HtOk cfg.locals) {A B : AS} {av : AV} {Γ : Env} {w : World} {vs : List V}
+    (hA1 : A.Holds vals Γ (obsCall w (.ffi .htInit) vs)) (hz : (obsCall w (.ffi .htInit) vs).mem.frozen = false)
+    (hi : (obsCall w (.ffi .htInit) vs).mem.busy.isEmpty = true) (hin : Ffi.inLib .htInit = true)
+    {a : R} (h : A.libInit a = some (B, av))
+    (hvs : [a].mapM (fun r => Γ[r]?) = some vs) :
+    (∃ r w', callOf cfg.locals (.ffi .htInit) vs (obsCall w (.ffi .htInit) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+        (∀ v, r = some v → av.Desc (Γ.push v) w' v) ∧ Contracts.KeepsRooms w w' ∧
+        ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs) ∨
+      (callOf cfg.locals (.ffi .htInit) vs (obsCall w (.ffi .htInit) vs) = none ∧
+        FailOk (failOf cfg.locals (.ffi .htInit) vs (obsCall w (.ffi .htInit) vs) : Outcome Env) false) := by
+  obtain ⟨v, vs', hv, hvs', rfl⟩ := mapM_cons_inv hvs
+  obtain rfl := mapM_nil_inv hvs'
+  unfold AS.libInit at h
+  split at h
+  · rename_i x hga
     split at h
-    · cases h
-      refine call_rule fun Γ w vs hA hvs => ?_
-      obtain ⟨r, w', hcall, hA', hr⟩ := callee_core hB hA hvs
-      exact ⟨r, w', hcall, fun v hv => hA'.push (hr v hv)⟩
+    · rename_i hc
+      simp only [Bool.and_eq_true] at hc
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      obtain rfl := known_of hA1 hga hv
+      obtain ⟨y, hy, hroom, -⟩ := npRoom_of hA1 (r := a) (by rw [hga]; rfl) hc.2
+      rw [hv] at hy; cases hy
+      rcases lib_outcome hin rfl hz (hH.init _ x hz hi hc.1 hroom) with ⟨r, w', hcall, hobj, hstep⟩ | hf
+      · exact .inl ⟨_, w', hcall, libDone_holds hA1 hstep (by
+          intro y hy; rw [List.mem_singleton.mp hy]; exact hobj), fun _ _ => trivial, hstep.rooms, lib_calls hstep⟩
+      · exact .inr hf
     · cases h
   · cases h
 
-theorem callVoid_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo fa : Bool}
-    (h : absStmt fa A (.callVoid c args) = .ok A') : Stmt1 cfg (A.Holds vals) (.callVoid c args) (A'.Holds vals) fo := by
+theorem libCleanup_core {cfg : Cfg} (hH : HtOk cfg.locals) {A B : AS} {av : AV} {Γ : Env} {w : World} {vs : List V}
+    (hA1 : A.Holds vals Γ (obsCall w (.ffi .htCleanup) vs)) (hz : (obsCall w (.ffi .htCleanup) vs).mem.frozen = false)
+    (hi : (obsCall w (.ffi .htCleanup) vs).mem.busy.isEmpty = true) (hin : Ffi.inLib .htCleanup = true)
+    {a : R} (h : A.libCleanup a = some (B, av))
+    (hvs : [a].mapM (fun r => Γ[r]?) = some vs) :
+    (∃ r w', callOf cfg.locals (.ffi .htCleanup) vs (obsCall w (.ffi .htCleanup) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+        (∀ v, r = some v → av.Desc (Γ.push v) w' v) ∧ Contracts.KeepsRooms w w' ∧
+        ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs) ∨
+      (callOf cfg.locals (.ffi .htCleanup) vs (obsCall w (.ffi .htCleanup) vs) = none ∧
+        FailOk (failOf cfg.locals (.ffi .htCleanup) vs (obsCall w (.ffi .htCleanup) vs) : Outcome Env) false) := by
+  obtain ⟨v, vs', hv, hvs', rfl⟩ := mapM_cons_inv hvs
+  obtain rfl := mapM_nil_inv hvs'
+  unfold AS.libCleanup at h
+  split at h
+  · rename_i x hga
+    split at h
+    · rename_i hn
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      obtain rfl := known_of hA1 hga hv
+      obtain ⟨⟨n, k⟩, hn⟩ := Option.isSome_iff_exists.mp hn
+      have hobj : HtSpec.HtObj _ x n k := hA1.2.2 _ (htAtOf_mem hn)
+      rcases lib_outcome hin rfl hz (hH.cleanup _ x n k hz hi hobj) with ⟨r, w', hcall, hnull, hstep⟩ | hf
+      · exact .inl ⟨_, w', hcall, libDone_holds hA1 hstep (by
+          intro y hy; rw [List.mem_singleton.mp hy]; exact hnull), fun _ _ => trivial, hstep.rooms, lib_calls hstep⟩
+      · exact .inr hf
+    · cases h
+  · cases h
+
+theorem libCreate_core {cfg : Cfg} (hH : HtOk cfg.locals) {A B : AS} {av : AV} {Γ : Env} {w : World} {vs : List V}
+    (hA1 : A.Holds vals Γ (obsCall w (.ffi .htCreate) vs)) (hz : (obsCall w (.ffi .htCreate) vs).mem.frozen = false)
+    (hi : (obsCall w (.ffi .htCreate) vs).mem.busy.isEmpty = true) (hin : Ffi.inLib .htCreate = true)
+    {c : R} (h : A.libCreate c = some (B, av))
+    (hvs : [c].mapM (fun r => Γ[r]?) = some vs) :
+    (∃ r w', callOf cfg.locals (.ffi .htCreate) vs (obsCall w (.ffi .htCreate) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+        (∀ v, r = some v → av.Desc (Γ.push v) w' v) ∧ Contracts.KeepsRooms w w' ∧
+        ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs) ∨
+      (callOf cfg.locals (.ffi .htCreate) vs (obsCall w (.ffi .htCreate) vs) = none ∧
+        FailOk (failOf cfg.locals (.ffi .htCreate) vs (obsCall w (.ffi .htCreate) vs) : Outcome Env) false) := by
+  obtain ⟨v, vs', hv, hvs', rfl⟩ := mapM_cons_inv hvs
+  obtain rfl := mapM_nil_inv hvs'
+  unfold AS.libCreate at h
+  split at h
+  · rename_i x hcx
+    split at h
+    · rename_i n k hn
+      split at h
+      · rename_i hk
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        obtain ⟨s, hs, hl⟩ := ctxOf_spec hA1 hcx
+        rw [hv] at hs; cases hs
+        have hobj : HtSpec.HtObj _ x n k := hA1.2.2 _ (htAtOf_mem hn)
+        rcases lib_outcome hin rfl hz (hH.create _ x s n k hz hi hobj hl hk) with ⟨r, w', hcall, hobj', hstep⟩ | hf
+        · exact .inl ⟨_, w', hcall, libDone_holds hA1 hstep (by
+            intro y hy; rw [List.mem_singleton.mp hy]; exact hobj'),
+            fun u hu => libAnswer_i32 rfl hu, hstep.rooms, lib_calls hstep⟩
+        · exact .inr hf
+      · cases h
+    · cases h
+  · cases h
+
+theorem libInsert_core {cfg : Cfg} (hH : HtOk cfg.locals) {A B : AS} {av : AV} {Γ : Env} {w : World} {vs : List V}
+    (hA1 : A.Holds vals Γ (obsCall w (.ffi .htInsert) vs)) (hz : (obsCall w (.ffi .htInsert) vs).mem.frozen = false)
+    (hi : (obsCall w (.ffi .htInsert) vs).mem.busy.isEmpty = true) (hin : Ffi.inLib .htInsert = true)
+    {c kp kl vp vl : R} (h : A.libInsert c kp kl vp vl = some (B, av))
+    (hvs : [c, kp, kl, vp, vl].mapM (fun r => Γ[r]?) = some vs) :
+    (∃ r w', callOf cfg.locals (.ffi .htInsert) vs (obsCall w (.ffi .htInsert) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+        (∀ v, r = some v → av.Desc (Γ.push v) w' v) ∧ Contracts.KeepsRooms w w' ∧
+        ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs) ∨
+      (callOf cfg.locals (.ffi .htInsert) vs (obsCall w (.ffi .htInsert) vs) = none ∧
+        FailOk (failOf cfg.locals (.ffi .htInsert) vs (obsCall w (.ffi .htInsert) vs) : Outcome Env) false) := by
+  obtain ⟨v0, vs0, hv0, hvs0, rfl⟩ := mapM_cons_inv hvs
+  obtain ⟨v1, vs1, hv1, hvs1, rfl⟩ := mapM_cons_inv hvs0
+  obtain ⟨v2, vs2, hv2, hvs2, rfl⟩ := mapM_cons_inv hvs1
+  obtain ⟨v3, vs3, hv3, hvs3, rfl⟩ := mapM_cons_inv hvs2
+  obtain ⟨v4, vs4, hv4, hvs4, rfl⟩ := mapM_cons_inv hvs3
+  obtain rfl := mapM_nil_inv hvs4
+  unfold AS.libInsert at h
+  split at h
+  · rename_i x a b hcx hka hkb
+    split at h
+    · rename_i n k hn
+      split at h
+      · rename_i hc
+        simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq] at hc
+        obtain ⟨⟨⟨⟨⟨ha, hb⟩, htk⟩, htv⟩, hmk⟩, hmv⟩ := hc
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        obtain ⟨s, hs, hl⟩ := ctxOf_spec hA1 hcx
+        rw [hv0] at hs; cases hs
+        obtain rfl := known_of hA1 hka hv2
+        obtain rfl := known_of hA1 hkb hv4
+        obtain ⟨xk, hxk, hrk, -⟩ := npRoom_of hA1 htk hmk
+        rw [hv1] at hxk; cases hxk
+        obtain ⟨xv, hxv, hrv, -⟩ := npRoom_of hA1 htv hmv
+        rw [hv3] at hxv; cases hxv
+        have hobj : HtSpec.HtObj _ x n k := hA1.2.2 _ (htAtOf_mem hn)
+        rcases lib_outcome hin rfl hz (hH.insert _ x s xk a xv b n k hz hi hobj hl ha hb hrk hrv)
+          with ⟨r, w', hcall, hobj', hstep⟩ | hf
+        · exact .inl ⟨_, w', hcall, libDone_holds hA1 hstep (by
+            intro y hy; rw [List.mem_singleton.mp hy]; exact hobj'), fun _ _ => trivial, hstep.rooms,
+            lib_calls hstep⟩
+        · exact .inr hf
+      · cases h
+    · cases h
+  · cases h
+
+theorem libLookup_core {cfg : Cfg} (hH : HtOk cfg.locals) {A B : AS} {av : AV} {Γ : Env} {w : World} {vs : List V}
+    (hA1 : A.Holds vals Γ (obsCall w (.ffi .htLookup) vs)) (hz : (obsCall w (.ffi .htLookup) vs).mem.frozen = false)
+    (hi : (obsCall w (.ffi .htLookup) vs).mem.busy.isEmpty = true) (hin : Ffi.inLib .htLookup = true)
+    {c kp kl rp : R} (h : A.libLookup c kp kl rp = some (B, av))
+    (hvs : [c, kp, kl, rp].mapM (fun r => Γ[r]?) = some vs) :
+    (∃ r w', callOf cfg.locals (.ffi .htLookup) vs (obsCall w (.ffi .htLookup) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+        (∀ v, r = some v → av.Desc (Γ.push v) w' v) ∧ Contracts.KeepsRooms w w' ∧
+        ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs) ∨
+      (callOf cfg.locals (.ffi .htLookup) vs (obsCall w (.ffi .htLookup) vs) = none ∧
+        FailOk (failOf cfg.locals (.ffi .htLookup) vs (obsCall w (.ffi .htLookup) vs) : Outcome Env) false) := by
+  obtain ⟨v0, vs0, hv0, hvs0, rfl⟩ := mapM_cons_inv hvs
+  obtain ⟨v1, vs1, hv1, hvs1, rfl⟩ := mapM_cons_inv hvs0
+  obtain ⟨v2, vs2, hv2, hvs2, rfl⟩ := mapM_cons_inv hvs1
+  obtain ⟨v3, vs3, hv3, hvs3, rfl⟩ := mapM_cons_inv hvs2
+  obtain rfl := mapM_nil_inv hvs3
+  unfold AS.libLookup at h
+  split at h
+  · rename_i x a hcx hka
+    split at h
+    · rename_i n k lo hi' hn hsp
+      split at h
+      · rename_i hc
+        simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq, Bool.or_eq_true] at hc
+        obtain ⟨⟨⟨⟨⟨ha, htk⟩, htr⟩, hmk⟩, hmr⟩, hmiss⟩ := hc
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        obtain ⟨s, hs, hl⟩ := ctxOf_spec hA1 hcx
+        rw [hv0] at hs; cases hs
+        obtain rfl := known_of hA1 hka hv2
+        obtain ⟨xk, hxk, hrk, -⟩ := npRoom_of hA1 htk hmk
+        rw [hv1] at hxk; cases hxk
+        obtain ⟨xr, hxr, hrr, hdr⟩ := npRoom_of hA1 htr hmr
+        rw [hv3] at hxr; cases hxr
+        obtain ⟨hlo, hhi⟩ := storeSpan_spec hdr hsp
+        have hobj : HtSpec.HtObj _ x n k := hA1.2.2 _ (htAtOf_mem hn)
+        rcases lib_outcome hin rfl hz (hH.lookup _ x s xk a xr n k hz hi hobj hl ha hrk hrr (by omega))
+          with ⟨r, w', hcall, hobj', hstep⟩ | hf
+        · have hstep' := hstep.mono (lo' := lo) (hi' := hi' + n) hlo (by omega)
+          exact .inl ⟨_, w', hcall, libDone_holds hA1 hstep' (by
+            intro y hy; rw [List.mem_singleton.mp hy]; exact hobj'),
+            fun u hu => libAnswer_i32 rfl hu, hstep.rooms, lib_calls hstep⟩
+        · exact .inr hf
+      · cases h
+    · cases h
+  · cases h
+
+/-- **A call into a library the checker accepts**, in a program linked with
+    the library: where it returns, the rule's state describes the world it
+    leaves and the rule's answer its answer, every region outside pinned
+    memory keeps its size and the calls observed before it are observed; and
+    where it does not return, it ends with neither a misuse nor a fault. -/
+theorem libCall_core {cfg : Cfg} [hL : Linked lb cfg] (hlb : lb = true) {A B : AS} {f : Ffi} {args : List R}
+    {av : AV} (hin : f.inLib = true) (h : A.libCall f args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V}
+    (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
+    (∃ r w', callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+        (∀ v, r = some v → av.Desc (Γ.push v) w' v) ∧ Contracts.KeepsRooms w w' ∧
+        ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs) ∨
+      (callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = none ∧
+        FailOk (failOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) : Outcome Env) false) := by
+  have hH := hL.ht hlb
+  have hA1 := hA.obsCall (.ffi f) vs
+  unfold AS.libCall at h
+  split at h
+  · rename_i hcalm
+    simp only [Bool.and_eq_true] at hcalm
+    have hz : (obsCall w (.ffi f) vs).mem.frozen = false := holds_of_mem hA1.2.2 hcalm.1
+    have hi : (obsCall w (.ffi f) vs).mem.busy.isEmpty = true := holds_of_mem hA1.2.2 hcalm.2
+    split at h
+    · rename_i p hp
+      simp only [Except.ok.injEq] at h
+      subst h
+      unfold AS.libRule at hp
+      split at hp
+      · exact libInit_core hH hA1 hz hi hin hp hvs
+      · exact libCleanup_core hH hA1 hz hi hin hp hvs
+      · exact libCreate_core hH hA1 hz hi hin hp hvs
+      · exact libInsert_core hH hA1 hz hi hin hp hvs
+      · exact libLookup_core hH hA1 hz hi hin hp hvs
+      · cases hp
+    · cases h
+  · cases h
+
+/-- An outcome that is neither a misuse nor a fault is one a body that may
+    fault may end with. -/
+theorem FailOk.weaken {o : Outcome Env} {fo : Bool} (h : FailOk o false) : FailOk o fo :=
+  ⟨h.1, fun m e => absurd (h.2 m e) (by decide)⟩
+
+/-- **A call the checker accepts**: where it answers, it ends where the
+    rule's state says and its answer is the one the rule gives; where it does
+    not, being a library's, it ends with neither a misuse nor a fault. -/
+theorem callee_core {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args : List R} {av : AV} {fo : Bool}
+    (h : A.callee lb c args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V} (hA : A.Holds vals Γ w)
+    (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
+    (callOf cfg.locals c vs (obsCall w c vs) = none → FailOk (failOf cfg.locals c vs (obsCall w c vs)) fo) ∧
+      ∀ r w', callOf cfg.locals c vs (obsCall w c vs) = some (r, w') →
+        B.Holds vals Γ w' ∧ ∀ v, r = some v → av.Desc (Γ.push v) w' v := by
+  by_cases hn : ∀ f, c = .ffi f → f.inLib = false
+  · obtain ⟨r0, w0, hc0, hB, hd⟩ := callee_total (cfg := cfg) h hn hA hvs
+    exact ⟨fun e => (by rw [hc0] at e; cases e), fun r w' e => (by rw [hc0] at e; cases e; exact ⟨hB, hd⟩)⟩
+  · obtain ⟨f, rfl, hin⟩ : ∃ f, c = .ffi f ∧ f.inLib = true := by
+      by_cases hx : ∃ f, c = .ffi f ∧ f.inLib = true
+      · exact hx
+      · exact absurd (fun f e => by
+          cases hf : f.inLib
+          · rfl
+          · exact absurd ⟨f, e, hf⟩ hx) hn
+    simp only [AS.callee, hin, if_true] at h
+    split at h
+    · rename_i hlb
+      rcases libCall_core (cfg := cfg) hlb hin h hA hvs with ⟨r0, w0, hc0, hB, hd, -, -⟩ | ⟨hc0, hf⟩
+      · exact ⟨fun e => (by rw [hc0] at e; cases e), fun r w' e => (by rw [hc0] at e; cases e; exact ⟨hB, hd⟩)⟩
+      · exact ⟨fun _ => FailOk.weaken hf, fun r w' e => (by rw [hc0] at e; cases e)⟩
+    · cases h
+
+theorem call_sound {cfg : Cfg} [Linked lb cfg] {A A' : AS} {c : Callee} {args : List R} {fo fa : Bool}
+    (h : absStmt fa lb A (.call c args) = .ok A') : Stmt1 cfg (A.Holds vals) (.call c args) (A'.Holds vals) fo := by
   simp only [absStmt] at h
   split at h
   · rename_i B av hB
     split at h
     · cases h
-      refine callVoid_rule fun Γ w vs hA hvs => ?_
-      obtain ⟨r, w', hcall, hA', -⟩ := callee_core hB hA hvs
-      exact ⟨r, w', hcall, hA'⟩
+      refine callL_rule fun Γ w vs hA hvs => ?_
+      obtain ⟨hnone, hsome⟩ := callee_core (cfg := cfg) (fo := fo) hB hA hvs
+      exact ⟨hnone, fun r w' hc v hv => (hsome r w' hc).1.push ((hsome r w' hc).2 v hv)⟩
+    · cases h
+  · cases h
+
+theorem callVoid_sound {cfg : Cfg} [Linked lb cfg] {A A' : AS} {c : Callee} {args : List R} {fo fa : Bool}
+    (h : absStmt fa lb A (.callVoid c args) = .ok A') : Stmt1 cfg (A.Holds vals) (.callVoid c args) (A'.Holds vals) fo := by
+  simp only [absStmt] at h
+  split at h
+  · rename_i B av hB
+    split at h
+    · cases h
+      refine callVoidL_rule fun Γ w vs hA hvs => ?_
+      obtain ⟨hnone, hsome⟩ := callee_core (cfg := cfg) (fo := fo) hB hA hvs
+      exact ⟨hnone, fun r w' hc => (hsome r w' hc).1⟩
     · cases h
   · cases h
 
 /-- **A call's answer by cases**: where `answerCases` splits the state after a
     call, one of the two describes where it ends. -/
-theorem answerCases_sound {cfg : Cfg} {A A' B1 B2 : AS} {s : Stmt} {fo fa : Bool}
-    (h : absStmt fa A s = .ok A') (hc : answerCases A A' s = some (B1, B2)) :
+theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stmt} {fo fa : Bool}
+    (h : absStmt fa lb A s = .ok A') (hc : answerCases A A' s = some (B1, B2)) :
     Stmt1 cfg (A.Holds vals) s (fun Γ w => B1.Holds vals Γ w ∨ B2.Holds vals Γ w) fo := by
   unfold answerCases at hc
   split at hc
@@ -974,7 +1353,7 @@ theorem answerCases_sound {cfg : Cfg} {A A' B1 B2 : AS} {s : Stmt} {fo fa : Bool
         simp only [absStmt, answersAs, if_true] at h
         split at h
         · rename_i B av hB
-          obtain ⟨hB', rfl⟩ := callee_ffi hB
+          obtain ⟨hB', rfl⟩ := callee_ffi hB rfl
           cases h
           refine call_rule fun Γ w vs hA hvs => ?_
           obtain ⟨r, w', bits, hcall, hA', hab, hr⟩ := ffiCall_core hB' hA hvs
@@ -1114,8 +1493,32 @@ theorem parOp_sound {A : AS} {Γ : Env} {w : World} {vals : List UInt64} (hA : A
       · cases he
   | _ => simp [parOp] at he
 
+/-- **A load `ctxOp` names a cell for** answers what the cell holds. -/
+theorem ctxOp_sound {A : AS} {Γ : Env} {w : World} {vals : List UInt64} (hA : A.Holds vals Γ w)
+    {o : Op} {x : UInt64} (he : ctxOp A o = some x) {v : V}
+    (hv : evalOp w.mem Γ o = some v) : ∃ s, v = .sc .i64 s ∧ w.mem.load x 8 = some s := by
+  cases o with
+  | load op a =>
+      simp only [ctxOp] at he
+      split at he
+      · rename_i t0 x0 hk hty hkn
+        split at he
+        · rename_i hn
+          cases he
+          obtain ⟨⟨n, k⟩, hn⟩ := Option.isSome_iff_exists.mp hn
+          obtain ⟨s, -, -, -, -, hl, -⟩ : HtSpec.HtObj w x n k := hA.2.2 _ (htAtOf_mem hn)
+          have hr := AS.get_lt_known (r := a) (by rw [hkn]; rfl)
+          obtain ⟨u, hu, hd⟩ := hA.get hr
+          rw [hkn] at hd; simp only [AV.Desc] at hd; subst hd
+          have hload : w.mem.load x (tyBytes op.ty) = some s := by rw [hty]; exact hl
+          rw [evalOp_load hk (by rw [hty]; rfl) hu hload] at hv
+          cases hv; rw [hty]; exact ⟨s, rfl, hl⟩
+        · cases he
+      · cases he
+  | _ => simp [ctxOp] at he
+
 /-- **What the checker steps a statement to is true of it.** -/
-theorem absStmt_sound {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo A s = .ok A') :
+theorem absStmt_sound {cfg : Cfg} [Linked lb cfg] {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo lb A s = .ok A') :
     Stmt1 cfg (A.Holds vals) s (A'.Holds vals) fo := by
   cases s with
   | op o =>
@@ -1131,8 +1534,10 @@ theorem absStmt_sound {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStm
             foldl_tighten hB _ _ (foldl_addUb _ _ hB
               (fun q hq hok => ⟨opFacts_sound hA hv q hq, hok⟩) (fun q _ C hC => ubOk_len hC _))
               (fun q hq => opFacts_sound hA hv q hq)
-          refine hC.parSlot fun t e he => ?_
-          rw [← hA.1.1, Array.getElem?_push_size, parOp_sound hA hA.1.2.2 he hv]
+          refine (hC.parSlot fun t e he => ?_).parCtx fun a ha => ?_
+          · rw [← hA.1.1, Array.getElem?_push_size, parOp_sound hA hA.1.2.2 he hv]
+          · obtain ⟨s, rfl, hl⟩ := ctxOp_sound hA ha hv
+            exact ⟨s, by rw [← hA.1.1, Array.getElem?_push_size], hl⟩
         · obtain ⟨v', hv', -⟩ := absOp_sound hA hav
           rw [hn] at hv'; cases hv'
       · split at h
@@ -1190,8 +1595,8 @@ theorem absStmt_sound {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStm
   | call c args => exact call_sound h
   | callVoid c args => exact callVoid_sound h
 
-theorem absStmtsH_sound {cfg : Cfg} {fo : Bool} :
-    ∀ {hist : List (Nat × Stmt)} {A A' : AS} {ss : List Stmt}, absStmtsH fo hist A ss = .ok A' →
+theorem absStmtsH_sound {cfg : Cfg} [Linked lb cfg] {fo : Bool} :
+    ∀ {hist : List (Nat × Stmt)} {A A' : AS} {ss : List Stmt}, absStmtsH fo lb hist A ss = .ok A' →
       Stmts cfg (A.Holds vals) ss (A'.Holds vals) fo
   | _, A, A', [], h => by
       simp only [absStmtsH, Except.ok.injEq] at h
@@ -1204,7 +1609,7 @@ theorem absStmtsH_sound {cfg : Cfg} {fo : Bool} :
         exact stmts_cons (absStmt_sound h1) (absStmtsH_sound h)
       · cases h
 
-theorem absStmts_sound {cfg : Cfg} {A A' : AS} {ss : List Stmt} {fo : Bool} (h : absStmts fo A ss = .ok A') :
+theorem absStmts_sound {cfg : Cfg} [Linked lb cfg] {A A' : AS} {ss : List Stmt} {fo : Bool} (h : absStmts fo lb A ss = .ok A') :
     Stmts cfg (A.Holds vals) ss (A'.Holds vals) fo :=
   absStmtsH_sound h
 
@@ -1332,10 +1737,9 @@ theorem meetFact_left {S' : TState} {x y : Fact} {w : World} (h : meetFact S' x 
   · rw [if_pos hc] at h; cases h; exact hx
   · rw [if_neg hc] at h
     cases x with
-    | htVals n =>
+    | htAt a n k =>
         obtain ⟨m, -, rfl⟩ := Option.map_eq_some_iff.mp h
-        intro k v hv
-        exact Nat.le_trans (hx k v hv) (Nat.le_max_left _ _)
+        exact HtSpec.HtObj.mono hx (Nat.le_max_left _ _) (Nat.le_max_left _ _)
     | readyAll p =>
         by_cases hr : readyIn S' p = true
         · simp only [hr, if_true, Option.some.injEq] at h; subst h; exact hx
@@ -1349,11 +1753,9 @@ theorem meetFact_right {S' : TState} {x y : Fact} {w : World} (h : meetFact S' x
   · rw [if_pos hc] at h; cases h; exact hS _ (by simpa using hc)
   · rw [if_neg hc] at h
     cases x with
-    | htVals n =>
-        obtain ⟨m, hm, rfl⟩ := Option.map_eq_some_iff.mp h
-        have hv := hS _ (htValsOf_mem hm)
-        intro k v hg
-        exact Nat.le_trans (hv k v hg) (Nat.le_max_right _ _)
+    | htAt a n k =>
+        obtain ⟨⟨m, j⟩, hm, rfl⟩ := Option.map_eq_some_iff.mp h
+        exact HtSpec.HtObj.mono (hS _ (htAtOf_mem hm)) (Nat.le_max_right _ _) (Nat.le_max_right _ _)
     | readyAll p =>
         by_cases hr : readyIn S' p = true
         · simp only [hr, if_true, Option.some.injEq] at h; subst h; exact Contracts.readyIn_sound hS hr
@@ -1857,15 +2259,26 @@ theorem Kept.repSucc {a : Tr} {n : Nat} {w0 w1 w2 : World} (h1 : Kept (.rep n a)
   ⟨KeepsRooms.trans h1.rooms h2.rooms, h1.trace.repSucc h2.trace⟩
 
 /-- A straight run's calls, as its piece records them or leaves them open. -/
-theorem Kept.straight {cs : List CallRec} {w0 w : World} {b : Bool}
-    (h : Kept (.seq (.lit []) (.lit cs)) w0 w) : Kept (if b then .lit cs else .any) w0 w :=
+theorem Kept.straight {cs : List CallRec} {w0 w : World} {b l : Bool}
+    (h : Kept (.seq (.lit []) (if l then .any else .lit cs)) w0 w) :
+    Kept (if b && !l then .lit cs else .any) w0 w :=
   h.mono fun s hs => by
     cases hs with
     | seq h1 h2 =>
         rw [h1.lit_nil, List.nil_append]
-        cases b
-        · exact .any _
-        · exact h2
+        cases l
+        · cases b
+          · exact .any _
+          · exact h2
+        · cases b <;> exact .any _
+
+/-- Calls a record describes are calls of a run whose calls are left open
+    where library calls are read. -/
+theorem Kept.orAny {cs : List CallRec} {w0 w : World} {l : Bool} (h : Kept (.lit cs) w0 w) :
+    Kept (if l then .any else .lit cs) w0 w := by
+  cases l
+  · exact h
+  · exact h.any
 
 /-- A first piece's calls and then the rest's, in the pattern a region gives
     the two. -/
@@ -2262,9 +2675,11 @@ def IvsAll (Γb : Env) (inits : List R) (ivs : List (Option (Nat × Int))) (cs :
 
 /-- The carries and the world a loop's carry state describes, the loop entered
     from `Γb`. Its values read no slot, so they are read in the empty
-    environment; its linear facts read slots from before the loop. -/
+    environment; its linear facts read slots from before the loop, as do the
+    slots it says hold what cells hold. -/
 def Carry.Desc (c : Carry) (Γb : Env) (cs : List V) (w : World) : Prop :=
-  DescAll #[] w c.vals cs ∧ c.facts.holds w ∧ SymsAll Γb w c.syms cs ∧ IvsAll Γb c.inits c.ivs cs
+  DescAll #[] w c.vals cs ∧ c.facts.holds w ∧ SymsAll Γb w c.syms cs ∧ IvsAll Γb c.inits c.ivs cs ∧
+    ∀ x ∈ c.ctxs, ∃ s, Γb[x.1]? = some (.sc .i64 s) ∧ w.mem.load x.2 8 = some s
 
 theorem mapM_getD {Γ : Env} : ∀ {xs : List R} {vs : List V}, xs.mapM (fun r => Γ[r]?) = some vs →
     ∀ i, i < vs.length → Γ[xs.getD i 0]? = some (vs.getD i default)
@@ -2456,12 +2871,13 @@ theorem Carry.join_length {a b : Carry} (h : b.vals.length = a.vals.length) :
   simp [Carry.join, List.length_zipWith, h]
 
 theorem Carry.join_left {a b : Carry} (h : a.vals.length = b.vals.length) : a.Le (a.join b) :=
-  fun _ _ _ ⟨hd, hf, hs, hi⟩ => ⟨descAll_zip (fun _ _ _ h => AV.join_left h) h hd,
-    factsMeet_left hf, hs.join_left, hi.join_left⟩
+  fun _ _ _ ⟨hd, hf, hs, hi, hx⟩ => ⟨descAll_zip (fun _ _ _ h => AV.join_left h) h hd,
+    factsMeet_left hf, hs.join_left, hi.join_left, fun x hm => hx x (List.mem_filter.mp hm).1⟩
 
 theorem Carry.join_right {a b : Carry} (h : a.vals.length = b.vals.length) : b.Le (a.join b) :=
-  fun _ _ _ ⟨hd, hf, hs, hi⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.join_right h) h hd,
-    factsMeet_right hf, hs.join_right, hi.join_right⟩
+  fun _ _ _ ⟨hd, hf, hs, hi, hx⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.join_right h) h hd,
+    factsMeet_right hf, hs.join_right, hi.join_right,
+    fun x hm => hx x (by simpa using (List.mem_filter.mp hm).2)⟩
 
 theorem foldl_join : ∀ (backs : List Carry) (c : Carry), (∀ b ∈ backs, b.vals.length = c.vals.length) →
     (backs.foldl Carry.join c).vals.length = c.vals.length ∧ c.Le (backs.foldl Carry.join c) ∧
@@ -2517,7 +2933,7 @@ theorem AV.widen_desc {Γ : Env} {w : World} {o n : AV} {v : V} (hd : n.Desc Γ 
   · exact hd
 
 theorem Carry.widen_le {a b : Carry} (h : a.vals.length = b.vals.length) : b.Le (Carry.widen a b) :=
-  fun _ _ _ ⟨hd, hf, hs, hi⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.widen_desc h) h hd, hf, hs, hi⟩
+  fun _ _ _ ⟨hd, hf, hs, hi, hx⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.widen_desc h) h hd, hf, hs, hi, hx⟩
 
 theorem Carry.widen_length {a b : Carry} (h : a.vals.length = b.vals.length) :
     (Carry.widen a b).vals.length = a.vals.length := by
@@ -2534,10 +2950,10 @@ theorem eq_of_zip_beq : ∀ {as bs : List AV}, as.length = bs.length →
 
 theorem Carry.beq_le {a b : Carry} (h : a.beq b = true) : a.Le b := by
   simp only [Carry.beq, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨⟨⟨⟨hl, hv⟩, -⟩, hf⟩, hs⟩, hin⟩, hiv⟩ := h
-  intro Γb cs w ⟨hd, hfa, hsa, hia⟩
+  obtain ⟨⟨⟨⟨⟨⟨⟨hl, hv⟩, -⟩, hf⟩, hs⟩, hin⟩, hiv⟩, hcx⟩ := h
+  intro Γb cs w ⟨hd, hfa, hsa, hia, hxa⟩
   refine ⟨?_, fun x hx => hfa x (by simpa using List.all_eq_true.mp hf x hx), by rw [← hs]; exact hsa,
-    by rw [← hin, ← hiv]; exact hia⟩
+    by rw [← hin, ← hiv]; exact hia, by rw [← hcx]; exact hxa⟩
   rw [← eq_of_zip_beq hl hv]
   exact hd
 
@@ -2897,10 +3313,15 @@ theorem ivKeep_sound {A : AS} {Γ Γb : Env} {w : World} {c : Carry} {args : Lis
 
 theorem backCarry_desc {A : AS} {Γ Γb : Env} {w : World} {Y : List R} {c : Carry} {n0 : Nat} {args : List R}
     {vs : List V} (hA : A.Holds vals Γ w) (hn0 : n0 = Γb.size) (hY : ∀ y ∈ Y, y < Γb.size)
-    (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y) (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
+    (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y) (hE : Ext Γb Γ)
+    (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
     (backCarry A Y c n0 args).Desc Γb vs w := by
   subst hn0
-  exact ⟨(descAll_of hA hvs).portable, hA.2.2, closeSym_all hA hY hΓ hvs, ivKeep_sound hA hΓ hvs⟩
+  refine ⟨(descAll_of hA hvs).portable, hA.2.2, closeSym_all hA hY hΓ hvs, ivKeep_sound hA hΓ hvs, fun x hx => ?_⟩
+  obtain ⟨hm, hlt⟩ := List.mem_filter.mp hx
+  obtain ⟨s, hs, hl⟩ := hA.1.2.2.2.2.2.2 x hm
+  have hlt' : x.1 < Γb.size := by simpa using hlt
+  exact ⟨s, by rw [← hE.2 x.1 hlt']; exact hs, hl⟩
 
 theorem exitSym_all' {A : AS} {Γ Γb : Env} {w : World} {Y : List R} {n0 : Nat} (hA : A.Holds vals Γ w)
     (hn0 : n0 = Γb.size) (hY : ∀ y ∈ Y, y < Γb.size) (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y)
@@ -3106,7 +3527,7 @@ theorem istore8_world {cfg : Cfg} {Γ Γ' : Env} {w w' : World} {v a : R}
 
 /-- An accepted foreign call keeps every region's size but the pinned one's. -/
 theorem ffi_rooms {cfg : Cfg} {A : AS} {f : Ffi} {Γ : Env} {w : World} {vs : List V} {r : Option V}
-    {w' : World} (hA : A.Holds vals Γ w) (hf : f ≠ .threadSpawn)
+    {w' : World} (hA : A.Holds vals Γ w) (hf : f.engine = true)
     (hz : A.facts.contains (.part .frozen false) = true)
     (hc : callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w')) : KeepsRooms w w' := by
   have hz' : (obsCall w (.ffi f) vs).mem.frozen = false := holds_of_mem hA.2.2 hz
@@ -3115,13 +3536,14 @@ theorem ffi_rooms {cfg : Cfg} {A : AS} {f : Ffi} {Γ : Env} {w : World} {vs : Li
   exact fun rg hrg => callBits_rooms f hc rg hrg
 
 /-- An accepted call keeps every region's size but the pinned one's. -/
-theorem callee_rooms {cfg : Cfg} {A B : AS} {c : Callee} {args : List R} {av : AV}
-    (h : A.callee c args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V} {res : Option V} {w2 : World}
+theorem callee_rooms {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args : List R} {av : AV}
+    (h : A.callee lb c args = .ok (B, av)) (hn : ∀ f, c = .ffi f → f.inLib = false)
+    {Γ : Env} {w : World} {vs : List V} {res : Option V} {w2 : World}
     (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs)
     (hc : callOf cfg.locals c vs (obsCall w c vs) = some (res, w2)) : KeepsRooms w w2 := by
   cases c with
   | ffi f =>
-      obtain ⟨hB, -⟩ := callee_ffi h
+      obtain ⟨hB, -⟩ := callee_ffi h (hn f rfl)
       obtain ⟨hf, hz, -⟩ := ffiCall_ok hB
       exact ffi_rooms hA hf hz hc
   | ext e =>
@@ -3130,13 +3552,14 @@ theorem callee_rooms {cfg : Cfg} {A B : AS} {c : Callee} {args : List R} {av : A
   | _ => simp [AS.callee] at h
 
 /-- An accepted call leaves the observations as they were once it was made. -/
-theorem callee_obs {cfg : Cfg} {A B : AS} {c : Callee} {args : List R} {av : AV}
-    (h : A.callee c args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V} {res : Option V} {w2 : World}
+theorem callee_obs {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args : List R} {av : AV}
+    (h : A.callee lb c args = .ok (B, av)) (hn : ∀ f, c = .ffi f → f.inLib = false)
+    {Γ : Env} {w : World} {vs : List V} {res : Option V} {w2 : World}
     (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs)
     (hc : callOf cfg.locals c vs (obsCall w c vs) = some (res, w2)) : w2.obs = .call c vs :: w.obs := by
   cases c with
   | ffi f =>
-      obtain ⟨hB, -⟩ := callee_ffi h
+      obtain ⟨hB, -⟩ := callee_ffi h (hn f rfl)
       obtain ⟨hf, hz, -⟩ := ffiCall_ok hB
       have hz' : (obsCall w (.ffi f) vs).mem.frozen = false := holds_of_mem hA.2.2 hz
       rw [Contracts.callOf_ffi hf _ _ hz'] at hc
@@ -3168,26 +3591,54 @@ theorem argsOk_of {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) :
           obtain ⟨t, rfl⟩ := AV.bits_desc (hA.desc hv) hb
           rfl
 
+/-- **What an accepted call keeps**: every region's size but the pinned
+    one's, and of calls the one its record describes, or, where library calls
+    are read, the calls observed before it. -/
+theorem callee_kept {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args : List R} {av : AV}
+    (h : A.callee lb c args = .ok (B, av)) {Γ : Env} {w : World} {vs : List V} {res : Option V} {w2 : World}
+    (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs)
+    (hc : callOf cfg.locals c vs (obsCall w c vs) = some (res, w2)) :
+    Kept (if lb then .any else .lit [⟨c, args.map fun r => (A.get r).bits⟩]) w w2 := by
+  by_cases hn : ∀ f, c = .ffi f → f.inLib = false
+  · exact (Kept.call (callee_rooms h hn hA hvs hc) (callee_obs h hn hA hvs hc) (argsOk_of hA hvs)).orAny
+  · obtain ⟨f, rfl, hin⟩ : ∃ f, c = .ffi f ∧ f.inLib = true := by
+      by_cases hx : ∃ f, c = .ffi f ∧ f.inLib = true
+      · exact hx
+      · exact absurd (fun f e => by
+          cases hf : f.inLib
+          · rfl
+          · exact absurd ⟨f, e, hf⟩ hx) hn
+    simp only [AS.callee, hin, if_true] at h
+    split at h
+    · rename_i hlb
+      subst hlb
+      rcases libCall_core (cfg := cfg) rfl hin h hA hvs with ⟨r0, w0, hc0, -, -, hrooms, cs, hcs⟩ | ⟨hc0, -⟩
+      · rw [hc0] at hc; cases hc
+        exact ⟨hrooms, cs, hcs, .any cs⟩
+      · rw [hc0] at hc; cases hc
+    · cases h
+
 /-- **What a statement the checker accepts keeps**: the environment extended,
-    every region's size, and of calls only the one its record describes. -/
-theorem absStmt_step {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo A s = .ok A') {Γ : Env} {w : World}
+    every region's size, and of calls only the one its record describes, or,
+    where library calls are read, the calls observed before it. -/
+theorem absStmt_step {cfg : Cfg} [Linked lb cfg] {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo lb A s = .ok A') {Γ : Env} {w : World}
     (hA : A.Holds vals Γ w) {Γ' : Env} {w' : World} (hr : runStmt cfg Γ w s = .ok Γ' w') :
-    Ext Γ Γ' ∧ Kept (.lit (recOf A s)) w w' := by
+    Ext Γ Γ' ∧ Kept (if lb then .any else .lit (recOf A s)) w w' := by
   cases s with
   | op o =>
       simp only [runStmt] at hr
       split at hr
-      · cases hr; exact ⟨Ext.push _ _, Kept.refl _⟩
+      · cases hr; exact ⟨Ext.push _ _, (Kept.refl _).orAny⟩
       · cases hr
   | store ty v a =>
       obtain ⟨rfl, hs, ho⟩ := store_world hr
-      exact ⟨Ext.refl _, Kept.same hs ho⟩
+      exact ⟨Ext.refl _, (Kept.same hs ho).orAny⟩
   | storeUnaligned v a =>
       obtain ⟨rfl, hs, ho⟩ := storeU_world hr
-      exact ⟨Ext.refl _, Kept.same hs ho⟩
+      exact ⟨Ext.refl _, (Kept.same hs ho).orAny⟩
   | istore8 v a =>
       obtain ⟨rfl, hs, ho⟩ := istore8_world hr
-      exact ⟨Ext.refl _, Kept.same hs ho⟩
+      exact ⟨Ext.refl _, (Kept.same hs ho).orAny⟩
   | call c args =>
       simp only [absStmt] at h
       split at h
@@ -3201,8 +3652,7 @@ theorem absStmt_step {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt
           · rename_i res w2 hc
             split at hr
             · cases hr
-              exact ⟨Ext.push _ _, Kept.call (callee_rooms hB hA hvs hc) (callee_obs hB hA hvs hc)
-                (argsOk_of hA hvs)⟩
+              exact ⟨Ext.push _ _, callee_kept hB hA hvs hc⟩
             · cases hr
       · cases h
   | callVoid c args =>
@@ -3217,8 +3667,7 @@ theorem absStmt_step {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt
           · exact absurd hr failOf_ne_ok
           · rename_i res w2 hc
             cases hr
-            exact ⟨Ext.refl _, Kept.call (callee_rooms hB hA hvs hc) (callee_obs hB hA hvs hc)
-              (argsOk_of hA hvs)⟩
+            exact ⟨Ext.refl _, callee_kept hB hA hvs hc⟩
       · cases h
 
 theorem stmts_conseq {cfg : Cfg} {P P' Q Q' : Env → World → Prop} {ss : List Stmt} {fo : Bool}
@@ -3238,9 +3687,10 @@ theorem stmts_conseq {cfg : Cfg} {P P' Q Q' : Env → World → Prop} {ss : List
 def Within (vals : List UInt64) (A : AS) (t : Tr) (Γ0 : Env) (w0 : World) (Γ : Env) (w : World) : Prop :=
   A.Holds vals Γ w ∧ Ext Γ0 Γ ∧ Kept t w0 w
 
-theorem absStmt_frame {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo A s = .ok A') {t : Tr}
+theorem absStmt_frame {cfg : Cfg} [Linked lb cfg] {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo lb A s = .ok A') {t : Tr}
     {Γ0 : Env} {w0 : World} :
-    Stmt1 cfg (Within vals A t Γ0 w0) s (Within vals A' (.seq t (.lit (recOf A s))) Γ0 w0) fo := by
+    Stmt1 cfg (Within vals A t Γ0 w0) s
+      (Within vals A' (.seq t (if lb then .any else .lit (recOf A s))) Γ0 w0) fo := by
   intro Γ w ⟨hA, he, hk⟩
   have h1 := absStmt_sound (cfg := cfg) h Γ w hA
   cases hr : runStmt cfg Γ w s with
@@ -3254,13 +3704,14 @@ theorem absStmt_frame {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStm
 
 /-- **A straight run the checker accepts makes the calls it records**, in
     order, after those made before it. -/
-theorem absStmtsH_frame {cfg : Cfg} {Γ0 : Env} {w0 : World} {fo : Bool} :
-    ∀ {hist : List (Nat × Stmt)} {A A' : AS} {ss : List Stmt} {t : Tr}, absStmtsH fo hist A ss = .ok A' →
-      Stmts cfg (Within vals A t Γ0 w0) ss (Within vals A' (.seq t (.lit (callRecs fo A ss))) Γ0 w0) fo
+theorem absStmtsH_frame {cfg : Cfg} [Linked lb cfg] {Γ0 : Env} {w0 : World} {fo : Bool} :
+    ∀ {hist : List (Nat × Stmt)} {A A' : AS} {ss : List Stmt} {t : Tr}, absStmtsH fo lb hist A ss = .ok A' →
+      Stmts cfg (Within vals A t Γ0 w0) ss
+        (Within vals A' (.seq t (if lb then .any else .lit (callRecs fo lb A ss))) Γ0 w0) fo
   | _, A, A', [], t, h => by
       simp only [absStmtsH, Except.ok.injEq] at h
       subst h
-      exact fun _ _ ⟨h1, h2, h3⟩ => ⟨h1, h2, h3.seq (Kept.refl _)⟩
+      exact fun _ _ ⟨h1, h2, h3⟩ => ⟨h1, h2, h3.seq (Kept.refl _).orAny⟩
   | _, A, A', s :: ss, t, h => by
       simp only [absStmtsH] at h
       split at h
@@ -3268,9 +3719,14 @@ theorem absStmtsH_frame {cfg : Cfg} {Γ0 : Env} {w0 : World} {fo : Bool} :
         refine stmts_conseq (stmts_cons (absStmt_frame h1) (absStmtsH_frame h)) (fun _ _ hp => hp) ?_
         rintro Γ w ⟨hx, he, hk⟩
         refine ⟨hx, he, hk.mono fun x hs => ?_⟩
-        have e : callRecs fo A (s :: ss) = recOf A s ++ callRecs fo A1 ss := by simp only [callRecs, h1]
+        have e : callRecs fo lb A (s :: ss) = recOf A s ++ callRecs fo lb A1 ss := by simp only [callRecs, h1]
         rw [e]
-        exact hs.seq_lits
+        cases lb
+        · exact hs.seq_lits
+        · cases hs with
+          | seq h1 h2 =>
+              cases h1 with
+              | seq h0 h1 => rw [List.append_assoc]; exact .seq h0 (.any _)
       · cases h
 
 -- ---------------------------------------------------------------------------
@@ -3313,7 +3769,7 @@ theorem triple_of_at {cfg : Cfg} {P : Env → World → Prop} {c : Code} {Q : Po
     (h : ∀ Γ w, P Γ w → Triple cfg (At Γ w) c Q) : Triple cfg P c Q :=
   fun fuel Γ w hP => h Γ w hP fuel Γ w ⟨rfl, rfl⟩
 
-theorem answerCases_frame {cfg : Cfg} {A A' B1 B2 : AS} {s : Stmt} {fo : Bool} (h : absStmt fo A s = .ok A')
+theorem answerCases_frame {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stmt} {fo : Bool} (h : absStmt fo lb A s = .ok A')
     (hc : answerCases A A' s = some (B1, B2)) {t : Tr} {Γ0 : Env} {w0 : World} :
     Stmt1 cfg (Within vals A t Γ0 w0) s
       (fun Γ w => Within vals B1 .any Γ0 w0 Γ w ∨ Within vals B2 .any Γ0 w0 Γ w) fo := by
@@ -3349,8 +3805,8 @@ theorem stmts_or {cfg : Cfg} {P1 P2 Q1 Q2 : Env → World → Prop} {ss : List S
     | fault _ => rw [hr] at this; exact this
 
 /-- A straight run `splitCases` splits ends in one of its two states. -/
-theorem splitCases_frame {cfg : Cfg} {Γ0 : Env} {w0 : World} {fo : Bool} :
-    ∀ {A C1 C2 : AS} {ss : List Stmt} {t : Tr}, splitCases fo A ss = some (C1, C2) →
+theorem splitCases_frame {cfg : Cfg} [Linked lb cfg] {Γ0 : Env} {w0 : World} {fo : Bool} :
+    ∀ {A C1 C2 : AS} {ss : List Stmt} {t : Tr}, splitCases fo lb A ss = some (C1, C2) →
       Stmts cfg (Within vals A t Γ0 w0) ss
         (fun Γ w => Within vals C1 .any Γ0 w0 Γ w ∨ Within vals C2 .any Γ0 w0 Γ w) fo
   | _, _, _, [], _, h => by simp [splitCases] at h
@@ -3574,7 +4030,7 @@ mutual
 
 /-- **A piece the checker accepts** ends, from any state the abstract one
     describes, as its result says. -/
-theorem execP_sound {cfg : Cfg} {cert : Cert} :
+theorem execP_sound {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] :
     ∀ {path : List Nat} {A : AS} {p : Piece} {o : AOut}, execP cert path A p = .ok o →
       ∀ {Γ0 : Env} {w0 : World}, A.Holds vals Γ0 w0 → PieceT cfg (At Γ0 w0) p (o.post vals cert.fo Γ0 w0)
   | _, A, .straight ss, o, h, Γ0, w0, hA => by
@@ -3671,14 +4127,15 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
           · intro Γ w cs ⟨e1, e2⟩ hcs
             subst Γ w
             exact ⟨hc0 Γ0 cs w0 ⟨((descAll_of hA hcs).portable).enrich hA.2.2, hA.2.2,
-              closeSym_all hA hY (fun _ _ => rfl) hcs, ivsAll_entry hcs _⟩, Kept.starNil _, cntInv_entry hA hcs⟩
-          · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc, hsc, hiv⟩, hkw, hcnt⟩
+              closeSym_all hA hY (fun _ _ => rfl) hcs, ivsAll_entry hcs _,
+              fun x hx => hA.1.2.2.2.2.2.2 x (List.mem_filter.mp hx).1⟩, Kept.starNil _, cntInv_entry hA hcs⟩
+          · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc, hsc, hiv, hcx⟩, hkw, hcnt⟩
             subst Γ w0'
             have hcl : cs.length = l.pTys.length := hdc.length.symm.trans hck
             have hΓb : Ext Γ0 (bindAt Γ0 A.len cs) := (Ext.refl Γ0).bindAt (by omega) cs
-            have hA1 : AS.Holds ((A.forgetHands.withFacts c.facts).bindAt A.len c.vals (c.headSyms A.len)) vals
+            have hA1 : AS.Holds (((A.forgetHands.withFacts c.facts).withCtxs c.ctxs).bindAt A.len c.vals (c.headSyms A.len)) vals
                 (bindAt Γ0 A.len cs) w :=
-              (hA.forgetHands.worldNH (AS.forgetHands_noHands A) hfc fun r hr => hkw.rooms r hr).bindAtS A.len hdc.of_empty fun i hi => by
+              ((hA.forgetHands.worldNH (AS.forgetHands_noHands A) hfc fun r hr => hkw.rooms r hr).withCtxs hcx).bindAtS A.len hdc.of_empty fun i hi => by
                 have := headSyms_fits hsc hiv hdc.length.symm i (by rw [← hdc.length]; exact hi)
                 rw [hn] at this
                 rwa [← hdc.length] at this
@@ -3746,7 +4203,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                   (fun _ _ h => h) ?_ ?_ ?_
                 · intro Γ2 w2 ⟨⟨A2, hA2E, hA2⟩, he2, hk2⟩ next hnext
                   refine ⟨hback _ (hfall A2 hA2E) Γ0 next w2
-                      (backCarry_desc hA2 hn.symm hY (fun y hy => (hΓb2.trans he2).slotVal hy) hnext),
+                      (backCarry_desc hA2 hn.symm hY (fun y hy => (hΓb2.trans he2).slotVal hy) (hΓb2.trans he2) hnext),
                     hkw.starSnoc ((hk1.seq hk2).mono hbody), ?_⟩
                   intro jc n P B eq c0 hc0' hjl hle
                   obtain ⟨x, hxc, hlo, hhi, hrep⟩ := hcnt jc n P B eq c0 hc0' hjl hle
@@ -3807,7 +4264,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                   cases d with
                   | zero =>
                       exact ⟨hback _ (hbc _ (mem_conts0 hm)) Γ0 vs w'
-                          (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb2.trans hec).slotVal hy) hvs),
+                          (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb2.trans hec).slotVal hy) (hΓb2.trans hec) hvs),
                         hkw.starSnoc ((hk1.seq hk').mono hbody), fun jc n P B e => by
                           rw [(hnb _ e).2] at hm; cases hm⟩
                   | succ d =>
@@ -3833,7 +4290,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
               cases d with
               | zero =>
                   exact ⟨hback _ (hcB _ (mem_conts0 hm)) Γ0 vs w'
-                    (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb.trans hec).slotVal hy) hvs),
+                    (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb.trans hec).slotVal hy) (hΓb.trans hec) hvs),
                     hkw.starSnoc (hk'.mono htr), fun jc n P B e => by rw [(hnp _ e).2] at hm; cases hm⟩
               | succ d =>
                   exact ⟨⟨Ac, args, Γc, hdC _ (mem_depthDown hm), hAc, hvs, hΓb.trans hec⟩,
@@ -3905,7 +4362,8 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                   have hent : ∀ cs, l.init.mapM (fun r => Γ0[r]?) = some cs → Ae.Holds vals Γ0 w0 →
                       c.Desc Γ0 cs w0 := fun cs hcs hAe =>
                     hc0 Γ0 cs w0 ⟨((descAll_of hAe hcs).portable).enrich hAe.2.2, hAe.2.2,
-                      closeSym_all hAe hY (fun _ _ => rfl) hcs, ivsAll_entry hcs _⟩
+                      closeSym_all hAe hY (fun _ _ => rfl) hcs, ivsAll_entry hcs _,
+                      fun x hx => hAe.1.2.2.2.2.2.2 x (List.mem_filter.mp hx).1⟩
                   have hexit : ∀ {Γ' : Env} {w' : World} {C : AS}, C ∈ exits → C.Holds vals Γ' w' →
                       Ext Γ0 Γ' → Kept (.star out.tr) w0 w' →
                       (∃ D, j = some D ∧ D.Holds vals Γ' w') ∧ Ext Γ0 Γ' ∧ Kept (.star out.tr) w0 w' :=
@@ -3934,12 +4392,12 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                           rw [hn]
                           obtain ⟨D, hD, hDh⟩ := joinOpt_holds hj (.inr ⟨C, hC, hCh⟩)
                           exact ⟨⟨D, hD, hDh⟩, hΓs outs, Kept.starNil _⟩
-                  · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc, hsc, hiv⟩, hkw, hAe⟩
+                  · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc, hsc, hiv, hcx⟩, hkw, hAe⟩
                     subst Γ w0'
                     have hΓb : Ext Γ0 (bindAt Γ0 A.len cs) := (Ext.refl Γ0).bindAt (by omega) cs
-                    have hA1 : AS.Holds ((Ae.forgetHands.withFacts c.facts).bindAt A.len c.vals (c.headSyms A.len)) vals
+                    have hA1 : AS.Holds (((Ae.forgetHands.withFacts c.facts).withCtxs c.ctxs).bindAt A.len c.vals (c.headSyms A.len)) vals
                         (bindAt Γ0 A.len cs) w :=
-                      (hAe.forgetHands.worldNH (AS.forgetHands_noHands Ae) hfc fun r hr => hkw.rooms r hr).bindAtS A.len hdc.of_empty fun i hi => by
+                      ((hAe.forgetHands.worldNH (AS.forgetHands_noHands Ae) hfc fun r hr => hkw.rooms r hr).withCtxs hcx).bindAtS A.len hdc.of_empty fun i hi => by
                         have := headSyms_fits hsc hiv hdc.length.symm i (by rw [← hdc.length]; exact hi)
                         rw [hn] at this
                         rwa [← hdc.length] at this
@@ -3952,7 +4410,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                       · have hb : (f != 0) = l.contOnTrue := by simpa using hx
                         obtain ⟨Ag, hr, hAg⟩ := refine_sound hA2 hf hb
                         exact ⟨hback _ (hgo Ag hr) Γ0 next w2
-                            (backCarry_desc hAg hn.symm hY (fun y hy => hE2.slotVal hy) hnext),
+                            (backCarry_desc hAg hn.symm hY (fun y hy => hE2.slotVal hy) hE2 hnext),
                           hkw.starSnoc (hk2.mono htr), hAe⟩
                       · have hb : (f != 0) = !l.contOnTrue := by
                           revert hx; cases (f != 0) <;> cases l.contOnTrue <;> simp
@@ -3981,7 +4439,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                       cases d with
                       | zero =>
                           exact ⟨hback _ (hcB _ (mem_conts0 hm)) Γ0 vs w'
-                              (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb.trans hec).slotVal hy) hvs),
+                              (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb.trans hec).slotVal hy) (hΓb.trans hec) hvs),
                             hkw.starSnoc (hk'.mono htr), hAe⟩
                       | succ d =>
                           exact ⟨⟨Ac, args, Γc, hdC _ (mem_depthDown hm), hAc, hvs, hΓb.trans hec⟩,
@@ -3991,7 +4449,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
 
 /-- **A region the checker accepts** ends, from any state the abstract one
     describes, as its result says. -/
-theorem execC_sound {cfg : Cfg} {cert : Cert} :
+theorem execC_sound {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] :
     ∀ {base : List Nat} {i : Nat} {A : AS} {c : Code} {o : AOut}, execC cert base i A c = .ok o →
       ∀ {Γ0 : Env} {w0 : World}, A.Holds vals Γ0 w0 → Triple cfg (At Γ0 w0) c (o.post vals cert.fo Γ0 w0)
   | _, _, A, [], o, h, Γ0, w0, hA => by
@@ -4007,7 +4465,7 @@ theorem execC_sound {cfg : Cfg} {cert : Cert} :
         obtain rfl := pin_eq hpin
         split at h
         · rename_i C1 C2 hpc
-          obtain ⟨ss, rfl, hsc⟩ : ∃ ss, p = .straight ss ∧ splitCases cert.fo A ss = some (C1, C2) := by
+          obtain ⟨ss, rfl, hsc⟩ : ∃ ss, p = .straight ss ∧ splitCases cert.fo cert.lib A ss = some (C1, C2) := by
             cases p <;> simp only [pieceCases, reduceCtorEq] at hpc
             exact ⟨_, rfl, hpc⟩
           split at h
@@ -4074,7 +4532,7 @@ end
 /-- **The checker is sound.** A body the checker accepts, run from arguments
     and a world its entry state describes, never misuses a call and, checked
     as one that may not fault, never reads or writes memory that is not there. -/
-theorem execC_run {cfg : Cfg} {cert : Cert} {base : List Nat} {i : Nat} {A : AS} {c : Code} {o : AOut}
+theorem execC_run {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {base : List Nat} {i : Nat} {A : AS} {c : Code} {o : AOut}
     (h : execC cert base i A c = .ok o) (hfo : cert.fo = false)
     {args : List V} {w : World} (hA : A.Holds vals args.toArray w) (m : String) :
     run cfg args w c ≠ .misuse m ∧ run cfg args w c ≠ .fault m :=
@@ -4082,7 +4540,7 @@ theorem execC_run {cfg : Cfg} {cert : Cert} {base : List Nat} {i : Nat} {A : AS}
 
 /-- A body the checker accepts, as one that may fault or not, never misuses a
     call. -/
-theorem execC_safe {cfg : Cfg} {cert : Cert} {base : List Nat} {i : Nat} {A : AS} {c : Code} {o : AOut}
+theorem execC_safe {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {base : List Nat} {i : Nat} {A : AS} {c : Code} {o : AOut}
     (h : execC cert base i A c = .ok o)
     {args : List V} {w : World} (hA : A.Holds vals args.toArray w) (m : String) :
     run cfg args w c ≠ .misuse m :=
@@ -4092,7 +4550,7 @@ theorem execC_safe {cfg : Cfg} {cert : Cert} {base : List Nat} {i : Nat} {A : AS
     body the checker accepts ends, the calls it observed, in order, are the
     ones made before it and then a sequence the pattern the checker gives the
     body admits. -/
-theorem execC_trace {cfg : Cfg} {cert : Cert} {base : List Nat} {i : Nat} {A : AS} {c : Code} {o : AOut}
+theorem execC_trace {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {base : List Nat} {i : Nat} {A : AS} {c : Code} {o : AOut}
     (h : execC cert base i A c = .ok o) {args : List V} {w : World} (hA : A.Holds vals args.toArray w)
     {obs : List Obs} {w' : World} (hr : run cfg args w c = .ok obs w') : o.tr.Covers w obs := by
   have hs := execC_sound (cfg := cfg) h hA cfg.steps args.toArray w ⟨rfl, rfl⟩

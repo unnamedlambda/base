@@ -294,12 +294,10 @@ theorem touches_congr {fr : Frame} {args args' : List UInt64}
   cases fr <;> simp_all [Frame.touches, frPos, mayWrite_congr h]
 
 /-- The argument positions a call's keeping of fact `x` reads: its frame's for
-    the bytes it may write, the slot for a C string `init` writes, the count for
-    the values a table holds. -/
+    the bytes it may write, the slot for a C string `init` writes. -/
 def fpos (f : Ffi) : Fact → List Nat
   | .cell .. | .cstrIn .. => if f = .fileRead then 4 :: frPos Contracts.readFrame else frPos (frame f)
   | .cstr _ => [0]
-  | .htVals _ => [4]
   | _ => []
 
 theorem keeps_congr {f : Ffi} {bits bits' : List UInt64} (x : Fact)
@@ -332,9 +330,6 @@ theorem keeps_congr {f : Ffi} {bits bits' : List UInt64} (x : Fact)
   | cstr a =>
       have h0 := h 0 (by simp [fpos])
       simp only [keeps, hgd, h0]
-  | htVals n =>
-      have h4 := h 4 (by simp [fpos])
-      simp only [keeps, h4]
   | _ => rfl
 
 /-- Whether a call keeps a fact, decided by the arguments it is handed: where
@@ -696,16 +691,6 @@ def preCpuHas (S : TState) (as : List AV) : Bool :=
   | [n] => cstrB S n
   | _ => false
 
-def preHtInit (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [s] => memN S s 8
-  | _ => false
-
-def preHtCleanup (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [s] => memN S s 8
-  | _ => false
-
 def preLmdbInit (S : TState) (as : List AV) : Bool :=
   match as with
   | [s] => S.contains (.part .lmdb false) && memN S s 8
@@ -719,11 +704,6 @@ def preLmdbBeginWriteTxn (S : TState) (as : List AV) : Bool :=
 def preLmdbCommitWriteTxn (S : TState) (as : List AV) : Bool :=
   match as with
   | [c, _] => ctxB S .lmdb lmdbCtx c
-  | _ => false
-
-def preHtCreate (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [_] => true
   | _ => false
 
 def preWindowCleanup (S : TState) (as : List AV) : Bool :=
@@ -777,37 +757,24 @@ def preLmdbPut (S : TState) (as : List AV) : Bool :=
          | _, _ => false)
   | _ => false
 
-def preHtInsert (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [_, kp, kl, vp, vl] =>
-      match kl.bits, vl.bits with
-      | some a, some b => memN S kp a.toNat && memN S vp b.toNat
-      | _, _ => false
-  | _ => false
-
-/-- The bound the typestate gives on the hash table's values. -/
-def htValsOf : TState → Option Nat
+/-- The bounds the typestate gives on the table at slot `a`: on its values,
+    and on how many times it was made. -/
+def htAtOf (a : UInt64) : TState → Option (Nat × Nat)
   | [] => none
-  | .htVals n :: _ => some n
-  | _ :: S => htValsOf S
+  | x :: S => match x with
+    | .htAt c n k => if c = a then some (n, k) else htAtOf a S
+    | _ => htAtOf a S
 
-theorem htValsOf_mem : ∀ {S : TState} {n : Nat}, htValsOf S = some n → Fact.htVals n ∈ S
-  | [], _, h => by cases h
-  | .htVals m :: _, _, h => by cases h; exact List.mem_cons_self
-  | .part .. :: S, _, h | .room .. :: S, _, h | .cell .. :: S, _, h | .held .. :: S, _, h
-  | .opened .. :: S, _, h | .cstr .. :: S, _, h | .devSeq :: S, _, h | .oracles :: S, _, h
-  | .cstrIn .. :: S, _, h | .roomArg .. :: S, _, h | .devBuf .. :: S, _, h
-  | .pinnedUsed .. :: S, _, h | .streams .. :: S, _, h | .events .. :: S, _, h | .evLive .. :: S, _, h
-  | .readyAll .. :: S, _, h | .evAll .. :: S, _, h => List.mem_cons_of_mem _ (htValsOf_mem h)
-
-/-- A lookup into room for any value the table holds. -/
-def preHtLookup (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [_, kp, kl, rp] =>
-      match kl.bits, htValsOf S with
-      | some a, some n => memN S kp a.toNat && memN S rp n
-      | _, _ => false
-  | _ => false
+theorem htAtOf_mem {a : UInt64} : ∀ {S : TState} {n k : Nat}, htAtOf a S = some (n, k) → Fact.htAt a n k ∈ S
+  | [], _, _, h => by cases h
+  | x :: S, n, k, h => by
+      unfold htAtOf at h
+      split at h
+      · rename_i c m j
+        split at h
+        · rename_i e; subst e; cases h; exact List.mem_cons_self
+        · exact List.mem_cons_of_mem _ (htAtOf_mem h)
+      · exact List.mem_cons_of_mem _ (htAtOf_mem h)
 
 /-- A scan from the first key only (a key of no bytes), into room for `cap`
     bytes. -/
@@ -1070,7 +1037,7 @@ def preCtxN (S : TState) (n : Nat) (cap : Bool) (as : List AV) : Bool :=
     decides; every other entry point is refused. -/
 def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Bool :=
   match f with
-  | .cosf | .sinf | .nativeFree | .htCount | .threadPriority => preArity 1 as
+  | .cosf | .sinf | .nativeFree | .threadPriority => preArity 1 as
   | .powf | .memAdviseHuge | .memLock | .memUnlock => preArity 2 as
   | .cudaEventCreate | .cudaMemInfoFree | .cudaMemInfoTotal | .cudaStreamCreate => preCtxN S 1 false as
   | .cudaEventDestroy | .cudaGraphDestroy | .cudaPinnedFree | .cudaPinnedPtr => preCtxN S 2 false as
@@ -1107,20 +1074,15 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .nativeArch => preNativeArch S as
   | .nativeLoad => preNativeLoad S as
   | .cpuHas => preCpuHas S as
-  | .htInit => preHtInit S as
-  | .htCleanup => preHtCleanup S as
   | .lmdbInit => preLmdbInit S as
   | .lmdbBeginWriteTxn => preLmdbBeginWriteTxn S as
   | .lmdbCommitWriteTxn => preLmdbCommitWriteTxn S as
-  | .htCreate => preHtCreate S as
   | .windowCleanup => preWindowCleanup S as
   | .lmdbCleanup => preLmdbCleanup S as
   | .lmdbOpen => preLmdbOpen S as
   | .cublasSgemv => preCublasSgemv S as
   | .cublasSgemm => preCublasSgemm S as
   | .lmdbPut => preLmdbPut S as
-  | .htInsert => preHtInsert S as
-  | .htLookup => preHtLookup S as
   | .lmdbCursorScan => preLmdbCursorScan S as
   | .fileCreateDirAll => preFileCreateDirAll S as
   | .fileWriteFromPtr => preFileWriteFromPtr S rb as

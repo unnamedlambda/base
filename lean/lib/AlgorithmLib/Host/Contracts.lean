@@ -204,73 +204,6 @@ theorem stdoutWrite_safe {w : World} {base srcOff size : UInt64}
   · rfl
   · next h => exact bind_some (hr h) fun _ _ => rfl
 
-theorem htInit_safe {w : World} {slot : UInt64} (h : Slot8 w.mem slot) :
-    (ffiHtInit [slot] w).isSome = true := by
-  unfold ffiHtInit; dsimp only; exact bind_some (h _) fun _ _ => rfl
-
-theorem htCleanup_safe {w : World} {slot : UInt64} (h : Slot8 w.mem slot) :
-    (ffiHtCleanup [slot] w).isSome = true := by
-  unfold ffiHtCleanup; dsimp only; exact bind_some (h _) fun _ _ => rfl
-
-theorem htCreate_safe (ctx : UInt64) (w : World) : (ffiHtCreate [ctx] w).isSome = true := by
-  unfold ffiHtCreate; dsimp only; split <;> rfl
-
-theorem htCount_safe (ctx : UInt64) (w : World) : (ffiHtCount [ctx] w).isSome = true := by
-  unfold ffiHtCount; dsimp only; split <;> rfl
-
-theorem htLookup_safe {w : World} {ctx keyPtr keyLen resultPtr : UInt64}
-    (hk : Readable w.mem keyPtr keyLen.toNat)
-    (hw : ∀ key val, readBytes w.mem keyPtr keyLen.toNat = some key → w.ht.get key = some val →
-      Writable w.mem resultPtr val.size) :
-    (ffiHtLookup [ctx, keyPtr, keyLen, resultPtr] w).isSome = true := by
-  unfold ffiHtLookup; dsimp only
-  refine bind_some hk fun key ek => ?_
-  dsimp only
-  split
-  · rfl
-  · cases ev : w.ht.get key with
-    | none => rfl
-    | some val => exact bind_some (hw key val ek ev _ rfl) fun _ _ => rfl
-
-theorem htInsert_safe {w : World} {ctx keyPtr keyLen valPtr valLen : UInt64}
-    (hk : Readable w.mem keyPtr keyLen.toNat) (hv : Readable w.mem valPtr valLen.toNat) :
-    (ffiHtInsert [ctx, keyPtr, keyLen, valPtr, valLen] w).isSome = true := by
-  unfold ffiHtInsert; dsimp only
-  exact bind_some hk fun _ _ => bind_some hv fun _ _ => by split <;> rfl
-
-/-- A counter the table holds is at least eight bytes, as the runtime indexes it. -/
-def HtCounters (h : Ht) : Prop := ∀ k v, h.get k = some v → 8 ≤ v.size
-
-theorem htIncrement_safe {w : World} {ctx keyPtr keyLen addend : UInt64}
-    (hk : Readable w.mem keyPtr keyLen.toNat) (hc : HtCounters w.ht) :
-    (ffiHtIncrement [ctx, keyPtr, keyLen, addend] w).isSome = true := by
-  unfold ffiHtIncrement; dsimp only
-  refine bind_some hk fun key _ => ?_
-  dsimp only
-  split
-  · rfl
-  · cases ev : w.ht.get key with
-    | none => rfl
-    | some v =>
-        have := hc key v ev
-        dsimp only
-        rw [if_neg (by omega)]; rfl
-
-theorem htGetEntry_safe {w : World} {ctx index keyOut valOut : UInt64}
-    (hw : ∀ k v, w.ht.entries[index.toNat]? = some (k, v) →
-      ∃ m, copyIn w.mem keyOut k = some m ∧ (copyIn m valOut v).isSome = true) :
-    (ffiHtGetEntry [ctx, index, keyOut, valOut] w).isSome = true := by
-  unfold ffiHtGetEntry; dsimp only
-  split
-  · rfl
-  · split
-    · rfl
-    · next k v he =>
-      obtain ⟨m, hm, hm2⟩ := hw k v he
-      exact bind_some (by rw [hm]; rfl) fun m' e => by
-        rw [hm] at e; cases e
-        exact bind_some hm2 fun _ _ => rfl
-
 -- LMDB
 
 /-- The LMDB context argument is null or the live context. -/
@@ -1228,30 +1161,8 @@ def Pre : IR.Ffi → List UInt64 → World → Prop
   | .powf => fun bits w => match bits with
     | [_b, _e] => True
     | _ => False
-  | .htInit => fun bits w => match bits with
-    | [slot] => (Slot8 w.mem slot)
-    | _ => False
-  | .htCleanup => fun bits w => match bits with
-    | [slot] => (Slot8 w.mem slot)
-    | _ => False
-  | .htCreate => fun bits w => match bits with
-    | [_ctx] => True
-    | _ => False
-  | .htCount => fun bits w => match bits with
-    | [_ctx] => True
-    | _ => False
-  | .htLookup => fun bits w => match bits with
-    | [_ctx, keyPtr, keyLen, resultPtr] => (Readable w.mem keyPtr keyLen.toNat) ∧ (∀ key val, readBytes w.mem keyPtr keyLen.toNat = some key → w.ht.get key = some val → Writable w.mem resultPtr val.size)
-    | _ => False
-  | .htInsert => fun bits w => match bits with
-    | [_ctx, keyPtr, keyLen, valPtr, valLen] => (Readable w.mem keyPtr keyLen.toNat) ∧ (Readable w.mem valPtr valLen.toNat)
-    | _ => False
-  | .htIncrement => fun bits w => match bits with
-    | [_ctx, keyPtr, keyLen, _addend] => (Readable w.mem keyPtr keyLen.toNat) ∧ (HtCounters w.ht)
-    | _ => False
-  | .htGetEntry => fun bits w => match bits with
-    | [_ctx, index, keyOut, valOut] => (∀ k v, w.ht.entries[index.toNat]? = some (k, v) → ∃ m, copyIn w.mem keyOut k = some m ∧ (copyIn m valOut v).isSome = true)
-    | _ => False
+  | .htInit | .htCleanup | .htCreate | .htCount | .htLookup | .htInsert | .htIncrement | .htGetEntry =>
+      fun _ _ => False
   | .cudaInit => fun bits w => match bits with
     | [slot] => ((w.mem.store slot 8 cudaCtx).isSome = true)
     | _ => False
@@ -1518,38 +1429,14 @@ theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w
     simp only [Pre] at h; split at h
     · apply powf_safe _ _ _
     · exact h.elim
-  case htInit =>
-    simp only [Pre] at h; split at h
-    · apply htInit_safe h
-    · exact h.elim
-  case htCleanup =>
-    simp only [Pre] at h; split at h
-    · apply htCleanup_safe h
-    · exact h.elim
-  case htCreate =>
-    simp only [Pre] at h; split at h
-    · apply htCreate_safe _ _
-    · exact h.elim
-  case htCount =>
-    simp only [Pre] at h; split at h
-    · apply htCount_safe _ _
-    · exact h.elim
-  case htLookup =>
-    simp only [Pre] at h; split at h
-    · apply htLookup_safe h.1 h.2
-    · exact h.elim
-  case htInsert =>
-    simp only [Pre] at h; split at h
-    · apply htInsert_safe h.1 h.2
-    · exact h.elim
-  case htIncrement =>
-    simp only [Pre] at h; split at h
-    · apply htIncrement_safe h.1 h.2
-    · exact h.elim
-  case htGetEntry =>
-    simp only [Pre] at h; split at h
-    · apply htGetEntry_safe h
-    · exact h.elim
+  case htInit => exact (h : False).elim
+  case htCleanup => exact (h : False).elim
+  case htCreate => exact (h : False).elim
+  case htCount => exact (h : False).elim
+  case htLookup => exact (h : False).elim
+  case htInsert => exact (h : False).elim
+  case htIncrement => exact (h : False).elim
+  case htGetEntry => exact (h : False).elim
   case cudaInit =>
     simp only [Pre] at h; split at h
     · apply init_safe h

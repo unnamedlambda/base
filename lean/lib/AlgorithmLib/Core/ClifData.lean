@@ -884,6 +884,22 @@ theorem id_injective {f g : Ffi} (h : f.id = g.id) : f = g := Enum.index_injecti
 /-- The entry point a name resolves to, if it is one. -/
 def ofCname (s : String) : Option Ffi := all.find? (·.cname == s)
 
+/-- **Entry points that are functions of the program.** A library written in
+    CLIF implements each over the C and vendor libraries, and a call to one is
+    a call to that function: the entry point has no meaning of its own. -/
+def inLib : Ffi → Bool
+  | .htCreate | .htLookup | .htInsert | .htIncrement | .htCount | .htGetEntry | .htCleanup | .htInit => true
+  | _ => false
+
+/-- Where the library function for `f` sits among a program's functions,
+    past every index a program gives its own. -/
+def libSlot (f : Ffi) : Nat := 2 ^ 32 + f.id
+
+/-- **Entry points the engine answers**, by their contracts: every one but
+    the thread spawn, which runs a function of the program, and those a
+    library implements. -/
+def engine (f : Ffi) : Bool := f != .threadSpawn && !f.inLib
+
 end Ffi
 
 /-- What a call names.

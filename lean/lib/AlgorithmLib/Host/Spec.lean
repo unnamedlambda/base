@@ -452,13 +452,12 @@ theorem Frame.mayWrite_sound {fr : Frame} {args : List UInt64} {x : UInt64} (h :
 -- ---------------------------------------------------------------------------
 
 /-- The entry points with an executable contract that may write host memory:
-    files, standard streams, the libm shims and hash table, the contexts'
+    files, standard streams, the libm shims, the contexts'
     slots, downloads, pinned allocation, wgpu, the LMDB context and scan, and
     the window context and poll. -/
 def hostTouching : List IR.Ffi :=
   [.fileRead, .fileWrite, .fileReadToPtr, .fileWriteFromPtr, .stdinReadline, .stdoutWrite,
-   .sinf, .cosf, .powf, .htInit, .htCleanup, .htCreate,
-   .htCount, .htLookup, .htInsert, .htIncrement, .htGetEntry, .cudaInit,
+   .sinf, .cosf, .powf, .cudaInit,
    .cudaCleanup, .cudaDownload, .cudaDownloadOffset, .gpuInit, .gpuCleanup, .gpuCreateBuffer,
    .gpuCreatePipeline, .gpuUpload, .gpuUploadPtr, .gpuDispatch, .gpuDownload, .gpuDownloadPtr,
    .cudaPinnedAlloc, .cudaPinnedFree, .lmdbInit, .lmdbCleanup, .lmdbCursorScan,
@@ -897,8 +896,8 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
     simp only [contracted, List.mem_append] at hc
     exact (hc.resolve_right hst).resolve_right hdev
   simp only [hostTouching, List.mem_cons, List.not_mem_nil, or_false] at hc'
-  rcases hc' with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
-  all_goals (delta callBits at h; dsimp only at h; simp only [gpuUploadAt, ffiFileRead, ffiFileWrite, ffiFileReadToPtr, ffiFileWriteFromPtr, ffiStdinReadline, ffiStdoutWrite, ffiSinf, ffiCosf, ffiPowf, ffiHtInit, ffiHtCleanup, ffiHtCreate, ffiHtCount, ffiHtLookup, ffiHtInsert, ffiHtIncrement, ffiHtGetEntry, ffiCudaInit, ffiCudaCleanup, ffiCudaDownload, ffiCudaDownloadOffset, ffiGpuInit, ffiGpuCleanup, ffiGpuCreateBuffer, ffiGpuCreatePipeline, ffiGpuUpload, ffiGpuUploadPtr, ffiGpuDispatch, ffiGpuDownload, ffiGpuDownloadPtr, ffiCudaPinnedAlloc, ffiCudaPinnedFree, ffiLmdbInit, ffiLmdbCleanup, ffiLmdbCursorScan, ffiWindowInit, ffiWindowCleanup, ffiWindowPoll, ffiCudaUploadAsync, ffiCudaUploadOffsetAsync, ffiCudaDownloadAsync, ffiThreadInit, ffiThreadCleanup, ffiThreadJoin] at h)
+  rcases hc' with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
+  all_goals (delta callBits at h; dsimp only at h; simp only [gpuUploadAt, ffiFileRead, ffiFileWrite, ffiFileReadToPtr, ffiFileWriteFromPtr, ffiStdinReadline, ffiStdoutWrite, ffiSinf, ffiCosf, ffiPowf, ffiCudaInit, ffiCudaCleanup, ffiCudaDownload, ffiCudaDownloadOffset, ffiGpuInit, ffiGpuCleanup, ffiGpuCreateBuffer, ffiGpuCreatePipeline, ffiGpuUpload, ffiGpuUploadPtr, ffiGpuDispatch, ffiGpuDownload, ffiGpuDownloadPtr, ffiCudaPinnedAlloc, ffiCudaPinnedFree, ffiLmdbInit, ffiLmdbCleanup, ffiLmdbCursorScan, ffiWindowInit, ffiWindowCleanup, ffiWindowPoll, ffiCudaUploadAsync, ffiCudaUploadOffsetAsync, ffiCudaDownloadAsync, ffiThreadInit, ffiThreadCleanup, ffiThreadJoin] at h)
   all_goals (split at h <;> (try contradiction))
   all_goals (simp only [frame, Frame.allows, ctxSlot, List.getD, List.getElem?_cons_zero,
     List.getElem?_cons_succ, Option.getD_some] at hout)
@@ -985,30 +984,6 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
   -- sinf, cosf, powf
   iterate 3
     next => simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-  -- htInit, htCleanup
-  iterate 2
-    next =>
-      obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-      exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-  -- htCreate, htCount
-  iterate 2
-    next => split at h <;> (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
-  -- htInsert
-  next =>
-    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h <;> (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
-  -- htIncrement
-  next =>
-    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · split at h
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · cases h
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
   -- cudaInit
   next =>
     split at h <;>

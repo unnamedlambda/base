@@ -18,12 +18,15 @@ namespace AlgorithmLib.HProg.Contracts
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 
 /-- An answer is a scalar of the type the signature gives through the call the
-    model makes too, for every entry point but the thread spawn, which runs a function of the program. -/
-theorem callOf_ffi_scalar {f : IR.Ffi} (hf : f ≠ .threadSpawn) {lc : Locals} {vs : List V} {w : World}
+    model makes too, for every entry point the engine answers. -/
+theorem callOf_ffi_scalar {f : IR.Ffi} (hf : f.engine = true) {lc : Locals} {vs : List V} {w : World}
     {v : V} {w' : World} (h : callOf lc (.ffi f) vs w = some (some v, w')) :
     ∃ x, v = .sc (f.result.getD .i64) x := by
-  have hs : (f == .threadSpawn) = false := by simpa using hf
-  simp only [callOf, hs, if_false, Bool.false_eq_true, callImport, ofCname_cname, bind, Option.bind,
+  have hf' : (f == .threadSpawn) = false ∧ f.inLib = false := by
+    simpa [IR.Ffi.engine, bne, Bool.and_eq_true] using hf
+  have hs := hf'.1
+  have hl := hf'.2
+  simp only [callOf, hs, hl, if_false, Bool.false_eq_true, callImport, ofCname_cname, bind, Option.bind,
     callFfi] at h
   split at h
   · cases h

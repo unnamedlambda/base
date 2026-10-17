@@ -5,13 +5,14 @@ import AlgorithmLib.Proof.LibSpec
 /-!
 # The hash table, run both ways
 
-One driver over the table, run in the semantics twice: through the entry
-points as `Host.Ffi` states them, and through the functions of `Surface.LibHt`
-that a linked program calls in their place. It makes two handles, inserts keys
+One driver over the table, run in the semantics twice against the functions
+of `Surface.LibHt`: calling them as the entry points they implement, the way a
+program is written, and calling them as the program's own functions, the way
+it is linked. It makes two handles, inserts keys
 until the entry array, the index and the arena have each grown, rewrites
 values at their old length and at a longer one, looks up keys present and
 absent, increments counters, walks the entries in order and cleans up. Both
-runs leave the same answers, and the library's run leaves no allocation live.
+runs leave the same answers, and no allocation live.
 
 A failed allocation is not reached here: the model's heap is full only at
 64 GiB of pinned memory. What the library does then is `Ship.HtSpec`'s to
@@ -36,7 +37,9 @@ structure Api (V : ClifTy → Type) (L : List ClifTy → List ClifTy → Type) w
   count : V .i64 → Prog V L (V .i64)
   getEntry : V .i64 → V .i32 → V .i64 → V .i64 → Prog V L (V .i64)
 
-def model : Api V L where
+/-- The table called by its entry points, each a call to the library's
+    function at the entry point's place (`Ffi.libSlot`). -/
+def entry : Api V L where
   init s := ffiVoid .htInit %[s]
   cleanup s := ffiVoid .htCleanup %[s]
   create c := do uextend64 (← ffi .htCreate %[c])
@@ -62,10 +65,12 @@ def lib : Api V L where
     function `Ship.HtSpec`'s `_calls` theorems speak of. -/
 def fnOf (f : Ffi) : Option Fn := (LibHt.implOf f).map (LibSpec.implFn f.params)
 
+/-- The program's functions: the library's, at the places a linked program
+    calls them and at the places their entry points name. -/
 def fns : Nat → Option Fn
   | 1 => fnOf .htInit | 2 => fnOf .htCleanup | 3 => fnOf .htCreate | 4 => fnOf .htInsert
   | 5 => fnOf .htLookup | 6 => fnOf .htIncrement | 7 => fnOf .htCount | 8 => fnOf .htGetEntry
-  | _ => none
+  | i => LibSpec.libFnsOf LibHt.implOf i
 
 -- arena: slot 0, key 16, value 32..96, out 128..192, kout 256, vout 320, results from 512
 def driver (n : Nat) (api : Api V L) : Prog V L Unit := do
@@ -148,7 +153,7 @@ def results (n : Nat) (api : Api Slot Lvl) : String :=
 
 end HtDiff
 
-#guard HtDiff.results 200 HtDiff.model == HtDiff.results 200 HtDiff.lib
+#guard HtDiff.results 200 HtDiff.entry == HtDiff.results 200 HtDiff.lib
 #guard (HtDiff.results 200 HtDiff.lib).endsWith "heap=0 live=0"
 #guard !(HtDiff.results 200 HtDiff.lib).startsWith "stuck" && !(HtDiff.results 200 HtDiff.lib).startsWith "misuse" &&
   !(HtDiff.results 200 HtDiff.lib).startsWith "fault"

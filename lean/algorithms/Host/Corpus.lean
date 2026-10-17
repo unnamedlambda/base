@@ -10,6 +10,8 @@ public import AlgorithmLib.Host.Blocks
 meta import AlgorithmLib.Host.Blocks
 public import AlgorithmLib.Surface.Prog
 meta import AlgorithmLib.Surface.Prog
+public import AlgorithmLib.Proof.LibSpec
+meta import AlgorithmLib.Proof.LibSpec
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -1052,6 +1054,11 @@ def startWorld : Except String Sem.Mem :=
         data := ByteArray.mk (Array.replicate 8 0),
         out := ByteArray.mk (Array.replicate outBytes 0) }
 
+/-- The program's functions a corpus run calls: the libraries', each at the
+    place its entry point names, as a linked artifact has them. -/
+def libLocals : Sem.Locals :=
+  termLocals (LibSpec.libFnsOf (Link.implOf false)) env 100000000 2
+
 /-- The corpus run through the *compiled* form, so the trace and the bytes can
     be compared against the term's.
 
@@ -1061,7 +1068,7 @@ def startWorld : Except String Sem.Mem :=
 def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
   let f ← Prog.compileProg 1 body
-  match Blocks.run Sem.noLocals f entryArgVals { mem := m } with
+  match Blocks.run libLocals f entryArgVals { mem := m } with
   | .stuck why | .misuse why | .fault why => .error why
   | .ok obs w => .ok (obs, w.mem.out)
 
@@ -1069,7 +1076,7 @@ def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
     against. -/
 def expected : Except String ByteArray := do
   let m ← startWorld
-  match Sem.run { env } entryArgVals { mem := m } code with
+  match Sem.run { env, locals := libLocals } entryArgVals { mem := m } code with
   | .stuck why | .misuse why | .fault why => .error why
   | .ok _ w => .ok w.mem.out
 
@@ -1077,7 +1084,7 @@ def expected : Except String ByteArray := do
     memory they leave behind. -/
 def viaTerm : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
-  match Sem.run { env } entryArgVals { mem := m } code with
+  match Sem.run { env, locals := libLocals } entryArgVals { mem := m } code with
   | .stuck why | .misuse why | .fault why => .error why
   | .ok obs w => .ok (obs, w.mem.out)
 

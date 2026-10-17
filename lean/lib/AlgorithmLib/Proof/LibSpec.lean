@@ -174,9 +174,6 @@ theorem load_store_clear {m m' : Mem} {a b : UInt64} {n k : Nat} {v : UInt64} {r
         · omega)
     · rw [hF.other r' e]
 
-/-- The eight bytes at `j` in the block `s` starts. -/
-def fld (w : World) (s : UInt64) (j : Nat) : Option UInt64 := w.mem.load (s + UInt64.ofNat j) 8
-
 theorem Blk.decode {w : World} {s : UInt64} {n : Nat} (h : Blk w s n) :
     ∃ off, decodeAddr s = some (.pinned, off) ∧ ∀ j, j < n → decodeAddr (s + UInt64.ofNat j) = some (.pinned, off + j) := by
   obtain ⟨off, m, hat, hn, hm, hsz, h36, hlv⟩ := h
@@ -188,10 +185,6 @@ theorem Blk.ne_zero {w : World} {s : UInt64} {n : Nat} (h : Blk w s n) : s ≠ 0
   rintro rfl
   rw [show decodeAddr 0 = none from by decide] at hd
   cases hd
-
-/-- A world with no worker running and no copy in flight: a heap block's
-    bytes can be read and written. -/
-def Calm (w : World) : Prop := w.mem.frozen = false ∧ w.mem.busy = []
 
 /-- The world a store leaves. -/
 abbrev stored (w : World) (p : UInt64) (x : UInt64) (m : Mem) : World := { obsStore w p 8 x with mem := m }
@@ -244,16 +237,6 @@ theorem reachable_sub {m : Mem} {r : Region} {off n off' k : Nat} (h : m.reachab
   rcases hb b hb' with h | h
   · exact Or.inl (by omega)
   · exact Or.inr (by omega)
-
-/-- **The bytes `bs` can be read at `p`**: none, wherever `p` is, or a run
-    inside one region. -/
-def Bytes (w : World) (p : UInt64) (bs : List UInt8) : Prop :=
-  bs = [] ∨ ∃ r off, decodeAddr p = some (r, off) ∧ off + bs.length ≤ (w.mem.region r).size ∧ off + bs.length ≤ 2 ^ 36 ∧
-    w.mem.readable r off bs.length = true ∧ ∀ i, i < bs.length → (w.mem.region r).get! (off + i) = bs.getD i 0
-
-/-- `k` bytes of `bs` from `j`, little-endian. -/
-def leN (bs : List UInt8) (j k : Nat) : UInt64 :=
-  (List.range k).foldr (fun i acc => (acc <<< 8) ||| (bs.getD (j + i) 0).toUInt64) 0
 
 /-- A load inside a run of bytes reads them. -/
 theorem Bytes.load {w : World} {p : UInt64} {bs : List UInt8} (h : Bytes w p bs) {j k : Nat}
@@ -335,9 +318,6 @@ macro "slot" : tactic => `(tactic| ((try simp only [Vals.head]); slot_walk))
 -- ---------------------------------------------------------------------------
 -- Values
 -- ---------------------------------------------------------------------------
-
-/-- The bits of a 64-bit constant. -/
-def c64 (k : Int) : UInt64 := UInt64.ofNat (k.emod (1 <<< 64)).toNat
 
 theorem norm64 (z : UInt64) : norm .i64 z = .sc .i64 z := by
   simp only [norm]
@@ -498,9 +478,6 @@ macro "join_ans" : tactic => `(tactic|
 -- ---------------------------------------------------------------------------
 -- Allocation
 -- ---------------------------------------------------------------------------
-
-/-- **The heap block at `x` is exactly `n` bytes.** -/
-def Whole (w : World) (x : UInt64) (n : Nat) : Prop := Blk w x n ∧ ∃ off, w.heapAt? x = some (off, n)
 
 theorem Whole.blk {w : World} {x : UInt64} {n : Nat} (h : Whole w x n) : Blk w x n := h.1
 
@@ -700,10 +677,6 @@ theorem alloc_fresh {w : World} {y : UInt64} {k : Nat} (h : Blk w y k) (hroom : 
   have := pinnedNext_ge w.mem
   have : w.mem.pinnedNext = off := by simpa using hd
   omega
-
-/-- **`k` bytes at `y` end before `x` starts**, both in pinned memory. -/
-def Before (y : UInt64) (k : Nat) (x : UInt64) : Prop :=
-  ∃ oy ox, decodeAddr y = some (.pinned, oy) ∧ decodeAddr x = some (.pinned, ox) ∧ oy + k ≤ ox
 
 /-- A fresh block starts past every block there was. -/
 theorem alloc_before {w : World} {y : UInt64} {k : Nat} (h : Blk w y k) (hroom : w.mem.pinnedNext < 2 ^ 36) :
@@ -1644,14 +1617,6 @@ theorem copyIn_spec {m : Mem} {a : UInt64} {r : Region} {off : Nat} {bs : List U
       · subst e; rw [if_pos (by omega), Nat.sub_self, byte_back, get!_ofList]
       · rw [if_neg (by omega)]; exact hb i (by omega)
 
-/-- **`w'` is `w` with at most the `n` bytes at `d` rewritten**: the same
-    heap, the same sizes and liveness, and every byte outside that run. -/
-structure Wrote (w w' : World) (d : UInt64) (n : Nat) : Prop where
-  same : MemSame w.mem w'.mem
-  heap : w'.heap = w.heap
-  get : ∀ r' j, (0 < n → ∀ r off, decodeAddr d = some (r, off) → r' ≠ r ∨ j < off ∨ off + n ≤ j) →
-    (w'.mem.region r').get! j = (w.mem.region r').get! j
-
 theorem Wrote.stays {w w' : World} {d : UInt64} {n : Nat} (h : Wrote w w' d n) : Stays w w' :=
   ⟨fun c => ⟨h.same.frozen.symm.trans c.1, h.same.busy.symm.trans c.2⟩,
     fun _ _ b => b.same h.heap (Nat.le_of_eq (h.same.size .pinned)) h.same.live.symm,
@@ -1699,16 +1664,8 @@ theorem Wrote.bytes {w w' : World} {d : UInt64} {n : Nat} (h : Wrote w w' d n) {
 
 /-- A store is a write of its eight bytes. -/
 theorem wrote_stored {w : World} {p x : UInt64} {m : Mem} (hs : w.mem.store p 8 x = some m) :
-    Wrote w (stored w p x m) p 8 := by
-  obtain ⟨r, off, hd, hF⟩ := store_frame hs
-  refine ⟨hF.same, rfl, fun r' j hc => ?_⟩
-  by_cases e : r' = r
-  · subst e
-    rcases hc (by decide) r' off hd with hc | hc | hc
-    · exact absurd rfl hc
-    · exact hF.outside j (Or.inl hc)
-    · exact hF.outside j (Or.inr hc)
-  · exact congrArg (·.get! j) (hF.other r' e)
+    Wrote w (stored w p x m) p 8 :=
+  Wrote.ofStore (w' := stored w p x m) hs rfl
 
 theorem Wrote.room {w w' : World} {d : UInt64} {n : Nat} (h : Wrote w w' d n) {p : UInt64} {k : Nat}
     (hr : Room w p k) : Room w' p k :=
@@ -1814,10 +1771,6 @@ theorem apart_blk {w : World} {p y : UInt64} {n k j : Nat} (hr : Room w p n) (hb
       · exact Or.inl c
       · exact Or.inr (Or.inl (by omega))
       · exact Or.inr (Or.inr (by omega))
-
-/-- **Two runs in pinned memory are apart**: one ends before the other
-    starts. -/
-def Apart (x : UInt64) (n : Nat) (y : UInt64) (k : Nat) : Prop := Before x n y ∨ Before y k x
 
 theorem Apart.symm {x y : UInt64} {n k : Nat} (h : Apart x n y k) : Apart y k x n := Or.symm h
 
@@ -2583,6 +2536,12 @@ theorem stored_bytes {w : World} {p x : UInt64} {m : Mem} {bs : List UInt8} (hb 
 def implFn (params : List ClifTy) : Lib.Impl → Fn
   | .void b => { params, code := emit b params, status := none }
   | .status b => { params, code := (runAns b params).2.1, status := (runAns b params).1 }
+
+/-- The library functions `impl` gives, each at the place its entry point
+    names (`Ffi.libSlot`): the functions a program that calls the entry points
+    is run with. -/
+def libFnsOf (impl : Ffi → Option Lib.Impl) (i : Nat) : Option Fn :=
+  (Ffi.all.find? fun f => f.inLib && f.libSlot == i).bind fun f => (impl f).map (implFn f.params)
 
 /-- **A call to function `i` on `args` from `w` answers as `Q` says**: it
     neither misuses a call nor faults, and where it returns, its answer and

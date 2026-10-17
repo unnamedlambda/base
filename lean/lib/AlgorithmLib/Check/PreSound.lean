@@ -433,23 +433,6 @@ theorem pre_cpuHas {n : AV} (hS : S.holds w) (hb : ArgBits Γ w [n] bits)
   argbits hb [hn]
   exact fun _ => cstrB_sound hS hn h
 
-theorem pre_htInit {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits) (h : preB .htInit [s] S rb = true) :
-    Contracts.Pre .htInit bits w := by
-  dsimp only [preB, preHtInit] at h
-  argbits hb [hs]
-  exact fits_slot8 (memN_fits' hS hs h)
-
-theorem pre_htCleanup {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
-    (h : preB .htCleanup [s] S rb = true) : Contracts.Pre .htCleanup bits w := by
-  dsimp only [preB, preHtCleanup] at h
-  argbits hb [hs]
-  exact fits_slot8 (memN_fits' hS hs h)
-
-theorem pre_htCreate {c : AV} (hb : ArgBits Γ w [c] bits) (_h : preB .htCreate [c] S = true) :
-    Contracts.Pre .htCreate bits w := by
-  argbits hb [hc]
-  trivial
-
 theorem pre_lmdbInit {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
     (h : preB .lmdbInit [s] S rb = true) : Contracts.Pre .lmdbInit bits w := by
   dsimp only [preB, preLmdbInit] at h; simp only [Bool.and_eq_true] at h
@@ -492,33 +475,6 @@ theorem pre_lmdbPut {c x kp kl vp vl : AV} (hS : S.holds w) (hb : ArgBits Γ w [
     exact ⟨ctxB_sound hS hc hc', fun _ =>
       ⟨fits_readable (memN_fits' hS hkp hm.1) (Nat.le_refl _), fits_readable (memN_fits' hS hvp hm.2) (Nat.le_refl _)⟩⟩
   · cases hm
-
-theorem pre_htInsert {c kp kl vp vl : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, kp, kl, vp, vl] bits)
-    (h : preB .htInsert [c, kp, kl, vp, vl] S rb = true) : Contracts.Pre .htInsert bits w := by
-  dsimp only [preB, preHtInsert] at h
-  argbits hb [hc, hkp, hkl, hvp, hvl]
-  split at h
-  · rename_i a b ha hb'
-    have e1 := known_bits hkl ha
-    have e2 := known_bits hvl hb'
-    subst e1 e2
-    simp only [Bool.and_eq_true] at h
-    exact ⟨fits_readable (memN_fits' hS hkp h.1) (Nat.le_refl _), fits_readable (memN_fits' hS hvp h.2) (Nat.le_refl _)⟩
-  · cases h
-
-theorem pre_htLookup {c kp kl rp : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, kp, kl, rp] bits)
-    (h : preB .htLookup [c, kp, kl, rp] S rb = true) : Contracts.Pre .htLookup bits w := by
-  dsimp only [preB, preHtLookup] at h
-  argbits hb [hc, hkp, hkl, hrp]
-  split at h
-  · rename_i a n ha hn
-    have e1 := known_bits hkl ha
-    subst e1
-    simp only [Bool.and_eq_true] at h
-    have hv := hS _ (htValsOf_mem hn)
-    exact ⟨fits_readable (memN_fits' hS hkp h.1) (Nat.le_refl _),
-      fun _ _ _ hg => fits_writable (memN_fits' hS hrp h.2) (hv _ _ hg)⟩
-  · cases h
 
 theorem pre_lmdbCursorScan {c hd kp kl me rp cap : AV} (hS : S.holds w)
     (hb : ArgBits Γ w [c, hd, kp, kl, me, rp, cap] bits)
@@ -799,30 +755,6 @@ theorem pre_cpuHas' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
   · exact pre_cpuHas (rb := rb) hS hb h
   · cases h
 
-theorem pre_htInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .htInit as S rb = true) : Contracts.Pre .htInit bits w := by
-  dsimp only [preB] at h
-  unfold preHtInit at h
-  split at h
-  · exact pre_htInit (rb := rb) hS hb h
-  · cases h
-
-theorem pre_htCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .htCleanup as S rb = true) : Contracts.Pre .htCleanup bits w := by
-  dsimp only [preB] at h
-  unfold preHtCleanup at h
-  split at h
-  · exact pre_htCleanup (rb := rb) hS hb h
-  · cases h
-
-theorem pre_htCreate' {as : List AV} (hb : ArgBits Γ w as bits)
-    (h : preB .htCreate as S rb = true) : Contracts.Pre .htCreate bits w := by
-  dsimp only [preB] at h
-  unfold preHtCreate at h
-  split at h
-  · exact pre_htCreate (S := S) hb h
-  · cases h
-
 theorem pre_lmdbInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB .lmdbInit as S rb = true) : Contracts.Pre .lmdbInit bits w := by
   dsimp only [preB] at h
@@ -861,22 +793,6 @@ theorem pre_lmdbPut' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
   unfold preLmdbPut at h
   split at h
   · exact pre_lmdbPut (rb := rb) hS hb h
-  · cases h
-
-theorem pre_htInsert' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .htInsert as S rb = true) : Contracts.Pre .htInsert bits w := by
-  dsimp only [preB] at h
-  unfold preHtInsert at h
-  split at h
-  · exact pre_htInsert (rb := rb) hS hb h
-  · cases h
-
-theorem pre_htLookup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .htLookup as S rb = true) : Contracts.Pre .htLookup bits w := by
-  dsimp only [preB] at h
-  unfold preHtLookup at h
-  split at h
-  · exact pre_htLookup (rb := rb) hS hb h
   · cases h
 
 theorem pre_lmdbCursorScan' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
@@ -1502,9 +1418,6 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case fileReadToPtr => exact pre_fileReadToPtr' hS hb h hrb
   case nativeLoad => exact pre_nativeLoad' hS hb h
   case cpuHas => exact pre_cpuHas' hS hb h
-  case htInit => exact pre_htInit' hS hb h
-  case htCleanup => exact pre_htCleanup' hS hb h
-  case htCreate => exact pre_htCreate' hb h
   case nativeArch => exact pre_nativeArch' hb h
   case lmdbInit => exact pre_lmdbInit' hS hb h
   case lmdbOpen => exact pre_lmdbOpen' hS hb h
@@ -1513,8 +1426,6 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case lmdbPut => exact pre_lmdbPut' hS hb h
   case cublasSgemv => exact pre_cublasSgemv' hS hb h
   case cublasSgemm => exact pre_cublasSgemm' hS hb h
-  case htInsert => exact pre_htInsert' hS hb h
-  case htLookup => exact pre_htLookup' hS hb h
   case lmdbCursorScan => exact pre_lmdbCursorScan' hS hb h
   case fileCreateDirAll => exact pre_fileCreateDirAll' hS hb h
   case fileWriteFromPtr => exact pre_fileWriteFromPtr' hS hb h hrb
@@ -1543,9 +1454,6 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
     have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
     match bits, hl with | [_], _ => trivial
   case nativeFree =>
-    have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
-    match bits, hl with | [_], _ => trivial
-  case htCount =>
     have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
     match bits, hl with | [_], _ => trivial
   case threadPriority =>

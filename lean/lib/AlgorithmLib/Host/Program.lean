@@ -112,7 +112,15 @@ theorem callOf_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (c : Callee) (vs
         · rename_i hsp
           rw [if_pos hsp]; exact spawnWorker_mono h vs w r hc
         · rename_i hsp
-          rw [if_neg hsp]; exact hc
+          rw [if_neg hsp]
+          split at hc
+          · rename_i hlib
+            rw [if_pos hlib]
+            cases hl : L₁ f.libSlot vs w with
+            | error _ => rw [hl] at hc; simp [Except.toOption] at hc
+            | ok x => rw [hl] at hc; rw [h _ _ _ _ hl]; exact hc
+          · rename_i hlib
+            rw [if_neg hlib]; exact hc
   | «local» i =>
       simp only [Sem.callOf] at hc ⊢
       cases hl : L₁ i vs w with

@@ -1,18 +1,19 @@
 import AlgorithmLib.Proof.LibSpec
+import AlgorithmLib.Host.HtRep
 import AlgorithmLib.Surface.Link
 
 /-!
 # The hash table's functions do what the model says
 
-`Surface.LibHt` implements the engine's hash-table entry points as CLIF over
-the C heap; `Host.Ffi` states them over a table `Ht` that is no memory at all.
-`Rep w s T` relates the two: the context block at `s` in world `w` holds the
+`Surface.LibHt` implements the hash-table entry points as CLIF over the C
+heap. The model is a table `Ht` that is no memory at all: its entries in the
+order they were first inserted and the handles made, with `Ht.get` and
+`Ht.set`. `Rep w s T` relates the two: the context block at `s` in world `w` holds the
 table `T`. Each function is then proven once, as `LibSpec.Ans`: handed a
 context holding `T`, it neither misuses a call nor faults, answers what the
 model answers for `T`, and leaves a context holding the table the model
 leaves (`create_spec`, `count_spec`); handed no context it answers the
 model's refusal and changes nothing (`create_null`, `count_null`).
-`create_model` and `count_model` are the model's side, read off `Host.Ffi`.
 
 `Rep` states the block's header: the handle count and the entry count.
 `Owned` states the three array fields: each holds null or a block of its own,
@@ -29,7 +30,7 @@ that a value can be overwritten where it is. A
 write clear of those blocks (`Clear`) leaves it (`Tab.wrote`). `htGetEntry`,
 handed room for an entry's key and value clear of the table, answers the
 key's length and leaves the memory the model's two copies leave
-(`getEntry_spec`, `getEntry_model`).
+(`getEntry_spec`).
 
 `init_spec` is where a context comes from: `htInit` leaves in its slot a
 context holding the empty table with its arrays and an index of empty slots,
@@ -51,8 +52,8 @@ index is one a probe can read (`Tab.probe`), and a write clear of the index
 leaves it (`Idx.wrote`). `htLookup` of a key that can be read, handed room
 for its value clear of the table, answers the value's length and leaves the
 memory the model's copy leaves, or answers the model's refusal
-(`lookup_spec`); `lookup_model` is the model's side, with `get_none` and
-`get_some` saying which value the model finds.
+(`lookup_spec`), with `get_none` and `get_some` saying which value the model
+finds.
 
 Keys and values live in the arena, which `LibHt.append` grows by moving it to
 a fresh block. `Appended w w' s L L' bs` is what that leaves: a layout that
@@ -97,14 +98,14 @@ and one an entry has by replacing that entry's value (`set_present`,
 long (`Tab.setInPlace`, by `Sep`) and at the arena's end otherwise
 (`Tab.setMoved`). `insert_spec` is `htInsert`: what `set` leaves, or nothing
 changed before a handle has been made (`InsertQ`); `insert_null` is the call
-handed no context, and `insert_model` the model's side.
+handed no context.
 
 `increment_spec` is `htIncrement`: where no entry has the key, the addend
 answered and a new entry holding its eight bytes, inserted from the header's
 scratch field (`Tab.scratch`); where one has, with a value of at least eight
 bytes, the sum answered and stored over the value's first eight bytes
-(`bumped`, `LibSpec.stored_bytes`). `increment_null` and `increment_model`
-are the call handed no context and the model's side.
+(`bumped`, `LibSpec.stored_bytes`). `increment_null` is the call handed no
+context.
 
 `lookup_null` and `getEntry_null` are those calls handed no context: the
 answer for no table, and nothing changed.
@@ -143,17 +144,6 @@ open AlgorithmLib.HProg.Hoare AlgorithmLib.HProg.Contracts
 
 namespace HtSpec
 open AlgorithmLib.LibSpec AlgorithmLib.LibHt
-
-/-- **The table a context block holds**, as far as its header says: the block
-    is live, its bytes can be read and written, and its counts are the
-    model's. -/
-structure Rep (w : World) (s : UInt64) (T : Ht) : Prop where
-  blk : Blk w s SIZE
-  calm : Calm w
-  created : fld w s CREATED = some (UInt64.ofNat T.handles.length)
-  count : fld w s COUNT = some (UInt64.ofNat T.entries.length)
-  handles : T.handles = List.range T.handles.length
-  small : T.handles.length < 2 ^ 64 ∧ T.entries.length < 2 ^ 64
 
 /-- **A context block and its three arrays**: the block is live, and its
     array fields each hold null or a block of its own. -/
@@ -417,68 +407,6 @@ theorem cleanup_spec (cfg : Cfg) (w : World) (slot s : UInt64) (r : Region) (off
     rw [show c64 0 = 0 from by decide] at hm
     exact load_store8 hm
 
--- The model's answers, as `Host.Ffi` states them, for the table `w.ht`.
-
-/-- Where a context's arrays are and how much of each is in use, and where
-    in the arena each entry's key and value start. -/
-structure Lay where
-  e : UInt64
-  ecap : Nat
-  ix : UInt64
-  icap : Nat
-  ar : UInt64
-  used : Nat
-  acap : Nat
-  offs : List (Nat × Nat)
-
-/-- **Entry `i` of the entry array is `kv`, its key at `ko` and its value at
-    `vo` in the arena**: its four fields say so and how long they are, and the
-    arena holds their bytes there. -/
-def EntO (w : World) (L : Lay) (i : Nat) (kv : ByteArray × ByteArray) (ko vo : Nat) : Prop :=
-  fld w L.e (i * ENTRY) = some (UInt64.ofNat ko) ∧
-    fld w L.e (i * ENTRY + 8) = some (UInt64.ofNat kv.1.size) ∧
-    fld w L.e (i * ENTRY + 16) = some (UInt64.ofNat vo) ∧
-    fld w L.e (i * ENTRY + 24) = some (UInt64.ofNat kv.2.size) ∧
-    ko + kv.1.size ≤ L.used ∧ vo + kv.2.size ≤ L.used ∧
-    Bytes w (L.ar + UInt64.ofNat ko) kv.1.data.toList ∧ Bytes w (L.ar + UInt64.ofNat vo) kv.2.data.toList
-
-/-- **Entry `i` of the entry array is `kv`**, somewhere in the arena. -/
-def EntAt (w : World) (L : Lay) (i : Nat) (kv : ByteArray × ByteArray) : Prop :=
-  ∃ ko vo, EntO w L i kv ko vo
-
-/-- **No value's run in the arena meets another run**: each entry's value is
-    apart from every entry's key and from every other entry's value, so a
-    value can be overwritten where it is. -/
-def Sep (T : Ht) (offs : List (Nat × Nat)) : Prop :=
-  ∀ i j (hi : i < T.entries.length) (hj : j < T.entries.length) (oi : i < offs.length) (oj : j < offs.length),
-    ((offs[i]).2 + (T.entries[i]).2.size ≤ (offs[j]).1 ∨ (offs[j]).1 + (T.entries[j]).1.size ≤ (offs[i]).2) ∧
-    (i ≠ j → (offs[i]).2 + (T.entries[i]).2.size ≤ (offs[j]).2 ∨
-      (offs[j]).2 + (T.entries[j]).2.size ≤ (offs[i]).2)
-
-/-- **The table a context holds, with its entries**: the header, the three
-    arrays as blocks of their capacities, and every entry of the model's table
-    at its place in the entry array. -/
-structure Tab (w : World) (s : UInt64) (T : Ht) (L : Lay) : Prop where
-  rep : Rep w s T
-  fe : fld w s ENTRIES = some L.e
-  fecap : fld w s ECAP = some (UInt64.ofNat L.ecap)
-  fix : fld w s INDEX = some L.ix
-  ficap : fld w s ICAP = some (UInt64.ofNat L.icap)
-  far : fld w s ARENA = some L.ar
-  fused : fld w s AUSED = some (UInt64.ofNat L.used)
-  facap : fld w s ACAP = some (UInt64.ofNat L.acap)
-  we : Whole w L.e (L.ecap * ENTRY)
-  wi : Whole w L.ix (L.icap * 8)
-  wa : Whole w L.ar L.acap
-  room : T.entries.length ≤ L.ecap ∧ L.used ≤ L.acap
-  pos : 0 < L.ecap ∧ 0 < L.icap ∧ 0 < L.acap
-  apart : Apart s SIZE L.e (L.ecap * ENTRY) ∧ Apart s SIZE L.ix (L.icap * 8) ∧ Apart s SIZE L.ar L.acap ∧
-    Apart L.e (L.ecap * ENTRY) L.ix (L.icap * 8) ∧ Apart L.e (L.ecap * ENTRY) L.ar L.acap ∧
-    Apart L.ix (L.icap * 8) L.ar L.acap
-  olen : L.offs.length = T.entries.length
-  ento : ∀ i (hi : i < T.entries.length) (ho : i < L.offs.length), EntO w L i T.entries[i] (L.offs[i]).1 (L.offs[i]).2
-  sep : Sep T L.offs
-
 theorem Tab.ent {w : World} {s : UInt64} {T : Ht} {L : Lay} (h : Tab w s T L) (i : Nat) (hi : i < T.entries.length) :
     EntAt w L i T.entries[i] :=
   ⟨_, _, h.ento i hi (h.olen ▸ hi)⟩
@@ -684,23 +612,6 @@ theorem getEntry_spec (cfg : Cfg) (w : World) (s : UInt64) (T : Ht) (L : Lay) (h
       rw [if_pos (by simp [h.rep.hasTable, hl]), hget]
       exact ⟨rfl, t1.wrote hw2 cv, ⟨_, hc1, hc2⟩, w1, hw1, hw2⟩
 
-/-- The hash after `i` words of `bs`. -/
-def hashW (bs : List UInt8) : Nat → UInt64
-  | 0 => UInt64.ofNat bs.length * c64 MIX
-  | i + 1 => (hashW bs i ^^^ leN bs (8 * i) 8) * c64 MIX
-
-/-- The tail word after `j` bytes from `base`. -/
-def hashT (bs : List UInt8) (base : Nat) : Nat → UInt64
-  | 0 => c64 0
-  | j + 1 => hashT bs base j ||| (leN bs (base + j) 1 <<< ((UInt64.ofNat j <<< (c64 3 % 64)) % 64))
-
-/-- **The hash of a key**, as `LibHt.hash` computes it. -/
-def H (bs : List UInt8) : UInt64 :=
-  let h := (hashW bs (bs.length / 8) ^^^ hashT bs (8 * (bs.length / 8)) (bs.length % 8)) * c64 MIX
-  let h := h ^^^ (h >>> (c64 32 % 64))
-  let h := h * c64 FIN
-  h ^^^ (h >>> (c64 29 % 64))
-
 section fns
 variable {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
 
@@ -904,11 +815,6 @@ theorem wp_bytesEq {a b n : Slot .i64} {pa pb nv : UInt64} {as bs : List UInt8}
 
 end fns
 
-/-- What an index slot holds for entry `p` whose key hashes to `h`: the
-    hash's high half above, the entry's position plus one below. -/
-def slotVal (h : UInt64) (p : Nat) : UInt64 :=
-  ((h >>> (c64 32 % 64)) <<< (c64 32 % 64)) ||| UInt64.ofNat (p + 1)
-
 theorem slotVal_toNat (h : UInt64) {p : Nat} (hp : p + 1 < 2 ^ 32) :
     (slotVal h p).toNat = h.toNat / 2 ^ 32 * 2 ^ 32 + (p + 1) := by
   have hh := h.toNat_lt
@@ -938,18 +844,10 @@ theorem slotVal_ne_zero (h : UInt64) {p : Nat} (hp : p + 1 < 2 ^ 32) : slotVal h
   rw [slotVal_toNat h hp] at this
   simp at this
 
-/-- The index's mask, for a capacity. -/
-def maskOf (icap : Nat) : UInt64 := UInt64.ofNat icap + c64 (-1)
-
 theorem maskOf_toNat {icap : Nat} (h0 : 0 < icap) (h1 : icap < 2 ^ 64) : (maskOf icap).toNat = icap - 1 := by
   unfold maskOf
   rw [UInt64.toNat_add, UInt64.toNat_ofNat', Nat.mod_eq_of_lt h1, show (c64 (-1)).toNat = 2 ^ 64 - 1 from by decide]
   omega
-
-/-- The slots a probe for hash `h` visits, in order. -/
-def path (icap : Nat) (h : UInt64) : Nat → UInt64
-  | 0 => h &&& maskOf icap
-  | t + 1 => (path icap h t + c64 1) &&& maskOf icap
 
 theorem and_mask_lt (x : UInt64) {icap : Nat} (h0 : 0 < icap) (h1 : icap < 2 ^ 64) :
     (x &&& maskOf icap).toNat < icap := by
@@ -1274,22 +1172,6 @@ theorem toList_data (b : ByteArray) : b.toList = b.data.toList := by
   rw [toList_loop b b.size 0 [] rfl (Nat.zero_le _)]
   simp
 
-/-- The keys of a table's entries, in order. -/
-def keysOf (T : Ht) : List (List UInt8) := T.entries.map (·.1.data.toList)
-
-/-- **The index covers the keys `ks`**: they are distinct, every slot is
-    empty or holds one of them, and each is reached from its hash's first
-    slot before any empty slot. -/
-structure Idx (w : World) (L : Lay) (ks : List (List UInt8)) : Prop where
-  cap : 0 < L.icap ∧ L.icap ≤ 2 ^ 33
-  small : ks.length < 2 ^ 32
-  nodup : ks.Nodup
-  slots : ∀ j, j < L.icap → ∃ v, fld w L.ix (8 * j) = some v ∧
-    (v = 0 ∨ ∃ p, ∃ hp : p < ks.length, v = slotVal (H ks[p]) p)
-  chain : ∀ p (hp : p < ks.length), ∃ t, fld w L.ix (8 * (path L.icap (H ks[p]) t).toNat) =
-      some (slotVal (H ks[p]) p) ∧
-    ∀ t', t' < t → fld w L.ix (8 * (path L.icap (H ks[p]) t').toNat) ≠ some 0
-
 /-- A table with its index is one a probe can read. -/
 theorem Tab.probe {w : World} {s : UInt64} {T : Ht} {L : Lay} (h : Tab w s T L) (hI : Idx w L (keysOf T)) :
     Probe w s L (keysOf T) := by
@@ -1475,16 +1357,6 @@ theorem get_some {T : Ht} {kb : List UInt8} {p : Nat} (hp : p < T.entries.length
   unfold Ht.get
   rw [find_key T.entries p hp hn hk]
   rfl
-
-theorem lookup_model (w : World) (key klen out : UInt64) (kb : List UInt8) (hB : Bytes w key kb)
-    (hl : klen.toNat = kb.length) : ffiHtLookup [htCtx, key, klen, out] w =
-    if w.ht.hasTable then
-      match w.ht.get (ByteArray.mk kb.toArray) with
-      | none => some (some (ofInt .i32 0xFFFFFFFF), w)
-      | some v => (copyIn w.mem out v).bind fun m => some (some (ofInt .i32 v.size), { w with mem := m })
-    else some (some (ofInt .i32 0xFFFFFFFF), w) := by
-  simp only [ffiHtLookup, readBytes, hl, copyOut_bytes hB, Option.bind_eq_bind, Option.bind_some]
-  cases w.ht.hasTable <;> rfl
 
 /-- A table's context and arrays are a context with its arrays. -/
 theorem Tab.owned {w : World} {s : UInt64} {T : Ht} {L : Lay} (h : Tab w s T L) : Owned w s L.e L.ix L.ar := by
@@ -1770,24 +1642,6 @@ theorem init_sound (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : N
     Sem.run cfg [.sc .i64 slot] w (emit init [.i64]) ≠ .misuse m ∧
     Sem.run cfg [.sc .i64 slot] w (emit init [.i64]) ≠ .fault m :=
   (init_spec cfg w slot r off hc hd hr hroom).sound m
-
-theorem create_model (w : World) : ffiHtCreate [htCtx] w = some (some (ofInt .i32 w.ht.handles.length),
-    { w with ht := { w.ht with handles := w.ht.handles ++ [w.ht.handles.length] } }) := rfl
-
-theorem count_model (w : World) : ffiHtCount [htCtx] w =
-    some (some (ofInt .i32 (if w.ht.hasTable then w.ht.entries.length else 0)), w) := by
-  unfold ffiHtCount
-  cases w.ht.hasTable <;> rfl
-
-theorem getEntry_model (w : World) (index kout vout : UInt64) : ffiHtGetEntry [htCtx, index, kout, vout] w =
-    if w.ht.hasTable then
-      match w.ht.entries[index.toNat]? with
-      | none => some (some (ofInt .i32 (-1)), w)
-      | some (k, v) => (copyIn w.mem kout k).bind fun m => (copyIn m vout v).bind fun m =>
-          some (some (ofInt .i32 k.size), { w with mem := m })
-    else some (some (ofInt .i32 (-1)), w) := by
-  unfold ffiHtGetEntry
-  cases w.ht.hasTable <;> rfl
 
 -- ---------------------------------------------------------------------------
 -- The arena
@@ -3749,16 +3603,6 @@ theorem insert_null (cfg : Cfg) (w : World) (key klen val vlen : UInt64) :
   apply wp_iconst64
   exact ⟨_, get_push_size, rfl⟩
 
-/-- The model's `ht_insert`, for a key and a value that can be read. -/
-theorem insert_model (w : World) (key klen val vlen : UInt64) (kb vb : List UInt8) (hkb : Bytes w key kb)
-    (hvb : Bytes w val vb) (hl : klen.toNat = kb.length) (hl' : vlen.toNat = vb.length) :
-    ffiHtInsert [htCtx, key, klen, val, vlen] w =
-      some (none, if w.ht.hasTable then
-        { w with ht := w.ht.set (ByteArray.mk kb.toArray) (ByteArray.mk vb.toArray) } else w) := by
-  simp only [ffiHtInsert, readBytes, hl, hl', copyOut_bytes hkb, copyOut_bytes hvb, Option.bind_eq_bind,
-    Option.bind_some]
-  cases w.ht.hasTable <;> rfl
-
 -- ---------------------------------------------------------------------------
 -- `htIncrement`
 -- ---------------------------------------------------------------------------
@@ -3973,19 +3817,6 @@ theorem increment_null (cfg : Cfg) (w : World) (key klen addend : UInt64) :
   wp_seq
   exact ⟨addend, by slot, rfl, rfl⟩
 
-/-- The model's `ht_increment`, for a key that can be read. -/
-theorem increment_model (w : World) (key klen addend : UInt64) (kb : List UInt8) (hkb : Bytes w key kb)
-    (hl : klen.toNat = kb.length) : ffiHtIncrement [htCtx, key, klen, addend] w =
-    if w.ht.hasTable then
-      match w.ht.get (ByteArray.mk kb.toArray) with
-      | none => some (some (.sc .i64 addend), { w with ht := w.ht.set (ByteArray.mk kb.toArray) (le64 addend) })
-      | some ex => if ex.size < 8 then none else
-          some (some (.sc .i64 (ofLe64 ex + addend)),
-            { w with ht := w.ht.set (ByteArray.mk kb.toArray) (bumped ex addend) })
-    else some (some (.sc .i64 addend), w) := by
-  simp only [ffiHtIncrement, readBytes, hl, copyOut_bytes hkb, Option.bind_eq_bind, Option.bind_some]
-  cases w.ht.hasTable <;> rfl
-
 -- ---------------------------------------------------------------------------
 -- The table's functions, called from a program
 -- ---------------------------------------------------------------------------
@@ -4166,14 +3997,6 @@ theorem getEntry_null (cfg : Cfg) (w : World) (index kout vout : UInt64) :
   intro _ Γ' hext
   apply wp_iconst64
   exact ⟨_, get_push_size, rfl, rfl⟩
-
-/-- **A program's slot holds the context `s`, which holds the table `T`**:
-    the slot is outside the heap and holds `s`, and `s` is a context holding
-    `T` with its index. What a program that uses the table keeps from call to
-    call. -/
-def HtAt (w : World) (slot s : UInt64) (T : Ht) : Prop :=
-  ∃ r off L, decodeAddr slot = some (r, off) ∧ r ≠ .pinned ∧ w.mem.load slot 8 = some s ∧ Tab w s T L ∧
-    Idx w L (keysOf T)
 
 theorem HtAt.load {w : World} {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) : w.mem.load slot 8 = some s := by
   obtain ⟨_, _, _, _, _, hl, _, _⟩ := h

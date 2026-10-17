@@ -76,12 +76,9 @@ def frame : IR.Ffi → Frame
   -- mod.rs — the libm shims are pure.
   | .sinf | .cosf | .powf => .none
 
-  -- ht.rs — the table lives outside shared memory; only the reads write back
-  -- into it, and for as many bytes as the stored value happens to be.
-  | .htInit | .htCleanup => ctxSlot
-  | .htCreate | .htCount | .htInsert | .htIncrement => .none
-  | .htLookup => .dataDependent 3
-  | .htGetEntry => .dataDependent2 2 3
+  -- The hash table's entry points are `Lib.Ht`'s functions, the program's
+  -- own: the engine writes nothing for them.
+  | .htInit | .htCleanup | .htCreate | .htCount | .htInsert | .htIncrement | .htLookup | .htGetEntry => .none
 
   -- cuda.rs — uploads and launches move data the other way or stay on the
   -- device; only the downloads write host memory.

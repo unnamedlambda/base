@@ -209,9 +209,8 @@ theorem ctxLoop_no_misuse (cfg : Cfg) (w : World) (h : Arena w) (m : String) :
 
 /-- A table filled in a loop: the context read once from its slot, a key and a
     value stored to scratch each trip, and one insertion per trip. Every call
-    answers, which the condition generator reaches through a bound answer
-    (`htCreate`'s), a store of values it does not know, and a loop whose
-    invariant is the entry typestate less its cells. -/
+    is read by the library function's statement: the slot holds null or a
+    table all the way round the loop, and the context is what the slot holds. -/
 def fillTable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} : Prog V L Unit := do
   let base ← basePtr
   let n ← load64 (← dataPtr)
@@ -239,10 +238,12 @@ def sumTrips {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} : 
     iadd acc i
   storeI64 sum (← outPtr)
 
-/-- Where they start: memory not frozen, the arena holding the slot and the
-    scratch, the input its count, the output its answer. -/
+/-- Where they start: no worker running and no copy in flight, the arena
+    holding the slot and the scratch, the input its count, the output its
+    answer. -/
 abbrev Scratch : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .room .arena 0xC0, .room .data 8, .room .out 8]
+  Contracts.TState.holds [.part .frozen false, .part .idle true, .room .arena 0xC0, .room .data 8,
+    .room .out 8]
 
 theorem fillTable_fine : Fine (emitGo (fillTable (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨rfl, by decide⟩
@@ -252,9 +253,10 @@ theorem sumTrips_fine : Fine (emitGo (sumTrips (V := Slot) (L := Lvl)) ⟨5, 0, 
 
 open HProgStaticChecks (args) in
 set_option maxRecDepth 20000 in
-/-- **Filling a table never misuses a call**, however many entries the input
-    asks for. -/
-theorem fillTable_no_misuse (cfg : Cfg) (w : World) (h : Scratch w) (m : String) :
+/-- **Filling a table, in a program linked with `Lib.Ht`, never misuses a
+    call**, however many entries the input asks for: its calls to the hash
+    table are the library's functions, read by their statements. -/
+theorem fillTable_no_misuse (cfg : Cfg) [Check.Linked true cfg] (w : World) (h : Scratch w) (m : String) :
     run cfg args w (emit fillTable) ≠ .misuse m := by
   check_body
 

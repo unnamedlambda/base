@@ -170,13 +170,6 @@ theorem decodeAddr_pinned {off : Nat} (h : off < 2 ^ 36) :
     simp [hx, regionBase]
   simpa using this
 
-/-- **A live heap allocation.** `x` is the start of an allocation of at least
-    `n` bytes the C library's heap holds: inside pinned memory, and among its
-    live allocations. -/
-def Blk (w : World) (x : UInt64) (n : Nat) : Prop :=
-  ∃ off m, w.heapAt? x = some (off, m) ∧ n ≤ m ∧ 0 < m ∧ off + m ≤ w.mem.pinned.size ∧ off + m ≤ 2 ^ 36 ∧
-    (off, m) ∈ w.mem.pinnedLive
-
 /-- Where a heap allocation's start decodes to. -/
 theorem heapAt_decode {w : World} {x : UInt64} {off m : Nat} (h : w.heapAt? x = some (off, m)) :
     decodeAddr x = some (.pinned, off) ∧ w.heap.find? (·.1 == off) = some (off, m) := by
@@ -868,7 +861,7 @@ def extKeeps (e : Ext) (bits : List UInt64) : Fact → Bool
   | .roomArg _ _ | .devBuf _ _ => e.aside
   | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => e.aside
   | .pinnedUsed _ => false
-  | .htVals _ | .cstr _ => false
+  | .htAt _ _ _ | .cstr _ => false
 
 /-- **What a library call leaves of a typestate**, from its argument bits and
     its answer: the facts it keeps, and for an open, that its answer is null
@@ -946,7 +939,7 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       refine cstrIn_kept hx (by rw [st.mem.1]; exact hx.1) (fun rg hp => st.mem.2.1 rg hp) fun i hi => ?_
       exact ExtContracts.ext_respects_frame e vs w r w' h bits hb _
         (Frame.mayWrite_sound (Frame.touches_false hk.2 i hi) _)
-  | htVals _ | cstr _ => simp [extKeeps] at hk
+  | htAt _ _ _ | cstr _ => simp [extKeeps] at hk
 
 /-- **The typestate follows a library call**: from a typestate that holds,
     a call of the engine's own libraries lands in what `extAfter` computes. -/

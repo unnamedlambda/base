@@ -521,7 +521,7 @@ theorem wp_ffiVoid_moves_res {cfg : Cfg} {d : Nat} {J : Post} {f : Ffi} {args : 
     lands in `W'`. The call itself is `callBits` on its argument bits
     (`callOf_ffi`), and `pre_safe` says it answers. -/
 theorem moves_of_pre (cfg : Cfg) {W W' : World → Prop} {f : Ffi} {vs : List V} {bits : List UInt64}
-    (hf : f ≠ .threadSpawn) (hb : vs.mapM asBits = some bits)
+    (hf : f.engine = true) (hb : vs.mapM asBits = some bits)
     (hobs : ∀ w, W w → W (obsCall w (.ffi f) vs)) (hz : ∀ w, W w → w.mem.frozen = false)
     (hpre : ∀ w, W w → Contracts.Pre f bits w)
     (hpost : ∀ w r w', W w → callBits f bits w = some (r, w') → W' w') : Moves cfg W f vs W' := by
@@ -547,7 +547,7 @@ theorem TState.holds_obsCall {S : TState} {w : World} {c : Callee} {vs : List V}
   | cell _ _ => exact this
   | held k _ => cases k <;> exact this
   | opened k _ => cases k <;> exact this
-  | htVals _ => exact this
+  | htAt _ _ _ => exact HtSpec.HtObj.of_mem this rfl rfl
   | cstr _ => exact this
   | devSeq => exact this
   | oracles => exact this
@@ -561,7 +561,7 @@ theorem TState.holds_obsCall {S : TState} {w : World} {c : Callee} {vs : List V}
     memory unfrozen, a call whose precondition the facts give lands in what
     the contract table says it leaves, `after f bits S`, computed as `S'`. -/
 theorem moves_state (cfg : Cfg) (S S' : TState) {f : Ffi} {vs : List V} {bits : List UInt64}
-    (hz : S.contains (.part .frozen false) = true) (hf : f ≠ .threadSpawn) (hb : vs.mapM asBits = some bits)
+    (hz : S.contains (.part .frozen false) = true) (hf : f.engine = true) (hb : vs.mapM asBits = some bits)
     (hS' : after f bits S = S') (hpre : ∀ w, S.holds w → Contracts.Pre f bits w) :
     Moves cfg S.holds f vs S'.holds := by
   subst hS'
@@ -573,7 +573,7 @@ theorem moves_state (cfg : Cfg) (S S' : TState) {f : Ffi} {vs : List V} {bits : 
     whose keeping does not compute, as over a length the program was answered,
     is dropped. -/
 theorem moves_state_sub (cfg : Cfg) (S S' : TState) {f : Ffi} {vs : List V} {bits : List UInt64}
-    (hz : S.contains (.part .frozen false) = true) (hf : f ≠ .threadSpawn) (hb : vs.mapM asBits = some bits)
+    (hz : S.contains (.part .frozen false) = true) (hf : f.engine = true) (hb : vs.mapM asBits = some bits)
     (ha : after f bits S = S.filter (Contracts.keeps f bits)) (hsub : S'.Sublist S)
     (hk : S'.all (Contracts.keeps f bits) = true) (hpre : ∀ w, S.holds w → Contracts.Pre f bits w) :
     Moves cfg S.holds f vs S'.holds := by
@@ -823,7 +823,7 @@ theorem wp_store_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
             rw [← Array.foldlM_toList] at hm
             obtain ⟨hsz, hz⟩ := Contracts.foldl_stores_sizes _
               (fun _ _ _ h => ⟨Contracts.store_sizes_eq h, Contracts.store_frozen h, Contracts.store_busy h⟩) _ _ _ hm
-            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ hsz
+            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl⟩ hsz
       · cases hrun
 
 theorem wp_store_known {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
@@ -929,7 +929,7 @@ theorem wp_storeUnaligned_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q 
         | none =>
             rw [← Array.foldlM_toList] at hm
             obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hm
-            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ hs
+            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl⟩ hs
         | some q =>
             obtain ⟨x, t', y⟩ := q
             obtain ⟨-, hv'⟩ := hst x t' y rfl
@@ -944,7 +944,7 @@ theorem wp_storeUnaligned_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q 
           rw [hm] at hrun; cases hrun
           cases st with
           | none =>
-              exact Contracts.nonCell_kept hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩
+              exact Contracts.nonCell_kept hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl⟩
                 (Contracts.store_sizes_eq hm)
           | some q =>
               obtain ⟨x, t', y⟩ := q
@@ -1781,7 +1781,7 @@ theorem wp_call_res_var {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.r
     spawn answers one, so what follows may pass it on with known bits. -/
 theorem wp_call_res_sc {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {Q : α → Env → World → Prop}
-    (W W' : World → Prop) {t0 : ClifTy} (ht : f.result = some t0) (hf : f ≠ .threadSpawn) {cs : List V}
+    (W W' : World → Prop) {t0 : ClifTy} (ht : f.result = some t0) (hf : f.engine = true) {cs : List V}
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
     (hQ : ∀ x w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t0 x) → W' w' →
       wp cfg d J (k (resSlot f.result Γ.size)) Q Γ' w') :
@@ -1799,11 +1799,14 @@ theorem wp_call_res_sc {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.re
   exact hQ x w' _ (Ext.push Γ _) (by simp) hw'
 
 /-- A call that answers went through the table on its argument bits. -/
-theorem callOf_ffi_bits {f : Ffi} (hf : f ≠ .threadSpawn) {lc : Locals} {vs : List V} {w : World}
+theorem callOf_ffi_bits {f : Ffi} (hf : f.engine = true) {lc : Locals} {vs : List V} {w : World}
     {v : V} {w' : World} (h : callOf lc (.ffi f) vs w = some (some v, w')) :
     ∃ bits, vs.mapM asBits = some bits ∧ Sem.callBits f bits w = some (some v, w') := by
-  have hs : (f == .threadSpawn) = false := by simpa using hf
-  simp only [callOf, hs, if_false, Bool.false_eq_true, callImport, Contracts.ofCname_cname, bind, Option.bind,
+  have hf' : (f == .threadSpawn) = false ∧ f.inLib = false := by
+    simpa [Ffi.engine, bne, Bool.and_eq_true] using hf
+  have hs := hf'.1
+  have hl := hf'.2
+  simp only [callOf, hs, hl, if_false, Bool.false_eq_true, callImport, Contracts.ofCname_cname, bind, Option.bind,
     callFfi] at h
   split at h
   · cases h
@@ -1816,7 +1819,7 @@ theorem callOf_ffi_bits {f : Ffi} (hf : f ≠ .threadSpawn) {lc : Locals} {vs : 
     what follows may count by. -/
 theorem wp_call_res_ans {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {Q : α → Env → World → Prop}
-    (W W' : World → Prop) {t0 : ClifTy} (ht : f.result = some t0) (hf : f ≠ .threadSpawn) {cs : List V}
+    (W W' : World → Prop) {t0 : ClifTy} (ht : f.result = some t0) (hf : f.engine = true) {cs : List V}
     {bits : List UInt64} (hb : cs.mapM asBits = some bits)
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
     (hQ : ∀ x w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t0 x) → answerOk f bits x → W' w' →
@@ -3878,7 +3881,7 @@ theorem wp_store_vec {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
         rw [hmm] at hrun; cases hrun
         rw [← Array.foldlM_toList] at hmm
         obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
-        exact hk _ (Contracts.nonCell_kept hS (store_parts hz) (fun kk _ => by cases kk <;> rfl) rfl
+        exact hk _ (Contracts.nonCell_kept hS (store_parts hz) (fun kk _ => by cases kk <;> rfl)
           ⟨rfl, rfl, rfl⟩ hs)
 
 /-- `wp_store_vec`, under default flags: a vector stores lane by lane all the
@@ -3917,7 +3920,7 @@ theorem wp_storeU_vec {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α
         rw [hmm] at hrun; cases hrun
         rw [← Array.foldlM_toList] at hmm
         obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
-        exact hk _ (Contracts.nonCell_kept hS (store_parts hz) (fun kk _ => by cases kk <;> rfl) rfl
+        exact hk _ (Contracts.nonCell_kept hS (store_parts hz) (fun kk _ => by cases kk <;> rfl)
           ⟨rfl, rfl, rfl⟩ hs)
 
 /-- `wp_store_vec`, the vector known by its type: the typestate after it given

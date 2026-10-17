@@ -458,6 +458,9 @@ structure Par where
   bufs : List (UInt64 × PExpr) := []
   obls : List Obl := []
   collect : Bool := false
+  /-- Slots holding what an eight-byte cell of memory holds: `(r, a)`, slot
+      `r` and the cell at `a`. -/
+  ctxs : List (R × UInt64) := []
   deriving Inhabited, DecidableEq
 
 /-- The cells and buffers the record names, as facts at the parameters'
@@ -471,71 +474,88 @@ def Par.At (P : Par) (vals : List UInt64) (Γ : Env) (w : World) : Prop :=
   P.collect = false ∧
   (∀ s ∈ P.slots, Γ[s.1]? = some (.sc s.2.1 (s.2.2.eval vals))) ∧
   (P.facts vals).holds w ∧
-  (∀ o ∈ P.obls, (o.Holds vals))
+  (∀ o ∈ P.obls, (o.Holds vals)) ∧
+  (∀ c ∈ P.ctxs, ∃ s, Γ[c.1]? = some (.sc .i64 s) ∧ w.mem.load c.2 8 = some s)
 
 /-- The record with what it says of the world forgotten. -/
-def Par.clearWorld (P : Par) : Par := { P with cells := [], bufs := [] }
+def Par.clearWorld (P : Par) : Par := { P with cells := [], bufs := [], ctxs := [] }
 
 theorem Par.At.clearWorld {P : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : P.At vals Γ w)
     (w' : World) : P.clearWorld.At vals Γ w' :=
-  ⟨h.1, h.2.1, fun _ hx => by simp [Par.clearWorld, Par.facts, bufFacts] at hx, h.2.2.2⟩
+  ⟨h.1, h.2.1, fun _ hx => by simp [Par.clearWorld, Par.facts, bufFacts] at hx, h.2.2.2.1,
+    fun _ hx => by simp [Par.clearWorld] at hx⟩
 
 /-- The record keeping, of the cells and buffers it names, those `k` keeps:
-    a cell or a buffer read by where it is, whatever its value. -/
+    a cell or a buffer read by where it is, whatever its value, and a slot
+    holding what a cell holds where the cell is kept. -/
 def Par.keepWorld (P : Par) (k : Fact → Bool) : Par :=
   { P with cells := P.cells.filter (fun c => k (.cell c.1 0)),
-           bufs := P.bufs.filter (fun b => k (.devBuf b.1 0)) }
+           bufs := P.bufs.filter (fun b => k (.devBuf b.1 0)),
+           ctxs := P.ctxs.filter (fun c => k (.cell c.2 0)) }
 
 /-- What the record keeps holds in a world where what `k` keeps does. -/
 theorem Par.At.keepWorld {P : Par} {vals : List UInt64} {Γ : Env} {w w' : World} (h : P.At vals Γ w)
     {k : Fact → Bool} (hc : ∀ a v, k (.cell a v) = k (.cell a 0)) (hb : ∀ b n, k (.devBuf b n) = k (.devBuf b 0))
     (hk : ∀ x, k x = true → x.holds w → x.holds w') : (P.keepWorld k).At vals Γ w' := by
-  refine ⟨h.1, h.2.1, fun x hx => ?_, h.2.2.2⟩
-  simp only [Par.keepWorld, Par.facts, bufFacts, List.mem_append, List.mem_map, List.mem_filter] at hx
-  rcases hx with ⟨c, ⟨hcm, hkc⟩, rfl⟩ | ⟨d, ⟨hdm, hkd⟩, rfl⟩
-  · exact hk _ (by rw [hc]; exact hkc) (h.2.2.1 _ (List.mem_append_left _ (List.mem_map_of_mem hcm)))
-  · exact hk _ (by rw [hb]; exact hkd) (h.2.2.1 _ (List.mem_append_right _ (List.mem_map_of_mem hdm)))
+  refine ⟨h.1, h.2.1, fun x hx => ?_, h.2.2.2.1, fun c hcm => ?_⟩
+  · simp only [Par.keepWorld, Par.facts, bufFacts, List.mem_append, List.mem_map, List.mem_filter] at hx
+    rcases hx with ⟨c, ⟨hcm, hkc⟩, rfl⟩ | ⟨d, ⟨hdm, hkd⟩, rfl⟩
+    · exact hk _ (by rw [hc]; exact hkc) (h.2.2.1 _ (List.mem_append_left _ (List.mem_map_of_mem hcm)))
+    · exact hk _ (by rw [hb]; exact hkd) (h.2.2.1 _ (List.mem_append_right _ (List.mem_map_of_mem hdm)))
+  · obtain ⟨hm, hkc⟩ := List.mem_filter.mp hcm
+    obtain ⟨s, hΓ, hl⟩ := h.2.2.2.2 c hm
+    exact ⟨s, hΓ, hk (.cell c.2 s) (by rw [hc]; exact hkc) hl⟩
 
-/-- What two records both say: nothing but the calls gathered, where the run
-    gathers them. -/
+/-- What two records both say: the slots both say hold what a cell holds,
+    and the calls gathered, where the run gathers them. -/
 def Par.join (P Q : Par) : Par :=
-  { collect := P.collect && Q.collect, obls := if P.collect && Q.collect then P.obls ++ Q.obls else [] }
-
-theorem Par.join_at {P : Par} (Q : Par) {vals : List UInt64} {Γ : Env} {w : World} (hc : P.collect = false) :
-    (P.join Q).At vals Γ w :=
-  ⟨by simp [Par.join, hc], fun _ e => by simp [Par.join] at e,
-    fun _ e => by simp [Par.join, Par.facts, bufFacts] at e,
-    fun _ e => by simp only [Par.join, hc, Bool.false_and, Bool.false_eq_true, if_false, List.not_mem_nil] at e⟩
+  { collect := P.collect && Q.collect, obls := if P.collect && Q.collect then P.obls ++ Q.obls else [],
+    ctxs := P.ctxs.filter Q.ctxs.contains }
 
 theorem Par.At.join_left {P : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : P.At vals Γ w) (Q : Par) :
     (P.join Q).At vals Γ w :=
-  Par.join_at Q h.1
+  ⟨by simp [Par.join, h.1], fun _ e => by simp [Par.join] at e,
+    fun _ e => by simp [Par.join, Par.facts, bufFacts] at e,
+    fun _ e => by simp only [Par.join, h.1, Bool.false_and, Bool.false_eq_true, if_false, List.not_mem_nil] at e,
+    fun c hc => h.2.2.2.2 c (List.mem_filter.mp hc).1⟩
 
 theorem Par.At.join_right {Q : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : Q.At vals Γ w) (P : Par) :
-    (P.join Q).At vals Γ w := by
-  have e : P.join Q = Q.join P := by simp [Par.join, Bool.and_comm, h.1]
-  rw [e]; exact Par.join_at P h.1
+    (P.join Q).At vals Γ w :=
+  ⟨by simp [Par.join, h.1], fun _ e => by simp [Par.join] at e,
+    fun _ e => by simp [Par.join, Par.facts, bufFacts] at e,
+    fun _ e => by simp only [Par.join, h.1, Bool.and_false, Bool.false_eq_true, if_false, List.not_mem_nil] at e,
+    fun c hc => h.2.2.2.2 c (by simpa using (List.mem_filter.mp hc).2)⟩
 
 /-- The record with the slots from `n` on forgotten. -/
-def Par.cut (P : Par) (n : Nat) : Par := { P with slots := P.slots.filter (·.1 < n) }
+def Par.cut (P : Par) (n : Nat) : Par :=
+  { P with slots := P.slots.filter (·.1 < n), ctxs := P.ctxs.filter (·.1 < n) }
 
 theorem Par.At.cut {P : Par} {vals : List UInt64} {Γ Γ' : Env} {w : World} (h : P.At vals Γ w) {n : Nat}
     (hΓ : ∀ r, r < n → Γ'[r]? = Γ[r]?) : (P.cut n).At vals Γ' w := by
-  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2⟩
-  obtain ⟨hs, hn⟩ := List.mem_filter.mp hs
-  rw [hΓ _ (by simpa using hn)]
-  exact h.2.1 s hs
+  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2.1, fun c hc => ?_⟩
+  · obtain ⟨hs, hn⟩ := List.mem_filter.mp hs
+    rw [hΓ _ (by simpa using hn)]
+    exact h.2.1 s hs
+  · obtain ⟨hm, hn⟩ := List.mem_filter.mp hc
+    rw [hΓ _ (by simpa using hn)]
+    exact h.2.2.2.2 c hm
 
 /-- What the record says of slots holds as more are appended. -/
 theorem Par.At.extend {P : Par} {vals : List UInt64} {Γ Γ' : Env} {w : World} (h : P.At vals Γ w)
     (hΓ : ∀ r, r < Γ.size → Γ'[r]? = Γ[r]?) : P.At vals Γ' w := by
-  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2⟩
-  have e := h.2.1 s hs
-  have hlt : s.1 < Γ.size := by
-    rcases Nat.lt_or_ge s.1 Γ.size with h' | h'
-    · exact h'
-    · rw [Array.getElem?_eq_none h'] at e; cases e
-  rw [hΓ _ hlt, e]
+  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2.1, fun c hc => ?_⟩
+  · have e := h.2.1 s hs
+    have hlt : s.1 < Γ.size := by
+      rcases Nat.lt_or_ge s.1 Γ.size with h' | h'
+      · exact h'
+      · rw [Array.getElem?_eq_none h'] at e; cases e
+    rw [hΓ _ hlt, e]
+  · obtain ⟨s, e, hl⟩ := h.2.2.2.2 c hc
+    have hlt : c.1 < Γ.size := by
+      rcases Nat.lt_or_ge c.1 Γ.size with h' | h'
+      · exact h'
+      · rw [Array.getElem?_eq_none h'] at e; cases e
+    exact ⟨s, by rw [hΓ _ hlt, e], hl⟩
 
 /-- The number slot `r` holds, where it holds one computed from the
     parameters. -/
@@ -773,6 +793,32 @@ theorem AS.Holds.parSlot {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w)
     rcases List.mem_cons.mp hs with rfl | hs
     · exact hx t e rfl
     · exact hP.2.1 s hs
+
+/-- The state saying of slots holding what cells hold exactly `xs`. -/
+def AS.withCtxs (A : AS) (xs : List (R × UInt64)) : AS := A.withPar { A.par with ctxs := xs }
+
+theorem AS.Holds.withCtxs {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {xs : List (R × UInt64)}
+    (hx : ∀ c ∈ xs, ∃ s, Γ[c.1]? = some (.sc .i64 s) ∧ w.mem.load c.2 8 = some s) :
+    (A.withCtxs xs).Holds vals Γ w :=
+  h.withPar ⟨h.1.2.2.1, h.1.2.2.2.1, h.1.2.2.2.2.1, h.1.2.2.2.2.2.1, hx⟩
+
+/-- The state knowing slot `r` holds what the eight-byte cell at `a` holds,
+    where `x` names one. -/
+def AS.parCtx (A : AS) (r : R) : Option UInt64 → AS
+  | some a => A.withPar { A.par with ctxs := (r, a) :: A.par.ctxs }
+  | none => A
+
+theorem AS.Holds.parCtx {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} {x : Option UInt64}
+    (hx : ∀ a, x = some a → ∃ s, Γ[r]? = some (.sc .i64 s) ∧ w.mem.load a 8 = some s) :
+    (A.parCtx r x).Holds vals Γ w := by
+  cases x with
+  | none => exact h
+  | some a =>
+    have hP := h.1.2.2
+    refine h.withPar ⟨hP.1, hP.2.1, hP.2.2.1, hP.2.2.2.1, fun c hc => ?_⟩
+    rcases List.mem_cons.mp hc with rfl | hc
+    · exact hx a rfl
+    · exact hP.2.2.2.2 c hc
 
 theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {av : AV} {v : V} {σ : Sym}
     (hv : av.Desc (Γ.push v) w v) (hσ : σ.Fits (Γ.push v) w A.len (A.len + 1)) :
