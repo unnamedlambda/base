@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Demo.RaymarchDemo
 
@@ -45,9 +46,8 @@ set_option maxHeartbeats 1000000 in
 theorem Raymarch_moveForward_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : RaymarchTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testMoveForward : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testMoveForward : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (RaymarchTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (RaymarchTestIO dataLen outLen))
-    Raymarch_moveForward_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testMoveForward : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem Raymarch_strafeRight_fine :
     Fine (emitGo (Raymarch.testStrafeRight : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -58,9 +58,8 @@ set_option maxHeartbeats 1000000 in
 theorem Raymarch_strafeRight_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : RaymarchTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testStrafeRight : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testStrafeRight : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (RaymarchTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (RaymarchTestIO dataLen outLen))
-    Raymarch_strafeRight_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testStrafeRight : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem Raymarch_riseClamp_fine :
     Fine (emitGo (Raymarch.testRiseClamp : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -71,9 +70,8 @@ set_option maxHeartbeats 1000000 in
 theorem Raymarch_riseClamp_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : RaymarchTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRiseClamp : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRiseClamp : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (RaymarchTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (RaymarchTestIO dataLen outLen))
-    Raymarch_riseClamp_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRiseClamp : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem Raymarch_quitOnClose_fine :
     Fine (emitGo (Raymarch.testQuitOnClose : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -84,9 +82,8 @@ set_option maxHeartbeats 1000000 in
 theorem Raymarch_quitOnClose_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : RaymarchTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (RaymarchTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (RaymarchTestIO dataLen outLen))
-    Raymarch_quitOnClose_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem Raymarch_renderScene_fine :
     Fine (emitGo (Raymarch.testRenderScene : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -97,9 +94,8 @@ set_option maxHeartbeats 1000000 in
 theorem Raymarch_renderScene_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : RaymarchTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRenderScene : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRenderScene : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (RaymarchTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (RaymarchTestIO dataLen outLen))
-    Raymarch_renderScene_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRenderScene : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- Raymarch: the game, on a display or on none
 

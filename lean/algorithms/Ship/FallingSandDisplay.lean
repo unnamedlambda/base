@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import Ship.FallingSandStart
 
 /-!
@@ -20,8 +21,7 @@ set_option maxHeartbeats 1000000 in
 theorem FallingSand_main_display_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : FallingSandMainOn true w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.mainBody : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (FallingSandMainOn true) (runArgs dataLen outLen) (by prog_vc (FallingSandMainOn true))
-    FallingSand_main_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end WgpuSafe

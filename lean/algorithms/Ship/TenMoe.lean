@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Warp.MlpCifar
 
@@ -128,8 +129,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem main_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Load w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mLoadFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mLoadFn : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Load (runArgs dataLen outLen) (by prog_vc Load) main_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mLoadFn : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem runRouter_fine : Fine (emitGo ((MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -138,8 +139,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem runRouter_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run 0 0) (runArgs dataLen outLen) (by prog_vc (Run 0 0)) runRouter_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem fetchGate_fine : Fine (emitGo ((MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -148,8 +149,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem fetchGate_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 (MlpCifar.NE * 4)) w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run 0 (MlpCifar.NE * 4)) (runArgs dataLen outLen) (by prog_vc (Run 0 (MlpCifar.NE * 4))) fetchGate_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem bindExperts_fine : Fine (emitGo (MlpCifar.mBindExperts : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -162,7 +163,7 @@ theorem bindExperts_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mBindExperts : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mBindExperts : Prog Slot Lvl Unit)) ≠ .fault m := by
   rw [mem_size] at h
-  exact sound_of_wp_entry (Bind dataLen) (runArgs dataLen outLen) (by prog_vc (Bind dataLen)) bindExperts_fine rfl h m
+  check_body
 
 theorem uploadGates_fine : Fine (emitGo ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -171,8 +172,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem uploadGates_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 128 0) w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run 128 0) (runArgs dataLen outLen) (by prog_vc (Run 128 0)) uploadGates_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem runExperts_fine : Fine (emitGo ((MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -181,8 +182,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem runExperts_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run 0 0) (runArgs dataLen outLen) (by prog_vc (Run 0 0)) runExperts_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem fetchOut_fine : Fine (emitGo ((MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -191,8 +192,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem fetchOut_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 (MlpCifar.MD * 4)) w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run 0 (MlpCifar.MD * 4)) (runArgs dataLen outLen) (by prog_vc (Run 0 (MlpCifar.MD * 4))) fetchOut_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end MoeSafe
 

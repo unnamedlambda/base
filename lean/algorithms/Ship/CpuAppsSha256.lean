@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Demo.Sha256
 

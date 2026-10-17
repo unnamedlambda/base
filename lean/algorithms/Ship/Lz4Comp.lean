@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Lz4.Comp
 
@@ -48,8 +49,7 @@ theorem warp15_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
   rw [memSize_15, bindOff_15] at h
   rw [show (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit) = (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 : Prog Slot Lvl Unit) by
     rw [Lz4Ship.warpCode, bindOff_15]]
-  exact sound_of_wp_entry (Start dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Start dataLen outLen))
-    warp15_fine rfl h m
+  check_body
 
 theorem warp16_fine : Fine (emitGo (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -66,8 +66,7 @@ theorem warp16_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
   rw [memSize_16, bindOff_16] at h
   rw [show (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit) = (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit) by
     rw [Lz4Ship.warpCode, bindOff_16]]
-  exact sound_of_wp_entry (Start dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Start dataLen outLen))
-    warp16_fine rfl h m
+  check_body
 
 end Lz4CompSafe
 

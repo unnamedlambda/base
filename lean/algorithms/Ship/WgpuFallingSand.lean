@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Demo.FallingSand
 
@@ -41,9 +42,8 @@ set_option maxHeartbeats 1000000 in
 theorem FallingSand_grainFalls_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : FallingSandTest dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testGrainFalls : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testGrainFalls : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (FallingSandTest dataLen outLen) (runArgs dataLen outLen) (by prog_vc (FallingSandTest dataLen outLen))
-    FallingSand_grainFalls_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testGrainFalls : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem FallingSand_conservation_fine :
     Fine (emitGo (FallingSand.testConservation : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -54,9 +54,8 @@ set_option maxHeartbeats 1000000 in
 theorem FallingSand_conservation_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : FallingSandTest dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testConservation : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testConservation : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (FallingSandTest dataLen outLen) (runArgs dataLen outLen) (by prog_vc (FallingSandTest dataLen outLen))
-    FallingSand_conservation_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testConservation : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end WgpuSafe
 

@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Demo.Draw
 import Demo.Raytrace
@@ -39,8 +40,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem Draw_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : DrawMain w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Draw.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Draw.code : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry DrawMain (runArgs dataLen outLen) (by prog_vc DrawMain) Draw_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Draw.code : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- Raytrace
 
@@ -55,8 +56,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem Raytrace_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : RaytraceMain w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Raytrace.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raytrace.code : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry RaytraceMain (runArgs dataLen outLen) (by prog_vc RaytraceMain) Raytrace_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Raytrace.code : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- Fft
 

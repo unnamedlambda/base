@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Host.StaticChecks
 import Demo.ByteCount
@@ -37,9 +38,8 @@ set_option maxRecDepth 20000 in
 theorem bytecount_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ByteCount.code) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ByteCount.code) ≠ .fault m :=
-  sound_of_wp_entry (Run dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Run dataLen outLen))
-    bytecount_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ByteCount.code) ≠ .fault m := by
+  check_body
 
 theorem bytescrub_fine : Fine (emitGo (ByteScrub.code (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -48,9 +48,8 @@ set_option maxRecDepth 20000 in
 theorem bytescrub_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ByteScrub.code) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ByteScrub.code) ≠ .fault m :=
-  sound_of_wp_entry (Run dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Run dataLen outLen))
-    bytescrub_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ByteScrub.code) ≠ .fault m := by
+  check_body
 
 theorem clampsum_fine : Fine (emitGo (ClampSumBench.code (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -60,9 +59,8 @@ set_option maxHeartbeats 1000000 in
 theorem clampsum_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit ClampSumBench.code) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ClampSumBench.code) ≠ .fault m :=
-  sound_of_wp_entry (Run dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Run dataLen outLen)) clampsum_fine
-    rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit ClampSumBench.code) ≠ .fault m := by
+  check_body
 
 /-- SelfDescribing's arena, and the caller's data and output of the lengths
     it passes. -/
@@ -70,6 +68,10 @@ abbrev SdRun (dl ol : UInt64) : World → Prop := Contracts.TState.holds
   [.part .frozen false, .room .arena 4420, .roomArg .data dl, .roomArg .out ol]
 
 theorem selfDescribing_size : SelfDescribing.layoutMeta.totalSize = 4420 := by native_decide
+
+/-- The schema's length as a number: the compiled encoder computes it, since the
+    kernel would encode the schema to check it. -/
+theorem schemaBytes_length : SelfDescribing.schemaBytes.length = 186 := by native_decide
 
 theorem selfDescribing_schema_fine :
     Fine (emitGo (SelfDescribing.schemaCode (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -82,8 +84,19 @@ theorem selfDescribing_schema_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.schemaCode (V := Slot) (L := Lvl))) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.schemaCode (V := Slot) (L := Lvl))) ≠ .fault m := by
   rw [selfDescribing_size] at h
-  exact sound_of_wp_entry_ans (SdRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (SdRun dataLen outLen))
-    selfDescribing_schema_fine rfl h m
+  unfold SelfDescribing.schemaCode
+  simp only [schemaBytes_length]
+  check_body
+
+/-- Where the stats and bulk answers sit, and their pieces, as numbers. -/
+theorem stats_offset : SelfDescribing.f.stats.offset = 250 := by native_decide
+theorem bulk_offset : SelfDescribing.f.bulk.offset = 2364 := by native_decide
+theorem statsCountAt_eq : SelfDescribing.statsCountAt = 30 := by native_decide
+theorem statsSumAt_eq : SelfDescribing.statsSumAt = 43 := by native_decide
+theorem statsHistAt_eq : SelfDescribing.statsHistAt = 66 := by native_decide
+theorem statsSize_eq : SelfDescribing.statsSize = 2114 := by native_decide
+theorem bulkSize_eq : SelfDescribing.bulkSize = 2056 := by native_decide
+theorem bulkId_size : SelfDescribing.bulkId.utf8ByteSize = 8 := by native_decide
 
 theorem selfDescribing_stats_fine :
     Fine (emitGo (SelfDescribing.statsCode (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -96,8 +109,9 @@ theorem selfDescribing_stats_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w 
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.statsCode (V := Slot) (L := Lvl))) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.statsCode (V := Slot) (L := Lvl))) ≠ .fault m := by
   rw [selfDescribing_size] at h
-  exact sound_of_wp_entry_ans (SdRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (SdRun dataLen outLen))
-    selfDescribing_stats_fine rfl h m
+  unfold SelfDescribing.statsCode
+  simp only [fldAddr, stats_offset, statsCountAt_eq, statsSumAt_eq, statsHistAt_eq, statsSize_eq]
+  check_body
 
 theorem selfDescribing_bulk_fine :
     Fine (emitGo (SelfDescribing.bulkCode (V := Slot) (L := Lvl)) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -110,8 +124,9 @@ theorem selfDescribing_bulk_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w :
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.bulkCode (V := Slot) (L := Lvl))) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.bulkCode (V := Slot) (L := Lvl))) ≠ .fault m := by
   rw [selfDescribing_size] at h
-  exact sound_of_wp_entry_ans (SdRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (SdRun dataLen outLen))
-    selfDescribing_bulk_fine rfl h m
+  unfold SelfDescribing.bulkCode
+  simp only [fldAddr, bulk_offset, bulkSize_eq, bulkId_size]
+  check_body
 
 end ShipSafe
 

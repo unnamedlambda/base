@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Warp.Gemv
 
@@ -47,8 +48,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Load w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.loadCode sh : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.loadCode sh : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Load (runArgs dataLen outLen) (by prog_vc Load) load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.loadCode sh : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem run_fine : Fine (emitGo (GemvWarp.runCode sh false .vec4 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -57,8 +58,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .vec4 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .vec4 : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) run_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .vec4 : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem runStrided_fine : Fine (emitGo (GemvWarp.runCode sh false .strided : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -67,8 +68,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem runStrided_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .strided : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .strided : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) runStrided_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .strided : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem runBlocked_fine : Fine (emitGo (GemvWarp.runCode sh false .blocked : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -77,8 +78,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem runBlocked_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .blocked : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .blocked : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) runBlocked_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh false .blocked : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem sq_fine : Fine (emitGo (GemvWarp.runCode sh true .vec4 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -87,8 +88,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem sq_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .vec4 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .vec4 : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) sq_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .vec4 : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem sqStrided_fine : Fine (emitGo (GemvWarp.runCode sh true .strided : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -97,8 +98,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem sqStrided_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .strided : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .strided : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) sqStrided_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .strided : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem sqBlocked_fine : Fine (emitGo (GemvWarp.runCode sh true .blocked : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -107,8 +108,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem sqBlocked_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .blocked : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .blocked : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) sqBlocked_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.runCode sh true .blocked : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem fetch_fine : Fine (emitGo (GemvWarp.fetchCode sh : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -117,8 +118,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.fetchCode sh : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.fetchCode sh : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) fetch_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.fetchCode sh : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem blas_fine : Fine (emitGo (GemvWarp.blasCode sh : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -127,8 +128,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem blas_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.blasCode sh : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.blasCode sh : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry Run (runArgs dataLen outLen) (by prog_vc Run) blas_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GemvWarp.blasCode sh : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end GemvWarpSafeMid
 

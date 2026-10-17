@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Host.StaticChecks
 import Warp.Silu
@@ -46,8 +47,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem SiluWarp_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpLoad w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry SiluWarpLoad (runArgs dataLen outLen) (by prog_vc SiluWarpLoad) SiluWarp_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem SiluWarp_run_fine : Fine (emitGo (SiluWarp.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -56,8 +57,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem SiluWarp_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry SiluWarpRun (runArgs dataLen outLen) (by prog_vc SiluWarpRun) SiluWarp_run_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem SiluWarp_runLoop_fine : Fine (emitGo (SiluWarp.runLoopFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -66,8 +67,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem SiluWarp_runLoop_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runLoopFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runLoopFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry SiluWarpRun (runArgs dataLen outLen) (by prog_vc SiluWarpRun) SiluWarp_runLoop_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runLoopFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem SiluWarp_fetch_fine : Fine (emitGo (SiluWarp.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -76,8 +77,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem SiluWarp_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry SiluWarpRun (runArgs dataLen outLen) (by prog_vc SiluWarpRun) SiluWarp_fetch_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- WarpSumSq
 
@@ -96,8 +97,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem WarpSumSq_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WarpSumSqLoad w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry WarpSumSqLoad (runArgs dataLen outLen) (by prog_vc WarpSumSqLoad) WarpSumSq_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem WarpSumSq_run_fine : Fine (emitGo (WarpSumSq.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -106,8 +107,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem WarpSumSq_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WarpSumSqRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry WarpSumSqRun (runArgs dataLen outLen) (by prog_vc WarpSumSqRun) WarpSumSq_run_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem WarpSumSq_fetch_fine : Fine (emitGo (WarpSumSq.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -116,8 +117,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem WarpSumSq_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WarpSumSqRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry WarpSumSqRun (runArgs dataLen outLen) (by prog_vc WarpSumSqRun) WarpSumSq_fetch_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- MlpWarp
 
@@ -136,8 +137,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem MlpWarp_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MlpWarpLoad w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry MlpWarpLoad (runArgs dataLen outLen) (by prog_vc MlpWarpLoad) MlpWarp_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem MlpWarp_run_fine : Fine (emitGo (MlpWarp.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -146,8 +147,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem MlpWarp_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MlpWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry MlpWarpRun (runArgs dataLen outLen) (by prog_vc MlpWarpRun) MlpWarp_run_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem MlpWarp_fetch_fine : Fine (emitGo (MlpWarp.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -156,8 +157,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem MlpWarp_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MlpWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry MlpWarpRun (runArgs dataLen outLen) (by prog_vc MlpWarpRun) MlpWarp_fetch_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- GradWarp
 
@@ -176,8 +177,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem GradWarp_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpLoad w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry GradWarpLoad (runArgs dataLen outLen) (by prog_vc GradWarpLoad) GradWarp_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem GradWarp_run_fine : Fine (emitGo (GradWarp.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -186,8 +187,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem GradWarp_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry GradWarpRun (runArgs dataLen outLen) (by prog_vc GradWarpRun) GradWarp_run_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem GradWarp_runD_fine : Fine (emitGo (GradWarp.runDFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -196,8 +197,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem GradWarp_runD_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runDFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runDFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry GradWarpRun (runArgs dataLen outLen) (by prog_vc GradWarpRun) GradWarp_runD_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runDFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem GradWarp_fetch_fine : Fine (emitGo (GradWarp.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -206,7 +207,7 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem GradWarp_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpRun w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry GradWarpRun (runArgs dataLen outLen) (by prog_vc GradWarpRun) GradWarp_fetch_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end CudaSafe

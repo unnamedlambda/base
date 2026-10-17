@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import Ship.CpuBenchStart
 
 /-!
@@ -24,8 +25,8 @@ set_option maxHeartbeats 1000000 in
 theorem poly_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outAnswer (CpuBench.polySimd (← CpuBench.arrayWith 2 CpuBench.POLY_OFF)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outAnswer (CpuBench.polySimd (← CpuBench.arrayWith 2 CpuBench.POLY_OFF)) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Run dataLen outLen)) poly_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outAnswer (CpuBench.polySimd (← CpuBench.arrayWith 2 CpuBench.POLY_OFF)) : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end CpuBenchSafe
 

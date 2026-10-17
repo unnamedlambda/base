@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import Ship.CpuBenchStart
 
 /-!

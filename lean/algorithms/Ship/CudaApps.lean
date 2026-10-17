@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Demo.Matmul
 import Demo.Scene
@@ -38,8 +39,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem Matmul_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MatmulMain w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Matmul.code Matmul.M Matmul.K Matmul.N : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Matmul.code Matmul.M Matmul.K Matmul.N : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry MatmulMain (runArgs dataLen outLen) (by prog_vc MatmulMain) Matmul_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Matmul.code Matmul.M Matmul.K Matmul.N : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- Scene, at the scene it ships with
 
@@ -56,8 +57,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem Scene_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SceneMain w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Scene.code Scene.defaultScene : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Scene.code Scene.defaultScene : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry SceneMain (runArgs dataLen outLen) (by prog_vc SceneMain) Scene_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Scene.code Scene.defaultScene : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- BlackHole, at the scene it ships with
 
@@ -76,8 +77,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem BlackHole_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BlackHoleMain w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (BlackHole.code BlackHole.defaultBlackHole : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BlackHole.code BlackHole.defaultBlackHole : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry BlackHoleMain (runArgs dataLen outLen) (by prog_vc BlackHoleMain) BlackHole_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (BlackHole.code BlackHole.defaultBlackHole : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end CudaAppsSafe
 

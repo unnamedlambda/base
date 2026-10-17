@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import Bench.System
 import AlgorithmLib.Proof.Typestate
 import Host.StaticChecks
@@ -35,8 +36,8 @@ set_option maxRecDepth 20000 in
     for: each lookup's value fits the eight bytes it is read into, because
     every value inserted is eight bytes. -/
 theorem ht_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : HtStart w) (m : String) :
-    run cfg (runArgs dataLen outLen) w (emit ht) ≠ .misuse m :=
-  safe_of_wp_entry HtStart (runArgs dataLen outLen) (by prog_vc HtStart) ht_fine rfl h m
+    run cfg (runArgs dataLen outLen) w (emit ht) ≠ .misuse m := by
+  check_body
 
 /-- Where `wc` may start: memory not frozen, the input a C string (the file's
     path), the arena holding the largest file it reads, the output its count. -/
@@ -51,8 +52,8 @@ set_option maxRecDepth 20000 in
 /-- **`wc` never misuses the file adapter**, whatever file its input names:
     the file is read into room for as much as it asks for. -/
 theorem wc_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WcStart w) (m : String) :
-    run cfg (runArgs dataLen outLen) w (emit wc) ≠ .misuse m :=
-  safe_of_wp_entry WcStart (runArgs dataLen outLen) (by prog_vc WcStart) wc_fine rfl h m
+    run cfg (runArgs dataLen outLen) w (emit wc) ≠ .misuse m := by
+  check_body
 
 /-- The arguments `kv` is run with: the output has room for the scan. -/
 def kvArgs : List V :=
@@ -73,7 +74,7 @@ set_option maxRecDepth 20000 in
 /-- **`kv` never misuses the ordered store**, whatever the directory already
     holds: the scan writes only the rows that fit in the room it is given. -/
 theorem kv_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : KvStart w) (m : String) :
-    run cfg kvArgs w (emit kv) ≠ .misuse m :=
-  safe_of_wp_entry KvStart kvArgs (by prog_vc KvStart) kv_fine rfl h m
+    run cfg kvArgs w (emit kv) ≠ .misuse m := by
+  check_body
 
 end SystemBench

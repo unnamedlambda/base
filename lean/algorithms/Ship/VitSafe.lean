@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Vit.Algorithm
 
@@ -55,7 +56,7 @@ theorem fetch_sound (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 
     Sem.run cfg (runArgs dataLen outLen) w (emit fetchCode) ≠ .fault m := by
   have hf := fetch_fine
   rw [fetch_eq] at hf ⊢
-  exact sound_of_wp_entry (Run 0 102400) (runArgs dataLen outLen) (by prog_vc (Run 0 102400)) hf rfl h m
+  check_body
 
 def seedCode : Prog Slot Lvl Unit := Vit.vSeedFn
 theorem seed_eq : seedCode = (do
@@ -77,7 +78,7 @@ theorem seed_sound (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 1
     Sem.run cfg (runArgs dataLen outLen) w (emit seedCode) ≠ .fault m := by
   have hf := seed_fine
   rw [seed_eq] at hf ⊢
-  exact sound_of_wp_entry (Run 102400 0) (runArgs dataLen outLen) (by prog_vc (Run 102400 0)) hf rfl h m
+  check_body
 
 theorem bindBase : Vit.VBIND_OFF = 760064 := by native_decide
 theorem nbuf : Vit.VNBUF = 2580 := by native_decide
@@ -118,7 +119,7 @@ theorem any_sound (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Any da
     Sem.run cfg (runArgs dataLen outLen) w (emit anyCode) ≠ .fault m := by
   have hf := any_fine
   rw [any_eq] at hf ⊢
-  exact sound_of_wp_entry (Any dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Any dataLen outLen)) hf rfl h m
+  check_body
 
 end VitSafe
 

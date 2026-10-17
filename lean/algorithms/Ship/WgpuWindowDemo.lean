@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Demo.WindowDemo
 
@@ -45,9 +46,8 @@ set_option maxHeartbeats 1000000 in
 theorem WindowDemo_renderPixel_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : WindowDemoTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testRenderPixel : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testRenderPixel : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (WindowDemoTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (WindowDemoTestIO dataLen outLen))
-    WindowDemo_renderPixel_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testRenderPixel : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem WindowDemo_quitOnClose_fine :
     Fine (emitGo (WindowDemo.testQuitOnClose : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -58,9 +58,8 @@ set_option maxHeartbeats 1000000 in
 theorem WindowDemo_quitOnClose_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : WindowDemoTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (WindowDemoTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (WindowDemoTestIO dataLen outLen))
-    WindowDemo_quitOnClose_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem WindowDemo_moveRight_fine :
     Fine (emitGo (WindowDemo.testMoveRight : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -71,9 +70,8 @@ set_option maxHeartbeats 1000000 in
 theorem WindowDemo_moveRight_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : WindowDemoTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveRight : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveRight : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (WindowDemoTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (WindowDemoTestIO dataLen outLen))
-    WindowDemo_moveRight_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveRight : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem WindowDemo_moveLeft_fine :
     Fine (emitGo (WindowDemo.testMoveLeft : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -84,9 +82,8 @@ set_option maxHeartbeats 1000000 in
 theorem WindowDemo_moveLeft_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : WindowDemoTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveLeft : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveLeft : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (WindowDemoTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (WindowDemoTestIO dataLen outLen))
-    WindowDemo_moveLeft_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveLeft : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem WindowDemo_moveUpClamp_fine :
     Fine (emitGo (WindowDemo.testMoveUpClamp : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
@@ -97,9 +94,8 @@ set_option maxHeartbeats 1000000 in
 theorem WindowDemo_moveUpClamp_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : WindowDemoTestIO dataLen outLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveUpClamp : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveUpClamp : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (WindowDemoTestIO dataLen outLen) (runArgs dataLen outLen) (by prog_vc (WindowDemoTestIO dataLen outLen))
-    WindowDemo_moveUpClamp_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveUpClamp : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- WindowDemo: the game, on a display or on none
 

@@ -1,3 +1,5 @@
+import AlgorithmLib.Check.Entry
+import AlgorithmLib.Check.Seq
 import AlgorithmLib.Proof.Calls
 import Host.StaticChecks
 import Bench.CudaSoftmaxPersist
@@ -51,9 +53,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaSoftmaxPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistLoad dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaSoftmaxPersistLoad dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaSoftmaxPersistLoad dataLen outLen))
-    CudaSoftmaxPersist_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem CudaSoftmaxPersist_prep_fine : Fine (emitGo (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -62,9 +63,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaSoftmaxPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaSoftmaxPersistRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaSoftmaxPersistRun dataLen outLen))
-    CudaSoftmaxPersist_prep_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem CudaSoftmaxPersist_core_fine : Fine (emitGo (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -73,9 +73,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaSoftmaxPersist_core_triple (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit))
-      { ok := fun _ w' => CudaSoftmaxPersistRun dataLen outLen w', faultOk := false } :=
-  triple_of_wp_entry (CudaSoftmaxPersistRun dataLen outLen) (CudaSoftmaxPersistRun dataLen outLen) (runArgs dataLen outLen)
-    (by prog_vc (CudaSoftmaxPersistRun dataLen outLen)) CudaSoftmaxPersist_core_fine rfl w h
+      { ok := fun _ w' => CudaSoftmaxPersistRun dataLen outLen w', faultOk := false } := by
+  check_reach
 
 theorem CudaSoftmaxPersist_core_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
@@ -89,9 +88,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaSoftmaxPersist_finalize_triple (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit))
-      { ok := fun _ w' => Contracts.TState.holds [] w', faultOk := false } :=
-  triple_of_wp_entry (CudaSoftmaxPersistRun dataLen outLen) (Contracts.TState.holds []) (runArgs dataLen outLen)
-    (by prog_vc (CudaSoftmaxPersistRun dataLen outLen)) CudaSoftmaxPersist_finalize_fine rfl w h
+      { ok := fun _ w' => Contracts.TState.holds [] w', faultOk := false } := by
+  check_reach
 
 theorem CudaSoftmaxPersist_finalize_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
@@ -115,9 +113,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaGemvPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaGemvPersistLoad dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaGemvPersistLoad dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaGemvPersistLoad dataLen outLen))
-    CudaGemvPersist_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem CudaGemvPersist_prep_fine : Fine (emitGo (CudaGemvPersist.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -126,9 +123,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaGemvPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaGemvPersistRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaGemvPersistRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaGemvPersistRun dataLen outLen))
-    CudaGemvPersist_prep_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 abbrev CudaGemvPersistInfer (dl ol m n : UInt64) : World → Prop := Contracts.TState.holds
   [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
@@ -168,9 +164,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaRmsNormPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaRmsNormPersistLoad dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaRmsNormPersistLoad dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaRmsNormPersistLoad dataLen outLen))
-    CudaRmsNormPersist_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem CudaRmsNormPersist_prep_fine : Fine (emitGo (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -179,9 +174,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaRmsNormPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaRmsNormPersistRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaRmsNormPersistRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaRmsNormPersistRun dataLen outLen))
-    CudaRmsNormPersist_prep_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem CudaRmsNormPersist_infer_fine : Fine (emitGo (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -190,9 +184,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaRmsNormPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaRmsNormPersistRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaRmsNormPersistRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaRmsNormPersistRun dataLen outLen))
-    CudaRmsNormPersist_infer_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- CudaDecodeAttention
 
@@ -222,9 +215,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaDecodeAttention_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.prepCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaDecodeAttentionRun dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaDecodeAttentionRun dataLen outLen))
-    CudaDecodeAttention_prep_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem CudaDecodeAttention_finalize_fine : Fine (emitGo (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -233,9 +225,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaDecodeAttention_finalize_triple (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionRun dataLen outLen w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit))
-      { ok := fun _ w' => Contracts.TState.holds [] w', faultOk := false } :=
-  triple_of_wp_entry (CudaDecodeAttentionRun dataLen outLen) (Contracts.TState.holds []) (runArgs dataLen outLen)
-    (by prog_vc (CudaDecodeAttentionRun dataLen outLen)) CudaDecodeAttention_finalize_fine rfl w h
+      { ok := fun _ w' => Contracts.TState.holds [] w', faultOk := false } := by
+  check_reach
 
 theorem CudaDecodeAttention_finalize_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionRun dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
@@ -329,8 +320,10 @@ theorem CudaSoftmaxPersist_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataLe
       (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ≠ .fault m :=
   have h3 := (softmax_summaries env steps k dataLen outLen).1
   have h4 := (softmax_summaries env steps k dataLen outLen).2
-  sound_of_wp_entry (CudaSoftmaxPersistRun dataLen outLen) (runArgs dataLen outLen)
-    (by prog_vc (CudaSoftmaxPersistRun dataLen outLen)) softmax_infer_fine rfl h m
+  by
+    rw [show (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) =
+      [.straight (Check.seqCalls [3, 4])] from rfl]
+    exact Check.seqCalls_run (cs := [3, 4]) ⟨_, h3, _, h4, trivial⟩ h m
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
@@ -342,8 +335,10 @@ theorem CudaSoftmaxPersist_stack_no_misuse (env : FnEnv) (steps k : Nat) (dataLe
       (emit (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) ≠ .fault m :=
   have h3 := (softmax_summaries env steps k dataLen outLen).1
   have h4 := (softmax_summaries env steps k dataLen outLen).2
-  sound_of_wp_entry (CudaSoftmaxPersistRun dataLen outLen) (runArgs dataLen outLen)
-    (by prog_vc (CudaSoftmaxPersistRun dataLen outLen)) softmax_stack_fine rfl h m
+  by
+    rw [show (emit (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) =
+      [.straight (Check.seqCalls (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]))] from rfl]
+    exact Check.seqCalls_run (Check.sumChain_repeat h3 (rest := [4]) ⟨_, h4, trivial⟩ _) h m
 
 theorem decode_infer_fine : Fine (emitGo (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   softmax_infer_fine
@@ -375,8 +370,13 @@ theorem CudaDecodeAttention_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataL
       (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ≠ .fault m :=
   have h3 := (decode_summaries env steps k dataLen outLen s hs).1
   have h4 := (decode_summaries env steps k dataLen outLen s hs).2
-  sound_of_wp_entry (CudaDecodeAttentionCore dataLen outLen s) (runArgs dataLen outLen)
-    (by prog_vc (CudaDecodeAttentionCore dataLen outLen s)) decode_infer_fine rfl h m
+  by
+    rw [show (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) =
+      [.straight (Check.seqCalls [3, 4])] from rfl]
+    exact Check.seqCalls_run (cs := [3, 4]) ⟨_, h3, _, (Check.summary_weaken h4 (by
+      intro f hf
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hf ⊢
+      rcases hf with h | h | h | h | h | h | h | h | h | h <;> simp [h])), trivial⟩ h m
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
@@ -389,8 +389,13 @@ theorem CudaDecodeAttention_stack_no_misuse (env : FnEnv) (steps k : Nat) (dataL
       (emit (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) ≠ .fault m :=
   have h3 := (decode_summaries env steps k dataLen outLen s hs).1
   have h4 := (decode_summaries env steps k dataLen outLen s hs).2
-  sound_of_wp_entry (CudaDecodeAttentionCore dataLen outLen s) (runArgs dataLen outLen)
-    (by prog_vc (CudaDecodeAttentionCore dataLen outLen s)) decode_stack_fine rfl h m
+  by
+    rw [show (emit (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) =
+      [.straight (Check.seqCalls (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]))] from rfl]
+    exact Check.seqCalls_run (Check.sumChain_repeat h3 (rest := [4]) ⟨_, (Check.summary_weaken h4 (by
+      intro f hf
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hf ⊢
+      rcases hf with h | h | h | h | h | h | h | h | h | h <;> simp [h])), trivial⟩ _) h m
 
 end CudaBenchSafe
 

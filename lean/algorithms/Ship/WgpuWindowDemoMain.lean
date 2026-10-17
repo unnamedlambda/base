@@ -1,3 +1,4 @@
+import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
 import Demo.WindowDemo
 
@@ -36,18 +37,16 @@ set_option maxHeartbeats 1000000 in
 theorem WindowDemo_main_display_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : WindowDemoMainOn true w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (WindowDemoMainOn true) (runArgs dataLen outLen) (by prog_vc (WindowDemoMainOn true))
-    WindowDemo_main_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem WindowDemo_main_headless_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     (h : WindowDemoMainOn false w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (WindowDemoMainOn false) (runArgs dataLen outLen) (by prog_vc (WindowDemoMainOn false))
-    WindowDemo_main_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 /-- **The game neither misuses a call nor faults**, whether or not there is a display. -/
 theorem WindowDemo_main_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
