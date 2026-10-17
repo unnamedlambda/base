@@ -256,18 +256,14 @@ unsafe extern "C" fn base_window_pixels(win: *mut Win) -> i64 {
     i64::from(size.width) | (i64::from(size.height) << 32)
 }
 
-/// The address of `symbol`, or `None` for one this library does not have.
-pub(crate) fn linked(symbol: &str) -> Option<usize> {
-    Some(match symbol {
-        "base_window_init" => base_window_init as usize,
-        "base_window_open" => base_window_open as usize,
-        "base_window_close" => base_window_close as usize,
-        "base_window_pump" => base_window_pump as usize,
-        "base_window_poll" => base_window_poll as usize,
-        "base_window_pixels" => base_window_pixels as usize,
-        _ => return None,
-    })
-}
+crate::ffi::symbols!(
+    base_window_init,
+    base_window_open,
+    base_window_close,
+    base_window_pump,
+    base_window_poll,
+    base_window_pixels,
+);
 
 #[cfg(test)]
 mod tests {

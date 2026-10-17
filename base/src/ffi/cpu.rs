@@ -143,14 +143,10 @@ unsafe extern "C" fn base_cpu_unpin() -> i32 {
     }
 }
 
-/// The address of `symbol`, or `None` for one this library does not have.
-pub(crate) fn linked(symbol: &str) -> Option<usize> {
-    Some(match symbol {
-        "base_cpu_count" => base_cpu_count as usize,
-        "base_cpu_core" => base_cpu_core as usize,
-        "base_cpu_package" => base_cpu_package as usize,
-        "base_cpu_pin" => base_cpu_pin as usize,
-        "base_cpu_unpin" => base_cpu_unpin as usize,
-        _ => return None,
-    })
-}
+crate::ffi::symbols!(
+    base_cpu_count,
+    base_cpu_core,
+    base_cpu_package,
+    base_cpu_pin,
+    base_cpu_unpin,
+);

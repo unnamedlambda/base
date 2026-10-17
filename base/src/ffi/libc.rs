@@ -12,14 +12,11 @@ extern "C" {
     fn free(p: *mut c_void);
 }
 
-pub(crate) fn linked(symbol: &str) -> Option<usize> {
-    Some(match symbol {
-        "memcpy" => memcpy as usize,
-        "memmove" => memmove as usize,
-        "memset" => memset as usize,
-        "strlen" => strlen as usize,
-        "calloc" => calloc as usize,
-        "free" => free as usize,
-        _ => return None,
-    })
-}
+crate::ffi::symbols!(
+    memcpy,
+    memmove,
+    memset,
+    strlen,
+    calloc,
+    free,
+);

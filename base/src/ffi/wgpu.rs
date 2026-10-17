@@ -467,37 +467,62 @@ release!(
     wgpuErrorScopeRelease wgpu::ErrorScopeGuard;
 );
 
-/// The address of `symbol`, for the functions a program calls itself
-/// (`Ext.wgpu`).
-pub(crate) fn linked(symbol: &str) -> Option<usize> {
-    macro_rules! table {
-        ($($f:ident)*) => {
-            match symbol {
-                $(stringify!($f) => Some($f as usize),)*
-                _ => None,
-            }
-        };
-    }
-    table!(
-        wgpuCreateInstance wgpuInstanceRequestAdapter wgpuAdapterRequestDevice wgpuDeviceGetQueue
-        wgpuDeviceCreateBuffer wgpuDeviceCreateShaderModule wgpuDeviceCreateBindGroupLayout
-        wgpuDeviceCreatePipelineLayout wgpuDeviceCreateComputePipeline wgpuDeviceCreateBindGroup
-        wgpuDeviceCreateRenderPipeline wgpuRenderPipelineGetBindGroupLayout
-        wgpuDevicePushErrorScope wgpuErrorScopePop
-        wgpuDeviceCreateCommandEncoder wgpuCommandEncoderBeginComputePass wgpuComputePassSetPipeline
-        wgpuComputePassSetBindGroup wgpuComputePassDispatchWorkgroups wgpuComputePassEnd
-        wgpuCommandEncoderCopyBufferToBuffer wgpuCommandEncoderBeginRenderPass wgpuRenderPassSetPipeline
-        wgpuRenderPassSetBindGroup wgpuRenderPassDraw wgpuRenderPassEnd wgpuCommandEncoderFinish
-        wgpuQueueSubmit wgpuQueueWriteBuffer wgpuBufferRead
-        wgpuInstanceCreateSurface wgpuSurfaceConfigure wgpuSurfaceGetCurrentTexture
-        wgpuSurfaceTextureCreateView wgpuSurfaceTexturePresent
-        wgpuInstanceRelease wgpuAdapterRelease wgpuDeviceRelease wgpuQueueRelease wgpuBufferRelease
-        wgpuShaderModuleRelease wgpuBindGroupLayoutRelease wgpuPipelineLayoutRelease
-        wgpuComputePipelineRelease wgpuBindGroupRelease wgpuCommandEncoderRelease
-        wgpuComputePassEncoderRelease wgpuCommandBufferRelease wgpuSurfaceRelease wgpuTextureRelease
-        wgpuTextureViewRelease wgpuRenderPipelineRelease wgpuRenderPassEncoderRelease wgpuErrorScopeRelease
-    )
-}
+crate::ffi::symbols!(
+    wgpuCreateInstance,
+    wgpuInstanceRequestAdapter,
+    wgpuAdapterRequestDevice,
+    wgpuDeviceGetQueue,
+    wgpuDeviceCreateBuffer,
+    wgpuDeviceCreateShaderModule,
+    wgpuDeviceCreateBindGroupLayout,
+    wgpuDeviceCreatePipelineLayout,
+    wgpuDeviceCreateComputePipeline,
+    wgpuDeviceCreateBindGroup,
+    wgpuDeviceCreateRenderPipeline,
+    wgpuRenderPipelineGetBindGroupLayout,
+    wgpuDevicePushErrorScope,
+    wgpuErrorScopePop,
+    wgpuDeviceCreateCommandEncoder,
+    wgpuCommandEncoderBeginComputePass,
+    wgpuComputePassSetPipeline,
+    wgpuComputePassSetBindGroup,
+    wgpuComputePassDispatchWorkgroups,
+    wgpuComputePassEnd,
+    wgpuCommandEncoderCopyBufferToBuffer,
+    wgpuCommandEncoderBeginRenderPass,
+    wgpuRenderPassSetPipeline,
+    wgpuRenderPassSetBindGroup,
+    wgpuRenderPassDraw,
+    wgpuRenderPassEnd,
+    wgpuCommandEncoderFinish,
+    wgpuQueueSubmit,
+    wgpuQueueWriteBuffer,
+    wgpuBufferRead,
+    wgpuInstanceCreateSurface,
+    wgpuSurfaceConfigure,
+    wgpuSurfaceGetCurrentTexture,
+    wgpuSurfaceTextureCreateView,
+    wgpuSurfaceTexturePresent,
+    wgpuInstanceRelease,
+    wgpuAdapterRelease,
+    wgpuDeviceRelease,
+    wgpuQueueRelease,
+    wgpuBufferRelease,
+    wgpuShaderModuleRelease,
+    wgpuBindGroupLayoutRelease,
+    wgpuPipelineLayoutRelease,
+    wgpuComputePipelineRelease,
+    wgpuBindGroupRelease,
+    wgpuCommandEncoderRelease,
+    wgpuComputePassEncoderRelease,
+    wgpuCommandBufferRelease,
+    wgpuSurfaceRelease,
+    wgpuTextureRelease,
+    wgpuTextureViewRelease,
+    wgpuRenderPipelineRelease,
+    wgpuRenderPassEncoderRelease,
+    wgpuErrorScopeRelease,
+);
 
 #[cfg(test)]
 mod tests {

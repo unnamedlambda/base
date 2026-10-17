@@ -213,18 +213,14 @@ unsafe extern "C" fn base_usb_interrupt(
     data_transfer::<Interrupt>(intf, endpoint, data, len, timeout_ms)
 }
 
-/// The address of `symbol`, or `None` for one this library does not have.
-pub(crate) fn linked(symbol: &str) -> Option<usize> {
-    Some(match symbol {
-        "base_usb_count" => base_usb_count as usize,
-        "base_usb_info" => base_usb_info as usize,
-        "base_usb_open" => base_usb_open as usize,
-        "base_usb_close" => base_usb_close as usize,
-        "base_usb_claim" => base_usb_claim as usize,
-        "base_usb_release" => base_usb_release as usize,
-        "base_usb_control" => base_usb_control as usize,
-        "base_usb_bulk" => base_usb_bulk as usize,
-        "base_usb_interrupt" => base_usb_interrupt as usize,
-        _ => return None,
-    })
-}
+crate::ffi::symbols!(
+    base_usb_count,
+    base_usb_info,
+    base_usb_open,
+    base_usb_close,
+    base_usb_claim,
+    base_usb_release,
+    base_usb_control,
+    base_usb_bulk,
+    base_usb_interrupt,
+);

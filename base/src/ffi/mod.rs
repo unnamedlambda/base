@@ -1,3 +1,16 @@
+/// `linked`, answering the address of each function listed, by its name.
+macro_rules! symbols {
+    ($($f:path),* $(,)?) => {
+        pub(crate) fn linked(symbol: &str) -> Option<usize> {
+            $(if stringify!($f).rsplit("::").next() == Some(symbol) {
+                return Some($f as usize);
+            })*
+            None
+        }
+    };
+}
+pub(crate) use symbols;
+
 pub(crate) mod cpu;
 pub(crate) mod file;
 pub(crate) mod libc;
@@ -11,33 +24,29 @@ pub(crate) mod usb;
 pub(crate) mod wgpu;
 pub(crate) mod window;
 
-/// The engine's own functions, the `Ffi` entries a program calls as the
-/// built-in library `base`, at the signatures `Ffi.sig` states.
-pub(crate) fn linked(symbol: &str) -> Option<usize> {
-    Some(match symbol {
-        "cl_native_load" => native::cl_native_load as usize,
-        "cl_native_free" => native::cl_native_free as usize,
-        "cl_native_arch" => native::cl_native_arch as usize,
-        "cl_cpu_has" => native::cl_cpu_has as usize,
-        "cl_file_read_to_ptr" => file::cl_file_read_to_ptr as usize,
-        "cl_file_write_from_ptr" => file::cl_file_write_from_ptr as usize,
-        "cl_file_create_dir_all" => file::cl_file_create_dir_all as usize,
-        "cl_file_size" => file::cl_file_size as usize,
-        "cl_file_set_len" => file::cl_file_set_len as usize,
-        "cl_stdin_read_line" => stdio::cl_stdin_read_line as usize,
-        "cl_stdout_write" => stdio::cl_stdout_write as usize,
-        "cl_thread_start" => thread::cl_thread_start as usize,
-        "cl_thread_finish" => thread::cl_thread_finish as usize,
-        "cl_mem_lock" => os::cl_mem_lock as usize,
-        "cl_mem_unlock" => os::cl_mem_unlock as usize,
-        "cl_mem_advise_huge" => os::cl_mem_advise_huge as usize,
-        "cl_thread_priority" => os::cl_thread_priority as usize,
-        "cl_mem_wait" => sync::cl_mem_wait as usize,
-        "cl_mem_wake" => sync::cl_mem_wake as usize,
-        "cl_clock_now" => sync::cl_clock_now as usize,
-        _ => return None,
-    })
-}
+// The engine's own functions, which a program calls as the library `base`.
+crate::ffi::symbols!(
+    native::cl_native_load,
+    native::cl_native_free,
+    native::cl_native_arch,
+    native::cl_cpu_has,
+    file::cl_file_read_to_ptr,
+    file::cl_file_write_from_ptr,
+    file::cl_file_create_dir_all,
+    file::cl_file_size,
+    file::cl_file_set_len,
+    stdio::cl_stdin_read_line,
+    stdio::cl_stdout_write,
+    thread::cl_thread_start,
+    thread::cl_thread_finish,
+    os::cl_mem_lock,
+    os::cl_mem_unlock,
+    os::cl_mem_advise_huge,
+    os::cl_thread_priority,
+    sync::cl_mem_wait,
+    sync::cl_mem_wake,
+    sync::cl_clock_now,
+);
 
 /// The string in the `cap`-byte field at `start`: its bytes up to the first
 /// NUL, or all `cap` of them if there is none, as a fixed-size `char` field

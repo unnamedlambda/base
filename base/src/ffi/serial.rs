@@ -88,16 +88,12 @@ unsafe extern "C" fn base_serial_pending(port: *mut Port) -> i64 {
     }
 }
 
-/// The address of `symbol`, or `None` for one this library does not have.
-pub(crate) fn linked(symbol: &str) -> Option<usize> {
-    Some(match symbol {
-        "base_serial_count" => base_serial_count as usize,
-        "base_serial_name" => base_serial_name as usize,
-        "base_serial_open" => base_serial_open as usize,
-        "base_serial_close" => base_serial_close as usize,
-        "base_serial_read" => base_serial_read as usize,
-        "base_serial_write" => base_serial_write as usize,
-        "base_serial_pending" => base_serial_pending as usize,
-        _ => return None,
-    })
-}
+crate::ffi::symbols!(
+    base_serial_count,
+    base_serial_name,
+    base_serial_open,
+    base_serial_close,
+    base_serial_read,
+    base_serial_write,
+    base_serial_pending,
+);
