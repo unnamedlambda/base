@@ -1646,6 +1646,7 @@ theorem evalOp_load_ty {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy} {
   revert h
   generalize Sem.get Γ a = g
   rcases g with _ | ⟨_, addr⟩ | _ <;> simp only [Option.bind, bind, reduceCtorEq, false_imp_iff]
+  simp only [hl, Option.isSome_none, Bool.and_false, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
   cases op.kind <;> simp only [hl] <;> split <;> simp [norm, ofInt] <;> intros <;> simp_all
 
 theorem wp_op_load_var {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} {op : LoadOp} {a : R}
@@ -1712,6 +1713,8 @@ theorem evalOp_uload8_lt {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy}
   revert h
   generalize Sem.get Γ a = g
   rcases g with _ | ⟨_, addr⟩ | _ <;> simp only [Option.bind, bind, reduceCtorEq, false_imp_iff, hk]
+  split
+  · simp
   cases hl : m.load addr 1 with
   | none => simp
   | some b =>
@@ -2915,12 +2918,13 @@ theorem foldlM_lanes_some {m : Mem} {addr : UInt64} {w : Nat} (P : Nat → Prop)
 
 /-- A vector load answers a vector of its type, and answers where its bytes fit. -/
 theorem evalOp_vload {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {lane : ClifTy} {n : Nat} {t' : ClifTy}
-    {x : UInt64} (hk : op.kind = .plain) (hl : op.ty.lanes = some (lane, n)) (ha : Γ[a]? = some (.sc t' x)) :
+    {x : UInt64} (hal : op.aligned = false) (hk : op.kind = .plain) (hl : op.ty.lanes = some (lane, n)) (ha : Γ[a]? = some (.sc t' x)) :
     (∀ v, evalOp m Γ (.load op a) = some v → TyV op.ty v) ∧
     (Fits m x (n * tyBytes lane) → evalOp m Γ (.load op a) ≠ none) := by
   have hw : 0 < tyBytes lane := by
     cases h : op.ty <;> rw [h] at hl <;> simp [ClifTy.lanes] at hl <;> obtain ⟨rfl, rfl⟩ := hl <;> decide
-  simp only [evalOp, Sem.get, ha, hk, hl, Option.bind_eq_bind, Option.bind_some]
+  simp only [evalOp, Sem.get, ha, hal, hk, hl, Option.bind_eq_bind, Option.bind_some, Bool.false_and,
+    Bool.false_eq_true, if_false]
   refine ⟨fun v hv => ?_, fun hf => ?_⟩
   · obtain ⟨r, hr, hv⟩ := Option.bind_eq_some_iff.mp hv
     cases hv
@@ -2936,13 +2940,13 @@ theorem evalOp_vload {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {lane : ClifTy} 
     bytes fit; it answers a vector of its type. -/
 theorem wp_op_vload_at {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
     {Γ : Env} {w : World} {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} {op : LoadOp} {a : R}
-    {lane : ClifTy} {n : Nat} (ho : o.erase = .load op a) (hk : op.kind = .plain)
+    {lane : ClifTy} {n : Nat} (ho : o.erase = .load op a) (hal : op.aligned = false) (hk : op.kind = .plain)
     (hl : op.ty.lanes = some (lane, n)) {t' : ClifTy} {x : UInt64} (ha : Γ[a]? = some (.sc t' x))
     (hJ : J.faultOk = true ∨ Fits w.mem x (n * tyBytes lane))
     (h : ∀ v, evalOp w.mem Γ o.erase = some v → TyV op.ty v → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some v →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w :=
-  have hv := evalOp_vload (m := w.mem) hk hl ha
+  have hv := evalOp_vload (m := w.mem) hal hk hl ha
   ⟨fun hn => hJ.elim id fun hf => absurd (ho ▸ hn) (hv.2 hf),
    fun v hev => h v hev (hv.1 v (ho ▸ hev)) _ (Ext.push Γ v) (by simp)⟩
 

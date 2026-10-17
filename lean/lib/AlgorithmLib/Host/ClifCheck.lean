@@ -1226,24 +1226,31 @@ theorem evalInst_load_inv {m : Mem} {vs : Vals} {d a dd : Val} {op : LoadOp} {x 
       rw [hl] at h
       simp only [] at h
       rcases hb : Mem.load m w (tyBytes op.ty) with _ | b <;> rw [hb] at h <;> simp at h
+      try (split at h <;> simp at h)
       exact ⟨h.1.symm, _, h.2.symm⟩
     case uload8 =>
       rcases hb : Mem.load m w 1 with _ | b <;> rw [hb] at h <;> simp at h
+      try (split at h <;> simp at h)
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
     case uload32 =>
       rcases hb : Mem.load m w 4 with _ | b <;> rw [hb] at h <;> simp at h
+      try (split at h <;> simp at h)
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
     case sload8 =>
       rcases hb : Mem.load m w 1 with _ | b <;> rw [hb] at h <;> simp at h
+      try (split at h <;> simp at h)
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
     case uload16 =>
       rcases hb : Mem.load m w 2 with _ | b <;> rw [hb] at h <;> simp at h
+      try (split at h <;> simp at h)
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
     case sload16 =>
       rcases hb : Mem.load m w 2 with _ | b <;> rw [hb] at h <;> simp at h
+      try (split at h <;> simp at h)
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
     case sload32 =>
       rcases hb : Mem.load m w 4 with _ | b <;> rw [hb] at h <;> simp at h
+      try (split at h <;> simp at h)
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
 
 /-- `addSym` reports a constant only by folding two of them. -/

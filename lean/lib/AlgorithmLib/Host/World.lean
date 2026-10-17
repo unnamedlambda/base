@@ -718,6 +718,8 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
       | _, _ => none
   | .load op a => do
       let (.sc _ addr) ← get Γ a | none
+      -- a vector load that states an alignment the address lacks is undefined
+      if op.aligned && op.ty.lanes.isSome && addr % UInt64.ofNat (tyBytes op.ty) != 0 then none else
       match op.kind with
       | .uload8 => do
           let b ← m.load addr 1
@@ -1403,6 +1405,13 @@ structure World where
   /-- **What the CPU has**, by Rust's spelling of the feature: `none` for a
       name the runtime does not know. -/
   cpuHas : String → Option Bool := fun _ => none
+  /-- **What the host's function at an address does**, for a program the host
+      hands it to (`Callee.host`): from its arguments' bits and the memory,
+      its answer's bits and the memory after, as a C function's contract
+      states it. It reaches memory only: no library state of the program's,
+      and no call back into the program. `none` where the host does not say,
+      so a call is stuck unless a claim states what the function does. -/
+  hostFn : UInt64 → List UInt64 → Mem → Option (Option UInt64 × Mem) := fun _ _ _ => none
   /-- Whether the system grants a performance control — `"lock"`, `"unlock"`,
       `"hugepages"`, `"priority"` — which depends on its limits and
       privileges, not on the program. -/

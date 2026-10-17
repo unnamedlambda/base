@@ -29,6 +29,9 @@ LIB_BELOW = {
     # What is proved about programs the surface builds: combinator lemmas and
     # their instances.
     "Proof": {"Core", "Vocab", "Host", "Surface"},
+    # The checker: a decision procedure over programs, proven sound by the
+    # program logic it decides (`Proof.Typestate`) and the host model.
+    "Check": {"Core", "Vocab", "Host", "Surface", "Proof"},
 }
 # The ML library's own layers, lowest first: carriers, the mathematics, the
 # warp machine, the PTX lowering, the kernel schemas, the model as written

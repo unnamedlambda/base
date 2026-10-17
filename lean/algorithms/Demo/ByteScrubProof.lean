@@ -237,7 +237,7 @@ theorem blendInsts_ship :
         { ref := ⟨8⟩, params := [(⟨16⟩, ClifTy.i64)],
           insts :=
             [.iconst ⟨17⟩ .i64 4, .ishl ⟨18⟩ ⟨16⟩ ⟨17⟩, .iadd ⟨19⟩ ⟨0⟩ ⟨18⟩,
-             .load ⟨20⟩ { kind := .plain, ty := .i8x16, notrapAligned := true } ⟨19⟩]
+             .load ⟨20⟩ { kind := .plain, ty := .i8x16 } ⟨19⟩]
             ++ blendInsts
             ++ [.iadd ⟨23⟩ ⟨2⟩ ⟨18⟩, .storeTyped .i8x16 ⟨22⟩ ⟨23⟩,
                 .iconst ⟨24⟩ .i64 1, .iadd ⟨25⟩ ⟨16⟩ ⟨24⟩, .jump ⟨7⟩ [⟨25⟩]] } := by

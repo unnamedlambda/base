@@ -1,6 +1,8 @@
 module
 public import AlgorithmLib.Surface.LibBase
 meta import AlgorithmLib.Surface.LibBase
+public import AlgorithmLib.Core.HtLayout
+meta import AlgorithmLib.Core.HtLayout
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -37,26 +39,7 @@ open AlgorithmLib.Lib
 
 variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 
-def CREATED : Nat := 0x00
-def COUNT : Nat := 0x08
-def ECAP : Nat := 0x10
-def ENTRIES : Nat := 0x18
-def ICAP : Nat := 0x20
-def INDEX : Nat := 0x28
-/-- Eight bytes of scratch: the value an increment inserts. -/
-def SCRATCH : Nat := 0x30
-/-- The arena every key and value lives in: address, bytes used, capacity. -/
-def ARENA : Nat := 0x38
-def AUSED : Nat := 0x40
-def ACAP : Nat := 0x48
-def SIZE : Nat := 0x50
-
-/-- An entry: where its key and its value sit in the arena, and their
-    lengths. Offsets, not addresses, since the arena moves when it grows. -/
-def ENTRY : Nat := 32
-
-def MIX : Int := 0x9E3779B97F4A7C15 - 2 ^ 64
-def FIN : Int := 0xBF58476D1CE4E5B9 - 2 ^ 64
+-- The block's layout and the hash's multipliers are `Core.HtLayout`'s.
 
 /-- A hash of `n` bytes at `p`: eight bytes a step, the tail as one word,
     then a finishing mix, so the low bits an index takes and the high bits a

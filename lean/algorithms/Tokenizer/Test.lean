@@ -121,7 +121,7 @@ def tMainFn : Prog V L Unit :=
   storeI64 len (← absAddr ptr T_TEXT_LEN)
   PretokCommon.tokenizeTextM tokMem pretokMem
   -- and out
-  let n ← load { ty := .i64, notrapAligned := true } (← absAddr ptr T_OUT_COUNT)
+  let n ← load { ty := .i64 } (← absAddr ptr T_OUT_COUNT)
   storeI32 (← ireduce32 n) outPtr
   let outTok ← iaddImm ptr T_OUT_TOK
   forLoop n fun i => do

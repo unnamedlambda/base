@@ -541,8 +541,13 @@ inductive LoadKind where
 structure LoadOp where
   kind : LoadKind := .plain
   ty : ClifTy
-  /-- `notrap aligned`; the float and vector accessors set it. -/
-  notrapAligned : Bool := false
+  /-- On a vector load, the program states the address is aligned to the
+      vector's size: one that says so of an address that is not is undefined
+      (`evalOp` faults), as an aligned SSE operand faults. On a scalar it
+      states nothing, and changes no code. No accessor sets it yet: the input
+      and output may start anywhere, and a load from the memory sets it only
+      where its alignment is proven. -/
+  aligned : Bool := false
   deriving Repr, BEq
 
 /-- One runtime entry point. -/
@@ -1278,8 +1283,8 @@ def indirectCbor (rs : List Val) (convention : String) (params : List ClifTy) (r
     reads: a Cranelift format and an opcode of it.
 
     Stores and loads carry a byte offset on the Rust side that no builder here
-    emits yet, so it is written as zero. The vector accessors and an atomic
-    state their address aligned. -/
+    emits yet, so it is written as zero. No access states its address aligned
+    but an atomic's: the input and output may start anywhere. -/
 def Inst.plainCbor (w : Wire) : Inst → W Unit
   | .iconst d t v => variant "UnaryImm" [resultsCbor [d], text "iconst", tyCbor (some t), i64 v]
   | .memory d => variant "UnaryGlobalValue" [resultsCbor [d], text "symbol_value", tyCbor (some .i64), text "Arena"]
@@ -1300,15 +1305,12 @@ def Inst.plainCbor (w : Wire) : Inst → W Unit
   | .sextend64 d a => unaryCbor d "sextend" (some .i64) a
   | .store v a => storeCbor "store" v a
   | .istore8 v a => storeCbor "istore8" v a
-  -- The vector stores are the ones that state their alignment.
-  | .storeTyped t v a =>
-    variant "Store"
-      [resultsCbor [], text "store", tyCbor none, flagsCbor (t == .f32x4 || t == .i8x16), cbor v, cbor a, nat 0]
+  | .storeTyped _ v a => storeCbor "store" v a
   -- `uload32` and `sload32` answer an `i64` whatever: CLIF takes their type
   -- from the address.
   | .load d op a =>
     let t := match op.kind with | .uload32 | .sload32 => none | _ => some op.ty
-    variant "Load" [resultsCbor [d], text op.kind.clif, tyCbor t, flagsCbor op.notrapAligned, cbor a, nat 0]
+    variant "Load" [resultsCbor [d], text op.kind.clif, tyCbor t, flagsCbor op.aligned, cbor a, nat 0]
   | .icmp d c a b => variant "IntCompare" [resultsCbor [d], text "icmp", tyCbor none, text c.clif, cbor a, cbor b]
   | .fcmp d c a b => variant "FloatCompare" [resultsCbor [d], text "fcmp", tyCbor none, text c.clif, cbor a, cbor b]
   | .select d c a b => ternaryCbor d "select" c a b

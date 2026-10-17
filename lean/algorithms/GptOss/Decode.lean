@@ -809,7 +809,7 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   let lenSel ← ifte .eq par zero32 (pure %[seqLen]) (pure %[seqLenF])
   let sLen := lenSel.head
   let sLen64 ← uextend64 sLen
-  let ctxStrideL ← load { ty := .i64, notrapAligned := true }
+  let ctxStrideL ← load { ty := .i64 }
                      (← absAddr ptr DCTXSTRIDE_OFF)
   let capSel ← ifte .eq par zero32
     (pure %[← iconst64 (CAP_SWA * HD)]) (pure %[ctxStrideL])
@@ -1135,7 +1135,7 @@ def dMainFn : Prog V L Unit :=
         -- the prompt, one position at a time.  There is no prefill kernel yet,
         -- so this is the decode path run over the prompt: correct, and bound by
         -- launches rather than by arithmetic.
-        let nText ← load { ty := .i64, notrapAligned := true }
+        let nText ← load { ty := .i64 }
                       (← absAddr ptr DT_OUTCOUNT)
         let nPre ← uload32_64 (← iaddImm dataPtr D_NPRE)
         let nPost ← uload32_64 (← iaddImm dataPtr D_NPOST)
@@ -1189,7 +1189,7 @@ def dMainFn : Prog V L Unit :=
                    (← iadd tokBuf (← ishlImm i 2))
         storeI64 nGen (← absAddr ptr DT_TOKCOUNT)
         TokenizerCommon.detokenizeM dTokMem
-        let nBytes ← load { ty := .i64, notrapAligned := true }
+        let nBytes ← load { ty := .i64 }
                        (← absAddr ptr DT_TEXTLEN)
         storeI32 (← ireduce32 nBytes) outPtr
         let miss ← load32 (← absAddr ptr DMISS_OFF)

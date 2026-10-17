@@ -132,7 +132,7 @@ theorem callOf_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (c : Callee) (vs
           rw [hl] at hc; simp only [Except.toOption, Option.some.injEq] at hc; subst hc
           rw [h _ _ _ _ hl]; rfl
   | native => cases hc
-  | host _ _ => cases hc
+  | host _ _ => exact hc
   | atomic a => exact hc
   | ext e => exact hc
 

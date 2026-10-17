@@ -1262,6 +1262,7 @@ def loadBytes (op : LoadOp) : Nat :=
 /-- A load whose bytes fit answers a value of its type: a scalar, or a vector
     read plainly. -/
 theorem evalOp_load_fits {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy} {x : UInt64}
+    (hal : op.aligned = false)
     (hok : (op.kind == .plain || op.ty.lanes.isNone) = true) (ha : Γ[a]? = some (.sc t x))
     (hf : Fits m x (loadBytes op)) : ∃ v, evalOp m Γ (.load op a) = some v ∧ TyV op.ty v := by
   cases hl : op.ty.lanes with
@@ -1269,7 +1270,7 @@ theorem evalOp_load_fits {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy}
       obtain ⟨l, n⟩ := p
       have hk : op.kind = .plain := by
         rw [hl] at hok; cases e : op.kind <;> rw [e] at hok <;> first | rfl | cases hok
-      have hv := evalOp_vload (m := m) hk hl ha
+      have hv := evalOp_vload (m := m) hal hk hl ha
       have hf' : Fits m x (n * tyBytes l) := by unfold loadBytes at hf; rw [hk, hl] at hf; exact hf
       cases e : evalOp m Γ (.load op a) with
       | none => exact absurd e (hv.2 hf')
@@ -1278,7 +1279,7 @@ theorem evalOp_load_fits {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy}
       obtain ⟨b, hb⟩ := hf.load
       unfold loadBytes at hb
       cases hk : op.kind <;> simp only [hk, hl] at hb <;>
-        exact ⟨_, by simp [evalOp, Sem.get, ha, hk, hl, hb] <;> rfl,
+        exact ⟨_, by simp [evalOp, Sem.get, ha, hal, hk, hl, hb] <;> rfl,
           by first | exact TyV.sc hl | (unfold norm; exact TyV.sc hl) | (unfold ofInt; exact TyV.sc hl)⟩
 
 /-- A read of a cell the typestate names: the whole of it as an `i64`, or
@@ -1379,11 +1380,11 @@ theorem evalOp_load_hi {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {v : V} (ht : 
       | vec _ _ => simp at h
       | sc t' addr =>
           simp only [Option.bind, bind] at h
+          simp only [hl, Option.isSome_none, Bool.and_false, Bool.false_and, Bool.false_eq_true,
+            ↓reduceIte] at h
           unfold loadHi
           cases hk : op.kind <;> rw [hk] at h <;> dsimp only at h ⊢
-          · rw [hl] at h
-            dsimp only at h
-            cases hld : m.load addr (tyBytes op.ty) with
+          · cases hld : m.load addr (tyBytes op.ty) with
             | none => rw [hld] at h; cases h
             | some b =>
                 rw [hld] at h; cases h
@@ -1415,8 +1416,9 @@ theorem evalOp_load_hi {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {v : V} (ht : 
 /-- What a load whose bytes are there leaves. -/
 def loadAV (op : LoadOp) : AV := if op.ty.isInt then .int ⟨op.ty, 0, loadHi op, 1, none⟩ else .sc op.ty
 
-/-- A load the checker reads whole: a plain one, or one of a scalar. -/
-def loadKindOk (op : LoadOp) : Bool := op.kind == .plain || op.ty.lanes.isNone
+/-- A load the checker decides: one that states no alignment (`LoadOp.aligned`),
+    of a kind its type admits. -/
+def loadKindOk (op : LoadOp) : Bool := !op.aligned && (op.kind == .plain || op.ty.lanes.isNone)
 
 /-- What a load of `op` reads from an address the checker knows of. -/
 def absLoad (S : TState) (op : LoadOp) (addr : AV) : Option AV :=
@@ -1466,7 +1468,8 @@ theorem cellLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {
 theorem load_of_fits {Γ : Env} {w : World} {op : LoadOp} {a : R} {t : ClifTy} {x : UInt64}
     (hok : loadKindOk op = true) (hu : Γ[a]? = some (.sc t x)) (hf : Fits w.mem x (loadBytes op)) :
     ∃ v, evalOp w.mem Γ (.load op a) = some v ∧ ∀ Γ', (loadAV op).Desc Γ' w v := by
-  obtain ⟨v, hv, ht⟩ := evalOp_load_fits hok hu hf
+  simp only [loadKindOk, Bool.and_eq_true, Bool.not_eq_true'] at hok
+  obtain ⟨v, hv, ht⟩ := evalOp_load_fits hok.1 hok.2 hu hf
   refine ⟨v, hv, fun _ => ?_⟩
   unfold loadAV
   split

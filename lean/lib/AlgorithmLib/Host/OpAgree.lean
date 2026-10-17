@@ -376,6 +376,8 @@ theorem load_typed {op : LoadOp} {a : R} {v : V} (h : evalOp m Γ (.load op a) =
     simp only [Bool.and_eq_true] at hw; exact lanes_of_isInt hw.1
   simp only [evalOp, Sem.get] at h
   rcases hg : Γ[a]? with _ | (⟨t, addr⟩ | ⟨t, xs⟩) <;> simp only [hg, bind, Option.bind] at h <;> try cases h
+  split at h
+  · cases h
   cases hkind : op.kind <;> simp only [hkind, LoadKind.admits] at h hk
   case plain =>
     cases hl : op.ty.lanes with

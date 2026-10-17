@@ -1,8 +1,8 @@
 module
 public import AlgorithmLib.Host.Heap
 meta import AlgorithmLib.Host.Heap
-public import AlgorithmLib.Surface.LibHt
-meta import AlgorithmLib.Surface.LibHt
+public import AlgorithmLib.Core.HtLayout
+meta import AlgorithmLib.Core.HtLayout
 @[expose] public section
 
 /-!
@@ -105,7 +105,7 @@ def hashT (bs : List UInt8) (base : Nat) : Nat → UInt64
   | 0 => c64 0
   | j + 1 => hashT bs base j ||| (leN bs (base + j) 1 <<< ((UInt64.ofNat j <<< (c64 3 % 64)) % 64))
 
-/-- **The hash of a key**, as `LibHt.hash` computes it. -/
+/-- **The hash of a key**, as `LibHt.hash` computes it (`Ship.HtSpec` proves it). -/
 def H (bs : List UInt8) : UInt64 :=
   let h := (hashW bs (bs.length / 8) ^^^ hashT bs (8 * (bs.length / 8)) (bs.length % 8)) * c64 MIX
   let h := h ^^^ (h >>> (c64 32 % 64))

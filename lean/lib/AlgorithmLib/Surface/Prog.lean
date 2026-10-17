@@ -974,13 +974,13 @@ def load_i16 (a : V .i64) : Prog V L (V .i16) := load { ty := .i16 } a
 def uload8_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .uload8, ty := .i64 } a
 def sload8_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .sload8, ty := .i64 } a
 def uload32_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .uload32, ty := .i64 } a
-def loadF32 (a : V .i64) : Prog V L (V .f32) := load { ty := .f32, notrapAligned := true } a
+def loadF32 (a : V .i64) : Prog V L (V .f32) := load { ty := .f32 } a
 def loadF32x4 (a : V .i64) : Prog V L (V .f32x4) :=
-  load { ty := .f32x4, notrapAligned := true } a
+  load { ty := .f32x4 } a
 def loadI8x16 (a : V .i64) : Prog V L (V .i8x16) :=
-  load { ty := .i8x16, notrapAligned := true } a
+  load { ty := .i8x16 } a
 
-/-- Stores under `notrap aligned`, typed from the value. -/
+/-- Stores, typed from the value. No store states an alignment. -/
 def store {ty} (v : V ty) (a : V .i64) : Prog V L Unit := .store v a (.ret ())
 /-- Stores exactly `ty` bytes; the value must already carry that width, which
     is now the type rather than a check on the emitted term. -/

@@ -313,8 +313,9 @@ def libAnswer (f : Ffi) : Option V → Option V
 
 /-- What a call does, by what it names: an import by its contract, one of the
     program's own functions by `locals` — an entry point a library implements
-    is one, at `Ffi.libSlot` — machine code not at all. Both interpreters make
-    every call through this. -/
+    is one, at `Ffi.libSlot` — a host's function by the contract the world
+    states for it (`World.hostFn`), machine code not at all. Both interpreters
+    make every call through this. -/
 def callOf (locals : Locals) (c : Callee) (vs : List V) (w : World) : Option (Option V × World) :=
   match c with
   | .ffi f =>
@@ -325,7 +326,14 @@ def callOf (locals : Locals) (c : Callee) (vs : List V) (w : World) : Option (Op
       else callImport f.cname vs w
   | .local i => (locals i vs w).toOption
   | .native => none
-  | .host _ _ => none
+  | .host _ r =>
+      match vs with
+      | .sc _ fp :: args =>
+          if w.mem.frozen then none else do
+            let bits ← args.mapM asBits
+            let (res, m) ← w.hostFn fp bits w.mem
+            some (r.bind fun t => res.map (norm t), { w with mem := m })
+      | _ => none
   | .atomic a => atomicCall a vs w
   | .ext e => extCall e vs w
 
@@ -334,7 +342,7 @@ def uncalled : Callee → String
   | .ffi f => s!"{f.cname} has no executable contract"
   | .local i => s!"calls u0:{i}, whose meaning is not given"
   | .native => "calls machine code, which the model does not read"
-  | .host _ _ => "calls a function of the host's, which the model does not read"
+  | .host _ _ => "calls a function of the host's whose contract the world does not state"
   | .atomic _ => "an atomic on an unaligned, unmapped or frozen address"
   | .ext e => s!"{e.lib.name}!{e.symbol} on arguments it does not define"
 
