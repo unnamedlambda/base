@@ -2,7 +2,8 @@
 
 mod common;
 
-mod decode_generated;
+mod c_api;
+mod call;
 mod hprog_absent_corpus;
 mod hprog_corpus;
 mod hprog_cpu_corpus;
@@ -19,5 +20,7 @@ mod hprog_thread_corpus;
 mod hprog_usb_corpus;
 mod hprog_wgpu_corpus;
 mod hprog_window_corpus;
-mod integration;
+mod instructions;
+mod load;
+mod programs;
 mod totality;
