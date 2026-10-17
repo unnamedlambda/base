@@ -140,7 +140,8 @@ pub struct Driver {
     arena: Arena,
     /// Each function a host may call, by its name.
     exports: HashMap<String, FunctionPtr>,
-    _module: Option<cranelift_jit::JITModule>,
+    /// Taken only by `drop`, which frees its code.
+    module: Option<cranelift_jit::JITModule>,
 }
 
 unsafe impl Send for Driver {}
@@ -155,7 +156,7 @@ impl Drop for Driver {
         // only while the driver lives, and a program finishes the
         // threads it started before then: both are what a caller of
         // `Function::call` keeps.
-        if let Some(module) = self._module.take() {
+        if let Some(module) = self.module.take() {
             unsafe { module.free_memory() };
         }
     }
@@ -201,26 +202,9 @@ impl Driver {
             let at = s.offset as usize;
             bytes[at..at + s.bytes.len()].copy_from_slice(&s.bytes);
         }
-        Self::from_parts(&artifact.primitives, &artifact.functions, arena)
-    }
-
-    fn from_parts(
-        primitives: &[base_types::clif::Primitive],
-        functions: &[base_types::clif::Function],
-        arena: Arena,
-    ) -> Result<Self, Error> {
-        Ok(if functions.is_empty() {
-            Driver { arena, exports: HashMap::new(), _module: None }
-        } else {
-            // The program's code is linked to the arena's address, so it is
-            // fixed before compiling, and it never moves.
-            let program = jit::compile(primitives, functions, arena.ptr.as_ptr()).map_err(Error::Clif)?;
-            Driver {
-                arena,
-                exports: program.exports,
-                _module: Some(program.module),
-            }
-        })
+        // The code is linked to the arena's address, which never moves.
+        let program = jit::compile(&artifact.primitives, &artifact.functions, arena.ptr.as_ptr()).map_err(Error::Clif)?;
+        Ok(Driver { arena, exports: program.exports, module: Some(program.module) })
     }
 
     /// The arena, borrowed exclusively: nothing can execute while the slice is
