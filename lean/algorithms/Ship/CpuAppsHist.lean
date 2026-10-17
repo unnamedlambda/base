@@ -31,9 +31,8 @@ set_option maxHeartbeats 1000000 in
 theorem Hist_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : HistMain dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (HistogramBench1.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HistogramBench1.code : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (HistMain dataLen outLen) (runArgs dataLen outLen) (by prog_vc (HistMain dataLen outLen))
-    Hist_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (HistogramBench1.code : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end CpuAppsSafe
 

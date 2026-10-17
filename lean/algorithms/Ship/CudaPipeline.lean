@@ -49,9 +49,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.prepCode 2 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-      Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.prepCode 2 : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Run dataLen outLen))
-    prep_fine rfl h m
+      Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.prepCode 2 : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem infer_fine : Fine (emitGo (CudaPipeline.inferCode (1 : Fin 2) 256 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩

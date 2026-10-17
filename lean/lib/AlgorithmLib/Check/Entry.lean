@@ -39,13 +39,24 @@ def entryOf (S : TState) (dLen oLen : Bool) : AS :=
     if oLen then AV.len .out else .sc .i64] S
 
 theorem AS.ofList_len (l : List AV) (S : TState) : (AS.ofList l S).len = l.length := by
-  unfold AS.ofList; rw [AS.foldl_push_len]; simp
+  unfold AS.ofList; rw [AS.pushAll_len]; simp
 
 theorem AS.ofList_facts (l : List AV) (S : TState) : (AS.ofList l S).facts = S := by
-  unfold AS.ofList; rw [AS.foldl_push_facts]
+  unfold AS.ofList; rw [AS.pushAll_facts]
+
+theorem AS.ofList_syms (l : List AV) (S : TState) (i : Nat) (hi : i < l.length) :
+    (AS.ofList l S).syms.get i = {} := by
+  unfold AS.ofList; rw [AS.pushAll_syms _ _ _ (by simpa using hi)]; simp
+
+theorem AS.ofList_fits (l : List AV) (S : TState) (Γ : Env) (w : World) :
+    ∀ i, i < (AS.ofList l S).len → ((AS.ofList l S).syms.get i).Fits Γ w i (AS.ofList l S).len :=
+  fun i hi => by
+    rw [AS.ofList_len] at hi
+    rw [AS.ofList_syms l S i hi]
+    exact Sym.fits_blank _ _ _ _
 
 theorem AS.ofList_get (l : List AV) (S : TState) (i : Nat) : (AS.ofList l S).get i = l.getD i .any := by
-  unfold AS.ofList; rw [AS.foldl_push_get]; simp
+  unfold AS.ofList; rw [AS.pushAll_get]; simp
 
 /-- Whether the checker accepts a body from a state, its loops checked against
     the invariants `cert` gives. -/
@@ -54,24 +65,18 @@ def accepts (cert : Cert) (A : AS) (c : Code) : Bool :=
   | .ok _ => true
   | .error _ => false
 
-/-- Why the checker refuses a body, or `none`: run natively, iterating each
-    loop until it settles; `fo` whether the body may fault. -/
-def refusal (fo : Bool) (A : AS) (c : Code) : Option String :=
-  match execC { fo } [] 0 A c with
-  | .ok _ => none
-  | .error e => some e
-
 /-- What a proof hands the kernel, found by running the checker natively: the
     invariant each loop settles at, then the state each piece starts from in a
-    run that checks each loop once against it. -/
-def certOf (fo : Bool) (A : AS) (c : Code) : Cert :=
+    run that checks each loop once against it; or why the checker refuses the
+    body. -/
+def certOrRefusal (fo : Bool) (A : AS) (c : Code) : Except String Cert :=
   match execC { fo } [] 0 A c with
   | .ok o =>
       let loops : Cert := { loops := o.certs.loops, fo }
       match execC loops [] 0 A c with
-      | .ok o' => { loops := o.certs.loops, states := o'.certs.states, fo }
-      | .error _ => loops
-  | .error _ => { fo }
+      | .ok o' => .ok { loops := o.certs.loops, states := o'.certs.states, fo }
+      | .error _ => .ok loops
+  | .error e => .error e
 
 theorem len_desc {Γ : Env} {w : World} {r : Region} (hr : r ≠ .pinned) {x : UInt64}
     (h : (Fact.roomArg r x).holds w) : (AV.len r).Desc Γ w (.sc .i64 x) :=
@@ -82,7 +87,7 @@ theorem entryOf_holds {S L : TState} {dLen oLen : Bool} {dataLen outLen : UInt64
     (h : L.holds w) (hS : S = L.filter fun x => !isRoomArg x)
     (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L) :
     (entryOf S dLen oLen).Holds (runArgs dataLen outLen).toArray w := by
-  refine ⟨by unfold entryOf; rw [AS.ofList_len]; rfl, fun i hi => ?_, fun x hx => h x (by
+  refine ⟨⟨by unfold entryOf; rw [AS.ofList_len]; rfl, AS.ofList_fits _ _ _ _⟩, fun i hi => ?_, fun x hx => h x (by
     unfold entryOf at hx; rw [AS.ofList_facts, hS] at hx; exact (List.mem_filter.mp hx).1)⟩
   unfold entryOf at hi ⊢
   rw [AS.ofList_len] at hi
@@ -139,7 +144,7 @@ def entryKnown (S : TState) (args : List V) : AS := AS.ofList (args.map .known) 
 theorem entryKnown_holds {S : TState} {args : List V} {w : World} (h : S.holds w) :
     (entryKnown S args).Holds args.toArray w := by
   unfold entryKnown
-  refine ⟨by rw [AS.ofList_len]; simp, fun i hi => ?_, by rw [AS.ofList_facts]; exact h⟩
+  refine ⟨⟨by rw [AS.ofList_len]; simp, AS.ofList_fits _ _ _ _⟩, fun i hi => ?_, by rw [AS.ofList_facts]; exact h⟩
   rw [AS.ofList_len, List.length_map] at hi
   rw [AS.ofList_get]
   refine ⟨args[i], by simp [hi], ?_⟩
@@ -213,9 +218,9 @@ theorem check_triple {cfg : Cfg} {cert : Cert} {S S' : TState} {dLen oLen : Bool
       · rw [hAf] at hf
         have hm : x ∈ S' := by rw [hS']; exact List.mem_filter.mpr ⟨hx, by simpa using hra⟩
         exact hAh.2.2 x (by simpa using List.all_eq_true.mp hf x hm)
-    · rintro d Γ vs w' ⟨⟨A, avs, hm, -⟩, -⟩
+    · rintro d Γ vs w' ⟨⟨A, args, hm, -⟩, -⟩
       rw [hb] at hm; cases hm
-    · rintro d vs w' ⟨⟨avs, S0, hm, -⟩, -⟩
+    · rintro d vs w' ⟨⟨A, args, Γ, hm, -⟩, -⟩
       rw [hcn] at hm; cases hm
   · cases hc
 
@@ -253,10 +258,11 @@ elab "check_body" : tactic => do
       let L ← instantiateMVars L
       if L.hasFVar then throwError "check_body: the typestate names a variable"
       let A := mkApp2 (mkConst ``entryKnown) L args
-      let r ← unsafe evalExpr (Option String) (mkApp (mkConst ``Option [0]) (mkConst ``String))
-        (mkApp3 (mkConst ``refusal) (toExpr fo) A code)
-      if let some e := r then throwError "check_body: the checker refuses this body:\n{e}"
-      let cert ← unsafe evalExpr Cert (mkConst ``Cert) (mkApp3 (mkConst ``certOf) (toExpr fo) A code)
+      let cert ← match ← unsafe evalExpr (Except String Cert)
+          (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
+          (mkApp3 (mkConst ``certOrRefusal) (toExpr fo) A code) with
+        | .ok c => pure c
+        | .error e => throwError "check_body: the checker refuses this body:\n{e}"
       let sCert ← Term.exprToSyntax (toExpr cert)
       let sL ← Term.exprToSyntax L
       let sa ← Term.exprToSyntax args
@@ -281,10 +287,11 @@ elab "check_body" : tactic => do
         keep := keep.push f
     let S ← mkListLit (mkConst ``Fact) keep.toList
     let A := mkApp3 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen)
-    let r ← unsafe evalExpr (Option String) (mkApp (mkConst ``Option [0]) (mkConst ``String))
-      (mkApp3 (mkConst ``refusal) (toExpr fo) A code)
-    if let some e := r then throwError "check_body: the checker refuses this body:\n{e}"
-    let cert ← unsafe evalExpr Cert (mkConst ``Cert) (mkApp3 (mkConst ``certOf) (toExpr fo) A code)
+    let cert ← match ← unsafe evalExpr (Except String Cert)
+        (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
+        (mkApp3 (mkConst ``certOrRefusal) (toExpr fo) A code) with
+      | .ok c => pure c
+      | .error e => throwError "check_body: the checker refuses this body:\n{e}"
     let sCert ← Term.exprToSyntax (toExpr cert)
     let sS ← Term.exprToSyntax S
     let sh ← Term.exprToSyntax h
@@ -342,10 +349,11 @@ elab "check_reach" : tactic => do
     let (S', _, _) ← readTypestate L'
     if code.hasFVar then throwError "check_reach: the body names a variable"
     let A := mkApp3 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen)
-    let r ← unsafe evalExpr (Option String) (mkApp (mkConst ``Option [0]) (mkConst ``String))
-      (mkApp3 (mkConst ``refusal) (toExpr false) A code)
-    if let some e := r then throwError "check_reach: the checker refuses this body:\n{e}"
-    let cert ← unsafe evalExpr Cert (mkConst ``Cert) (mkApp3 (mkConst ``certOf) (toExpr false) A code)
+    let cert ← match ← unsafe evalExpr (Except String Cert)
+        (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
+        (mkApp3 (mkConst ``certOrRefusal) (toExpr false) A code) with
+      | .ok c => pure c
+      | .error e => throwError "check_reach: the checker refuses this body:\n{e}"
     let sCert ← Term.exprToSyntax (toExpr cert)
     let sS ← Term.exprToSyntax S
     let sS' ← Term.exprToSyntax S'

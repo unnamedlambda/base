@@ -72,8 +72,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem Fft_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : FftMain w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Fft.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Fft.code : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry FftMain (runArgs dataLen outLen) (by prog_vc FftMain) Fft_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Fft.code : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 -- Compress, at the block size it ships with
 
@@ -91,9 +91,8 @@ set_option maxHeartbeats 1000000 in
 theorem Compress_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CompressMain dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Compress.code 16384 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Compress.code 16384 : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CompressMain dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CompressMain dataLen outLen))
-    Compress_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Compress.code 16384 : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end WgpuSafe
 

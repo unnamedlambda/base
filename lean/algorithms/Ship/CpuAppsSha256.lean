@@ -35,8 +35,7 @@ theorem Sha256_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
     Sem.run cfg (runArgs dataLen outLen) w (emit (Sha256.mainCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (Sha256.mainCode : Prog Slot Lvl Unit)) ≠ .fault m := by
   rw [sha256_size] at h
-  exact sound_of_wp_entry (Sha256Main dataLen outLen) (runArgs dataLen outLen)
-    (by prog_vc (Sha256Main dataLen outLen)) Sha256_fine rfl h m
+  check_body
 
 end CpuAppsSafe
 

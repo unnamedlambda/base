@@ -1,5 +1,5 @@
 module
-public import AlgorithmLib.Proof.Typestate
+public import AlgorithmLib.Check.Lin
 import all Init.Data.Repr
 @[expose] public section
 
@@ -215,46 +215,57 @@ theorem AV.desc_transport {Γ Γ' : Env} {w w' : World} {av : AV} {v : V} (hd : 
 -- States
 -- ---------------------------------------------------------------------------
 
+/-- What a slot holds before anything is put in it. -/
+class Blank (α : Type) where
+  blank : α
+
+instance : Blank AV := ⟨.any⟩
+
+instance : Blank Sym := ⟨{}⟩
+
 /-- What the checker knows of each slot, by index: slot `0` at the root, slot
     `n + 1` in the left subtree at `n / 2` when `n` is even and in the right
     one when it is odd. Slots filled in order make a balanced tree, so a slot
     is read in steps logarithmic in how many there are. -/
-inductive Slots where
+inductive Slots (α : Type) where
   | leaf
-  | node (l : Slots) (x : AV) (r : Slots)
+  | node (l : Slots α) (x : α) (r : Slots α)
   deriving Inhabited
 
 namespace Slots
 
-def get : Slots → Nat → AV
-  | .leaf, _ => .any
+variable {α : Type} [Blank α]
+
+def get : Slots α → Nat → α
+  | .leaf, _ => Blank.blank
   | .node _ x _, 0 => x
   | .node l _ r, n + 1 => if n % 2 = 0 then l.get (n / 2) else r.get (n / 2)
 
 /-- `v` at slot `n` and nothing else; `f` bounds how deep `n` sits. -/
-def single : Nat → Nat → AV → Slots
+def single : Nat → Nat → α → Slots α
   | _, 0, v => .node .leaf v .leaf
   | 0, _ + 1, _ => .leaf
   | f + 1, n + 1, v =>
-      if n % 2 = 0 then .node (single f (n / 2) v) .any .leaf else .node .leaf .any (single f (n / 2) v)
+      if n % 2 = 0 then .node (single f (n / 2) v) Blank.blank .leaf
+      else .node .leaf Blank.blank (single f (n / 2) v)
 
-def set : Slots → Nat → AV → Slots
+def set : Slots α → Nat → α → Slots α
   | .leaf, n, v => single n n v
   | .node l _ r, 0, v => .node l v r
   | .node l x r, n + 1, v =>
       if n % 2 = 0 then .node (l.set (n / 2) v) x r else .node l x (r.set (n / 2) v)
 
-def map (f : AV → AV) : Slots → Slots
+def map (f : α → α) : Slots α → Slots α
   | .leaf => .leaf
   | .node l x r => .node (l.map f) (f x) (r.map f)
 
-def zip (f : AV → AV → AV) : Slots → Slots → Slots
-  | .leaf, b => b.map (f .any)
-  | .node l x r, .leaf => (Slots.node l x r).map (f · .any)
+def zip (f : α → α → α) : Slots α → Slots α → Slots α
+  | .leaf, b => b.map (f Blank.blank)
+  | .node l x r, .leaf => (Slots.node l x r).map (f · Blank.blank)
   | .node l x r, .node l' x' r' => .node (zip f l l') (f x x') (zip f r r')
 
-theorem get_single : ∀ (f n : Nat) (v : AV) (m : Nat), n ≤ f →
-    (single f n v).get m = if m = n then v else .any
+theorem get_single : ∀ (f n : Nat) (v : α) (m : Nat), n ≤ f →
+    (single f n v).get m = if m = n then v else Blank.blank
   | _, 0, v, 0, _ => by simp [single, get]
   | _, 0, v, m + 1, _ => by simp only [single, get]; split <;> simp [get]
   | 0, _ + 1, _, _, h => by omega
@@ -286,7 +297,7 @@ theorem get_single : ∀ (f n : Nat) (v : AV) (m : Nat), n ≤ f →
               · subst e; simp
               · rw [if_neg (by omega), if_neg (by omega)]
 
-theorem get_set : ∀ (t : Slots) (i : Nat) (v : AV) (j : Nat), (t.set i v).get j = if j = i then v else t.get j
+theorem get_set : ∀ (t : Slots α) (i : Nat) (v : α) (j : Nat), (t.set i v).get j = if j = i then v else t.get j
   | .leaf, i, v, j => by
       simp only [set]
       rw [get_single i i v j (Nat.le_refl _)]
@@ -323,7 +334,8 @@ theorem get_set : ∀ (t : Slots) (i : Nat) (v : AV) (j : Nat), (t.set i v).get 
               · subst e; simp
               · rw [if_neg (by omega), if_neg (by omega)]
 
-theorem get_map {f : AV → AV} (hf : f .any = .any) : ∀ (t : Slots) (i : Nat), (t.map f).get i = f (t.get i)
+theorem get_map {f : α → α} (hf : f Blank.blank = Blank.blank) :
+    ∀ (t : Slots α) (i : Nat), (t.map f).get i = f (t.get i)
   | .leaf, _ => by simp [map, get, hf]
   | .node l x r, 0 => rfl
   | .node l x r, i + 1 => by
@@ -332,11 +344,11 @@ theorem get_map {f : AV → AV} (hf : f .any = .any) : ∀ (t : Slots) (i : Nat)
       · exact get_map hf l _
       · exact get_map hf r _
 
-theorem get_zip {f : AV → AV → AV} (hf : f .any .any = .any) :
-    ∀ (a b : Slots) (i : Nat), (zip f a b).get i = f (a.get i) (b.get i)
+theorem get_zip {f : α → α → α} (hf : f Blank.blank Blank.blank = Blank.blank) :
+    ∀ (a b : Slots α) (i : Nat), (zip f a b).get i = f (a.get i) (b.get i)
   | .leaf, b, i => by simp only [zip]; rw [get_map hf]; rfl
   | .node l x r, .leaf, i => by
-      simp only [zip]; rw [get_map (f := fun a => f a .any) hf]; cases i <;> rfl
+      simp only [zip]; rw [get_map (f := fun a => f a Blank.blank) hf]; cases i <;> rfl
   | .node l x r, .node l' x' r', 0 => rfl
   | .node l x r, .node l' x' r', i + 1 => by
       simp only [zip, get]
@@ -346,20 +358,34 @@ theorem get_zip {f : AV → AV → AV} (hf : f .any .any = .any) :
 
 end Slots
 
-/-- The checker's state: what it knows of each of `len` slots, and of the world. -/
+/-- The checker's state: what it knows of each of `len` slots, and of the
+    world; and, beyond each slot's range, the linear facts `syms` holds. -/
 structure AS where
-  slots : Slots
+  slots : Slots AV
   len : Nat
   facts : TState
+  syms : Slots Sym
 
 def AS.get (A : AS) (r : R) : AV := if r < A.len then A.slots.get r else .any
 
+/-- What the checker knows of a slot beyond its range. -/
+def AS.sym (A : AS) (r : R) : Sym := if r < A.len then A.syms.get r else {}
+
 /-- The same slots, with other facts. -/
-def AS.withFacts (A : AS) (S : TState) : AS := ⟨A.slots, A.len, S⟩
+def AS.withFacts (A : AS) (S : TState) : AS := { A with facts := S }
+
+/-- A slot's linear facts hold, and read only slots before `n` and sizes of
+    regions other than the pinned one. -/
+def Sym.FitsAt (σ : Sym) (Γ : Env) (w : World) (x : Int) (n : Nat) : Prop :=
+  σ.Holds Γ w x ∧ (∀ y ∈ σ.slots, y < n) ∧ ∀ g ∈ σ.regions, g ≠ .pinned
+
+/-- A slot's linear facts hold of its bits. -/
+abbrev Sym.Fits (σ : Sym) (Γ : Env) (w : World) (r n : Nat) : Prop := σ.FitsAt Γ w (slotVal Γ r) n
 
 /-- The environments and worlds an abstract state describes. -/
 def AS.Holds (A : AS) (Γ : Env) (w : World) : Prop :=
-  Γ.size = A.len ∧ (∀ i, i < A.len → ∃ v, Γ[i]? = some v ∧ (A.get i).Desc Γ w v) ∧
+  (Γ.size = A.len ∧ ∀ i, i < A.len → (A.syms.get i).Fits Γ w i A.len) ∧
+    (∀ i, i < A.len → ∃ v, Γ[i]? = some v ∧ (A.get i).Desc Γ w v) ∧
     A.facts.holds w
 
 theorem AS.get_out {A : AS} {r : R} (hr : ¬ r < A.len) : A.get r = .any := by
@@ -385,30 +411,160 @@ theorem AS.Holds.getSc {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R
   obtain ⟨x, rfl⟩ := AV.scTy_desc hd ht
   exact ⟨x, hv, hd⟩
 
+/-- What the checker knows after a slot is appended, with what it knows of
+    it beyond its range. -/
+def AS.pushS (A : AS) (av : AV) (σ : Sym) : AS :=
+  ⟨A.slots.set A.len av, A.len + 1, A.facts, A.syms.set A.len σ⟩
+
 /-- What the checker knows after a slot is appended. -/
-def AS.push (A : AS) (av : AV) : AS := ⟨A.slots.set A.len av, A.len + 1, A.facts⟩
+def AS.push (A : AS) (av : AV) : AS := A.pushS av {}
+
+/-- Slots appended in order, each with its linear facts. -/
+def AS.pushAll (B : AS) (xs : List (AV × Sym)) : AS := xs.foldl (fun B (av, σ) => B.pushS av σ) B
 
 /-- A state of the slots a list describes, in order. -/
-def AS.ofList (l : List AV) (S : TState) : AS := l.foldl AS.push ⟨.leaf, 0, S⟩
+def AS.ofList (l : List AV) (S : TState) : AS := (⟨.leaf, 0, S, .leaf⟩ : AS).pushAll (l.map (·, {}))
 
-theorem AS.get_push_lt {A : AS} {av : AV} {i : R} (hi : i < A.len) : (A.push av).get i = A.get i := by
+theorem AS.get_pushS_lt {A : AS} {av : AV} {σ : Sym} {i : R} (hi : i < A.len) :
+    (A.pushS av σ).get i = A.get i := by
   show (if i < A.len + 1 then (A.slots.set A.len av).get i else .any) =
     (if i < A.len then A.slots.get i else .any)
   rw [if_pos (Nat.lt_succ_of_lt hi), if_pos hi, Slots.get_set, if_neg (Nat.ne_of_lt hi)]
 
-theorem AS.get_push_eq {A : AS} {av : AV} : (A.push av).get A.len = av := by
+theorem AS.get_pushS_eq {A : AS} {av : AV} {σ : Sym} : (A.pushS av σ).get A.len = av := by
   show (if A.len < A.len + 1 then (A.slots.set A.len av).get A.len else .any) = av
   rw [if_pos (Nat.lt_succ_self _), Slots.get_set, if_pos rfl]
 
-theorem AS.Holds.push {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : AV} {v : V}
-    (hv : av.Desc (Γ.push v) w v) : (A.push av).Holds (Γ.push v) w := by
-  obtain ⟨hs, he, hf⟩ := h
-  refine ⟨by simp [AS.push, hs], fun i hi => ?_, hf⟩
-  simp only [AS.push] at hi
+theorem AS.get_push_lt {A : AS} {av : AV} {i : R} (hi : i < A.len) : (A.push av).get i = A.get i :=
+  AS.get_pushS_lt hi
+
+theorem AS.get_push_eq {A : AS} {av : AV} : (A.push av).get A.len = av := AS.get_pushS_eq
+
+theorem slotVal_push {Γ : Env} {v : V} {r : R} (hr : r < Γ.size) : slotVal (Γ.push v) r = slotVal Γ r := by
+  unfold slotVal; rw [Array.getElem?_push_lt hr, Array.getElem?_eq_getElem hr]
+
+theorem Lin.eval_congr {Γ Γ' : Env} {w w' : World} {L : Lin}
+    (hΓ : ∀ x ∈ L.slots, slotVal Γ' x = slotVal Γ x) (hw : ∀ g ∈ L.regions, w'.mem.sizes g = w.mem.sizes g) :
+    L.eval Γ' w' = L.eval Γ w := by
+  obtain ⟨t, k⟩ := L
+  simp only [Lin.eval]
+  congr 1
+  induction t with
+  | nil => rfl
+  | cons p t ih =>
+      obtain ⟨a, c⟩ := p
+      simp only [Lin.slots, Lin.regions, List.filterMap_cons] at hΓ hw ih ⊢
+      simp only [Lin.evalT]
+      congr 1
+      · cases a with
+        | slot r => simp only [Atom.val]; rw [hΓ r (by simp)]
+        | size g => simp only [Atom.val]; rw [hw g (by simp)]
+        | iun k r => simp only [Atom.val]; rw [hΓ r (by simp)]
+      · exact ih (fun x hx => hΓ x (by cases a <;> simp_all)) (fun g hg => hw g (by cases a <;> simp_all))
+
+/-- Facts read in an environment and world that agree on what they read hold
+    there too. -/
+theorem Sym.fitsAt_congr {σ : Sym} {Γ Γ' : Env} {w w' : World} {x : Int} {n m : Nat} (h : σ.FitsAt Γ w x n)
+    (hΓ : ∀ y, y < n → slotVal Γ' y = slotVal Γ y)
+    (hw : ∀ g, g ≠ .pinned → w'.mem.sizes g = w.mem.sizes g) (hnm : n ≤ m) : σ.FitsAt Γ' w' x m := by
+  obtain ⟨⟨hd, hu⟩, hs, hg⟩ := h
+  have he : ∀ L : Lin, (∀ y ∈ L.slots, y ∈ σ.slots) → (∀ g ∈ L.regions, g ∈ σ.regions) →
+      L.eval Γ' w' = L.eval Γ w := fun L h1 h2 =>
+    Lin.eval_congr (fun y hy => hΓ y (hs y (h1 y hy))) (fun g hg' => hw g (hg g (h2 g hg')))
+  refine ⟨⟨fun D hD => ?_, fun p hp => ?_⟩, fun y hy => Nat.lt_of_lt_of_le (hs y hy) hnm, hg⟩
+  · rw [he D (fun y hy => by simp [Sym.slots, hD, hy]) (fun g hg' => by simp [Sym.regions, hD, hg'])]
+    exact hd D hD
+  · rw [he p.2 (fun y hy => by
+        simp only [Sym.slots, List.mem_append, List.mem_flatten, List.mem_map]
+        exact .inr ⟨_, ⟨p, hp, rfl⟩, hy⟩) (fun g hg' => by
+        simp only [Sym.regions, List.mem_append, List.mem_flatten, List.mem_map]
+        exact .inr ⟨_, ⟨p, hp, rfl⟩, hg'⟩)]
+    exact hu p hp
+
+/-- A slot's linear facts hold of the same bits wherever the slots and sizes
+    they read are the same. -/
+theorem Sym.fits_congr {σ : Sym} {Γ Γ' : Env} {w w' : World} {r n m : Nat} (h : σ.Fits Γ w r n)
+    (hΓ : ∀ x, x < n → slotVal Γ' x = slotVal Γ x) (hr : slotVal Γ' r = slotVal Γ r)
+    (hw : ∀ g, g ≠ .pinned → w'.mem.sizes g = w.mem.sizes g) (hnm : n ≤ m) : σ.Fits Γ' w' r m := by
+  show σ.FitsAt Γ' w' (slotVal Γ' r) m
+  rw [hr]
+  exact Sym.fitsAt_congr h hΓ hw hnm
+
+/-- Fewer facts fit where more do. -/
+theorem Sym.fits_sub {σ τ : Sym} {Γ : Env} {w : World} {x : Int} {m : Nat} (h : σ.FitsAt Γ w x m)
+    (hd : ∀ D, τ.dfn = some D → σ.dfn = some D) (hu : ∀ p ∈ τ.ubs, p ∈ σ.ubs) : τ.FitsAt Γ w x m := by
+  obtain ⟨⟨h1, h2⟩, h3, h4⟩ := h
+  refine ⟨⟨fun D e => h1 D (hd D e), fun p hp => h2 p (hu p hp)⟩, fun y hy => h3 y ?_, fun g hg => h4 g ?_⟩
+  · simp only [Sym.slots, List.mem_append, List.mem_flatten, List.mem_map] at hy ⊢
+    rcases hy with hy | ⟨_, ⟨p, hp, rfl⟩, hy⟩
+    · left; cases e : τ.dfn with
+      | none => rw [e] at hy; simp at hy
+      | some D => rw [e] at hy; rw [hd D e]; exact hy
+    · exact .inr ⟨_, ⟨p, hu p hp, rfl⟩, hy⟩
+  · simp only [Sym.regions, List.mem_append, List.mem_flatten, List.mem_map] at hg ⊢
+    rcases hg with hg | ⟨_, ⟨p, hp, rfl⟩, hg⟩
+    · left; cases e : τ.dfn with
+      | none => rw [e] at hg; simp at hg
+      | some D => rw [e] at hg; rw [hd D e]; exact hg
+    · exact .inr ⟨_, ⟨p, hu p hp, rfl⟩, hg⟩
+
+/-- Facts no stronger than ones that fit, fit: each bound one with the same
+    multiple and terms, and a constant no smaller. -/
+theorem Sym.fits_weaken {σ τ : Sym} {Γ : Env} {w : World} {x : Int} {m : Nat} (h : σ.FitsAt Γ w x m)
+    (hd : ∀ D, τ.dfn = some D → σ.dfn = some D)
+    (hu : ∀ p ∈ τ.ubs, ∃ p' ∈ σ.ubs, p'.1 = p.1 ∧ p'.2.terms = p.2.terms ∧ p'.2.k ≤ p.2.k) :
+    τ.FitsAt Γ w x m := by
+  obtain ⟨⟨h1, h2⟩, h3, h4⟩ := h
+  refine ⟨⟨fun D e => h1 D (hd D e), fun p hp => ?_⟩, fun y hy => h3 y ?_, fun g hg => h4 g ?_⟩
+  · obtain ⟨p', hp', e1, e2, e3⟩ := hu p hp
+    have := h2 p' hp'
+    rw [e1] at this
+    simp only [Lin.eval, e2] at this ⊢
+    omega
+  · simp only [Sym.slots, List.mem_append, List.mem_flatten, List.mem_map] at hy ⊢
+    rcases hy with hy | ⟨_, ⟨p, hp, rfl⟩, hy⟩
+    · left; cases e : τ.dfn with
+      | none => rw [e] at hy; simp at hy
+      | some D => rw [e] at hy; rw [hd D e]; exact hy
+    · obtain ⟨p', hp', -, e2, -⟩ := hu p hp
+      exact .inr ⟨_, ⟨p', hp', rfl⟩, by unfold Lin.slots at hy ⊢; rw [e2]; exact hy⟩
+  · simp only [Sym.regions, List.mem_append, List.mem_flatten, List.mem_map] at hg ⊢
+    rcases hg with hg | ⟨_, ⟨p, hp, rfl⟩, hg⟩
+    · left; cases e : τ.dfn with
+      | none => rw [e] at hg; simp at hg
+      | some D => rw [e] at hg; rw [hd D e]; exact hg
+    · obtain ⟨p', hp', -, e2, -⟩ := hu p hp
+      exact .inr ⟨_, ⟨p', hp', rfl⟩, by unfold Lin.regions at hg ⊢; rw [e2]; exact hg⟩
+
+/-- Facts that read only slots before `k` fit below `k`. -/
+theorem Sym.fits_bound {σ : Sym} {Γ : Env} {w : World} {x : Int} {m k : Nat} (h : σ.FitsAt Γ w x m)
+    (hk : ∀ y ∈ σ.slots, y < k) : σ.FitsAt Γ w x k :=
+  ⟨h.1, hk, h.2.2⟩
+
+theorem Sym.fitsAt_blank (Γ : Env) (w : World) (x : Int) (n : Nat) : ({} : Sym).FitsAt Γ w x n :=
+  ⟨Sym.holds_blank Γ w _, fun _ h => by simp [Sym.slots] at h, fun _ h => by simp [Sym.regions] at h⟩
+
+theorem Sym.fits_blank (Γ : Env) (w : World) (r n : Nat) : ({} : Sym).Fits Γ w r n :=
+  Sym.fitsAt_blank Γ w _ n
+
+theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : AV} {v : V} {σ : Sym}
+    (hv : av.Desc (Γ.push v) w v) (hσ : σ.Fits (Γ.push v) w A.len (A.len + 1)) :
+    (A.pushS av σ).Holds (Γ.push v) w := by
+  obtain ⟨⟨hs, hy⟩, he, hf⟩ := h
+  refine ⟨⟨by simp [AS.pushS, hs], fun i hi => ?_⟩, fun i hi => ?_, hf⟩
+  · simp only [AS.pushS] at hi ⊢
+    rw [Slots.get_set]
+    split
+    · rename_i e; subst e; exact hσ
+    · rename_i hne
+      have hi' : i < A.len := by omega
+      exact Sym.fits_congr (hy i hi') (fun x hx => slotVal_push (Γ := Γ) (v := v) (hs ▸ hx))
+        (slotVal_push (Γ := Γ) (v := v) (hs ▸ hi')) (fun _ _ => rfl) (Nat.le_succ _)
+  simp only [AS.pushS] at hi
   by_cases hlt : i < A.len
   · obtain ⟨u, hu, hd⟩ := he i hlt
     refine ⟨u, by rw [Array.getElem?_push, if_neg (by omega)]; exact hu, ?_⟩
-    rw [AS.get_push_lt hlt]
+    rw [AS.get_pushS_lt hlt]
     refine AV.desc_transport hd (fun a ha => ?_) (fun _ _ => rfl)
     rcases Nat.lt_or_ge a Γ.size with ha' | ha'
     · rw [Array.getElem?_push, if_neg (by omega)]
@@ -427,14 +583,18 @@ theorem AS.Holds.push {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : A
   · have hi' : i = A.len := by omega
     subst hi'
     refine ⟨v, by rw [Array.getElem?_push, if_pos (by omega)], ?_⟩
-    rw [AS.get_push_eq]; exact hv
+    rw [AS.get_pushS_eq]; exact hv
+
+theorem AS.Holds.push {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : AV} {v : V}
+    (hv : av.Desc (Γ.push v) w v) : (A.push av).Holds (Γ.push v) w :=
+  h.pushS hv (Sym.fits_blank _ _ _ _)
 
 /-- The same environment, a world the new facts describe, reached by a step that
     keeps the region sizes. -/
 theorem AS.Holds.world {A : AS} {Γ : Env} {w w' : World} (h : A.Holds Γ w) {S : TState}
     (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r) :
     (A.withFacts S).Holds Γ w' :=
-  ⟨h.1, fun i hi => by
+  ⟨⟨h.1.1, fun i hi => Sym.fits_congr (h.1.2 i hi) (fun _ _ => rfl) rfl hw (Nat.le_refl _)⟩, fun i hi => by
     obtain ⟨v, hv, hd⟩ := h.2.1 i hi
     exact ⟨v, hv, AV.desc_transport hd (fun _ _ => rfl) hw⟩, hS⟩
 
@@ -787,12 +947,17 @@ theorem evalOp_load_hi {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {v : V} (ht : 
                       | exact unext addr 4 b (by decide) hld _ rfl
                       | exact sext _)
 
+/-- What a load whose bytes are there leaves. -/
+def loadAV (op : LoadOp) : AV := if op.ty.isInt then .int ⟨op.ty, 0, loadHi op, 1, none⟩ else .sc op.ty
+
+/-- A load the checker reads whole: a plain one, or one of a scalar. -/
+def loadKindOk (op : LoadOp) : Bool := op.kind == .plain || op.ty.lanes.isNone
+
 /-- What a load of `op` reads from an address the checker knows of. -/
 def absLoad (S : TState) (op : LoadOp) (addr : AV) : Option AV :=
   match cellLoad S op addr with
   | some av => some av
-  | none => if (op.kind == .plain || op.ty.lanes.isNone) && memN S addr (loadBytes op) then
-      some (if op.ty.isInt then .int ⟨op.ty, 0, loadHi op, 1, none⟩ else .sc op.ty) else none
+  | none => if loadKindOk op && memN S addr (loadBytes op) then some (loadAV op) else none
 
 theorem cellLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {op : LoadOp} {a : R}
     {av : AV} (hl : cellLoad A.facts op (A.get a) = some av) :
@@ -832,6 +997,19 @@ theorem cellLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {op : 
       · cases hl
   · cases hl
 
+/-- **A load whose bytes are there** is defined, and leaves what `loadAV` says. -/
+theorem load_of_fits {Γ : Env} {w : World} {op : LoadOp} {a : R} {t : ClifTy} {x : UInt64}
+    (hok : loadKindOk op = true) (hu : Γ[a]? = some (.sc t x)) (hf : Fits w.mem x (loadBytes op)) :
+    ∃ v, evalOp w.mem Γ (.load op a) = some v ∧ ∀ Γ', (loadAV op).Desc Γ' w v := by
+  obtain ⟨v, hv, ht⟩ := evalOp_load_fits hok hu hf
+  refine ⟨v, hv, fun _ => ?_⟩
+  unfold loadAV
+  split
+  · rename_i hi
+    obtain ⟨y, rfl, hy⟩ := evalOp_load_hi hi hv
+    exact ⟨y, rfl, Nat.zero_le _, hy, Nat.one_dvd _, trivial⟩
+  · exact ht
+
 theorem absLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {op : LoadOp} {a : R}
     {av : AV} (hl : absLoad A.facts op (A.get a) = some av) :
     ∃ v, evalOp w.mem Γ (.load op a) = some v ∧ ∀ Γ', av.Desc Γ' w v := by
@@ -849,13 +1027,7 @@ theorem absLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {op : L
         · rw [AS.get_out (Nat.not_lt_of_ge h')] at hm; simp [memN] at hm
       obtain ⟨u, hu, hd⟩ := h.get hr
       obtain ⟨t, x, rfl⟩ := memN_sc hd hm
-      obtain ⟨v, hv, ht⟩ := evalOp_load_fits hok hu (memN_fits h.2.2 ⟨t, hd⟩ hm)
-      refine ⟨v, hv, fun _ => ?_⟩
-      split
-      · rename_i hi
-        obtain ⟨y, rfl, hy⟩ := evalOp_load_hi hi hv
-        exact ⟨y, rfl, Nat.zero_le _, hy, Nat.one_dvd _, trivial⟩
-      · exact ht
+      exact load_of_fits hok hu (memN_fits h.2.2 ⟨t, hd⟩ hm)
     · cases hl
 
 -- ---------------------------------------------------------------------------

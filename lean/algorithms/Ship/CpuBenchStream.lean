@@ -27,8 +27,8 @@ set_option maxHeartbeats 1000000 in
 theorem stream_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outCopy (CpuBench.copySimd (← CpuBench.array 3)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outCopy (CpuBench.copySimd (← CpuBench.array 3)) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (Run dataLen outLen) (runArgs dataLen outLen) (by prog_vc (Run dataLen outLen)) stream_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outCopy (CpuBench.copySimd (← CpuBench.array 3)) : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 end CpuBenchSafe
 

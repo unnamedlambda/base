@@ -203,6 +203,21 @@ theorem memB_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} 
         exact ⟨r, off, hdec, hpin, by have := hy.2.1; omega, hz, by have := hy.2.1; omega⟩
       · cases h
 
+/-- Bytes `[p, p + n)`: by `memB`, or by `rb`, which answers for the
+    arguments at `i` and `j`. -/
+def memBR (S : TState) (rb : Nat → Nat → Bool) (i j : Nat) (p n : AV) : Bool := memB S p n || rb i j
+
+/-- What `rb` answers is true of the arguments' bits. -/
+def RbSound (w : World) (bits : List UInt64) (rb : Nat → Nat → Bool) : Prop :=
+  ∀ i j, rb i j = true → Fits w.mem (bits.getD i 0) (bits.getD j 0).toNat
+
+theorem memBR_fits {Γ : Env} {w : World} {S : TState} {rb : Nat → Nat → Bool} {i j : Nat} {p n : AV}
+    {x k : UInt64} (hS : S.holds w) (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k))
+    (h : memBR S rb i j p n = true) (hrb : rb i j = true → Fits w.mem x k.toNat) : Fits w.mem x k.toNat := by
+  rcases Bool.or_eq_true_iff.mp h with h | h
+  · exact memB_spec hS hp hn h
+  · exact hrb h
+
 theorem memB_readable {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memB S p n = true) :
     Readable w.mem x k.toNat := by
@@ -465,24 +480,24 @@ def preCudaSync (S : TState) (as : List AV) : Bool :=
   | [c] => cudaB S c
   | _ => false
 
-def preCudaUpload (S : TState) (as : List AV) : Bool :=
+def preCudaUpload (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, d, n] => cudaB S c && memB S d n && S.contains .devSeq
+  | [c, _, d, n] => cudaB S c && memBR S rb 2 3 d n && S.contains .devSeq
   | _ => false
 
-def preCudaDownload (S : TState) (as : List AV) : Bool :=
+def preCudaDownload (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, d, n] => cudaB S c && memB S d n && S.contains .devSeq
+  | [c, _, d, n] => cudaB S c && memBR S rb 2 3 d n && S.contains .devSeq
   | _ => false
 
-def preCudaUploadOffset (S : TState) (as : List AV) : Bool :=
+def preCudaUploadOffset (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, _, d, n] => cudaB S c && memB S d n && S.contains .devSeq
+  | [c, _, _, d, n] => cudaB S c && memBR S rb 3 4 d n && S.contains .devSeq
   | _ => false
 
-def preCudaDownloadOffset (S : TState) (as : List AV) : Bool :=
+def preCudaDownloadOffset (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, _, d, n] => cudaB S c && memB S d n && S.contains .devSeq
+  | [c, _, _, d, n] => cudaB S c && memBR S rb 3 4 d n && S.contains .devSeq
   | _ => false
 
 def preCudaLaunch (S : TState) (as : List AV) : Bool :=
@@ -534,14 +549,14 @@ def preGpuCreatePipeline (S : TState) (as : List AV) : Bool :=
          | none => false)
   | _ => false
 
-def preGpuUpload (S : TState) (as : List AV) : Bool :=
+def preGpuUpload (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, s, n] => ctxB S .gpu gpuCtx c && memB S s n
+  | [c, _, s, n] => ctxB S .gpu gpuCtx c && memBR S rb 2 3 s n
   | _ => false
 
-def preGpuDownload (S : TState) (as : List AV) : Bool :=
+def preGpuDownload (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [c, _, d, n] => ctxB S .gpu gpuCtx c && memB S d n
+  | [c, _, d, n] => ctxB S .gpu gpuCtx c && memBR S rb 2 3 d n
   | _ => false
 
 def preWindowInit (S : TState) (as : List AV) : Bool :=
@@ -581,20 +596,45 @@ def preFileRead (S : TState) (as : List AV) : Bool :=
       | _, _, _, _ => false
   | _ => false
 
+/-- The addresses `base + s` for `s` a number `sn` describes: inside the region
+    `base` starts. -/
+def addrAt (base : UInt64) (sn : Num) : AV :=
+  match [Region.arena, .data, .out].find? (regionBase · = base) with
+  | some r => if sn.hi ≤ span then .ptr r ⟨.i64, sn.lo, sn.hi, 1, none⟩ else .any
+  | none => .any
+
+theorem addrAt_desc {Γ : Env} {w : World} {base s : UInt64} {sn : Num} (hs : sn.Holds w s.toNat) :
+    (addrAt base sn).Desc Γ w (.sc .i64 (base + s)) := by
+  unfold addrAt
+  split
+  · rename_i r hr
+    have hb : regionBase r = base := by simpa using List.find?_some hr
+    split
+    · rename_i hsp
+      refine ⟨s.toNat, by rw [hb, UInt64.ofNat_toNat], ⟨hs.1, hs.2.1, Nat.one_dvd _, trivial⟩, hsp⟩
+    · trivial
+  · trivial
+
 def preFileWrite (S : TState) (as : List AV) : Bool :=
   match as with
   | [b, po, so, _, n] =>
-      match b.bits, po.bits, so.bits, n.bits with
-      | some base, some p, some s, some k =>
+      match b.bits, po.bits with
+      | some base, some p =>
           pathB S (.known (.sc .i64 (base + p))) &&
-            (if k = 0 then cstrB S (.known (.sc .i64 (base + s)))
-             else memN S (.known (.sc .i64 (base + s))) k.toNat)
-      | _, _, _, _ => false
+            (match so.bits, n.bits with
+             | some s, some k =>
+                 if k = 0 then cstrB S (.known (.sc .i64 (base + s)))
+                 else memN S (.known (.sc .i64 (base + s))) k.toNat
+             | _, _ =>
+                 match so.num, n.num with
+                 | some sn, some nn => decide (1 ≤ nn.lo) && memN S (addrAt base sn) nn.hi
+                 | _, _ => false)
+      | _, _ => false
   | _ => false
 
-def preFileReadToPtr (S : TState) (as : List AV) : Bool :=
+def preFileReadToPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
   match as with
-  | [pp, d, _, n] => pathB S pp && memB S d n
+  | [pp, d, _, n] => pathB S pp && memBR S rb 1 3 d n
   | _ => false
 
 def preNativeArch (S : TState) (as : List AV) : Bool :=
@@ -739,16 +779,16 @@ def preLmdbCursorScan (S : TState) (as : List AV) : Bool :=
 
 /-- **What a call needs, decided.** One case per entry point a shipped body
     calls; every other entry point is refused. -/
-def preB (f : Ffi) (as : List AV) (S : TState) : Bool :=
+def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Bool :=
   match f with
   | .cudaInit => preCudaInit S as
   | .cudaCleanup => preCudaCleanup S as
   | .cudaCreateBuffer => preCudaCreateBuffer S as
   | .cudaSync => preCudaSync S as
-  | .cudaUpload => preCudaUpload S as
-  | .cudaDownload => preCudaDownload S as
-  | .cudaUploadOffset => preCudaUploadOffset S as
-  | .cudaDownloadOffset => preCudaDownloadOffset S as
+  | .cudaUpload => preCudaUpload S rb as
+  | .cudaDownload => preCudaDownload S rb as
+  | .cudaUploadOffset => preCudaUploadOffset S rb as
+  | .cudaDownloadOffset => preCudaDownloadOffset S rb as
   | .cudaLaunch => preCudaLaunch S as
   | .cudaLaunchNamed => preCudaLaunchNamed S as
   | .gpuInit => preGpuInit S as
@@ -756,15 +796,15 @@ def preB (f : Ffi) (as : List AV) (S : TState) : Bool :=
   | .gpuCreateBuffer => preGpuCreateBuffer S as
   | .gpuDispatch => preGpuDispatch S as
   | .gpuCreatePipeline => preGpuCreatePipeline S as
-  | .gpuUpload => preGpuUpload S as
-  | .gpuDownload => preGpuDownload S as
+  | .gpuUpload => preGpuUpload S rb as
+  | .gpuDownload => preGpuDownload S rb as
   | .windowInit => preWindowInit S as
   | .windowOpen => preWindowOpen S as
   | .windowPoll => preWindowPoll S as
   | .windowPresentGpuBuffer => preWindowPresentGpuBuffer S as
   | .fileRead => preFileRead S as
   | .fileWrite => preFileWrite S as
-  | .fileReadToPtr => preFileReadToPtr S as
+  | .fileReadToPtr => preFileReadToPtr S rb as
   | .nativeArch => preNativeArch S as
   | .nativeLoad => preNativeLoad S as
   | .cpuHas => preCpuHas S as

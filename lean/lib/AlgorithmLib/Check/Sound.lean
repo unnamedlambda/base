@@ -99,7 +99,7 @@ theorem afterStore_ne8 {a : UInt64} {vo : Option UInt64} {n : Nat} {S : TState} 
 theorem AS.Holds.desc {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {r : R} {u : V}
     (hr : Γ[r]? = some u) : (A.get r).Desc Γ w u := by
   have hl : r < A.len := by
-    rw [← hA.1]
+    rw [← hA.1.1]
     rcases Nat.lt_or_ge r Γ.size with h' | h'
     · exact h'
     · rw [Array.getElem?_eq_none h'] at hr; cases hr
@@ -380,13 +380,113 @@ theorem wild_istore8 {cfg : Cfg} {A : AS} {v a : R} :
     · rfl
   · trivial
 
+theorem storeBytes_any {A : AS} {v a : R} {n : Nat} (hm : (storeBytes A v n).any (memRel A a) = true) :
+    ∃ k, storeBytes A v n = some k ∧ memRel A a k = true := by
+  cases hb : storeBytes A v n with
+  | none => simp [hb] at hm
+  | some k => exact ⟨k, rfl, by simpa [hb] using hm⟩
+
+/-- A store the linear facts place inside a region keeps every fact but the
+    cells, and does not fault. -/
+theorem rel_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} {fo : Bool}
+    (hm : (storeBytes A v (tyBytes ty)).any (memRel A a) = true) :
+    Stmt1 cfg A.Holds (.store ty v a) (A.withFacts (A.facts.filter (!·.isCell))).Holds fo := by
+  intro Γ w hA
+  obtain ⟨k, hk, hmk⟩ := storeBytes_any hm
+  cases hv : Γ[v]? with
+  | none => rw [runStmt_store, hv]; trivial
+  | some val =>
+    cases ha : Γ[a]? with
+    | none => rw [runStmt_store, hv, ha]; trivial
+    | some av =>
+      cases av with
+      | vec _ _ => rw [runStmt_store, hv, ha]; trivial
+      | sc t x =>
+        have hfit := memRel_fits hA hmk ha
+        rw [runStmt_store, hv, ha]
+        rcases store_val (hA.desc hv) hk with ⟨tv, b, hsc, rfl, rfl⟩ | ⟨T, lane, cnt, ls, hsc, hl, rfl, hn, rfl⟩
+        · obtain ⟨m, hm⟩ := hfit.store b
+          simp only [hm]
+          exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+        · have hlw : ((some (lane, cnt)).map (·.1.width)).getD 8 / 8 = tyBytes lane := rfl
+          simp only [hl]
+          rw [hlw]
+          subst hn
+          obtain ⟨mm, hmm⟩ := lanes_store hfit (lanes_pos hl)
+          obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
+          rw [Array.foldlM_toList] at hmm
+          simp only [hmm]
+          exact wild_holds hA hs hz
+
+theorem rel_storeU {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
+    (hm : (storeBytes A v (tyBytes ((A.get v).scTy.getD .i64))).any (memRel A a) = true) :
+    Stmt1 cfg A.Holds (.storeUnaligned v a) (A.withFacts (A.facts.filter (!·.isCell))).Holds fo := by
+  intro Γ w hA
+  obtain ⟨k, hk, hmk⟩ := storeBytes_any hm
+  cases hv : Γ[v]? with
+  | none => rw [runStmt_storeUnaligned, hv]; trivial
+  | some val =>
+    cases ha : Γ[a]? with
+    | none => rw [runStmt_storeUnaligned, hv, ha]; cases val <;> trivial
+    | some av =>
+      cases av with
+      | vec _ _ => rw [runStmt_storeUnaligned, hv, ha]; cases val <;> trivial
+      | sc t x =>
+        have hfit := memRel_fits hA hmk ha
+        rw [runStmt_storeUnaligned, hv, ha]
+        rcases store_val (hA.desc hv) hk with ⟨tv, b, hsc, rfl, rfl⟩ | ⟨T, lane, cnt, ls, hsc, hl, rfl, hn, rfl⟩
+        · simp only [hsc, Option.getD_some] at hfit
+          obtain ⟨m, hm⟩ := hfit.store b
+          simp only [hm]
+          exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+        · have hlw : ((some (lane, cnt)).map (·.1.width)).getD 8 / 8 = tyBytes lane := rfl
+          simp only [hl]
+          rw [hlw]
+          subst hn
+          obtain ⟨mm, hmm⟩ := lanes_store hfit (lanes_pos hl)
+          obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
+          rw [Array.foldlM_toList] at hmm
+          simp only [hmm]
+          exact wild_holds hA hs hz
+
+theorem rel_istore8 {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
+    (hm : (storeBytes A v 1).any (memRel A a) = true) :
+    Stmt1 cfg A.Holds (.istore8 v a) (A.withFacts (A.facts.filter (!·.isCell))).Holds fo := by
+  intro Γ w hA
+  obtain ⟨k, hk, hmk⟩ := storeBytes_any hm
+  cases hv : Γ[v]? with
+  | none => rw [runStmt_istore8, hv]; trivial
+  | some val =>
+    cases val with
+    | vec _ _ => rw [runStmt_istore8, hv]; trivial
+    | sc tv b =>
+      cases ha : Γ[a]? with
+      | none => rw [runStmt_istore8, hv, ha]; trivial
+      | some av =>
+        cases av with
+        | vec _ _ => rw [runStmt_istore8, hv, ha]; trivial
+        | sc t x =>
+          have hfit := memRel_fits hA hmk ha
+          rw [runStmt_istore8, hv, ha]
+          have hk1 : k = 1 := by
+            rcases store_val (hA.desc hv) hk with ⟨_, _, _, -, e⟩ | ⟨_, _, _, _, -, -, e, -⟩
+            · exact e
+            · cases e
+          subst hk1
+          obtain ⟨m, hm⟩ := hfit.store (b &&& 0xff)
+          simp only [hm]
+          exact wild_holds hA (store_sizes_eq hm) (store_frozen hm)
+
 theorem storeF_sound {cfg : Cfg} {A A' : AS} {ty : ClifTy} {v a : R} {fo : Bool}
     (h : absStoreF fo A v a (tyBytes ty) = .ok A') : Stmt1 cfg A.Holds (.store ty v a) A'.Holds fo := by
   unfold absStoreF at h
   split at h
   · rename_i A1 h1; cases h; exact store_sound h1
   · split at h
-    · rename_i hfo; cases h; subst hfo; exact wild_store
+    · rename_i hc; cases h
+      rcases Bool.or_eq_true_iff.mp hc with hm | hfo
+      · exact rel_store hm
+      · subst hfo; exact wild_store
     · cases h
 
 theorem storeUF_sound {cfg : Cfg} {A A' : AS} {v a : R} {fo : Bool}
@@ -396,7 +496,10 @@ theorem storeUF_sound {cfg : Cfg} {A A' : AS} {v a : R} {fo : Bool}
   split at h
   · rename_i A1 h1; cases h; exact storeU_sound h1
   · split at h
-    · rename_i hfo; cases h; subst hfo; exact wild_storeU
+    · rename_i hc; cases h
+      rcases Bool.or_eq_true_iff.mp hc with hm | hfo
+      · exact rel_storeU hm
+      · subst hfo; exact wild_storeU
     · cases h
 
 theorem istore8F_sound {cfg : Cfg} {A A' : AS} {v a : R} {tv : ClifTy} {fo : Bool}
@@ -406,7 +509,10 @@ theorem istore8F_sound {cfg : Cfg} {A A' : AS} {v a : R} {tv : ClifTy} {fo : Boo
   split at h
   · rename_i A1 h1; cases h; exact istore8_sound hsc h1
   · split at h
-    · rename_i hfo; cases h; subst hfo; exact wild_istore8
+    · rename_i hc; cases h
+      rcases Bool.or_eq_true_iff.mp hc with hm | hfo
+      · exact rel_istore8 hm
+      · subst hfo; exact wild_istore8
     · cases h
 -- ---------------------------------------------------------------------------
 -- Calls
@@ -420,23 +526,25 @@ theorem ffi_result_lanes (f : Ffi) : (f.result.getD .i64).lanes = none := by
 theorem call_core {cfg : Cfg} {A : AS} {f : Ffi} {args : List R} (hf : f ≠ .threadSpawn)
     (hz : A.facts.contains (.part .frozen false) = true)
     (hsc : (args.map A.get).all (fun a => a.scTy.isSome) = true)
-    (hp : preB f (args.map A.get) A.facts = true) {Γ : Env} {w : World} {vs : List V}
+    (hp : preB f (args.map A.get) A.facts (relRb A args) = true) {Γ : Env} {w : World} {vs : List V}
     (hA : A.Holds Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
-    ∃ r w', callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') ∧
+    ∃ r w' bits, callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') ∧
       (A.withFacts (postA f (args.map A.get) A.facts)).Holds Γ w' ∧
-      ∀ v, r = some v → ∃ x, v = .sc (f.result.getD .i64) x := by
+      ArgBits Γ (obsCall w (.ffi f) vs) (args.map A.get) bits ∧
+      ∀ v, r = some v → ∃ x, v = .sc (f.result.getD .i64) x ∧ answerOk f bits x := by
   have hA1 := hA.obsCall (.ffi f) vs
   have hd := descAll_of hA1 hvs
   obtain ⟨bits, hb⟩ := bits_exist hd hsc
   have hab := argBits_of hd hb
   have hz' : (obsCall w (.ffi f) vs).mem.frozen = false := holds_of_mem hA1.2.2 hz
-  have hpre := preB_sound hA1.2.2 hab hp
+  have hpre := preB_sound hA1.2.2 hab hp (relRb_sound hA1 hvs hb)
   obtain ⟨⟨r, w'⟩, hc⟩ := Option.isSome_iff_exists.mp (Contracts.pre_safe f bits _ hpre)
   have hcall : callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') := by
     rw [Contracts.callOf_ffi hf cfg.locals vs hz', hb]; exact hc
-  refine ⟨r, w', hcall, hA1.world (postA_sound hab hA1.2.2 hc) (callBits_rooms f hc), fun v hv => ?_⟩
+  refine ⟨r, w', bits, hcall, hA1.world (postA_sound hab hA1.2.2 hc) (callBits_rooms f hc), hab, fun v hv => ?_⟩
   subst hv
-  exact Contracts.callOf_ffi_scalar hf hcall
+  obtain ⟨x, rfl⟩ := Contracts.callOf_ffi_scalar hf hcall
+  exact ⟨x, rfl, answerOk_sound hc⟩
 
 theorem call_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo fa : Bool}
     (h : absStmt fa A (.call c args) = .ok A') : Stmt1 cfg A.Holds (.call c args) A'.Holds fo := by
@@ -449,9 +557,9 @@ theorem call_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo fa :
         simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hc
         obtain ⟨⟨⟨hf, hz⟩, hsc⟩, hp⟩ := hc
         refine call_rule fun Γ w vs hA hvs => ?_
-        obtain ⟨r, w', hcall, hA', hr⟩ := call_core hf hz hsc hp hA hvs
+        obtain ⟨r, w', _bits, hcall, hA', -, hr⟩ := call_core hf hz hsc hp hA hvs
         refine ⟨r, w', hcall, fun v hv => ?_⟩
-        obtain ⟨x, rfl⟩ := hr v hv
+        obtain ⟨x, rfl, -⟩ := hr v hv
         exact hA'.push (av := .sc (f.result.getD .i64)) (TyV.sc (ffi_result_lanes f))
       · cases h
   | _ => simp [absStmt] at h
@@ -467,14 +575,86 @@ theorem callVoid_sound {cfg : Cfg} {A A' : AS} {c : Callee} {args : List R} {fo 
         simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hc
         obtain ⟨⟨⟨hf, hz⟩, hsc⟩, hp⟩ := hc
         refine callVoid_rule fun Γ w vs hA hvs => ?_
-        obtain ⟨r, w', hcall, hA', -⟩ := call_core hf hz hsc hp hA hvs
+        obtain ⟨r, w', _bits, hcall, hA', -⟩ := call_core hf hz hsc hp hA hvs
         exact ⟨r, w', hcall, hA'⟩
       · cases h
   | _ => simp [absStmt] at h
 
+/-- **A call's answer by cases**: where `answerCases` splits the state after a
+    call, one of the two describes where it ends. -/
+theorem answerCases_sound {cfg : Cfg} {A A' B1 B2 : AS} {s : Stmt} {fo fa : Bool}
+    (h : absStmt fa A s = .ok A') (hc : answerCases A A' s = some (B1, B2)) :
+    Stmt1 cfg A.Holds s (fun Γ w => B1.Holds Γ w ∨ B2.Holds Γ w) fo := by
+  unfold answerCases at hc
+  split at hc
+  · rename_i b po dO fo' n
+    split at hc
+    · rename_i t0 sz hn
+      split at hc
+      · rename_i hs
+        simp only [Option.some.injEq, Prod.mk.injEq] at hc
+        obtain ⟨rfl, rfl⟩ := hc
+        simp only [absStmt] at h
+        split at h
+        · rename_i hpc
+          cases h
+          simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hpc
+          obtain ⟨⟨⟨hf, hz⟩, hsc⟩, hp⟩ := hpc
+          refine call_rule fun Γ w vs hA hvs => ?_
+          obtain ⟨r, w', bits, hcall, hA', hab, hr⟩ := call_core hf hz hsc hp hA hvs
+          refine ⟨r, w', hcall, fun v hv => ?_⟩
+          obtain ⟨x, rfl, hans⟩ := hr v hv
+          have hP := hA'.push (av := .sc (Ffi.fileRead.result.getD .i64))
+            (v := .sc (Ffi.fileRead.result.getD .i64) x) (TyV.sc (ffi_result_lanes Ffi.fileRead))
+          have hlen : Γ.size = A.len := hA.1.1
+          have hat : ∀ u, (Γ.push (.sc (Ffi.fileRead.result.getD .i64) x))[A.len]? = some u →
+              u = .sc .i64 x := by
+            intro u hu
+            rw [← hlen, Array.getElem?_push_size] at hu
+            cases hu; rfl
+          -- the size asked for is the one the state knows
+          simp only [List.map_cons, List.map_nil] at hab
+          rcases bits with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨size, _ | ⟨_, _⟩⟩⟩⟩⟩⟩ <;>
+            simp only [ArgBits, and_false] at hab
+          obtain ⟨-, -, -, -, ⟨t, hd⟩, -⟩ := hab
+          rw [hn] at hd
+          simp only [AV.Desc, V.sc.injEq] at hd
+          obtain ⟨-, rfl⟩ := hd
+          simp only [answerOk] at hans
+          rcases hans with h1 | h2
+          · left
+            refine hP.setAV fun u hu => ?_
+            rw [hat u hu]
+            show _ = _
+            congr 1
+            exact UInt64.toNat_inj.mp (by rw [h1]; rfl)
+          · right
+            refine hP.setAV fun u hu => ?_
+            rw [hat u hu]
+            exact ⟨x, rfl, Nat.zero_le _, h2 hs, Nat.one_dvd _, trivial⟩
+        · cases h
+      · cases hc
+    · cases hc
+  · cases hc
+
 -- ---------------------------------------------------------------------------
 -- Statements
 -- ---------------------------------------------------------------------------
+
+theorem relLoad_spec {A : AS} {o : Op} {av : AV} (h : relLoad A o = some av) :
+    ∃ op a t, o = .load op a ∧ loadKindOk op = true ∧ (A.get a).scTy = some t ∧
+      memRel A a (loadBytes op) = true ∧ av = loadAV op := by
+  unfold relLoad at h
+  split at h
+  · rename_i op a
+    split at h
+    · rename_i hc
+      cases h
+      simp only [Bool.and_eq_true, Option.isSome_iff_exists] at hc
+      obtain ⟨⟨hok, t, ht⟩, hm⟩ := hc
+      exact ⟨op, a, t, rfl, hok, ht, hm, rfl⟩
+    · cases h
+  · cases h
 
 /-- **What the checker steps a statement to is true of it.** -/
 theorem absStmt_sound {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStmt fo A s = .ok A') :
@@ -488,15 +668,30 @@ theorem absStmt_sound {cfg : Cfg} {A A' : AS} {s : Stmt} {fo : Bool} (h : absStm
         refine op_rule (fun Γ w v hA hv => ?_) (fun Γ w hA hn => ?_)
         · obtain ⟨v', hv', hd⟩ := absOp_sound hA hav
           rw [hv] at hv'; cases hv'
-          exact hA.push hd
+          have hB := hA.pushS (opAV_desc hA hv hd) (symOp_fits hA hv)
+          exact foldl_tighten hB _ _ (foldl_addUb _ _ hB
+            (fun q hq hok => ⟨opFacts_sound hA hv q hq, hok⟩) (fun q _ C hC => ubOk_len hC _))
+            (fun q hq => opFacts_sound hA hv q hq)
         · obtain ⟨v', hv', -⟩ := absOp_sound hA hav
           rw [hn] at hv'; cases hv'
       · split at h
-        · rename_i hfo
+        · rename_i av hrl
           cases h
-          subst hfo
-          exact op_rule (fun Γ w v hA _ => hA.push (av := .any) trivial) (fun _ _ _ _ => rfl)
-        · cases h
+          obtain ⟨op, a, t, rfl, hok, ht, hm, rfl⟩ := relLoad_spec hrl
+          refine op_rule (fun Γ w v hA hv => ?_) (fun Γ w hA hn => ?_)
+          · obtain ⟨x, hx, -⟩ := hA.getSc ht
+            obtain ⟨v', hv', hd⟩ := load_of_fits hok hx (memRel_fits hA hm hx)
+            rw [hv] at hv'; cases hv'
+            exact hA.push (hd _)
+          · obtain ⟨x, hx, -⟩ := hA.getSc ht
+            obtain ⟨v', hv', -⟩ := load_of_fits hok hx (memRel_fits hA hm hx)
+            rw [hn] at hv'; cases hv'
+        · split at h
+          · rename_i hfo
+            cases h
+            subst hfo
+            exact op_rule (fun Γ w v hA _ => hA.push (av := .any) trivial) (fun _ _ _ _ => rfl)
+          · cases h
   | store ty v a => exact storeF_sound h
   | storeUnaligned v a => exact storeUF_sound h
   | istore8 v a =>
@@ -684,10 +879,16 @@ theorem AS.join_holds {A B C : AS} (h : A.join B = .ok C) {Γ : Env} {w : World}
   split at h
   · rename_i hl
     cases h
-    have hs : Γ.size = A.len := by rcases hAB with hA | hB; exact hA.1; rw [hB.1, hl]
-    refine ⟨hs, fun i hi => ?_, ?_⟩
+    have hs : Γ.size = A.len := by rcases hAB with hA | hB; exact hA.1.1; rw [hB.1.1, hl]
+    refine ⟨⟨hs, fun i hi => ?_⟩, fun i hi => ?_, ?_⟩
+    · show (Slots.zip Sym.join A.syms B.syms |>.get i).Fits Γ w i A.len
+      rw [Slots.get_zip (by rfl)]
+      rcases hAB with hA | hB
+      · exact Sym.join_left (hA.1.2 i hi)
+      · exact Sym.join_right (hl ▸ hB.1.2 i (hl ▸ hi))
     · have hi' : i < B.len := hl ▸ hi
-      have e : AS.get ⟨Slots.zip AV.join A.slots B.slots, A.len, factsMeet A.facts B.facts⟩ i
+      have e : AS.get ⟨Slots.zip AV.join A.slots B.slots, A.len, factsMeet A.facts B.facts,
+          Slots.zip Sym.join A.syms B.syms⟩ i
           = (A.get i).join (B.get i) := by
         unfold AS.get
         rw [if_pos hi, if_pos hi, if_pos hi', Slots.get_zip (by rfl)]
@@ -782,47 +983,72 @@ theorem DescAll.portable {Γ Γ' : Env} {w : World} :
   | [], _ :: _, h => h.elim
   | _ :: _, [], h => h.elim
 
-theorem AS.foldl_push_len : ∀ (vs : List AV) (B : AS), (vs.foldl AS.push B).len = B.len + vs.length
+theorem AS.pushAll_cons (B : AS) (x : AV × Sym) (xs : List (AV × Sym)) :
+    B.pushAll (x :: xs) = (B.pushS x.1 x.2).pushAll xs := rfl
+
+theorem AS.pushAll_len : ∀ (xs : List (AV × Sym)) (B : AS), (B.pushAll xs).len = B.len + xs.length
   | [], _ => rfl
-  | v :: vs, B => by
-      rw [List.foldl_cons, AS.foldl_push_len vs (B.push v)]
-      simp only [AS.push, List.length_cons]
+  | x :: xs, B => by
+      rw [AS.pushAll_cons, AS.pushAll_len xs]
+      simp only [AS.pushS, List.length_cons]
       omega
 
-theorem AS.foldl_push_facts : ∀ (vs : List AV) (B : AS), (vs.foldl AS.push B).facts = B.facts
+theorem AS.pushAll_facts : ∀ (xs : List (AV × Sym)) (B : AS), (B.pushAll xs).facts = B.facts
   | [], _ => rfl
-  | v :: vs, B => by rw [List.foldl_cons, AS.foldl_push_facts vs (B.push v)]; rfl
+  | x :: xs, B => by rw [AS.pushAll_cons, AS.pushAll_facts xs]; rfl
 
-theorem AS.foldl_push_get : ∀ (vs : List AV) (B : AS) (i : Nat),
-    (vs.foldl AS.push B).get i = if i < B.len then B.get i else vs.getD (i - B.len) .any
+theorem AS.pushAll_syms : ∀ (xs : List (AV × Sym)) (B : AS) (i : Nat), i < B.len + xs.length →
+    (B.pushAll xs).syms.get i = if i < B.len then B.syms.get i else (xs.getD (i - B.len) (.any, {})).2
+  | [], B, i, hi => by
+      simp only [List.length_nil, Nat.add_zero] at hi
+      simp only [AS.pushAll, List.foldl_nil, if_pos hi]
+  | x :: xs, B, i, hi => by
+      have hi' : i < (B.pushS x.1 x.2).len + xs.length := by
+        simp only [AS.pushS, List.length_cons] at hi ⊢; omega
+      rw [AS.pushAll_cons, AS.pushAll_syms xs _ i hi']
+      have hl : (B.pushS x.1 x.2).len = B.len + 1 := rfl
+      rw [hl]
+      show (if i < B.len + 1 then (B.syms.set B.len x.2).get i else _) = _
+      rw [Slots.get_set]
+      by_cases h1 : i < B.len
+      · rw [if_pos (by omega), if_pos h1, if_neg (by omega)]
+      · by_cases h2 : i = B.len
+        · subst h2; rw [if_pos (by omega), if_pos rfl, if_neg h1, Nat.sub_self]; rfl
+        · rw [if_neg (by omega), if_neg h1]
+          obtain ⟨k, hk⟩ : ∃ k, i - B.len = k + 1 := ⟨i - B.len - 1, by omega⟩
+          rw [hk, show i - (B.len + 1) = k by omega]
+          rfl
+
+theorem AS.pushAll_get : ∀ (xs : List (AV × Sym)) (B : AS) (i : Nat),
+    (B.pushAll xs).get i = if i < B.len then B.get i else (xs.getD (i - B.len) (.any, {})).1
   | [], B, i => by
-      simp only [List.foldl_nil, List.getD_nil]
+      simp only [AS.pushAll, List.foldl_nil, List.getD_nil]
       split
       · rfl
       · rename_i h; exact AS.get_out h
-  | v :: vs, B, i => by
-      rw [List.foldl_cons, AS.foldl_push_get vs (B.push v) i]
-      have hl : (B.push v).len = B.len + 1 := rfl
+  | x :: xs, B, i => by
+      rw [AS.pushAll_cons, AS.pushAll_get xs _ i]
+      have hl : (B.pushS x.1 x.2).len = B.len + 1 := rfl
       rw [hl]
       by_cases h1 : i < B.len
-      · rw [if_pos (by omega), if_pos h1, AS.get_push_lt h1]
+      · rw [if_pos (by omega), if_pos h1, AS.get_pushS_lt h1]
       · by_cases h2 : i = B.len
         · subst h2
-          rw [if_pos (by omega), if_neg h1, AS.get_push_eq, Nat.sub_self]
+          rw [if_pos (by omega), if_neg h1, AS.get_pushS_eq, Nat.sub_self]
           rfl
         · rw [if_neg (by omega), if_neg h1]
           obtain ⟨k, hk⟩ : ∃ k, i - B.len = k + 1 := ⟨i - B.len - 1, by omega⟩
           rw [hk, show i - (B.len + 1) = k by omega]
           rfl
 
-theorem Slots.get_clear : ∀ (k : Nat) (t : Slots) (i j : Nat),
-    (t.clear i k).get j = if i ≤ j ∧ j < i + k then .any else t.get j
+theorem Slots.get_clear {α : Type} [Blank α] : ∀ (k : Nat) (t : Slots α) (i j : Nat),
+    (t.clear i k).get j = if i ≤ j ∧ j < i + k then Blank.blank else t.get j
   | 0, t, i, j => by
       simp only [Slots.clear]
       rw [if_neg (by omega)]
   | k + 1, t, i, j => by
       simp only [Slots.clear]
-      rw [Slots.get_clear k (t.set i .any) (i + 1) j, Slots.get_set]
+      rw [Slots.get_clear k (t.set i Blank.blank) (i + 1) j, Slots.get_set]
       by_cases h1 : i + 1 ≤ j ∧ j < i + 1 + k
       · rw [if_pos h1, if_pos (by omega)]
       · rw [if_neg h1]
@@ -830,47 +1056,64 @@ theorem Slots.get_clear : ∀ (k : Nat) (t : Slots) (i j : Nat),
         · rw [if_pos h2, if_pos (by omega)]
         · rw [if_neg h2, if_neg (by omega)]
 
-theorem AS.bindAt_len (A : AS) (n : Nat) (vs : List AV) : (A.bindAt n vs).len = n + vs.length := by
+theorem AS.bindAt_len (A : AS) (n : Nat) (vs : List AV) (ss : List Sym) :
+    (A.bindAt n vs ss).len = n + vs.length := by
   unfold AS.bindAt
-  rw [AS.foldl_push_len, List.length_map]
+  rw [AS.pushAll_len, List.length_mapIdx]
   split <;> rfl
 
-theorem AS.bindAt_facts (A : AS) (n : Nat) (vs : List AV) : (A.bindAt n vs).facts = A.facts := by
+theorem AS.bindAt_facts (A : AS) (n : Nat) (vs : List AV) (ss : List Sym) :
+    (A.bindAt n vs ss).facts = A.facts := by
   unfold AS.bindAt
-  rw [AS.foldl_push_facts]
+  rw [AS.pushAll_facts]
   split <;> rfl
 
-theorem AS.bindAt_get_lt {A : AS} {n i : Nat} {vs : List AV} (hi : i < n) :
-    (A.bindAt n vs).get i = if A.len ≤ n then A.get i else AV.cut n (A.get i) := by
+theorem AS.bindAt_get_lt {A : AS} {n i : Nat} {vs : List AV} {ss : List Sym} (hi : i < n) :
+    (A.bindAt n vs ss).get i = if A.len ≤ n then A.get i else AV.cut n (A.get i) := by
   unfold AS.bindAt
-  rw [AS.foldl_push_get]
+  rw [AS.pushAll_get]
   split
   · rename_i hle
-    have e : AS.get ⟨A.slots.clear A.len (n - A.len), n, A.facts⟩ i = A.get i := by
+    have e : AS.get ⟨A.slots.clear A.len (n - A.len), n, A.facts, A.syms.clear A.len (n - A.len)⟩ i
+        = A.get i := by
       unfold AS.get
       simp only
       rw [if_pos hi, Slots.get_clear]
       by_cases h : i < A.len
       · rw [if_neg (by omega), if_pos h]
-      · rw [if_pos (by omega), if_neg h]
+      · rw [if_pos (by omega), if_neg h]; rfl
     first | exact e | (rw [if_pos (show i < n from hi)]; exact e)
   · rename_i hle
-    have e : AS.get ⟨A.slots.map (AV.cut n), n, A.facts⟩ i = AV.cut n (A.get i) := by
+    have e : AS.get ⟨A.slots.map (AV.cut n), n, A.facts, A.syms.map (Sym.cut n)⟩ i = AV.cut n (A.get i) := by
       unfold AS.get
       simp only
       rw [if_pos hi, Slots.get_map (by rfl), if_pos (show i < A.len by omega)]
     first | exact e | (rw [if_pos (show i < n from hi)]; exact e)
 
-theorem AS.bindAt_get_ge {A : AS} {n j : Nat} {vs : List AV} :
-    (A.bindAt n vs).get (n + j) = (vs.getD j .any).portable := by
+theorem getD_out {α : Type} {l : List α} {d : α} {j : Nat} (h : l.length ≤ j) : l.getD j d = d := by
+  simp [List.getD_eq_getElem?_getD, List.getElem?_eq_none h]
+
+theorem getD_mapIdx_pair {vs : List AV} {ss : List Sym} {j : Nat} :
+    (vs.mapIdx fun i v => (v.portable, ss.getD i {})).getD j (.any, {}) =
+      if j < vs.length then ((vs.getD j .any).portable, ss.getD j {}) else (.any, {}) := by
+  split
+  · rename_i hj
+    simp [List.getD_eq_getElem?_getD, List.getElem?_mapIdx, List.getElem?_eq_getElem hj]
+  · rename_i hj
+    exact getD_out (by simp; omega)
+
+theorem AS.bindAt_get_ge {A : AS} {n j : Nat} {vs : List AV} {ss : List Sym} :
+    (A.bindAt n vs ss).get (n + j) = (vs.getD j .any).portable := by
   unfold AS.bindAt
-  rw [AS.foldl_push_get]
+  rw [AS.pushAll_get]
   have hb : ∀ B : AS, B.len = n → (if n + j < B.len then B.get (n + j)
-      else (vs.map AV.portable).getD (n + j - B.len) .any) = (vs.getD j .any).portable := by
+      else ((vs.mapIdx fun i v => (v.portable, ss.getD i {})).getD (n + j - B.len) (.any, {})).1) =
+        (vs.getD j .any).portable := by
     intro B hB
-    rw [hB, if_neg (by omega), Nat.add_sub_cancel_left]
-    simp only [List.getD_eq_getElem?_getD, List.getElem?_map]
-    cases vs[j]? <;> rfl
+    rw [hB, if_neg (by omega), Nat.add_sub_cancel_left, getD_mapIdx_pair]
+    split
+    · rfl
+    · rename_i hj; rw [getD_out (by omega)]; rfl
   split
   · exact hb _ rfl
   · exact hb _ rfl
@@ -920,23 +1163,73 @@ theorem bindAt_size' (Γ : Env) (n : Nat) (vs : List V) : (bindAt Γ n vs).size 
     List.size_toArray]
   omega
 
+theorem AS.bindAt_syms {A : AS} {n i : Nat} {vs : List AV} {ss : List Sym} (hi : i < n + vs.length) :
+    (A.bindAt n vs ss).syms.get i =
+      if i < n then (if A.len ≤ n then (if i < A.len then A.syms.get i else {}) else Sym.cut n (A.syms.get i))
+      else ss.getD (i - n) {} := by
+  unfold AS.bindAt
+  rw [AS.pushAll_syms _ _ _ (by split <;> simpa using hi)]
+  have tail : ¬ i < n → ((vs.mapIdx fun i v => (v.portable, ss.getD i {})).getD (i - n) (.any, {})).2 =
+      ss.getD (i - n) {} := fun hn => by
+    rw [getD_mapIdx_pair, if_pos (by omega)]
+  split
+  · rename_i hle
+    show (if i < n then (A.syms.clear A.len (n - A.len)).get i else _) = _
+    split
+    · rw [Slots.get_clear]
+      by_cases h : i < A.len
+      · rw [if_neg (by omega), if_pos h]
+      · rw [if_pos (by omega), if_neg h]; rfl
+    · rename_i hn; exact tail hn
+  · rename_i hle
+    show (if i < n then (A.syms.map (Sym.cut n)).get i else _) = _
+    split
+    · rw [Slots.get_map (by rfl)]
+    · rename_i hn; exact tail hn
+
+theorem slotVal_bindAt {Γ : Env} {n x : Nat} {vs : List V} (hx : x < n) (hs : x < Γ.size) :
+    slotVal (Sem.bindAt Γ n vs) x = slotVal Γ x := by
+  unfold slotVal; rw [Hoare.bindAt_lt hx hs]
+
 /-- **Binding, abstractly and concretely**: `AS.bindAt` describes `bindAt`. -/
-theorem AS.Holds.bindAt {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) (n : Nat) {avs : List AV}
-    {vs : List V} (hd : DescAll Γ w avs vs) : (A.bindAt n avs).Holds (Sem.bindAt Γ n vs) w := by
+theorem AS.Holds.bindAtS {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) (n : Nat) {avs : List AV}
+    {vs : List V} {ss : List Sym} (hd : DescAll Γ w avs vs)
+    (hss : ∀ j, j < avs.length → (ss.getD j {}).Fits (Sem.bindAt Γ n vs) w (n + j) (n + avs.length)) :
+    (A.bindAt n avs ss).Holds (Sem.bindAt Γ n vs) w := by
   have hlen := hd.length
-  refine ⟨by rw [bindAt_size', AS.bindAt_len, hlen], fun i hi => ?_, by rw [AS.bindAt_facts]; exact hA.2.2⟩
+  refine ⟨⟨by rw [bindAt_size', AS.bindAt_len, hlen], fun i hi => ?_⟩, fun i hi => ?_,
+    by rw [AS.bindAt_facts]; exact hA.2.2⟩
+  · rw [AS.bindAt_len] at hi
+    rw [AS.bindAt_syms (by simpa using hi), AS.bindAt_len]
+    have hs := hA.1.1
+    split
+    · rename_i hn
+      split
+      · rename_i hle
+        split
+        · rename_i hia
+          exact Sym.fits_congr (hA.1.2 i hia) (fun x hx => slotVal_bindAt (by omega) (by omega))
+            (slotVal_bindAt hn (by omega)) (fun _ _ => rfl) (by omega)
+        · exact Sym.fits_blank _ _ _ _
+      · rename_i hle
+        exact Sym.cut_fits (hA.1.2 i (by omega)) (fun x hx => slotVal_bindAt hx (by omega))
+          (slotVal_bindAt hn (by omega)) (by omega)
+    · rename_i hn
+      obtain ⟨j, rfl⟩ : ∃ j, i = n + j := ⟨i - n, by omega⟩
+      rw [Nat.add_sub_cancel_left]
+      exact hss j (by omega)
   rw [AS.bindAt_len] at hi
   by_cases hn : i < n
   · rw [AS.bindAt_get_lt hn, bindAt_get?, if_pos hn]
     by_cases hs : i < Γ.size
     · rw [if_pos hs]
-      obtain ⟨v, hv, hdv⟩ := hA.get (hA.1 ▸ hs)
+      obtain ⟨v, hv, hdv⟩ := hA.get (hA.1.1 ▸ hs)
       refine ⟨v, hv, ?_⟩
       split
       · rename_i hle
-        exact AV.desc_extend hdv fun a has => Hoare.bindAt_lt (by have := hA.1; omega) has
+        exact AV.desc_extend hdv fun a has => Hoare.bindAt_lt (by have := hA.1.1; omega) has
       · exact AV.cut_desc hdv fun a ha has => Hoare.bindAt_lt ha has
-    · rw [if_neg hs, AS.get_out (by rw [← hA.1]; exact hs)]
+    · rw [if_neg hs, AS.get_out (by rw [← hA.1.1]; exact hs)]
       exact ⟨_, rfl, by split <;> trivial⟩
   · obtain ⟨j, rfl⟩ : ∃ j, i = n + j := ⟨i - n, by omega⟩
     rw [AS.bindAt_get_ge, Hoare.bindAt_at]
@@ -949,6 +1242,11 @@ theorem AS.Holds.bindAt {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) (n :
 
 /-- `Γ` extends `Γ0`: every slot of `Γ0` is still there, unchanged. -/
 def Ext (Γ0 Γ : Env) : Prop := Γ0.size ≤ Γ.size ∧ ∀ i, i < Γ0.size → Γ[i]? = Γ0[i]?
+
+
+theorem AS.Holds.bindAt {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) (n : Nat) {avs : List AV}
+    {vs : List V} (hd : DescAll Γ w avs vs) : (A.bindAt n avs).Holds (Sem.bindAt Γ n vs) w :=
+  hA.bindAtS n hd fun _ _ => by simp only [List.getD_nil]; exact Sym.fits_blank _ _ _ _
 
 theorem Ext.refl (Γ : Env) : Ext Γ Γ := ⟨Nat.le_refl _, fun _ _ => rfl⟩
 
@@ -1075,6 +1373,7 @@ def RelHolds : ICmpCond → Nat → Nat → Prop
   | .ugt, a, b => b < a
   | .uge, a, b => b ≤ a
   | .eq, a, b => a = b
+  | .ne, a, b => a ≠ b
   | _, _, _ => True
 
 theorem holdsRel_sound {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {c : ICmpCond} {x y : R}
@@ -1088,30 +1387,8 @@ theorem holdsRel_sound {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {c : 
   split at h <;> (try cases h) <;> rename_i hc <;>
     simp only [cmpInt, decide_eq_true_eq, decide_eq_false_iff_not, UInt64.lt_iff_toNat_lt,
       UInt64.le_iff_toNat_le, gt_iff_lt, ge_iff_le, Nat.not_lt, Nat.not_le, beq_iff_eq,
-      bne_eq_false_iff_eq] at hc <;> simp only [RelHolds] <;> first | omega | rw [hc]
-
-theorem AS.Holds.setAV {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {r : R} {av : AV}
-    (hv : ∀ v, Γ[r]? = some v → av.Desc Γ w v) : (A.setAV r av).Holds Γ w := by
-  unfold AS.setAV
-  split
-  · exact hA
-  · split
-    · rename_i hr
-      refine ⟨hA.1, fun i hi => ?_, hA.2.2⟩
-      obtain ⟨u, hu, hd⟩ := hA.get hi
-      refine ⟨u, hu, ?_⟩
-      have e : AS.get ⟨A.slots.set r av, A.len, A.facts⟩ i = if i = r then av else A.get i := by
-        unfold AS.get
-        rw [if_pos hi, Slots.get_set]
-        split
-        · rfl
-        · first | rfl | rw [if_pos hi]
-      rw [e]
-      split
-      · rename_i h; subst h
-        exact hv u hu
-      · exact hd
-    · exact hA
+      bne_eq_false_iff_eq] at hc <;> simp only [RelHolds] <;>
+    first | omega | rw [hc] | (intro h; have := UInt64.toNat_inj.mp h; subst this; simp at hc)
 
 /-- The number `offs` reads a value as: an address less its region's base, or
     the value itself. -/
@@ -1150,10 +1427,10 @@ theorem AV.offs_desc {Γ : Env} {w : World} {av : AV} {t : ClifTy} {x : UInt64} 
     obtain ⟨rfl, rfl⟩ := e
     exact ⟨hz, fun _ e => absurd e (by simp), fun n' hn' ht _ => ⟨x, by rw [ht], hn'⟩⟩
 
-theorem lessThan_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {x y : R} {tx ty : ClifTy}
+theorem lessRange_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {x y : R} {tx ty : ClifTy}
     {a b : UInt64} {e : Nat} (hx : Γ[x]? = some (.sc tx a)) (hy : Γ[y]? = some (.sc ty b)) (he : e ≤ 1)
-    (hab : a.toNat + e ≤ b.toNat) : (lessThan A x y e).Holds Γ w := by
-  unfold lessThan
+    (hab : a.toNat + e ≤ b.toNat) : (lessRange A x y e).Holds Γ w := by
+  unfold lessRange
   split
   · rename_i gx nx gy ny hox hoy
     split
@@ -1202,18 +1479,69 @@ theorem lessThan_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {x y 
           rw [hy] at hv; cases hv
           exact hny _ ⟨by have := hxa.1; have := hyb.1; dsimp only; omega, hyb.2.1, hyb.2.2.1, hyb.2.2.2⟩ rfl
             (Nat.le_refl _))
-      split
-      · rename_i k r s' d hk hfit
-        have hak := Num.exact_eq hxa hk
-        have hf := hyb.2.2.2
-        rw [hfit] at hf
-        refine ⟨hA2.1, hA2.2.1, TState.holds_cons ?_ hA2.2.2⟩
-        show (k + s) * s' + d ≤ w.mem.sizes r
-        have hm := Nat.mul_le_mul_right s' (show k + s ≤ zb by omega)
-        have := hf.2
-        omega
-      · exact hA2
+      have hf := hyb.2.2.2
+      revert hA2
+      cases hfit : ny.fit with
+      | none => dsimp only; exact id
+      | some f =>
+        obtain ⟨r, s', d⟩ := f
+        dsimp only
+        intro hA2
+        by_cases hpos : 0 < nx.lo + s
+        · rw [if_pos hpos]
+          rw [hfit] at hf
+          refine ⟨hA2.1, hA2.2.1, TState.holds_cons ?_ hA2.2.2⟩
+          show (nx.lo + s) * s' + d ≤ w.mem.sizes r
+          have hm := Nat.mul_le_mul_right s' (show nx.lo + s ≤ zb by have := hxa.1; omega)
+          have := hf.2
+          omega
+        · rw [if_neg hpos]; exact hA2
     · exact hA
+  · exact hA
+
+
+theorem lessThan_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {x y : R} {tx ty : ClifTy}
+    {a b : UInt64} {e : Nat} (hx : Γ[x]? = some (.sc tx a)) (hy : Γ[y]? = some (.sc ty b)) (he : e ≤ 1)
+    (hab : a.toNat + e ≤ b.toNat) : (lessThan A x y e).Holds Γ w := by
+  have hal : a.toNat + alignE A x y e ≤ b.toNat := by
+    unfold alignE
+    dsimp only
+    split
+    · rename_i hg
+      obtain ⟨rfl, hg⟩ := hg
+      have hga : Nat.gcd (A.get x).absAl (A.get y).absAl ∣ a.toNat :=
+        Nat.dvd_trans (Nat.gcd_dvd_left _ _) (AV.absAl_dvd (hA.descAt hx))
+      have hgb : Nat.gcd (A.get x).absAl (A.get y).absAl ∣ b.toNat :=
+        Nat.dvd_trans (Nat.gcd_dvd_right _ _) (AV.absAl_dvd (hA.descAt hy))
+      generalize Nat.gcd (A.get x).absAl (A.get y).absAl = g at hg hga hgb ⊢
+      obtain ⟨i, hi⟩ := hga
+      obtain ⟨j, hj⟩ := hgb
+      rw [hi, hj] at hab ⊢
+      have hij : i + 1 ≤ j := by
+        rcases Nat.lt_or_ge i j with h | h
+        · exact h
+        · have := Nat.mul_le_mul_left g h; omega
+      have := Nat.mul_le_mul_left g hij
+      rw [Nat.mul_add, Nat.mul_one] at this
+      exact this
+    · exact hab
+  exact relLo_holds (relLess_holds (lessRange_holds hA hx hy he hab) (by rw [slotVal_sc hx, slotVal_sc hy]; omega)) x
+
+theorem nonZero_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {x y : R} {tx ty : ClifTy}
+    {a b : UInt64} (hx : Γ[x]? = some (.sc tx a)) (hy : Γ[y]? = some (.sc ty b)) (hab : a.toNat ≠ b.toNat) :
+    (nonZero A x y).Holds Γ w := by
+  unfold nonZero
+  split
+  · rename_i t hb
+    have hd := hA.descAt hy
+    rw [hb] at hd
+    simp only [AV.Desc, V.sc.injEq] at hd
+    obtain ⟨-, rfl⟩ := hd
+    refine hA.tightenLo ?_
+    rw [slotVal_sc hx]
+    simp only [UInt64.toNat_zero] at hab
+    push_cast
+    omega
   · exact hA
 
 theorem learn_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {rel : ICmpCond} {x y : R}
@@ -1221,7 +1549,7 @@ theorem learn_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {rel : I
     (hr : RelHolds rel a.toNat b.toNat) : (learn A rel x y).Holds Γ w := by
   cases rel <;> simp only [learn, RelHolds] at hr ⊢
   · exact lessThan_holds (lessThan_holds hA hx hy (by decide) (by omega)) hy hx (by decide) (by omega)
-  · exact hA
+  · exact nonZero_holds (nonZero_holds hA hx hy hr) hy hx (Ne.symm hr)
   · exact lessThan_holds hA hy hx (by decide) (by omega)
   · exact lessThan_holds hA hy hx (by decide) (by omega)
   · exact lessThan_holds hA hx hy (by decide) (by omega)
@@ -1261,18 +1589,187 @@ theorem refine_sound {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {flag :
 -- Carries
 -- ---------------------------------------------------------------------------
 
-/-- The carries and the world a loop's carry state describes. Its values read
-    no slot, so they are read in the empty environment. -/
-def Carry.Desc (c : Carry) (cs : List V) (w : World) : Prop :=
-  DescAll #[] w c.vals cs ∧ c.facts.holds w
+/-- Each value's linear facts hold of it, read in `Γb`, the environment its
+    loop was entered from. -/
+def SymsAll (Γb : Env) (w : World) (ss : List Sym) (cs : List V) : Prop :=
+  ∀ i, i < cs.length → (ss.getD i {}).FitsAt Γb w (vVal (cs.getD i default)) Γb.size
+
+/-- What carries stepping together say of the carries `cs`, the loop entered
+    from `Γb` with the slots `inits`. -/
+def IvsAll (Γb : Env) (inits : List R) (ivs : List (Option (Nat × Int))) (cs : List V) : Prop :=
+  ∀ i j r, i < cs.length → ivs.getD i none = some (j, r) → j < cs.length →
+    inits.getD i 0 < Γb.size → inits.getD j 0 < Γb.size →
+    vVal (cs.getD i default) % 2 ^ 64 =
+      (slotVal Γb (inits.getD i 0) + r * (vVal (cs.getD j default) - slotVal Γb (inits.getD j 0))) % 2 ^ 64
+
+/-- The carries and the world a loop's carry state describes, the loop entered
+    from `Γb`. Its values read no slot, so they are read in the empty
+    environment; its linear facts read slots from before the loop. -/
+def Carry.Desc (c : Carry) (Γb : Env) (cs : List V) (w : World) : Prop :=
+  DescAll #[] w c.vals cs ∧ c.facts.holds w ∧ SymsAll Γb w c.syms cs ∧ IvsAll Γb c.inits c.ivs cs
+
+theorem mapM_getD {Γ : Env} : ∀ {xs : List R} {vs : List V}, xs.mapM (fun r => Γ[r]?) = some vs →
+    ∀ i, i < vs.length → Γ[xs.getD i 0]? = some (vs.getD i default)
+  | [], vs, h, i, hi => by
+      simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h; subst h; simp at hi
+  | x :: xs, vs, h, i, hi => by
+      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨v, hv, vs', hvs', rfl⟩ := h
+      cases i with
+      | zero => simpa using hv
+      | succ i => simpa using mapM_getD hvs' i (by simpa using hi)
+
+/-- Carries entered with the values of `inits` step together however they are
+    said to. -/
+theorem ivsAll_entry {Γ : Env} {inits : List R} {cs : List V}
+    (h : inits.mapM (fun r => Γ[r]?) = some cs) (ivs : List (Option (Nat × Int))) : IvsAll Γ inits ivs cs := by
+  intro i j r hi _ hj _ _
+  rw [← slotVal_of (mapM_getD h i hi), ← slotVal_of (mapM_getD h j hj)]
+  simp
+
+theorem getD_zipWith_eq {a b : List (Option (Nat × Int))} {i : Nat} {p : Nat × Int}
+    (h : (List.zipWith (fun x y => if x = y then x else none) a b).getD i none = some p) :
+    a.getD i none = some p ∧ b.getD i none = some p := by
+  induction a generalizing b i with
+  | nil => simp at h
+  | cons x a ih =>
+      cases b with
+      | nil => simp at h
+      | cons y b =>
+          cases i with
+          | zero =>
+              simp only [List.zipWith_cons_cons, List.getD_cons_zero] at h ⊢
+              split at h
+              · rename_i e; subst e; exact ⟨h, h⟩
+              · cases h
+          | succ i =>
+              simp only [List.zipWith_cons_cons, List.getD_cons_succ] at h ⊢
+              exact ih h
+
+theorem IvsAll.join_left {Γb : Env} {a b : Carry} {cs : List V} (h : IvsAll Γb a.inits a.ivs cs) :
+    IvsAll Γb (a.join b).inits (a.join b).ivs cs := by
+  intro i j r hi hiv
+  simp only [Carry.join] at hiv ⊢
+  split at hiv
+  · exact h i j r hi (getD_zipWith_eq hiv).1
+  · simp at hiv
+
+theorem IvsAll.join_right {Γb : Env} {a b : Carry} {cs : List V} (h : IvsAll Γb b.inits b.ivs cs) :
+    IvsAll Γb (a.join b).inits (a.join b).ivs cs := by
+  intro i j r hi hiv
+  simp only [Carry.join] at hiv ⊢
+  split at hiv
+  · rename_i e; rw [e]; exact h i j r hi (getD_zipWith_eq hiv).2
+  · simp at hiv
+
+theorem Sym.fitsAt_merge {σ τ : Sym} {Γ : Env} {w : World} {x : Int} {m : Nat} (h1 : σ.FitsAt Γ w x m)
+    (h2 : τ.FitsAt Γ w x m) : (Sym.merge σ τ).FitsAt Γ w x m := by
+  obtain ⟨⟨d1, u1⟩, s1, g1⟩ := h1
+  obtain ⟨⟨d2, u2⟩, s2, g2⟩ := h2
+  refine ⟨⟨fun D e => ?_, fun p hp => ?_⟩, fun y hy => ?_, fun g hg => ?_⟩
+  · simp only [Sym.merge] at e
+    cases e1 : σ.dfn with
+    | some D1 => rw [e1] at e; simp at e; subst e; exact d1 _ e1
+    | none => rw [e1] at e; simp at e; exact d2 _ e
+  · simp only [Sym.merge, List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact u1 p hp
+    · exact u2 p hp
+  · simp only [Sym.slots, Sym.merge, List.mem_append, List.mem_flatten, List.mem_map, List.map_append,
+      List.flatten_append] at hy
+    rcases hy with hy | hy
+    · cases e1 : σ.dfn with
+      | some D1 =>
+          rw [e1] at hy; simp at hy
+          exact s1 y (by simp [Sym.slots, e1, hy])
+      | none =>
+          rw [e1] at hy; simp at hy
+          exact s2 y (by simp only [Sym.slots, List.mem_append]; left; simpa using hy)
+    · rcases hy with ⟨_, ⟨p, hp, rfl⟩, hy⟩ | ⟨_, ⟨p, hp, rfl⟩, hy⟩
+      · exact s1 y (by simp only [Sym.slots, List.mem_append, List.mem_flatten, List.mem_map]; exact .inr ⟨_, ⟨p, hp, rfl⟩, hy⟩)
+      · exact s2 y (by simp only [Sym.slots, List.mem_append, List.mem_flatten, List.mem_map]; exact .inr ⟨_, ⟨p, hp, rfl⟩, hy⟩)
+  · simp only [Sym.regions, Sym.merge, List.mem_append, List.mem_flatten, List.mem_map, List.map_append,
+      List.flatten_append] at hg
+    rcases hg with hg | hg
+    · cases e1 : σ.dfn with
+      | some D1 =>
+          rw [e1] at hg; simp at hg
+          exact g1 g (by simp [Sym.regions, e1, hg])
+      | none =>
+          rw [e1] at hg; simp at hg
+          exact g2 g (by simp only [Sym.regions, List.mem_append]; left; simpa using hg)
+    · rcases hg with ⟨_, ⟨p, hp, rfl⟩, hg⟩ | ⟨_, ⟨p, hp, rfl⟩, hg⟩
+      · exact g1 g (by simp only [Sym.regions, List.mem_append, List.mem_flatten, List.mem_map]; exact .inr ⟨_, ⟨p, hp, rfl⟩, hg⟩)
+      · exact g2 g (by simp only [Sym.regions, List.mem_append, List.mem_flatten, List.mem_map]; exact .inr ⟨_, ⟨p, hp, rfl⟩, hg⟩)
+
+/-- What carry `i` steps with fits where the carries are bound at `Γb`'s end. -/
+theorem ivSym_fits {Γb : Env} {w : World} {inits : List R} {ivs : List (Option (Nat × Int))} {cs : List V}
+    (h : IvsAll Γb inits ivs cs) {i : Nat} (hi : i < cs.length) :
+    (ivSym Γb.size cs.length inits i (ivs.getD i none)).Fits (Sem.bindAt Γb Γb.size cs) w
+      (Γb.size + i) (Γb.size + cs.length) := by
+  show (ivSym Γb.size cs.length inits i (ivs.getD i none)).FitsAt _ w
+    (slotVal (Sem.bindAt Γb Γb.size cs) (Γb.size + i)) _
+  rw [slotVal_of (v := cs[i]) (by rw [Hoare.bindAt_at, List.getElem?_eq_getElem hi])]
+  cases hv : ivs.getD i none with
+  | none => exact Sym.fitsAt_blank _ _ _ _
+  | some p =>
+      obtain ⟨j, r⟩ := p
+      simp only [ivSym]
+      split
+      · rename_i hc
+        obtain ⟨hj, hii, hij⟩ := hc
+        have key := h i j r hi hv hj hii hij
+        have hcj : cs.getD j default = cs[j] := by simp [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hj]
+        have hci : cs.getD i default = cs[i] := by simp [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hi]
+        rw [hci, hcj] at key
+        refine ⟨⟨fun D e => ?_, fun p hp => by simp at hp⟩, fun y hy => ?_, fun g hg => ?_⟩
+        · simp only [Option.some.injEq] at e; subst e
+          simp only [Lin.eval, Lin.evalT, Atom.val]
+          rw [slotVal_bindAt hii hii, slotVal_bindAt hij hij,
+            slotVal_of (Γ := Sem.bindAt Γb Γb.size cs) (r := Γb.size + j) (v := cs[j])
+              (by rw [Hoare.bindAt_at, List.getElem?_eq_getElem hj])]
+          have e : 1 * slotVal Γb (inits.getD i 0) + (r * vVal cs[j] + (-r * slotVal Γb (inits.getD j 0) + 0)) + 0 =
+              slotVal Γb (inits.getD i 0) + r * (vVal cs[j] - slotVal Γb (inits.getD j 0)) := by
+            rw [Int.mul_sub, Int.neg_mul]; omega
+          rw [e]; exact key
+        · have hy' : y = inits.getD i 0 ∨ y = Γb.size + j ∨ y = inits.getD j 0 := by
+            simpa [Sym.slots, Lin.slots] using hy
+          rcases hy' with rfl | rfl | rfl
+          · exact Nat.lt_of_lt_of_le hii (Nat.le_add_right _ _)
+          · exact Nat.add_lt_add_left hj _
+          · exact Nat.lt_of_lt_of_le hij (Nat.le_add_right _ _)
+        · simp [Sym.regions, Lin.regions] at hg
+      · exact Sym.fitsAt_blank _ _ _ _
 
 /-- Every carry state `b` describes, `c` does. -/
-def Carry.Le (b c : Carry) : Prop := ∀ cs w, b.Desc cs w → c.Desc cs w
+def Carry.Le (b c : Carry) : Prop := ∀ Γb cs w, b.Desc Γb cs w → c.Desc Γb cs w
 
-theorem Carry.Le.refl (c : Carry) : c.Le c := fun _ _ h => h
+theorem Carry.Le.refl (c : Carry) : c.Le c := fun _ _ _ h => h
 
 theorem Carry.Le.trans {a b c : Carry} (h1 : a.Le b) (h2 : b.Le c) : a.Le c :=
-  fun cs w h => h2 cs w (h1 cs w h)
+  fun Γb cs w h => h2 Γb cs w (h1 Γb cs w h)
+
+theorem Sym.join_blank_left (τ : Sym) : Sym.join {} τ = {} := by
+  simp only [Sym.join]; split <;> simp
+
+theorem Sym.join_blank_right (σ : Sym) : Sym.join σ {} = {} := by
+  simp only [Sym.join]; split <;> simp_all [Sym.like]
+
+theorem getD_zipWith_join : ∀ (a b : List Sym) (i : Nat),
+    (List.zipWith Sym.join a b).getD i {} = Sym.join (a.getD i {}) (b.getD i {})
+  | [], b, i => by simp [Sym.join_blank_left]
+  | _ :: _, [], i => by simp [Sym.join_blank_right]
+  | x :: a, y :: b, 0 => rfl
+  | x :: a, y :: b, i + 1 => by simpa using getD_zipWith_join a b i
+
+theorem SymsAll.join_left {Γb : Env} {w : World} {a b : List Sym} {cs : List V} (h : SymsAll Γb w a cs) :
+    SymsAll Γb w (List.zipWith Sym.join a b) cs := fun i hi => by
+  rw [getD_zipWith_join]; exact Sym.join_left (h i hi)
+
+theorem SymsAll.join_right {Γb : Env} {w : World} {a b : List Sym} {cs : List V} (h : SymsAll Γb w b cs) :
+    SymsAll Γb w (List.zipWith Sym.join a b) cs := fun i hi => by
+  rw [getD_zipWith_join]; exact Sym.join_right (h i hi)
 
 theorem descAll_zip {Γ : Env} {w : World} {f : AV → AV → AV}
     (hf : ∀ a b v, a.Desc Γ w v → (f a b).Desc Γ w v) :
@@ -1301,12 +1798,12 @@ theorem Carry.join_length {a b : Carry} (h : b.vals.length = a.vals.length) :
   simp [Carry.join, List.length_zipWith, h]
 
 theorem Carry.join_left {a b : Carry} (h : a.vals.length = b.vals.length) : a.Le (a.join b) :=
-  fun _ _ ⟨hd, hf⟩ => ⟨descAll_zip (fun _ _ _ h => AV.join_left h) h hd,
-    factsMeet_left hf⟩
+  fun _ _ _ ⟨hd, hf, hs, hi⟩ => ⟨descAll_zip (fun _ _ _ h => AV.join_left h) h hd,
+    factsMeet_left hf, hs.join_left, hi.join_left⟩
 
 theorem Carry.join_right {a b : Carry} (h : a.vals.length = b.vals.length) : b.Le (a.join b) :=
-  fun _ _ ⟨hd, hf⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.join_right h) h hd,
-    factsMeet_right hf⟩
+  fun _ _ _ ⟨hd, hf, hs, hi⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.join_right h) h hd,
+    factsMeet_right hf, hs.join_right, hi.join_right⟩
 
 theorem foldl_join : ∀ (backs : List Carry) (c : Carry), (∀ b ∈ backs, b.vals.length = c.vals.length) →
     (backs.foldl Carry.join c).vals.length = c.vals.length ∧ c.Le (backs.foldl Carry.join c) ∧
@@ -1362,7 +1859,7 @@ theorem AV.widen_desc {Γ : Env} {w : World} {o n : AV} {v : V} (hd : n.Desc Γ 
   · exact hd
 
 theorem Carry.widen_le {a b : Carry} (h : a.vals.length = b.vals.length) : b.Le (Carry.widen a b) :=
-  fun _ _ ⟨hd, hf⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.widen_desc h) h hd, hf⟩
+  fun _ _ _ ⟨hd, hf, hs, hi⟩ => ⟨descAll_zip_right (fun _ _ _ h => AV.widen_desc h) h hd, hf, hs, hi⟩
 
 theorem Carry.widen_length {a b : Carry} (h : a.vals.length = b.vals.length) :
     (Carry.widen a b).vals.length = a.vals.length := by
@@ -1378,10 +1875,11 @@ theorem eq_of_zip_beq : ∀ {as bs : List AV}, as.length = bs.length →
   | _ :: _, [], hl, _ => by simp at hl
 
 theorem Carry.beq_le {a b : Carry} (h : a.beq b = true) : a.Le b := by
-  simp only [Carry.beq, Bool.and_eq_true, beq_iff_eq] at h
-  obtain ⟨⟨⟨hl, hv⟩, -⟩, hf⟩ := h
-  intro cs w ⟨hd, hfa⟩
-  refine ⟨?_, fun x hx => hfa x (by simpa using List.all_eq_true.mp hf x hx)⟩
+  simp only [Carry.beq, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at h
+  obtain ⟨⟨⟨⟨⟨⟨hl, hv⟩, -⟩, hf⟩, hs⟩, hin⟩, hiv⟩ := h
+  intro Γb cs w ⟨hd, hfa, hsa, hia⟩
+  refine ⟨?_, fun x hx => hfa x (by simpa using List.all_eq_true.mp hf x hx), by rw [← hs]; exact hsa,
+    by rw [← hin, ← hiv]; exact hia⟩
   rw [← eq_of_zip_beq hl hv]
   exact hd
 
@@ -1392,29 +1890,6 @@ def LoopInv (path : List Nat) (trip : Carry → Except String (List Carry × Lis
   ∃ c backs exits out j, c0.Le c ∧ c.vals.length = c0.vals.length ∧
     trip c = .ok (backs, exits, out) ∧ (∀ b ∈ backs, b.Le c) ∧ joinAll exits = .ok j ∧
     o = ⟨j, out.brk, out.cont, { out.certs with loops := (path, c) :: out.certs.loops }⟩
-
-/-- **`settle` ends at an invariant**: a carry state covering the one it
-    started from, from which one trip goes round only with states it covers. -/
-theorem roomOf_le {S : TState} {w : World} (hS : S.holds w) (r : Region) : roomOf S r ≤ w.mem.sizes r := by
-  unfold roomOf
-  suffices h : ∀ (l : List Fact) (m : Nat), m ≤ w.mem.sizes r → (∀ f ∈ l, f.holds w) →
-      l.foldl (fun m f => match f with | .room r' n => if r' = r then max m n else m | _ => m) m ≤ w.mem.sizes r from
-    h S 0 (Nat.zero_le _) hS
-  intro l
-  induction l with
-  | nil => intro m hm _; exact hm
-  | cons f l ih =>
-      intro m hm hl
-      rw [List.foldl_cons]
-      refine ih _ ?_ (fun g hg => hl g (List.mem_cons_of_mem _ hg))
-      have hf := hl f (List.mem_cons_self ..)
-      cases f with
-      | room r' n =>
-          dsimp only
-          split
-          · rename_i e; subst e; exact Nat.max_le.mpr ⟨hm, hf⟩
-          · exact hm
-      | _ => exact hm
 
 theorem AV.enrich_desc {Γ : Env} {w : World} {S : TState} {a : AV} {v : V} (hS : S.holds w)
     (hd : a.Desc Γ w v) : (a.enrich S).Desc Γ w v := by
@@ -1442,6 +1917,8 @@ theorem DescAll.enrich {Γ : Env} {w : World} {S : TState} (hS : S.holds w) :
   | [], _ :: _, h => h.elim
   | _ :: _, [], h => h.elim
 
+/-- **`settle` ends at an invariant**: a carry state covering the one it
+    started from, from which one trip goes round only with states it covers. -/
 theorem settle_sound {path : List Nat} {trip : Carry → Except String (List Carry × List AS × AOut)}
     (n : Nat) : ∀ {c0 : Carry} {o : AOut}, settle path trip n c0 = .ok o → LoopInv path trip c0 o := by
   induction n with
@@ -1554,39 +2031,320 @@ theorem runLoop_sound {cert : Cert} {path : List Nat}
         · cases h; exact h1
       · cases h; exact h1
 
+/-- What `runLoopIv` gives: what `runLoop` gives, the carries entered with
+    some steps-together. -/
+theorem withIvs_sound {cert : Cert} {path : List Nat}
+    {trip tripFo : Carry → Except String (List Carry × List AS × AOut)} {c0 : Carry} {o : AOut}
+    (h : withIvs cert path trip tripFo c0 = .ok o) : ∃ ivs, LoopInv path trip { c0 with ivs := ivs } o := by
+  unfold withIvs at h
+  split at h
+  · cases h
+  · dsimp only at h
+    generalize ivGuess cert path tripFo c0 = ivs at h
+    split at h
+    · exact ⟨_, runLoop_sound h⟩
+    · cases h
+
+theorem runLoopIv_sound {cert : Cert} {path : List Nat}
+    {trip tripFo : Carry → Except String (List Carry × List AS × AOut)} {c0 : Carry} {o : AOut}
+    (h : runLoopIv cert path trip tripFo c0 = .ok o) : ∃ ivs, LoopInv path trip { c0 with ivs := ivs } o := by
+  unfold runLoopIv at h
+  split at h
+  · exact ⟨c0.ivs, runLoop_sound h⟩
+  · split at h
+    · split at h
+      · rename_i o' h'; cases h; exact withIvs_sound h'
+      · exact ⟨c0.ivs, runLoop_sound h⟩
+    · split at h
+      · rename_i o' h'; cases h; exact ⟨c0.ivs, runLoop_sound h'⟩
+      · split at h
+        · rename_i o' h'; cases h; exact withIvs_sound h'
+        · cases h
+
 -- ---------------------------------------------------------------------------
 -- One trip of a loop
 -- ---------------------------------------------------------------------------
 
-theorem mem_brks0 {xs : List (Nat × AS × List AV)} {A : AS} {avs : List AV} {ab : Nat}
-    (h : (0, A, avs) ∈ xs) : A.bindAt ab avs ∈ brks0 xs ab :=
+theorem mem_brks0 {xs : List (Nat × AS × List R)} {A : AS} {args : List R} {ab n0 : Nat} {Y : List R}
+    (h : (0, A, args) ∈ xs) : A.bindAt ab (args.map A.get) (args.map (exitSym A Y n0)) ∈ brks0 xs ab Y n0 :=
   List.mem_filterMap.mpr ⟨_, h, by simp⟩
 
-theorem mem_depthDown {xs : List (Nat × AS × List AV)} {d : Nat} {A : AS} {avs : List AV}
-    (h : (d + 1, A, avs) ∈ xs) : (d, A, avs) ∈ depthDown xs :=
+theorem mem_depthDown {xs : List (Nat × AS × List R)} {d : Nat} {A : AS} {args : List R}
+    (h : (d + 1, A, args) ∈ xs) : (d, A, args) ∈ depthDown xs :=
   List.mem_filterMap.mpr ⟨_, h, rfl⟩
 
-theorem mem_conts0 {xs : List (Nat × List AV × TState)} {avs : List AV} {S : TState}
-    (h : (0, avs, S) ∈ xs) : (⟨avs, S⟩ : Carry) ∈ conts0 xs :=
-  List.mem_filterMap.mpr ⟨_, h, rfl⟩
+theorem mem_conts0 {xs : List (Nat × AS × List R)} {A : AS} {args : List R} {Y : List R} {c : Carry}
+    {n0 : Nat} (h : (0, A, args) ∈ xs) : backCarry A Y c n0 args ∈ conts0 xs Y c n0 :=
+  List.mem_filterMap.mpr ⟨_, h, by simp⟩
 
-theorem mem_depthDownC {xs : List (Nat × List AV × TState)} {d : Nat} {avs : List AV} {S : TState}
-    (h : (d + 1, avs, S) ∈ xs) : (d, avs, S) ∈ depthDownC xs :=
-  List.mem_filterMap.mpr ⟨_, h, rfl⟩
+theorem mapM_len {f : R → Option V} : ∀ {xs : List R} {vs : List V}, xs.mapM f = some vs → vs.length = xs.length
+  | [], vs, h => by simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h; subst h; rfl
+  | x :: xs, vs, h => by
+      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨v, -, vs', hvs', rfl⟩ := h
+      simp [mapM_len hvs']
+
+theorem loopCands_lt {n0 : Nat} {c : Code} : ∀ y ∈ loopCands n0 c, y < n0 := fun y hy => by
+  simpa using (List.mem_filter.mp hy).2
+
+/-- **What `closeSym` says of a value is true**, read where the loop was
+    entered from: an environment the present one agrees with on the slots
+    before the loop. -/
+theorem closeSym_fitsAt {A : AS} {Γ Γb : Env} {w : World} {Y : List R} {a : R} (hA : A.Holds Γ w)
+    (hY : ∀ y ∈ Y, y < Γb.size) (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y) :
+    (closeSym A Y a).FitsAt Γb w (slotVal Γ a) Γb.size := by
+  -- each bound `closeSym` keeps is `y` less some number, `y` one of `Y`
+  have hform : ∀ p ∈ (closeSym A Y a).ubs, ∃ y ∈ Y, ∃ g : Int, p = (1, ⟨[(.slot y, 1)], -g⟩) ∧
+      slotVal Γ a + g ≤ slotVal Γ y := by
+    intro p hp
+    simp only [closeSym, List.mem_filterMap] at hp
+    obtain ⟨y, hy, hpy⟩ := hp
+    split at hpy
+    · rename_i hpr
+      cases hpy
+      have := Ctx.prove_sound (AS.ctx_sound hA) hpr
+      simp only [Lin.eval_add, Lin.eval_sub, eval_lin1, Lin.eval_const] at this
+      exact ⟨y, hy, _, rfl, by omega⟩
+    · split at hpy
+      · rename_i hpr
+        cases hpy
+        have := Ctx.prove_sound (AS.ctx_sound hA) hpr
+        simp only [Lin.eval_sub, eval_lin1] at this
+        exact ⟨y, hy, 0, by simp [lin1], by omega⟩
+      · cases hpy
+  refine ⟨⟨fun D hD => by simp [closeSym] at hD, fun p hp => ?_⟩, fun x hx => ?_, fun g hg => ?_⟩
+  · obtain ⟨y, hy, g, rfl, hle⟩ := hform p hp
+    simp only [Lin.eval, Lin.evalT, Atom.val]
+    rw [← hΓ y (hY y hy)]
+    omega
+  · simp only [Sym.slots, closeSym, Option.map_none, Option.getD_none, List.nil_append, List.mem_flatten,
+      List.mem_map] at hx
+    obtain ⟨_, ⟨p, hp, rfl⟩, hx⟩ := hx
+    obtain ⟨y, hy, g, rfl, -⟩ := hform p hp
+    simp only [Lin.slots, List.filterMap_cons, List.filterMap_nil, List.mem_singleton] at hx
+    subst hx; exact hY _ hy
+  · simp only [Sym.regions, closeSym, Option.map_none, Option.getD_none, List.nil_append, List.mem_flatten,
+      List.mem_map] at hg
+    obtain ⟨_, ⟨p, hp, rfl⟩, hg⟩ := hg
+    obtain ⟨y, hy, g', rfl, -⟩ := hform p hp
+    simp [Lin.regions] at hg
+
+/-- The values a list of slots passes on, each with what `closeSym` says of it. -/
+theorem closeSym_all {A : AS} {Γ Γb : Env} {w : World} {Y : List R} (hA : A.Holds Γ w)
+    (hY : ∀ y ∈ Y, y < Γb.size) (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y) :
+    ∀ {args : List R} {vs : List V}, args.mapM (fun r => Γ[r]?) = some vs →
+      SymsAll Γb w (args.map (closeSym A Y)) vs
+  | [], vs, h => by
+      simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h
+      subst h; intro i hi; simp at hi
+  | a :: as, vs, h => by
+      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨v, hv, vs', hvs', rfl⟩ := h
+      intro i hi
+      cases i with
+      | zero =>
+          simp only [List.map_cons, List.getD_cons_zero]
+          rw [← slotVal_of hv]
+          exact closeSym_fitsAt hA hY hΓ
+      | succ i =>
+          simp only [List.map_cons, List.getD_cons_succ, List.length_cons] at hi ⊢
+          exact closeSym_all hA hY hΓ hvs' i (by omega)
+
+theorem Ext.slotVal {Γ0 Γ : Env} (h : Ext Γ0 Γ) {y : Nat} (hy : y < Γ0.size) :
+    _root_.AlgorithmLib.Check.slotVal Γ y = _root_.AlgorithmLib.Check.slotVal Γ0 y := by
+  unfold AlgorithmLib.Check.slotVal; rw [h.2 y hy]
+
+/-- **What `closeDfn` says of a value is true**, read where the loop was
+    entered from. -/
+theorem closeDfn_fitsAt {A : AS} {Γ Γb : Env} {w : World} (hA : A.Holds Γ w)
+    (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y) (a : R) :
+    ({ dfn := closeDfn A Γb.size a } : Sym).FitsAt Γb w (slotVal Γ a) Γb.size := by
+  unfold closeDfn
+  dsimp only
+  split
+  · rename_i hc
+    obtain ⟨hs, hg⟩ := hc
+    simp only [List.all_eq_true, decide_eq_true_eq] at hs hg
+    have hC := AS.ctx_sound hA
+    refine ⟨⟨fun D e => ?_, fun p hp => by simp at hp⟩, fun y hy => ?_, fun g hgm => ?_⟩
+    · simp only [Option.some.injEq] at e
+      subst e
+      rw [Lin.eval_congr (Γ := Γ) (w := w) (fun x hx => (hΓ x (hs x hx)).symm) (fun _ _ => rfl),
+        Ctx.foldKnown_eval hC, Lin.eval_norm, Ctx.deepen_mod hC, eval_lin1, Int.one_mul]
+    · simp only [Sym.slots, Option.map_some, Option.getD_some, List.map_nil, List.flatten_nil,
+        List.append_nil] at hy
+      exact hs y hy
+    · simp only [Sym.regions, Option.map_some, Option.getD_some, List.map_nil, List.flatten_nil,
+        List.append_nil] at hgm
+      exact hg g hgm
+  · exact Sym.fitsAt_blank _ _ _ _
+
+theorem exitSym_all {A : AS} {Γ Γb : Env} {w : World} {Y : List R} (hA : A.Holds Γ w)
+    (hY : ∀ y ∈ Y, y < Γb.size) (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y) :
+    ∀ {args : List R} {vs : List V}, args.mapM (fun r => Γ[r]?) = some vs →
+      SymsAll Γb w (args.map (exitSym A Y Γb.size)) vs
+  | [], vs, h => by
+      simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h
+      subst h; intro i hi; simp at hi
+  | a :: as, vs, h => by
+      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨v, hv, vs', hvs', rfl⟩ := h
+      intro i hi
+      cases i with
+      | zero =>
+          simp only [List.map_cons, List.getD_cons_zero]
+          rw [← slotVal_of hv]
+          exact Sym.fitsAt_merge (closeDfn_fitsAt hA hΓ a) (closeSym_fitsAt hA hY hΓ)
+      | succ i =>
+          simp only [List.map_cons, List.getD_cons_succ, List.length_cons] at hi ⊢
+          exact exitSym_all hA hY hΓ hvs' i (by omega)
+
+/-- A form whose unfolding comes to a multiple of `2 ^ 64` and no atoms is
+    zero modulo `2 ^ 64`. -/
+theorem ivForm_mod {C : Ctx} {Γ : Env} {w : World} (hC : C.Sound Γ w) {D : Lin}
+    (ht : (C.foldKnown (C.deepen ivDepth D)).norm.terms = [])
+    (hk : (C.foldKnown (C.deepen ivDepth D)).norm.k % 2 ^ 64 = 0) : D.eval Γ w % 2 ^ 64 = 0 := by
+  have e : (C.foldKnown (C.deepen ivDepth D)).norm.eval Γ w = (C.foldKnown (C.deepen ivDepth D)).norm.k := by
+    simp [Lin.eval, ht, Lin.evalT]
+  rw [Lin.eval_norm, Ctx.foldKnown_eval hC] at e
+  have := Ctx.deepen_mod hC ivDepth D
+  omega
+
+/-- **The steps-together a trip keeps hold** of the values it goes round with. -/
+theorem ivKeep_sound {A : AS} {Γ Γb : Env} {w : World} {c : Carry} {args : List R} {vs : List V}
+    (hA : A.Holds Γ w) (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y)
+    (hvs : args.mapM (fun r => Γ[r]?) = some vs) : IvsAll Γb c.inits (ivKeep A Γb.size c args) vs := by
+  intro i j r hi hiv hj hii hij
+  have hvl := mapM_len hvs
+  unfold ivKeep at hiv
+  rw [List.getD_eq_getElem?_getD, List.getElem?_map, List.getElem?_range (by omega)] at hiv
+  simp only [Option.map_some, Option.getD_some] at hiv
+  split at hiv
+  · rename_i j' r' hcv
+    split at hiv
+    · rename_i hc
+      simp only [Option.some.injEq, Prod.mk.injEq] at hiv
+      obtain ⟨rfl, rfl⟩ := hiv
+      obtain ⟨hterms, hk, -, -, -⟩ := hc
+      have h0 := ivForm_mod (AS.ctx_sound hA) hterms hk
+      simp only [Lin.eval_sub, Lin.eval_scale, eval_lin1, Int.one_mul] at h0
+      rw [slotVal_of (mapM_getD hvs i hi), slotVal_of (mapM_getD hvs _ hj), hΓ _ hii, hΓ _ hij] at h0
+      generalize _ * (vVal (vs.getD _ default) - slotVal Γb (c.inits.getD _ 0)) = X at h0 ⊢
+      omega
+    · cases hiv
+  · cases hiv
+
+theorem backCarry_desc {A : AS} {Γ Γb : Env} {w : World} {Y : List R} {c : Carry} {n0 : Nat} {args : List R}
+    {vs : List V} (hA : A.Holds Γ w) (hn0 : n0 = Γb.size) (hY : ∀ y ∈ Y, y < Γb.size)
+    (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y) (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
+    (backCarry A Y c n0 args).Desc Γb vs w := by
+  subst hn0
+  exact ⟨(descAll_of hA hvs).portable, hA.2.2, closeSym_all hA hY hΓ hvs, ivKeep_sound hA hΓ hvs⟩
+
+theorem exitSym_all' {A : AS} {Γ Γb : Env} {w : World} {Y : List R} {n0 : Nat} (hA : A.Holds Γ w)
+    (hn0 : n0 = Γb.size) (hY : ∀ y ∈ Y, y < Γb.size) (hΓ : ∀ y, y < Γb.size → slotVal Γ y = slotVal Γb y)
+    {args : List R} {vs : List V} (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
+    SymsAll Γb w (args.map (exitSym A Y n0)) vs := by
+  subst hn0; exact exitSym_all hA hY hΓ hvs
+
+/-- Values bound after a loop, or as its carries, with the linear facts
+    `SymsAll` gives them: they fit where they are bound. -/
+theorem SymsAll.fits_bindAt {Γb Γ : Env} {w : World} {ss : List Sym} {cs : List V} {n : Nat}
+    (h : SymsAll Γb w ss cs) (hE : Ext Γb (Sem.bindAt Γ n cs)) (hn : Γb.size ≤ n) :
+    ∀ j, j < cs.length → (ss.getD j {}).Fits (Sem.bindAt Γ n cs) w (n + j) (n + cs.length) := by
+  intro j hj
+  show (ss.getD j {}).FitsAt _ w (slotVal (Sem.bindAt Γ n cs) (n + j)) _
+  rw [slotVal_of (v := cs[j]) (by rw [Hoare.bindAt_at, List.getElem?_eq_getElem hj])]
+  have hj' := h j hj
+  rw [show cs.getD j default = cs[j] by simp [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hj]] at hj'
+  exact Sym.fitsAt_congr hj' (fun y hy => hE.slotVal hy) (fun _ _ => rfl) (by omega)
+
+/-- A loop's carries, bound at its head with what their state says of them,
+    fit there. -/
+theorem headSyms_fits {c : Carry} {Γ0 : Env} {w : World} {cs : List V} (hsc : SymsAll Γ0 w c.syms cs)
+    (hiv : IvsAll Γ0 c.inits c.ivs cs) (hl : cs.length = c.vals.length) :
+    ∀ i, i < cs.length → ((c.headSyms Γ0.size).getD i {}).Fits (Sem.bindAt Γ0 Γ0.size cs) w
+      (Γ0.size + i) (Γ0.size + cs.length) := by
+  intro i hi
+  have e : (c.headSyms Γ0.size).getD i {} =
+      Sym.merge (c.syms.getD i {}) (ivSym Γ0.size c.vals.length c.inits i (c.ivs.getD i none)) := by
+    simp [Carry.headSyms, List.getD_eq_getElem?_getD, List.getElem?_map, List.getElem?_range (hl ▸ hi)]
+  rw [e, ← hl]
+  exact Sym.fitsAt_merge (SymsAll.fits_bindAt hsc ((Ext.refl Γ0).bindAt (Nat.le_refl _) cs) (Nat.le_refl _) i hi)
+    (ivSym_fits hiv hi)
+
+/-- The values picked by index out of ones with linear facts, with those facts. -/
+theorem SymsAll.pick {Γb : Env} {w : World} {ss : List Sym} {cs : List V} (h : SymsAll Γb w ss cs) :
+    ∀ {idx : List Nat} {outs : List V}, idx.mapM (fun i => cs[i]?) = some outs →
+      SymsAll Γb w (idx.map fun i => ss.getD i {}) outs
+  | [], outs, hm => by
+      simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at hm
+      subst hm; intro i hi; simp at hi
+  | i :: is, outs, hm => by
+      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at hm
+      obtain ⟨o, ho, os, hos, rfl⟩ := hm
+      intro k hk
+      cases k with
+      | zero =>
+          simp only [List.map_cons, List.getD_cons_zero]
+          have hi : i < cs.length := by
+            rcases Nat.lt_or_ge i cs.length with h' | h'
+            · exact h'
+            · rw [List.getElem?_eq_none h'] at ho; cases ho
+          have e : cs.getD i default = o := by
+            simp [List.getD_eq_getElem?_getD, ho]
+          have := h i hi
+          rwa [e] at this
+      | succ k =>
+          simp only [List.map_cons, List.getD_cons_succ, List.length_cons] at hk ⊢
+          exact SymsAll.pick h hos k (by omega)
+
+/-- A loop body's parameters, bound from the carries `cs` the slots from `n0`
+    hold, are each exactly the slot it is bound from. -/
+theorem copySyms_fits {Γ : Env} {w : World} {n0 n k : Nat} {cs : List V}
+    (hΓ : ∀ i, i < k → Γ[n0 + i]? = cs[i]?) (hcl : cs.length = k) (hn : n0 + k ≤ n) :
+    ∀ j, j < k → ((copySyms n0 k).getD j {}).Fits (Sem.bindAt Γ n cs) w (n + j) (n + k) := by
+  intro j hj
+  have e : (copySyms n0 k).getD j {} = { dfn := some (lin1 (n0 + j) 1) } := by
+    simp [copySyms, List.getD_eq_getElem?_getD, List.getElem?_range hj]
+  rw [e]
+  have hj' : j < cs.length := hcl ▸ hj
+  have hv : Γ[n0 + j]? = some cs[j] := by rw [hΓ j hj, List.getElem?_eq_getElem hj']
+  have hlt : n0 + j < Γ.size := by
+    rcases Nat.lt_or_ge (n0 + j) Γ.size with h | h
+    · exact h
+    · rw [Array.getElem?_eq_none h] at hv; cases hv
+  refine ⟨⟨fun D hD => ?_, fun p hp => by simp at hp⟩, fun y hy => ?_, fun g hg => ?_⟩
+  · simp only [Option.some.injEq] at hD
+    subst hD
+    rw [eval_lin1, slotVal_bindAt (by omega) hlt, slotVal_of hv,
+      slotVal_of (v := cs[j]) (by rw [Hoare.bindAt_at, List.getElem?_eq_getElem hj'])]
+    simp
+  · simp only [Sym.slots, Option.map_some, Option.getD_some, List.map_nil, List.flatten_nil,
+      List.append_nil] at hy
+    rw [lin1_slots _ 1 y hy]; show n0 + j < n + k; omega
+  · simp only [Sym.regions, Option.map_some, Option.getD_some, List.map_nil, List.flatten_nil,
+      List.append_nil] at hg
+    exact lin1_regions _ 1 g hg
 
 /-- What one trip collects: everything its prefix and body end with. -/
-theorem loopTrip_spec {l : Loop} {n0 k preEnd ab : Nat} {op : AOut} {runBody : AS → Except String AOut}
-    {backs : List Carry} {exits : List AS} {out : AOut}
-    (h : loopTrip l n0 k preEnd ab op runBody = .ok (backs, exits, out)) :
-    (∀ x ∈ conts0 op.cont, x ∈ backs) ∧ (∀ x ∈ brks0 op.brk ab, x ∈ exits) ∧
-    (∀ x ∈ depthDown op.brk, x ∈ out.brk) ∧ (∀ x ∈ depthDownC op.cont, x ∈ out.cont) ∧
+theorem loopTrip_spec {l : Loop} {n0 k preEnd ab : Nat} {Y : List R} {c : Carry} {op : AOut}
+    {runBody : AS → Except String AOut} {backs : List Carry} {exits : List AS} {out : AOut}
+    (h : loopTrip l n0 k preEnd ab Y c op runBody = .ok (backs, exits, out)) :
+    (∀ x ∈ conts0 op.cont Y c n0, x ∈ backs) ∧ (∀ x ∈ brks0 op.brk ab Y n0, x ∈ exits) ∧
+    (∀ x ∈ depthDown op.brk, x ∈ out.brk) ∧ (∀ x ∈ depthDown op.cont, x ∈ out.cont) ∧
     ∀ Ap, op.ok = some Ap →
-      (∀ Ax, refine Ap l.flag l.exitOnTrue = some Ax → Ax.bindAt ab (l.exitR.map Ax.get) ∈ exits) ∧
+      (∀ Ax, refine Ap l.flag l.exitOnTrue = some Ax →
+        Ax.bindAt ab (l.exitR.map Ax.get) (l.exitR.map (exitSym Ax Y n0)) ∈ exits) ∧
       ∀ Ag, refine Ap l.flag (!l.exitOnTrue) = some Ag →
-        ∃ ob, runBody (Ag.bindAt preEnd ((List.range k).map fun i => Ag.get (n0 + i))) = .ok ob ∧
-          (∀ x ∈ conts0 ob.cont, x ∈ backs) ∧ (∀ x ∈ brks0 ob.brk ab, x ∈ exits) ∧
-          (∀ x ∈ depthDown ob.brk, x ∈ out.brk) ∧ (∀ x ∈ depthDownC ob.cont, x ∈ out.cont) ∧
-          ∀ A2, ob.ok = some A2 → (⟨(l.cont.map A2.get).map AV.portable, A2.facts⟩ : Carry) ∈ backs := by
+        ∃ ob, runBody (Ag.bindAt preEnd ((List.range k).map fun i => Ag.get (n0 + i)) (copySyms n0 k)) = .ok ob ∧
+          (∀ x ∈ conts0 ob.cont Y c n0, x ∈ backs) ∧ (∀ x ∈ brks0 ob.brk ab Y n0, x ∈ exits) ∧
+          (∀ x ∈ depthDown ob.brk, x ∈ out.brk) ∧ (∀ x ∈ depthDown ob.cont, x ∈ out.cont) ∧
+          ∀ A2, ob.ok = some A2 → backCarry A2 Y c n0 l.cont ∈ backs := by
   unfold loopTrip at h
   dsimp only at h
   split at h
@@ -1775,14 +2533,16 @@ theorem absStmtsH_frame {cfg : Cfg} {Γ0 : Env} {w0 : World} {fo : Bool} :
 -- ---------------------------------------------------------------------------
 
 /-- What a region the checker accepted may end with, from `Γ0` and `w0`: in a
-    state its result describes, by a `br` from a state it recorded with the
-    values it passes, or by a `cont` with carries and facts it recorded; with
-    the environment extended and every region's size kept; and no fault but where `fo` allows one. -/
+    state its result describes, or by a `br` or `cont` from a state it
+    recorded, passing the values of the slots it recorded; with the
+    environment extended and every region's size kept; and no fault but where
+    `fo` allows one. -/
 def AOut.post (o : AOut) (fo : Bool) (Γ0 : Env) (w0 : World) : Post where
   ok Γ w := (∃ A, o.ok = some A ∧ A.Holds Γ w) ∧ Ext Γ0 Γ ∧ KeepsRooms w0 w
-  brk d Γ vs w := (∃ A avs, (d, A, avs) ∈ o.brk ∧ A.Holds Γ w ∧ DescAll Γ w avs vs) ∧
+  brk d Γ vs w := (∃ A args, (d, A, args) ∈ o.brk ∧ A.Holds Γ w ∧ args.mapM (fun r => Γ[r]?) = some vs) ∧
     Ext Γ0 Γ ∧ KeepsRooms w0 w
-  cont d vs w := (∃ avs S, (d, avs, S) ∈ o.cont ∧ S.holds w ∧ DescAll #[] w avs vs) ∧ KeepsRooms w0 w
+  cont d vs w := (∃ A args Γ, (d, A, args) ∈ o.cont ∧ A.Holds Γ w ∧ args.mapM (fun r => Γ[r]?) = some vs ∧
+    Ext Γ0 Γ) ∧ KeepsRooms w0 w
   faultOk := fo
 
 theorem sat_mono {Q Q' : Post} {r : CodeRes} (h : CodeRes.Sat Q r)
@@ -1807,6 +2567,60 @@ theorem pieceT_conseq {cfg : Cfg} {P : Env → World → Prop} {p : Piece} {Q Q'
 theorem triple_of_at {cfg : Cfg} {P : Env → World → Prop} {c : Code} {Q : Post}
     (h : ∀ Γ w, P Γ w → Triple cfg (At Γ w) c Q) : Triple cfg P c Q :=
   fun fuel Γ w hP => h Γ w hP fuel Γ w ⟨rfl, rfl⟩
+
+theorem answerCases_frame {cfg : Cfg} {A A' B1 B2 : AS} {s : Stmt} {fo : Bool} (h : absStmt fo A s = .ok A')
+    (hc : answerCases A A' s = some (B1, B2)) {Γ0 : Env} {w0 : World} :
+    Stmt1 cfg (Within A Γ0 w0) s (fun Γ w => Within B1 Γ0 w0 Γ w ∨ Within B2 Γ0 w0 Γ w) fo := by
+  intro Γ w ⟨hA, he, hk⟩
+  have h1 := answerCases_sound (cfg := cfg) (fo := fo) h hc Γ w hA
+  cases hr : runStmt cfg Γ w s with
+  | ok Γ' w' =>
+      rw [hr] at h1
+      obtain ⟨e1, k1⟩ := absStmt_step h hA hr
+      rcases h1 with h1 | h1
+      · exact .inl ⟨h1, he.trans e1, KeepsRooms.trans hk k1⟩
+      · exact .inr ⟨h1, he.trans e1, KeepsRooms.trans hk k1⟩
+  | stuck _ => trivial
+  | misuse _ => rw [hr] at h1; exact h1
+  | fault _ => rw [hr] at h1; exact h1
+
+theorem stmts_or {cfg : Cfg} {P1 P2 Q1 Q2 : Env → World → Prop} {ss : List Stmt} {fo : Bool}
+    (h1 : Stmts cfg P1 ss Q1 fo) (h2 : Stmts cfg P2 ss Q2 fo) :
+    Stmts cfg (fun Γ w => P1 Γ w ∨ P2 Γ w) ss (fun Γ w => Q1 Γ w ∨ Q2 Γ w) fo := by
+  intro Γ w hp
+  rcases hp with hp | hp
+  · have := h1 Γ w hp
+    cases hr : runStmts cfg Γ w ss with
+    | ok Γ' w' => rw [hr] at this; exact .inl this
+    | stuck _ => trivial
+    | misuse _ => rw [hr] at this; exact this
+    | fault _ => rw [hr] at this; exact this
+  · have := h2 Γ w hp
+    cases hr : runStmts cfg Γ w ss with
+    | ok Γ' w' => rw [hr] at this; exact .inr this
+    | stuck _ => trivial
+    | misuse _ => rw [hr] at this; exact this
+    | fault _ => rw [hr] at this; exact this
+
+/-- A straight run `splitCases` splits ends in one of its two states. -/
+theorem splitCases_frame {cfg : Cfg} {Γ0 : Env} {w0 : World} {fo : Bool} :
+    ∀ {A C1 C2 : AS} {ss : List Stmt}, splitCases fo A ss = some (C1, C2) →
+      Stmts cfg (Within A Γ0 w0) ss (fun Γ w => Within C1 Γ0 w0 Γ w ∨ Within C2 Γ0 w0 Γ w) fo
+  | _, _, _, [], h => by simp [splitCases] at h
+  | A, C1, C2, s :: ss, h => by
+      simp only [splitCases] at h
+      split at h
+      · cases h
+      · rename_i A' hA'
+        split at h
+        · rename_i B1 B2 hc
+          split at h
+          · rename_i D1 D2 h1 h2
+            simp only [Option.some.injEq, Prod.mk.injEq] at h
+            obtain ⟨rfl, rfl⟩ := h
+            exact stmts_cons (answerCases_frame hA' hc) (stmts_or (absStmtsH_frame h1) (absStmtsH_frame h2))
+          · cases h
+        · exact stmts_cons (absStmt_frame hA') (splitCases_frame h)
 
 theorem stmts_conseq {cfg : Cfg} {P P' Q Q' : Env → World → Prop} {ss : List Stmt} {fo : Bool}
     (h : Stmts cfg P ss Q fo) (hP : ∀ Γ w, P' Γ w → P Γ w) (hQ : ∀ Γ w, Q Γ w → Q' Γ w) :
@@ -1857,15 +2671,15 @@ theorem descAll_pick {Γ : Env} {w : World} {as : List AV} {vs : List V} (hd : D
       rw [hv] at hv'; cases hv'; exact hd'
 
 /-- What one trip of a bottom-tested loop collects. -/
-theorem dloopTrip_spec {l : DLoop} {ab : Nat} {ob : AOut} {backs : List Carry} {exits : List AS}
-    {out : AOut} (h : dloopTrip l ab ob = (backs, exits, out)) :
-    (∀ x ∈ conts0 ob.cont, x ∈ backs) ∧ (∀ x ∈ brks0 ob.brk ab, x ∈ exits) ∧
-    (∀ x ∈ depthDown ob.brk, x ∈ out.brk) ∧ (∀ x ∈ depthDownC ob.cont, x ∈ out.cont) ∧
+theorem dloopTrip_spec {l : DLoop} {n0 ab : Nat} {Y : List R} {c : Carry} {ob : AOut} {backs : List Carry}
+    {exits : List AS} {out : AOut} (h : dloopTrip l n0 ab Y c ob = (backs, exits, out)) :
+    (∀ x ∈ conts0 ob.cont Y c n0, x ∈ backs) ∧ (∀ x ∈ brks0 ob.brk ab Y n0, x ∈ exits) ∧
+    (∀ x ∈ depthDown ob.brk, x ∈ out.brk) ∧ (∀ x ∈ depthDown ob.cont, x ∈ out.cont) ∧
     ∀ A2, ob.ok = some A2 →
-      (∀ Ag, refine A2 l.flag l.contOnTrue = some Ag →
-        (⟨(l.cont.map Ag.get).map AV.portable, Ag.facts⟩ : Carry) ∈ backs) ∧
+      (∀ Ag, refine A2 l.flag l.contOnTrue = some Ag → backCarry Ag Y c n0 l.cont ∈ backs) ∧
       (∀ Ax, refine A2 l.flag (!l.contOnTrue) = some Ax →
-        Ax.bindAt ab (l.exitIdx.map fun i => (l.cont.map Ax.get).getD i .any) ∈ exits) := by
+        Ax.bindAt ab (l.exitIdx.map fun i => (l.cont.map Ax.get).getD i .any)
+          (l.exitIdx.map fun i => (l.cont.map (exitSym Ax Y n0)).getD i {}) ∈ exits) := by
   unfold dloopTrip at h
   simp only [Prod.mk.injEq] at h
   obtain ⟨rfl, rfl, rfl⟩ := h
@@ -1873,20 +2687,22 @@ theorem dloopTrip_spec {l : DLoop} {ab : Nat} {ob : AOut} {backs : List Carry} {
     fun _ h => h, fun A2 e => ⟨fun Ag hg => List.mem_append_right _ (by simp [e, hg]),
       fun Ax hx => List.mem_append_right _ (by simp [e, hx])⟩⟩
 
-theorem Slots.eq_of_beq : ∀ {a b : Slots}, a.beq b = true → a = b
+theorem Slots.eq_of_beqBy {α : Type} {f : α → α → Bool} (hf : ∀ a b, f a b = true → a = b) :
+    ∀ {a b : Slots α}, Slots.beqBy f a b = true → a = b
   | .leaf, .leaf, _ => rfl
   | .node l x r, .node l' x' r', h => by
-      simp only [Slots.beq, Bool.and_eq_true] at h
-      rw [AV.eq_of_beq h.1.1, Slots.eq_of_beq h.1.2, Slots.eq_of_beq h.2]
-  | .leaf, .node .., h => by simp [Slots.beq] at h
-  | .node .., .leaf, h => by simp [Slots.beq] at h
+      simp only [Slots.beqBy, Bool.and_eq_true] at h
+      rw [hf _ _ h.1.1, Slots.eq_of_beqBy hf h.1.2, Slots.eq_of_beqBy hf h.2]
+  | .leaf, .node .., h => by simp [Slots.beqBy] at h
+  | .node .., .leaf, h => by simp [Slots.beqBy] at h
 
 theorem AS.eq_of_beq {A B : AS} (h : A.beq B = true) : A = B := by
   simp only [AS.beq, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-  obtain ⟨⟨h1, h2⟩, h3⟩ := h
+  obtain ⟨⟨⟨h1, h2⟩, h3⟩, h4⟩ := h
   cases A; cases B
-  simp only at h1 h2 h3
-  rw [Slots.eq_of_beq h2, h1, h3]
+  simp only at h1 h2 h3 h4
+  rw [Slots.eq_of_beqBy (fun _ _ => AV.eq_of_beq) h2, h1, h3,
+    Slots.eq_of_beqBy (fun _ _ e => of_decide_eq_true e) h4]
 
 /-- A state written out is the one reached. -/
 theorem pin_eq {cert : Cert} {path : List Nat} {A A' : AS} (h : pin cert path A = .ok A') : A' = A := by
@@ -1918,17 +2734,15 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
       subst h
       exact br_rule fun Γ w vs ⟨e1, e2⟩ hvs => by
         subst Γ w
-        exact ⟨⟨A, args.map A.get, List.mem_singleton.mpr rfl, hA, descAll_of hA hvs⟩, Ext.refl _,
-          KeepsRooms.refl _⟩
+        exact ⟨⟨A, args, List.mem_singleton.mpr rfl, hA, hvs⟩, Ext.refl _, KeepsRooms.refl _⟩
   | _, A, .cont d args, o, h, Γ0, w0, hA => by
       simp only [execP, Except.ok.injEq] at h
       subst h
       exact cont_rule fun Γ w vs ⟨e1, e2⟩ hvs => by
         subst Γ w
-        exact ⟨⟨_, A.facts, List.mem_singleton.mpr rfl, hA.2.2, (descAll_of hA hvs).portable⟩,
-          KeepsRooms.refl _⟩
+        exact ⟨⟨A, args, Γ0, List.mem_singleton.mpr rfl, hA, hvs, Ext.refl _⟩, KeepsRooms.refl _⟩
   | _, A, .ite m thn els thnR elsR, o, h, Γ0, w0, hA => by
-      have hn : Γ0.size = A.len := hA.1
+      have hn : Γ0.size = A.len := hA.1.1
       have hj0 : A.len ≤ slotsOf (slotsOf A.len thn) els :=
         Nat.le_trans (slotsOf_ge _ _) (slotsOf_ge _ _)
       simp only [execP] at h
@@ -1949,8 +2763,8 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
               exact ⟨⟨C, hC, hCh⟩, he.bindAt (by omega) vs, hk⟩
             · intro d Γ' vs w' ⟨⟨A', avs, hm, h1, h2⟩, he, hk⟩
               exact ⟨⟨A', avs, List.mem_append_left _ hm, h1, h2⟩, he, hk⟩
-            · intro d vs w' ⟨⟨avs, S, hm, h1, h2⟩, hk⟩
-              exact ⟨⟨avs, S, List.mem_append_left _ hm, h1, h2⟩, hk⟩
+            · intro d vs w' ⟨⟨A', args, Γ', hm, h1, h2, he⟩, hk⟩
+              exact ⟨⟨A', args, Γ', List.mem_append_left _ hm, h1, h2, he⟩, hk⟩
           · subst Γ w
             obtain ⟨Ae, hr, hAe⟩ := refine_sound hA hf hb
             rw [hr] at hE
@@ -1965,17 +2779,17 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
               exact ⟨⟨C, hC, hCh⟩, (he0.trans he).bindAt (by omega) vs, hk⟩
             · intro d Γ' vs w' ⟨⟨A', avs, hm, h1, h2⟩, he, hk⟩
               exact ⟨⟨A', avs, List.mem_append_right _ hm, h1, h2⟩, he0.trans he, hk⟩
-            · intro d vs w' ⟨⟨avs, S, hm, h1, h2⟩, hk⟩
-              exact ⟨⟨avs, S, List.mem_append_right _ hm, h1, h2⟩, hk⟩
+            · intro d vs w' ⟨⟨A', args, Γ', hm, h1, h2, he⟩, hk⟩
+              exact ⟨⟨A', args, Γ', List.mem_append_right _ hm, h1, h2, he0.trans he⟩, hk⟩
         · cases h
       · cases h
       · cases h
   | path, A, .loop l pre body, o, h, Γ0, w0, hA => by
-      have hn : Γ0.size = A.len := hA.1
+      have hn : Γ0.size = A.len := hA.1.1
       simp only [execP] at h
       split at h
       · rename_i hk
-        obtain ⟨c, backs, exits, out, j, hc0, hlen, ht, hback, hj, rfl⟩ := runLoop_sound h
+        obtain ⟨ivs, c, backs, exits, out, j, hc0, hlen, ht, hback, hj, rfl⟩ := runLoopIv_sound h
         dsimp only at ht
         split at ht
         · cases ht
@@ -1984,26 +2798,38 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
           have hck : c.vals.length = l.pTys.length := by rw [hlen]; simp [hk]
           have hpre := slotsOf_ge (A.len + l.pTys.length) pre
           have hab := slotsOf_ge (slotsOf (A.len + l.pTys.length) pre + l.pTys.length) body
-          refine loop_rule (fun _ cs w => c.Desc cs w ∧ KeepsRooms w0 w) ?_ ?_
+          have hY : ∀ y ∈ loopCands A.len (pre ++ body), y < Γ0.size := fun y hy => hn ▸ loopCands_lt y hy
+          have hab0 : Γ0.size ≤ slotsOf (slotsOf (A.len + l.pTys.length) pre + l.pTys.length) body := by omega
+          refine loop_rule (fun _ cs w => c.Desc Γ0 cs w ∧ KeepsRooms w0 w) ?_ ?_
           · intro Γ w cs ⟨e1, e2⟩ hcs
             subst Γ w
-            exact ⟨hc0 cs w0 ⟨((descAll_of hA hcs).portable).enrich hA.2.2, hA.2.2⟩, KeepsRooms.refl _⟩
-          · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc⟩, hkw⟩
+            exact ⟨hc0 Γ0 cs w0 ⟨((descAll_of hA hcs).portable).enrich hA.2.2, hA.2.2,
+              closeSym_all hA hY (fun _ _ => rfl) hcs, ivsAll_entry hcs _⟩, KeepsRooms.refl _⟩
+          · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc, hsc, hiv⟩, hkw⟩
             subst Γ w0'
-            rw [hn]
             have hcl : cs.length = l.pTys.length := hdc.length.symm.trans hck
-            have hA1 : AS.Holds ((A.withFacts c.facts).bindAt A.len c.vals)
-                (bindAt Γ0 A.len cs) w :=
-              (hA.world hfc fun r hr => hkw r hr).bindAt A.len hdc.of_empty
             have hΓb : Ext Γ0 (bindAt Γ0 A.len cs) := (Ext.refl Γ0).bindAt (by omega) cs
+            have hA1 : AS.Holds ((A.withFacts c.facts).bindAt A.len c.vals (c.headSyms A.len))
+                (bindAt Γ0 A.len cs) w :=
+              (hA.world hfc fun r hr => hkw r hr).bindAtS A.len hdc.of_empty fun i hi => by
+                have := headSyms_fits hsc hiv hdc.length.symm i (by rw [← hdc.length]; exact hi)
+                rw [hn] at this
+                rwa [← hdc.length] at this
+            rw [hn]
             refine Hoare.conseq (execC_sound hop hA1) (fun _ _ h => h) ?_ ?_ ?_
             · intro Γ1 w1 ⟨⟨Ap, hApE, hAp⟩, he1, hk1⟩ t f hf
               obtain ⟨hexit, hgo⟩ := hsome Ap hApE
               refine ⟨fun hx vs hvs => ?_, fun hx => ?_⟩
               · have hb : (f != 0) = l.exitOnTrue := by simpa using hx
                 obtain ⟨Ax, hr, hAx⟩ := refine_sound hAp hf hb
-                obtain ⟨C, hC, hCh⟩ := joinAll_holds hj (hexit Ax hr) (hAx.bindAt _ (descAll_of hAx hvs))
-                exact ⟨⟨C, hC, hCh⟩, (hΓb.trans he1).bindAt (by omega) vs, KeepsRooms.trans hkw hk1⟩
+                have hE1 : Ext Γ0 Γ1 := hΓb.trans he1
+                have hvl := mapM_len hvs
+                obtain ⟨C, hC, hCh⟩ := joinAll_holds hj (hexit Ax hr)
+                  (hAx.bindAtS _ (descAll_of hAx hvs) fun i hi => by
+                    have := (exitSym_all' hAx hn.symm hY (fun y hy => hE1.slotVal hy) hvs).fits_bindAt
+                      (hE1.bindAt hab0 vs) hab0 i (by simp at hi; omega)
+                    simpa [hvl] using this)
+                exact ⟨⟨C, hC, hCh⟩, hE1.bindAt hab0 vs, KeepsRooms.trans hkw hk1⟩
               · have hb : (f != 0) = !l.exitOnTrue := by
                   revert hx; cases (f != 0) <;> cases l.exitOnTrue <;> simp
                 obtain ⟨Ag, hr, hAg⟩ := refine_sound hAp hf hb
@@ -2021,59 +2847,87 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                   exact hAg.desc h1
                 have hΓb2 : Ext Γ0 (bindAt Γ1 (slotsOf (A.len + l.pTys.length) pre) cs) :=
                   (hΓb.trans he1).bindAt (by omega) cs
-                refine Hoare.conseq (execC_sound hob (hAg.bindAt _ hcs)) (fun _ _ h => h) ?_ ?_ ?_
+                have hcs1 : ∀ i, i < l.pTys.length → Γ1[A.len + i]? = cs[i]? := fun i hi => by
+                  rw [he1.2 _ (by rw [bindAt_size']; omega), Hoare.bindAt_at]
+                refine Hoare.conseq (execC_sound hob (hAg.bindAtS _ hcs (by
+                    simpa using copySyms_fits hcs1 hcl (by omega))))
+                  (fun _ _ h => h) ?_ ?_ ?_
                 · intro Γ2 w2 ⟨⟨A2, hA2E, hA2⟩, he2, hk2⟩ next hnext
-                  exact ⟨hback _ (hfall A2 hA2E) next w2 ⟨(descAll_of hA2 hnext).portable, hA2.2.2⟩,
+                  exact ⟨hback _ (hfall A2 hA2E) Γ0 next w2
+                      (backCarry_desc hA2 hn.symm hY (fun y hy => (hΓb2.trans he2).slotVal hy) hnext),
                     KeepsRooms.trans hkw (KeepsRooms.trans hk1 hk2)⟩
-                · intro d Γb vs w' ⟨⟨Ab, avs, hm, hAb, hdv⟩, he', hk'⟩
+                · intro d Γb vs w' ⟨⟨Ab, args, hm, hAb, hvs⟩, he', hk'⟩
                   cases d with
                   | zero =>
-                      obtain ⟨C, hC, hCh⟩ := joinAll_holds hj (hbe _ (mem_brks0 hm)) (hAb.bindAt _ hdv)
-                      exact ⟨⟨C, hC, hCh⟩, (hΓb2.trans he').bindAt (by omega) vs,
+                      have hE : Ext Γ0 Γb := hΓb2.trans he'
+                      have hvl := mapM_len hvs
+                      obtain ⟨C, hC, hCh⟩ := joinAll_holds hj (hbe _ (mem_brks0 hm))
+                        (hAb.bindAtS _ (descAll_of hAb hvs) fun i hi => by
+                          have := (exitSym_all' hAb hn.symm hY (fun y hy => hE.slotVal hy) hvs).fits_bindAt
+                            (hE.bindAt hab0 vs) hab0 i (by simp at hi; omega)
+                          simpa [hvl] using this)
+                      exact ⟨⟨C, hC, hCh⟩, hE.bindAt hab0 vs,
                         KeepsRooms.trans hkw (KeepsRooms.trans hk1 hk')⟩
                   | succ d =>
-                      exact ⟨⟨Ab, avs, hbB' _ (mem_depthDown hm), hAb, hdv⟩, hΓb2.trans he',
+                      exact ⟨⟨Ab, args, hbB' _ (mem_depthDown hm), hAb, hvs⟩, hΓb2.trans he',
                         KeepsRooms.trans hkw (KeepsRooms.trans hk1 hk')⟩
-                · intro d vs w' ⟨⟨avs, S, hm, hS, hdv⟩, hk'⟩
+                · intro d vs w' ⟨⟨Ac, args, Γc, hm, hAc, hvs, hec⟩, hk'⟩
                   cases d with
                   | zero =>
-                      exact ⟨hback _ (hbc _ (mem_conts0 hm)) vs w' ⟨hdv, hS⟩,
+                      exact ⟨hback _ (hbc _ (mem_conts0 hm)) Γ0 vs w'
+                          (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb2.trans hec).slotVal hy) hvs),
                         KeepsRooms.trans hkw (KeepsRooms.trans hk1 hk')⟩
                   | succ d =>
-                      exact ⟨⟨avs, S, hbC' _ (mem_depthDownC hm), hS, hdv⟩,
+                      exact ⟨⟨Ac, args, Γc, hbC' _ (mem_depthDown hm), hAc, hvs, hΓb2.trans hec⟩,
                         KeepsRooms.trans hkw (KeepsRooms.trans hk1 hk')⟩
-            · intro d Γb vs w' ⟨⟨Ab, avs, hm, hAb, hdv⟩, he', hk'⟩
+            · intro d Γb vs w' ⟨⟨Ab, args, hm, hAb, hvs⟩, he', hk'⟩
               cases d with
               | zero =>
-                  obtain ⟨C, hC, hCh⟩ := joinAll_holds hj (hbB _ (mem_brks0 hm)) (hAb.bindAt _ hdv)
-                  exact ⟨⟨C, hC, hCh⟩, (hΓb.trans he').bindAt (by omega) vs, KeepsRooms.trans hkw hk'⟩
+                  have hE : Ext Γ0 Γb := hΓb.trans he'
+                  have hvl := mapM_len hvs
+                  obtain ⟨C, hC, hCh⟩ := joinAll_holds hj (hbB _ (mem_brks0 hm))
+                    (hAb.bindAtS _ (descAll_of hAb hvs) fun i hi => by
+                      have := (exitSym_all' hAb hn.symm hY (fun y hy => hE.slotVal hy) hvs).fits_bindAt
+                        (hE.bindAt hab0 vs) hab0 i (by simp at hi; omega)
+                      simpa [hvl] using this)
+                  exact ⟨⟨C, hC, hCh⟩, hE.bindAt hab0 vs, KeepsRooms.trans hkw hk'⟩
               | succ d =>
-                  exact ⟨⟨Ab, avs, hdB _ (mem_depthDown hm), hAb, hdv⟩, hΓb.trans he', KeepsRooms.trans hkw hk'⟩
-            · intro d vs w' ⟨⟨avs, S, hm, hS, hdv⟩, hk'⟩
+                  exact ⟨⟨Ab, args, hdB _ (mem_depthDown hm), hAb, hvs⟩, hΓb.trans he', KeepsRooms.trans hkw hk'⟩
+            · intro d vs w' ⟨⟨Ac, args, Γc, hm, hAc, hvs, hec⟩, hk'⟩
               cases d with
-              | zero => exact ⟨hback _ (hcB _ (mem_conts0 hm)) vs w' ⟨hdv, hS⟩, KeepsRooms.trans hkw hk'⟩
+              | zero =>
+                  exact ⟨hback _ (hcB _ (mem_conts0 hm)) Γ0 vs w'
+                    (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb.trans hec).slotVal hy) hvs), KeepsRooms.trans hkw hk'⟩
               | succ d =>
-                  exact ⟨⟨avs, S, hdC _ (mem_depthDownC hm), hS, hdv⟩, KeepsRooms.trans hkw hk'⟩
+                  exact ⟨⟨Ac, args, Γc, hdC _ (mem_depthDown hm), hAc, hvs, hΓb.trans hec⟩,
+                    KeepsRooms.trans hkw hk'⟩
       · cases h
   | path, A, .dloop l body, o, h, Γ0, w0, hA => by
-      have hn : Γ0.size = A.len := hA.1
+      have hn : Γ0.size = A.len := hA.1.1
       simp only [execP] at h
       split at h
       · rename_i hk
         have hab := slotsOf_ge (A.len + l.pTys.length) body
+        have hY : ∀ y ∈ loopCands A.len body, y < Γ0.size := fun y hy => hn ▸ loopCands_lt y hy
+        have hab0 : Γ0.size ≤ slotsOf (A.len + l.pTys.length) body := by omega
+        have hΓs : ∀ outs, Ext Γ0 (bindAt Γ0 (slotsOf (A.len + l.pTys.length) body) outs) :=
+          fun outs => (Ext.refl Γ0).bindAt hab0 outs
         -- the loop skipped: its exits bound from the carries it would be entered with
         have hskip : ∀ g t f cs, l.guard = some g → Γ0[g]? = some (.sc t f) →
             ((f != 0) == l.contOnTrue) = false → l.init.mapM (fun r => Γ0[r]?) = some cs →
             ∀ outs, l.exitIdx.mapM (fun i => cs[i]?) = some outs →
-            ∃ C, dSkip A l (slotsOf (A.len + l.pTys.length) body) = some C ∧
+            ∃ C, dSkip A l (slotsOf (A.len + l.pTys.length) body) (loopCands A.len body) = some C ∧
               C.Holds (bindAt Γ0 (slotsOf (A.len + l.pTys.length) body) outs) w0 := by
           intro g t f cs hg hf hx hcs outs houts
           have hb : (f != 0) = !l.contOnTrue := by
             revert hx; cases (f != 0) <;> cases l.contOnTrue <;> simp
           obtain ⟨Ax, hr, hAx⟩ := refine_sound hA hf hb
-          exact ⟨_, by simp [dSkip, hg, hr], hAx.bindAt _ (descAll_pick (descAll_of hAx hcs) houts)⟩
-        have hΓs : ∀ outs, Ext Γ0 (bindAt Γ0 (slotsOf (A.len + l.pTys.length) body) outs) :=
-          fun outs => (Ext.refl Γ0).bindAt (by omega) outs
+          have hpk := descAll_pick (descAll_of hAx hcs) houts
+          refine ⟨_, by simp [dSkip, hg, hr], hAx.bindAtS (ss := l.exitIdx.map fun i =>
+            (l.init.map (exitSym Ax (loopCands A.len body) A.len)).getD i {}) _ hpk fun i hi => ?_⟩
+          have hsy := ((exitSym_all' hAx hn.symm hY (fun _ _ => rfl) hcs).pick houts).fits_bindAt (hΓs outs) hab0 i
+            (by rw [← hpk.length]; exact hi)
+          rwa [← hpk.length] at hsy
         cases he : dEnter A l with
         | none =>
             rw [he] at h
@@ -2102,7 +2956,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
               split at h
               · rename_i j hj
                 cases h
-                obtain ⟨c, backs, exits, out, j', hc0, hlen, ht, hback, hj', rfl⟩ := runLoop_sound hrun
+                obtain ⟨ivs, c, backs, exits, out, j', hc0, hlen, ht, hback, hj', rfl⟩ := runLoopIv_sound hrun
                 dsimp only at ht
                 split at ht
                 · cases ht
@@ -2112,8 +2966,9 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                   have hck : c.vals.length = l.pTys.length := by rw [hlen]; simp [hk]
                   -- where the loop is entered, the state entered with describes it
                   have hent : ∀ cs, l.init.mapM (fun r => Γ0[r]?) = some cs → Ae.Holds Γ0 w0 →
-                      c.Desc cs w0 := fun cs hcs hAe =>
-                    hc0 cs w0 ⟨((descAll_of hAe hcs).portable).enrich hAe.2.2, hAe.2.2⟩
+                      c.Desc Γ0 cs w0 := fun cs hcs hAe =>
+                    hc0 Γ0 cs w0 ⟨((descAll_of hAe hcs).portable).enrich hAe.2.2, hAe.2.2,
+                      closeSym_all hAe hY (fun _ _ => rfl) hcs, ivsAll_entry hcs _⟩
                   have hexit : ∀ {Γ' : Env} {w' : World} {C : AS}, C ∈ exits → C.Holds Γ' w' →
                       Ext Γ0 Γ' → KeepsRooms w0 w' →
                       (∃ D, j = some D ∧ D.Holds Γ' w') ∧ Ext Γ0 Γ' ∧ KeepsRooms w0 w' :=
@@ -2121,7 +2976,7 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                       obtain ⟨C', hC', hC'h⟩ := joinAll_holds hj' hm hC
                       obtain ⟨D, hD, hDh⟩ := joinOpt_holds hj (.inl ⟨C', hC', hC'h⟩)
                       exact ⟨⟨D, hD, hDh⟩, he, hk⟩
-                  refine dloop_rule (fun _ cs w => c.Desc cs w ∧ KeepsRooms w0 w ∧ Ae.Holds Γ0 w0) ?_ ?_
+                  refine dloop_rule (fun _ cs w => c.Desc Γ0 cs w ∧ KeepsRooms w0 w ∧ Ae.Holds Γ0 w0) ?_ ?_
                   · intro Γ w cs ⟨e1, e2⟩ hcs
                     subst Γ w
                     cases hg : l.guard with
@@ -2141,39 +2996,58 @@ theorem execP_sound {cfg : Cfg} {cert : Cert} :
                           rw [hn]
                           obtain ⟨D, hD, hDh⟩ := joinOpt_holds hj (.inr ⟨C, hC, hCh⟩)
                           exact ⟨⟨D, hD, hDh⟩, hΓs outs, KeepsRooms.refl _⟩
-                  · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc⟩, hkw, hAe⟩
+                  · intro Γ w0' cs w ⟨e1, e2⟩ ⟨⟨hdc, hfc, hsc, hiv⟩, hkw, hAe⟩
                     subst Γ w0'
-                    rw [hn]
-                    have hA1 : AS.Holds ((Ae.withFacts c.facts).bindAt A.len c.vals)
-                        (bindAt Γ0 A.len cs) w :=
-                      (hAe.world hfc fun r hr => hkw r hr).bindAt A.len hdc.of_empty
                     have hΓb : Ext Γ0 (bindAt Γ0 A.len cs) := (Ext.refl Γ0).bindAt (by omega) cs
+                    have hA1 : AS.Holds ((Ae.withFacts c.facts).bindAt A.len c.vals (c.headSyms A.len))
+                        (bindAt Γ0 A.len cs) w :=
+                      (hAe.world hfc fun r hr => hkw r hr).bindAtS A.len hdc.of_empty fun i hi => by
+                        have := headSyms_fits hsc hiv hdc.length.symm i (by rw [← hdc.length]; exact hi)
+                        rw [hn] at this
+                        rwa [← hdc.length] at this
+                    rw [hn]
                     refine Hoare.conseq (execC_sound hob hA1) (fun _ _ h => h) ?_ ?_ ?_
                     · intro Γ2 w2 ⟨⟨A2, hA2E, hA2⟩, he2, hk2⟩
                       obtain ⟨hgo, hstop⟩ := hsome A2 hA2E
+                      have hE2 : Ext Γ0 Γ2 := hΓb.trans he2
                       refine ⟨fun next hnext t f hf hx => ?_, fun next hnext t f hf hx outs houts => ?_⟩
                       · have hb : (f != 0) = l.contOnTrue := by simpa using hx
                         obtain ⟨Ag, hr, hAg⟩ := refine_sound hA2 hf hb
-                        exact ⟨hback _ (hgo Ag hr) next w2 ⟨(descAll_of hAg hnext).portable, hAg.2.2⟩,
+                        exact ⟨hback _ (hgo Ag hr) Γ0 next w2
+                            (backCarry_desc hAg hn.symm hY (fun y hy => hE2.slotVal hy) hnext),
                           KeepsRooms.trans hkw hk2, hAe⟩
                       · have hb : (f != 0) = !l.contOnTrue := by
                           revert hx; cases (f != 0) <;> cases l.contOnTrue <;> simp
                         obtain ⟨Ax, hr, hAx⟩ := refine_sound hA2 hf hb
-                        exact hexit (hstop Ax hr) (hAx.bindAt _ (descAll_pick (descAll_of hAx hnext) houts))
-                          ((hΓb.trans he2).bindAt (by omega) outs) (KeepsRooms.trans hkw hk2)
-                    · intro d Γb vs w' ⟨⟨Ab, avs, hm, hAb, hdv⟩, he', hk'⟩
+                        have hpk := descAll_pick (descAll_of hAx hnext) houts
+                        exact hexit (hstop Ax hr) (hAx.bindAtS _ hpk fun i hi => by
+                            have hsy := ((exitSym_all' hAx hn.symm hY (fun y hy => hE2.slotVal hy) hnext).pick
+                              houts).fits_bindAt (hE2.bindAt hab0 outs) hab0 i (by rw [← hpk.length]; exact hi)
+                            rw [← hpk.length] at hsy
+                            simpa [List.getD_eq_getElem?_getD, List.getElem?_map] using hsy)
+                          (hE2.bindAt hab0 outs) (KeepsRooms.trans hkw hk2)
+                    · intro d Γb vs w' ⟨⟨Ab, args, hm, hAb, hvs⟩, he', hk'⟩
                       cases d with
                       | zero =>
-                          exact hexit (hbB _ (mem_brks0 hm)) (hAb.bindAt _ hdv)
-                            ((hΓb.trans he').bindAt (by omega) vs) (KeepsRooms.trans hkw hk')
+                          have hE : Ext Γ0 Γb := hΓb.trans he'
+                          have hvl := mapM_len hvs
+                          exact hexit (hbB _ (mem_brks0 hm)) (hAb.bindAtS _ (descAll_of hAb hvs) fun i hi => by
+                              have := (exitSym_all' hAb hn.symm hY (fun y hy => hE.slotVal hy) hvs).fits_bindAt
+                                (hE.bindAt hab0 vs) hab0 i (by simp at hi; omega)
+                              simpa [hvl] using this)
+                            (hE.bindAt hab0 vs) (KeepsRooms.trans hkw hk')
                       | succ d =>
-                          exact ⟨⟨Ab, avs, hdB _ (mem_depthDown hm), hAb, hdv⟩, hΓb.trans he',
+                          exact ⟨⟨Ab, args, hdB _ (mem_depthDown hm), hAb, hvs⟩, hΓb.trans he',
                             KeepsRooms.trans hkw hk'⟩
-                    · intro d vs w' ⟨⟨avs, S, hm, hS, hdv⟩, hk'⟩
+                    · intro d vs w' ⟨⟨Ac, args, Γc, hm, hAc, hvs, hec⟩, hk'⟩
                       cases d with
-                      | zero => exact ⟨hback _ (hcB _ (mem_conts0 hm)) vs w' ⟨hdv, hS⟩, KeepsRooms.trans hkw hk', hAe⟩
+                      | zero =>
+                          exact ⟨hback _ (hcB _ (mem_conts0 hm)) Γ0 vs w'
+                              (backCarry_desc hAc hn.symm hY (fun y hy => (hΓb.trans hec).slotVal hy) hvs),
+                            KeepsRooms.trans hkw hk', hAe⟩
                       | succ d =>
-                          exact ⟨⟨avs, S, hdC _ (mem_depthDownC hm), hS, hdv⟩, KeepsRooms.trans hkw hk'⟩
+                          exact ⟨⟨Ac, args, Γc, hdC _ (mem_depthDown hm), hAc, hvs, hΓb.trans hec⟩,
+                            KeepsRooms.trans hkw hk'⟩
               · cases h
       · cases h
 
@@ -2193,6 +3067,39 @@ theorem execC_sound {cfg : Cfg} {cert : Cert} :
       · cases h
       · rename_i A hpin
         obtain rfl := pin_eq hpin
+        split at h
+        · rename_i C1 C2 hpc
+          obtain ⟨ss, rfl, hsc⟩ : ∃ ss, p = .straight ss ∧ splitCases cert.fo A ss = some (C1, C2) := by
+            cases p <;> simp only [pieceCases, reduceCtorEq] at hpc
+            exact ⟨_, rfl, hpc⟩
+          split at h
+          · rename_i o1 o2 h1 h2
+            split at h
+            · rename_i j hj
+              cases h
+              refine cons_rule (R := fun Γ w => Within C1 Γ0 w0 Γ w ∨ Within C2 Γ0 w0 Γ w)
+                (straight_rule (stmts_conseq (splitCases_frame hsc)
+                  (fun Γ w ⟨e1, e2⟩ => by subst Γ w; exact ⟨hA, Ext.refl _, KeepsRooms.refl _⟩)
+                  (fun _ _ h => h)))
+                (triple_of_at fun Γ1 w1 hR => ?_)
+              rcases hR with ⟨hC, he, hk⟩ | ⟨hC, he, hk⟩
+              · refine Hoare.conseq (execC_sound h1 hC) (fun _ _ h => h) ?_ ?_ ?_
+                · intro Γ w ⟨⟨A', e, hA'⟩, he', hk'⟩
+                  exact ⟨joinOpt_holds hj (.inl ⟨A', e, hA'⟩), he.trans he', KeepsRooms.trans hk hk'⟩
+                · intro d Γ vs w ⟨⟨Ab, avs, hm, h1, h2⟩, he', hk'⟩
+                  exact ⟨⟨Ab, avs, List.mem_append_left _ hm, h1, h2⟩, he.trans he', KeepsRooms.trans hk hk'⟩
+                · intro d vs w ⟨⟨Ac, args, Γc, hm, h1, h2, hec⟩, hk'⟩
+                  exact ⟨⟨Ac, args, Γc, List.mem_append_left _ hm, h1, h2, he.trans hec⟩, KeepsRooms.trans hk hk'⟩
+              · refine Hoare.conseq (execC_sound h2 hC) (fun _ _ h => h) ?_ ?_ ?_
+                · intro Γ w ⟨⟨A', e, hA'⟩, he', hk'⟩
+                  exact ⟨joinOpt_holds hj (.inr ⟨A', e, hA'⟩), he.trans he', KeepsRooms.trans hk hk'⟩
+                · intro d Γ vs w ⟨⟨Ab, avs, hm, h1, h2⟩, he', hk'⟩
+                  exact ⟨⟨Ab, avs, List.mem_append_right _ hm, h1, h2⟩, he.trans he', KeepsRooms.trans hk hk'⟩
+                · intro d vs w ⟨⟨Ac, args, Γc, hm, h1, h2, hec⟩, hk'⟩
+                  exact ⟨⟨Ac, args, Γc, List.mem_append_right _ hm, h1, h2, he.trans hec⟩, KeepsRooms.trans hk hk'⟩
+            · cases h
+          · cases h
+          · cases h
         split at h
         · cases h
         · rename_i o1 h1
@@ -2214,15 +3121,15 @@ theorem execC_sound {cfg : Cfg} {cert : Cert} :
                 rw [hA'] at e; cases e; exact ⟨hA1, he, hk⟩
               · intro d Γ vs w ⟨⟨Ab, avs, hm, h1, h2⟩, he, hk⟩
                 exact ⟨⟨Ab, avs, List.mem_append_left _ hm, h1, h2⟩, he, hk⟩
-              · intro d vs w ⟨⟨avs, S, hm, h1, h2⟩, hk⟩
-                exact ⟨⟨avs, S, List.mem_append_left _ hm, h1, h2⟩, hk⟩
+              · intro d vs w ⟨⟨Ac, args, Γc, hm, h1, h2, hec⟩, hk⟩
+                exact ⟨⟨Ac, args, Γc, List.mem_append_left _ hm, h1, h2, hec⟩, hk⟩
               · refine Hoare.conseq (execC_sound h2 h1') (fun _ _ h => h) ?_ ?_ ?_
                 · intro Γ w ⟨hx, he', hk'⟩
                   exact ⟨hx, he.trans he', KeepsRooms.trans hk hk'⟩
                 · intro d Γ vs w ⟨⟨Ab, avs, hm, h1, h2⟩, he', hk'⟩
                   exact ⟨⟨Ab, avs, List.mem_append_right _ hm, h1, h2⟩, he.trans he', KeepsRooms.trans hk hk'⟩
-                · intro d vs w ⟨⟨avs, S, hm, h1, h2⟩, hk'⟩
-                  exact ⟨⟨avs, S, List.mem_append_right _ hm, h1, h2⟩, KeepsRooms.trans hk hk'⟩
+                · intro d vs w ⟨⟨Ac, args, Γc, hm, h1, h2, hec⟩, hk'⟩
+                  exact ⟨⟨Ac, args, Γc, List.mem_append_right _ hm, h1, h2, he.trans hec⟩, KeepsRooms.trans hk hk'⟩
 
 end
 

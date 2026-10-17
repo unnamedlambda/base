@@ -14,6 +14,7 @@ open Lean
 
 deriving instance ToExpr for AlgorithmLib.IR.ClifTy
 deriving instance ToExpr for AlgorithmLib.IR.ICmpCond
+deriving instance ToExpr for AlgorithmLib.IR.IUn
 deriving instance ToExpr for AlgorithmLib.HProg.Sem.Region
 deriving instance ToExpr for AlgorithmLib.HProg.Sem.V
 deriving instance ToExpr for AlgorithmLib.HProg.Contracts.Part
@@ -21,6 +22,9 @@ deriving instance ToExpr for AlgorithmLib.HProg.Contracts.Held
 deriving instance ToExpr for AlgorithmLib.HProg.Contracts.Fact
 deriving instance ToExpr for AlgorithmLib.Check.Num
 deriving instance ToExpr for AlgorithmLib.Check.AV
+deriving instance ToExpr for AlgorithmLib.Check.Atom
+deriving instance ToExpr for AlgorithmLib.Check.Lin
+deriving instance ToExpr for AlgorithmLib.Check.Sym
 deriving instance ToExpr for AlgorithmLib.Check.Carry
 deriving instance ToExpr for AlgorithmLib.Check.Slots
 deriving instance ToExpr for AlgorithmLib.Check.AS

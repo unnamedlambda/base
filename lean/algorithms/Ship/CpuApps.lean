@@ -32,8 +32,8 @@ theorem Sat_fine : Fine (emitGo (Sat.mainCode : Prog Slot Lvl Unit) ⟨5, 0, [],
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem Sat_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SatMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Sat.mainCode : Prog Slot Lvl Unit)) ≠ .misuse m :=
-  safe_of_wp_entry SatMain (runArgs dataLen outLen) (by prog_vc SatMain) Sat_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (Sat.mainCode : Prog Slot Lvl Unit)) ≠ .misuse m := by
+  check_body
 
 end CpuAppsSafe
 

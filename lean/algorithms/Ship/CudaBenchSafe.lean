@@ -204,9 +204,8 @@ set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem CudaDecodeAttention_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionLoad dataLen outLen w)
     (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  sound_of_wp_entry (CudaDecodeAttentionLoad dataLen outLen) (runArgs dataLen outLen) (by prog_vc (CudaDecodeAttentionLoad dataLen outLen))
-    CudaDecodeAttention_load_fine rfl h m
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+  check_body
 
 theorem CudaDecodeAttention_prep_fine : Fine (emitGo (CudaDecodeAttention.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
