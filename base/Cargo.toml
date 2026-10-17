@@ -57,7 +57,7 @@ serde_json = "1"
 name = "base"
 path = "src/lib.rs"
 # `rlib` for the Rust dependents; `cdylib` for the hosts that reach the same
-# `Base` through `src/capi.rs`. A shared object rather than a static library
+# `Base` through `src/c_api.rs`. A shared object rather than a static library
 # so a non-Rust host links one file: linking a `staticlib` it would have to
 # name every transitive system library on its own link line.
 crate-type = ["rlib", "cdylib"]

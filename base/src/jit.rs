@@ -85,11 +85,11 @@ pub(crate) fn compile(
     let insts = functions.iter().flat_map(|f| &f.blocks).map(|b| b.insts.len()).sum();
     let mut symbols: Vec<(String, usize)> = Vec::with_capacity(primitives.len() + 1);
     for p in primitives {
-        let name = crate::libs::link_name(p);
+        let name = crate::link::link_name(p);
         if symbols.iter().any(|(n, _)| *n == name) {
             return Err(format!("the primitive {}!{} is declared twice", p.lib, p.symbol));
         }
-        symbols.push((name, crate::libs::bind(p)));
+        symbols.push((name, crate::link::bind(p)));
     }
     symbols.push((ARENA.into(), arena as usize));
     let mut module = new_module(insts, &symbols)?;
@@ -99,7 +99,7 @@ pub(crate) fn compile(
     let data = module.declare_data(ARENA, Linkage::Import, true, false).map_err(|e| format!("declaring {ARENA}: {e}"))?;
     declared("the arena", data.as_u32(), 0)?;
     for (k, (p, sig)) in primitives.iter().zip(&decoded.primitive_sigs).enumerate() {
-        let name = crate::libs::link_name(p);
+        let name = crate::link::link_name(p);
         let id = module.declare_function(&name, Linkage::Import, sig).map_err(|e| format!("declaring {name}: {e}"))?;
         declared(&name, id.as_u32(), k)?;
     }

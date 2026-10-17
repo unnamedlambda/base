@@ -1,7 +1,7 @@
 /* base's C API: load an artifact, get its functions as C functions, share
  * its arena, free it.
  *
- * These are the functions `base/src/capi.rs` exports from `libbase.so`; the
+ * These are the functions `base/src/c_api.rs` exports from `libbase.so`; the
  * documentation there is the full contract and this header must match it.
  *
  * It works like a shared library: `base_driver_load` compiles an artifact as

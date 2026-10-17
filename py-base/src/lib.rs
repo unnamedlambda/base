@@ -1,4 +1,4 @@
-//! base's C API in Python's terms, through `base::capi` only: exceptions for
+//! base's C API in Python's terms, through `base::c_api` only: exceptions for
 //! failures, buffers for input, output and the arena, and the GIL released
 //! while a program runs.
 
@@ -9,7 +9,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyMemoryView;
 
-use base::capi;
+use base::c_api;
 
 /// An encoded artifact.
 #[pyclass(name = "Artifact")]
@@ -61,7 +61,7 @@ struct PyDriver {
 
 impl Drop for PyDriver {
     fn drop(&mut self) {
-        unsafe { capi::base_driver_free(self.handle.0) };
+        unsafe { c_api::base_driver_free(self.handle.0) };
     }
 }
 
@@ -113,7 +113,7 @@ impl PyDriver {
     fn new(artifact: &PyArtifact) -> PyResult<Self> {
         let mut err = [0u8; 1024];
         let handle = unsafe {
-            capi::base_driver_load(artifact.bytes.as_ptr(), artifact.bytes.len(), err.as_mut_ptr(), err.len())
+            c_api::base_driver_load(artifact.bytes.as_ptr(), artifact.bytes.len(), err.as_mut_ptr(), err.len())
         };
         if handle.is_null() {
             let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
@@ -125,7 +125,7 @@ impl PyDriver {
     /// The function named `name`.
     fn function(slf: &Bound<'_, Self>, name: &str) -> PyResult<PyFunction> {
         let handle = slf.get().handle.0;
-        let f = unsafe { capi::base_driver_function(handle, name.as_ptr(), name.len()) }
+        let f = unsafe { c_api::base_driver_function(handle, name.as_ptr(), name.len()) }
             .ok_or_else(|| PyValueError::new_err(format!("the artifact has no function named {name:?}")))?;
         Ok(PyFunction { _driver: slf.clone().unbind(), f })
     }
@@ -138,7 +138,7 @@ impl PyDriver {
         length: usize,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let mut have = 0usize;
-        let arena = unsafe { capi::base_driver_arena(self.handle.0, &mut have) };
+        let arena = unsafe { c_api::base_driver_arena(self.handle.0, &mut have) };
         if offset.checked_add(length).is_none_or(|end| end > have) {
             return Err(PyValueError::new_err(format!(
                 "{offset}..{offset}+{length} is outside the {have} bytes of the arena"
@@ -198,7 +198,7 @@ impl PyDriver {
         flags: std::os::raw::c_int,
     ) -> PyResult<()> {
         let mut len = 0usize;
-        let ptr = capi::base_driver_arena(slf.get().handle.0, &mut len);
+        let ptr = c_api::base_driver_arena(slf.get().handle.0, &mut len);
         // An empty arena has no address; a view of nothing still needs one.
         let ptr = if ptr.is_null() { std::ptr::NonNull::<u8>::dangling().as_ptr() } else { ptr };
         // The view holds a reference to the driver, so the arena outlives it.
@@ -213,7 +213,7 @@ impl PyDriver {
     /// The word at `offset`: in the arena and 4-byte aligned, or an error.
     fn word(&self, offset: usize) -> PyResult<*mut u32> {
         let mut have = 0usize;
-        let arena = unsafe { capi::base_driver_arena(self.handle.0, &mut have) };
+        let arena = unsafe { c_api::base_driver_arena(self.handle.0, &mut have) };
         if offset % 4 != 0 || offset.checked_add(4).is_none_or(|end| end > have) {
             return Err(PyValueError::new_err(format!(
                 "{offset} is not a 4-byte-aligned word of the {have} bytes of the arena"

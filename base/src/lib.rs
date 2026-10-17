@@ -10,10 +10,10 @@ use std::{
     sync::atomic::{AtomicU64, AtomicU8, Ordering},
 };
 
-pub mod capi;
+pub mod c_api;
 mod clif_decode;
 mod ffi;
-mod libs;
+mod link;
 mod jit;
 
 

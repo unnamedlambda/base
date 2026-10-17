@@ -1,4 +1,4 @@
-/* Lean's calling convention over `base/src/capi.rs`.
+/* Lean's calling convention over `base/src/c_api.rs`.
  *
  * The runtime's C ABI answers a failure value, with a message where a load
  * fails. Lean's convention is an `IO` result carrying either the value or the
@@ -6,7 +6,7 @@
  * throws. That way the Lean side has no error codes in it.
  *
  * Nothing here decides anything. A wrapper that does more than translate a
- * calling convention belongs in `capi.rs`, where it is testable from Rust.
+ * calling convention belongs in `c_api.rs`, where it is testable from Rust.
  */
 
 #include <lean/lean.h>

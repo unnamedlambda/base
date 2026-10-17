@@ -1,6 +1,6 @@
 //! The C API: what a host outside Rust calls.
 
-use base::capi::*;
+use base::c_api::*;
 use base::Driver;
 use base_types::{Artifact, Segment};
 
