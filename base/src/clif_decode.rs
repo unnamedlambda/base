@@ -99,35 +99,22 @@ pub fn signature_of(f: &clif::Function, index: usize, host: CallConv) -> Result<
     signature(&f.signature, host)
 }
 
-/// The value each `Val` names: the error when a program names one it never
-/// defined, or defines one twice, which SSA does not allow and which would
-/// otherwise leave the later uses to whichever definition came last.
-///
-/// Indexed rather than hashed: generators number values densely from zero, so
-/// the id is the position.
+/// The value each `Val` names, defined once each.
 #[derive(Default)]
-struct Vals(Vec<Option<ir::Value>>);
+struct Vals(HashMap<u32, ir::Value>);
 
 impl Vals {
     fn get(&self, v: clif::Val) -> Result<ir::Value, String> {
-        self.0
-            .get(v.0 as usize)
-            .copied()
-            .flatten()
-            .ok_or_else(|| format!("v{} used before it is defined", v.0))
+        self.0.get(&v.0).copied().ok_or_else(|| format!("v{} used before it is defined", v.0))
     }
     fn get_all(&self, vs: &[clif::Val]) -> Result<Vec<ir::Value>, String> {
         vs.iter().map(|v| self.get(*v)).collect()
     }
     fn set(&mut self, v: clif::Val, val: ir::Value) -> Result<(), String> {
-        let i = v.0 as usize;
-        if i >= self.0.len() {
-            self.0.resize(i + 1, None);
+        match self.0.insert(v.0, val) {
+            Some(_) => Err(format!("v{} is defined twice", v.0)),
+            None => Ok(()),
         }
-        if self.0[i].replace(val).is_some() {
-            return Err(format!("v{} is defined twice", v.0));
-        }
-        Ok(())
     }
 }
 
@@ -163,6 +150,9 @@ pub fn decode_function(
     module: &mut Module,
 ) -> Result<ir::Function, String> {
     let sig = signature_of(f, index, host)?;
+    if f.blocks.is_empty() {
+        return Err(format!("u0:{index} has no blocks, so no entry block"));
+    }
     let mut func = ir::Function::with_name_signature(UserFuncName::user(0, index as u32), sig);
 
     let slots = f

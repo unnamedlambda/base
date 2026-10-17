@@ -20,3 +20,4 @@ mod hprog_usb_corpus;
 mod hprog_wgpu_corpus;
 mod hprog_window_corpus;
 mod integration;
+mod totality;
