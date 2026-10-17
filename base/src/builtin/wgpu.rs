@@ -438,7 +438,7 @@ release!(
     wgpuErrorScopeRelease wgpu::ErrorScopeGuard;
 );
 
-crate::ffi::symbols!(
+crate::builtin::symbols!(
     wgpuCreateInstance,
     wgpuInstanceRequestAdapter,
     wgpuAdapterRequestDevice,

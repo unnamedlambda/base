@@ -80,7 +80,7 @@ unsafe extern "C" fn base_serial_pending(port: *mut Port) -> i64 {
     }
 }
 
-crate::ffi::symbols!(
+crate::builtin::symbols!(
     base_serial_count,
     base_serial_name,
     base_serial_open,

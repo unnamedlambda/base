@@ -198,7 +198,7 @@ unsafe extern "C" fn base_usb_interrupt(
     data_transfer::<Interrupt>(intf, endpoint, data, len, timeout_ms)
 }
 
-crate::ffi::symbols!(
+crate::builtin::symbols!(
     base_usb_count,
     base_usb_info,
     base_usb_open,

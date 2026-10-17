@@ -12,7 +12,7 @@ use std::{
 
 pub mod c_api;
 mod clif_decode;
-mod ffi;
+mod builtin;
 mod link;
 mod jit;
 
@@ -102,7 +102,7 @@ impl Function<'_> {
 pub use jit::BaseFunction;
 
 /// Waiting on a word, waking, and the clock: the calls programs make, for hosts.
-pub use ffi::sync::{now, wait, wake};
+pub use builtin::sync::{now, wait, wake};
 
 pub struct Driver {
     arena: Arena,

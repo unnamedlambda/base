@@ -11,11 +11,11 @@ cranelift-codegen = "0.123"
 cranelift-jit = "0.123"
 cranelift-module = "0.123"
 cranelift-native = "0.123"
-# For `ffi/native.rs`: the same two crates cranelift-jit maps its own code with
+# For `builtin/native.rs`: the same two crates cranelift-jit maps its own code with
 # (so already in the build), for placing a program's machine code executable
 # on every OS and making the instruction cache see it on AArch64.
 region = "3"
-# The performance controls in `ffi/os.rs`: `madvise` and `setpriority` on
+# The performance controls in `builtin/os.rs`: `madvise` and `setpriority` on
 # Linux, and `SetThreadPriority` on Windows.
 libc = "0.2"
 # Loading the C libraries a program calls directly, at run time, so a library
@@ -41,7 +41,7 @@ wasmtime-internal-jit-icache-coherence = "=36.0.13"
 # Waiting on a word of memory (`ffi/sync.rs`): the system's own address wait
 # (futex, WaitOnAddress, os_sync_wait_on_address), which a host's threads meet.
 wait_on_address = "=0.1.6"
-# A thread's priority on one scale for every system (`ffi/os.rs`).
+# A thread's priority on one scale for every system (`builtin/os.rs`).
 thread-priority = "=3.1.1"
 
 [target.'cfg(windows)'.dependencies]

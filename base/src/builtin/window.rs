@@ -237,7 +237,7 @@ unsafe extern "C" fn base_window_pixels(win: *mut Win) -> i64 {
     i64::from(size.width) | (i64::from(size.height) << 32)
 }
 
-crate::ffi::symbols!(
+crate::builtin::symbols!(
     base_window_init,
     base_window_open,
     base_window_close,

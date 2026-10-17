@@ -11,7 +11,7 @@ extern "C" {
     fn free(p: *mut c_void);
 }
 
-crate::ffi::symbols!(
+crate::builtin::symbols!(
     memcpy,
     memmove,
     memset,

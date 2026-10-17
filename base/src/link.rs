@@ -58,13 +58,13 @@ fn library(f: &Primitive) -> Option<&'static libloading::Library> {
 /// A library built into the engine.
 fn builtin(lib: &str) -> Option<fn(&str) -> Option<usize>> {
     match lib {
-        "base" => Some(crate::ffi::linked),
-        "c" => Some(crate::ffi::libc::linked),
-        "wgpu" => Some(crate::ffi::wgpu::linked),
-        "window" => Some(crate::ffi::window::linked),
-        "cpu" => Some(crate::ffi::cpu::linked),
-        "serial" => Some(crate::ffi::serial::linked),
-        "usb" => Some(crate::ffi::usb::linked),
+        "base" => Some(crate::builtin::linked),
+        "c" => Some(crate::builtin::libc::linked),
+        "wgpu" => Some(crate::builtin::wgpu::linked),
+        "window" => Some(crate::builtin::window::linked),
+        "cpu" => Some(crate::builtin::cpu::linked),
+        "serial" => Some(crate::builtin::serial::linked),
+        "usb" => Some(crate::builtin::usb::linked),
         _ => None,
     }
 }

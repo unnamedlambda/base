@@ -25,7 +25,7 @@ pub(crate) mod wgpu;
 pub(crate) mod window;
 
 // The engine's own functions, which a program calls as the library `base`.
-crate::ffi::symbols!(
+crate::builtin::symbols!(
     native::cl_native_load,
     native::cl_native_free,
     native::cl_native_arch,

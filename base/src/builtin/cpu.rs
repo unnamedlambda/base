@@ -134,7 +134,7 @@ unsafe extern "C" fn base_cpu_unpin() -> i32 {
     }
 }
 
-crate::ffi::symbols!(
+crate::builtin::symbols!(
     base_cpu_count,
     base_cpu_core,
     base_cpu_package,
