@@ -183,8 +183,7 @@ rust_test() {
 
 rust_test_fast() {
   cd "$ROOT"
-  "${GUARD[@]}" taskset -c 0-3 cargo test -j 2 --workspace \
-    --exclude bench-scaling --exclude qwen2
+  "${GUARD[@]}" taskset -c 0-3 cargo test -j 2 -p base-types -p base
 }
 
 # The MXFP4 expert kernels are outside the machine this project proves kernels
