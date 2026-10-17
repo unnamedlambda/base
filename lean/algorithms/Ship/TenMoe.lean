@@ -122,35 +122,11 @@ theorem mem_size : MlpCifar.MMEM_SIZE = 558092 := by decide +kernel
 abbrev Bind (dl : UInt64) : World → Prop := Contracts.TState.holds
   [.part .frozen false, .room .arena 558092, .roomArg .data dl]
 
-theorem main_fine : Fine (emitGo (MlpCifar.mLoadFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry main : MlpCifar.mLoadFn under Load
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem main_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Load w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mLoadFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mLoadFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry runRouter : (MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) under ((Run 0 0))
 
-theorem runRouter_fine : Fine (emitGo ((MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem runRouter_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem fetchGate_fine : Fine (emitGo ((MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchGate_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 (MlpCifar.NE * 4)) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry fetchGate : (MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) under ((Run 0 (MlpCifar.NE * 4)))
 
 theorem bindExperts_fine : Fine (emitGo (MlpCifar.mBindExperts : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -175,25 +151,9 @@ theorem uploadGates_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) 
     Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit)) ≠ .fault m := by
   check_body
 
-theorem runExperts_fine : Fine (emitGo ((MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry runExperts : (MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) under ((Run 0 0))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem runExperts_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mRunRange MlpCifar.mRouterTape.length MlpCifar.moeTape.length) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem fetchOut_fine : Fine (emitGo ((MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchOut_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 (MlpCifar.MD * 4)) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit ((MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry fetchOut : (MlpCifar.mFetchFn MlpCifar.MOUT (MlpCifar.MD * 4)) under ((Run 0 (MlpCifar.MD * 4)))
 
 end MoeSafe
 

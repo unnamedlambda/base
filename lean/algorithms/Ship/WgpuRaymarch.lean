@@ -37,65 +37,15 @@ abbrev RaymarchTestIO (dl ol : UInt64) : World → Prop := Contracts.TState.hold
 theorem Raymarch_layout : Raymarch.layoutMeta.totalSize = 934112 ∧ Raymarch.f.shader.offset = 80 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
-theorem Raymarch_moveForward_fine :
-    Fine (emitGo (Raymarch.testMoveForward : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry Raymarch_moveForward : Raymarch.testMoveForward under RaymarchTestIO dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raymarch_moveForward_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testMoveForward : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testMoveForward : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Raymarch_strafeRight : Raymarch.testStrafeRight under RaymarchTestIO dataLen outLen
 
-theorem Raymarch_strafeRight_fine :
-    Fine (emitGo (Raymarch.testStrafeRight : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry Raymarch_riseClamp : Raymarch.testRiseClamp under RaymarchTestIO dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raymarch_strafeRight_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testStrafeRight : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testStrafeRight : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Raymarch_quitOnClose : Raymarch.testQuitOnClose under RaymarchTestIO dataLen outLen
 
-theorem Raymarch_riseClamp_fine :
-    Fine (emitGo (Raymarch.testRiseClamp : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raymarch_riseClamp_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRiseClamp : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRiseClamp : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem Raymarch_quitOnClose_fine :
-    Fine (emitGo (Raymarch.testQuitOnClose : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raymarch_quitOnClose_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem Raymarch_renderScene_fine :
-    Fine (emitGo (Raymarch.testRenderScene : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raymarch_renderScene_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRenderScene : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.testRenderScene : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Raymarch_renderScene : Raymarch.testRenderScene under RaymarchTestIO dataLen outLen
 
 -- Raymarch: the game, on a display or on none
 

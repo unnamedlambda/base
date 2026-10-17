@@ -184,6 +184,27 @@ theorem check_safe {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} (hc : accepts c
     exact execC_safe ho' hA m
   · cases hc
 
+/-- The pattern the checker gives the calls of a body it accepts, written
+    shorter. -/
+def traceOf (cert : Cert) (A : AS) (c : Code) : Option Tr :=
+  match execC cert [] 0 A c with
+  | .ok o => some o.tr.norm
+  | .error _ => none
+
+/-- **A body the checker accepts makes calls its pattern admits**: run from
+    any arguments and world its state describes, where it ends the calls it
+    observed are those made before it and then ones the pattern admits. -/
+theorem check_calls_of {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} {t : Tr} (ht : traceOf cert A c = some t)
+    {args : List V} {w : World} (hA : A.Holds vals args.toArray w) {obs : List Obs} {w' : World}
+    (hr : run cfg args w c = .ok obs w') : t.Covers w obs := by
+  unfold traceOf at ht
+  split at ht
+  · rename_i o ho
+    cases ht
+    obtain ⟨cs, e, hh⟩ := execC_trace ho hA hr
+    exact ⟨cs, e, hh.norm⟩
+  · cases ht
+
 /-- The checker's state where a body is called with arguments it knows
     exactly, the typestate its facts. -/
 def entryKnown (S : TState) (args : List V) : AS := AS.ofList (args.map .known) S
@@ -257,7 +278,7 @@ theorem check_triple {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} {S' : TState}
       rw [hAf] at hf
       simp only [Bool.and_eq_true, List.all_eq_true] at hf
       obtain ⟨⟨hfs, hfc⟩, hfb⟩ := hf
-      refine hpost w' hk (fun x hx => hAh.2.2 x (by simpa using hfs x hx)) fun x hx => ?_
+      refine hpost w' hk.rooms (fun x hx => hAh.2.2 x (by simpa using hfs x hx)) fun x hx => ?_
       have hP := hAh.1.2.2.2.2.1
       simp only [Par.facts, bufFacts, List.mem_append, List.mem_map] at hx
       rcases hx with ⟨p, hp, rfl⟩ | ⟨p, hp, rfl⟩
@@ -496,5 +517,69 @@ elab "check_reach" : tactic => do
     evalTactic (← `(tactic| refine check_triple (vals := $sv) hacc rfl $hA ?hpost))
     evalTactic (← `(tactic| case hpost =>
       exact fun w' hk hS' hT => post_of $sh hk hS' hT $splan (by rfl) (by simp [isRoomArg])))
+
+open Lean Meta Elab Tactic in
+/-- Prove `Tr.Covers t w obs` from the hypotheses that the world `w` satisfies
+    a typestate and that a body run from `runArgs` and `w` ended observing
+    `obs`, by the checker: `t` is the pattern it gives the body's calls. A
+    refusal names the pattern the checker finds. -/
+elab "check_calls" : tactic => do
+  let g ← getMainGoal
+  g.withContext do
+    let (h, L) ← findTypestate "check_calls"
+    let tgt ← whnfR (← instantiateMVars (← g.getType))
+    unless tgt.isAppOfArity ``Tr.Covers 3 do throwError "check_calls: the goal is not `Tr.Covers t w obs`"
+    let goalT := tgt.getArg! 0
+    let mut found : Option (Expr × Expr) := none
+    for d in ← getLCtx do
+      if d.isImplementationDetail then continue
+      let t ← instantiateMVars d.type
+      if let some (_, lhs, _) := t.eq? then
+        if lhs.isAppOfArity ``Sem.run 4 then found := some (d.toExpr, lhs)
+    let some (hr, runE) := found | throwError "check_calls: no hypothesis that a run ended"
+    let code := runE.getArg! 3
+    if code.hasFVar then throwError "check_calls: the body names a variable"
+    unless (runE.getArg! 1).isAppOf ``runArgs do throwError "check_calls: the arguments are not `runArgs`"
+    let (keep, idx, dLen, oLen, P, pidx, _, vs) ← readTypestate L #[]
+    let S ← mkListLit (mkConst ``Fact) keep
+    let (P, cert) ← runChecker "check_calls" false S dLen oLen P code
+    let cert : Cert := { cert with tr := true }
+    let A := mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P)
+    let some t ← unsafe evalExpr (Option Tr) (mkApp (mkConst ``Option [0]) (mkConst ``Tr))
+        (mkApp3 (mkConst ``traceOf) (toExpr cert) A code)
+      | throwError "check_calls: the checker refuses this body"
+    if goalT.hasFVar || goalT.hasMVar then throwError "check_calls: the calls the checker finds are\n{repr t}"
+    let want ← unsafe evalExpr Tr (mkConst ``Tr) goalT
+    unless want == t do throwError "check_calls: the calls the checker finds are\n{repr t}"
+    let sCert ← Term.exprToSyntax (toExpr cert)
+    let sA ← Term.exprToSyntax A
+    let sc ← Term.exprToSyntax code
+    let sT ← Term.exprToSyntax goalT
+    let shr ← Term.exprToSyntax hr
+    evalTactic (← `(tactic| have hacc : traceOf $sCert $sA $sc = some $sT := by decide +kernel))
+    let hA ← entryProof h S idx dLen oLen P pidx vs
+    evalTactic (← `(tactic| refine check_calls_of hacc $hA $shr))
+
+/-- `ship_entry X : code under P` states and proves the two theorems of a
+    shipped body: `X_fine`, that its emission is well formed, and `X_no_misuse`,
+    that from a world satisfying the typestate `P` (which may read `dataLen`
+    and `outLen`) the body neither misuses a call nor faults, by `check_body`. -/
+syntax (docComment)? "ship_entry " ident " : " term " under " term : command
+
+open Lean in
+set_option hygiene false in
+macro_rules
+  | `($[$doc:docComment]? ship_entry $n:ident : $code:term under $P:term) => do
+    let fine := mkIdent (n.getId.appendAfter "_fine")
+    let safe := mkIdent (n.getId.appendAfter "_no_misuse")
+    `(theorem $fine : Fine (emitGo ($code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
+        ⟨by decide +kernel, by decide +kernel⟩
+      set_option maxRecDepth 200000 in
+      set_option maxHeartbeats 4000000 in
+      $[$doc:docComment]?
+      theorem $safe (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : $P w) (m : String) :
+          Sem.run cfg (runArgs dataLen outLen) w (emit ($code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
+          Sem.run cfg (runArgs dataLen outLen) w (emit ($code : Prog Slot Lvl Unit)) ≠ .fault m := by
+        check_body)
 
 end AlgorithmLib.Check

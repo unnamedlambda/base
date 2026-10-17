@@ -32,21 +32,9 @@ theorem Raymarch_main_fine :
     Fine (emitGo (Raymarch.mainBody : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raymarch_main_display_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchMainOn true w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Raymarch_main_display : Raymarch.mainBody under (RaymarchMainOn true)
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raymarch_main_headless_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchMainOn false w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Raymarch_main_headless : Raymarch.mainBody under (RaymarchMainOn false)
 
 /-- **The game neither misuses a call nor faults**, whether or not there is a display. -/
 theorem Raymarch_main_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)

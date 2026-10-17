@@ -37,57 +37,15 @@ abbrev RmsNormRun (dl ol : UInt64) : World → Prop := Contracts.TState.holds
    .room .arena CudaRmsNormPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
    .cell (regionBase .arena + UInt64.ofNat CudaRmsNormPersist.CTX_OFF) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaRmsNormPersist.PTX_SOURCE_OFF) (CudaRmsNormPersist.BIND_DESC_OFF - CudaRmsNormPersist.PTX_SOURCE_OFF)]
 
-theorem clampSum_fine : Fine (emitGo (HProgPilots.ClampSum.code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry clampSum : HProgPilots.ClampSum.code under Run dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem clampSum_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
-    (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.ClampSum.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.ClampSum.code : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry nested : HProgPilots.Nested.code under NestedStart dataLen outLen
 
-theorem nested_fine : Fine (emitGo (HProgPilots.Nested.code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry rmsNorm_load : HProgPilots.RmsNorm.loadCode under RmsNormLoad dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem nested_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : NestedStart dataLen outLen w)
-    (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.Nested.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.Nested.code : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry rmsNorm_prep : HProgPilots.RmsNorm.prepCode under RmsNormRun dataLen outLen
 
-theorem rmsNorm_load_fine : Fine (emitGo (HProgPilots.RmsNorm.loadCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem rmsNorm_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : RmsNormLoad dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.RmsNorm.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.RmsNorm.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem rmsNorm_prep_fine : Fine (emitGo (HProgPilots.RmsNorm.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem rmsNorm_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : RmsNormRun dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.RmsNorm.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.RmsNorm.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem rmsNorm_infer_fine : Fine (emitGo (HProgPilots.RmsNorm.inferCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem rmsNorm_infer_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : RmsNormRun dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.RmsNorm.inferCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.RmsNorm.inferCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry rmsNorm_infer : HProgPilots.RmsNorm.inferCode under RmsNormRun dataLen outLen
 
 end PilotsSafe
 

@@ -33,29 +33,9 @@ abbrev FallingSandTest (dl ol : UInt64) : World → Prop := Contracts.TState.hol
 theorem FallingSand_layout : FallingSand.layoutMeta.totalSize = 2783568 ∧ FallingSand.f.stepSh.offset = 64 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
-theorem FallingSand_grainFalls_fine :
-    Fine (emitGo (FallingSand.testGrainFalls : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry FallingSand_grainFalls : FallingSand.testGrainFalls under FallingSandTest dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem FallingSand_grainFalls_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : FallingSandTest dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testGrainFalls : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testGrainFalls : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem FallingSand_conservation_fine :
-    Fine (emitGo (FallingSand.testConservation : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem FallingSand_conservation_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : FallingSandTest dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testConservation : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.testConservation : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry FallingSand_conservation : FallingSand.testConservation under FallingSandTest dataLen outLen
 
 end WgpuSafe
 

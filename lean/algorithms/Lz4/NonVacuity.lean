@@ -122,8 +122,8 @@ theorem shipped64_launch_correct
     6400 warps at once — from the single hypothesis `hord`.
 
     `hord` is an EQUATION, which the host establishes by allocating once;
-    `Lz4Host.host_single_allocation` reads that single `cudaCreateBuffer` back out
-    of the emitted CLIF, and the kernel's own prologue supplies the other half by
+    every run of the host program makes that single `cudaCreateBuffer`
+    (`Lz4CompSafe.warp15_calls`), and the kernel's own prologue supplies the other half by
     computing `outBase` from `in_ptr`.  An inequality between two independent
     allocations would leave an informal step in the chain. -/
 theorem layoutOK_of_alloc (b inPtr outPtr : Nat) (gm : Array UInt8)

@@ -23,16 +23,7 @@ namespace CpuAppsSafe
 abbrev HistMain (dl ol : UInt64) : World → Prop := Contracts.TState.holds
   [.part .frozen false, .room .arena HistogramBench1.MEM_SIZE, .roomArg .data dl, .roomArg .out ol]
 
-theorem Hist_fine : Fine (emitGo (HistogramBench1.code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Hist_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : HistMain dataLen outLen w)
-    (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HistogramBench1.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HistogramBench1.code : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Hist : HistogramBench1.code under HistMain dataLen outLen
 
 end CpuAppsSafe
 

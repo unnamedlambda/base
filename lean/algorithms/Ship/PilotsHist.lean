@@ -22,16 +22,7 @@ namespace PilotsSafe
 abbrev HistStart (dl ol : UInt64) : World → Prop := Contracts.TState.holds
   [.part .frozen false, .room .arena HistogramBench1.MEM_SIZE, .roomArg .data dl, .roomArg .out ol]
 
-theorem hist_fine : Fine (emitGo (HProgPilots.Hist.code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem hist_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : HistStart dataLen outLen w)
-    (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.Hist.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (HProgPilots.Hist.code : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry hist : HProgPilots.Hist.code under HistStart dataLen outLen
 
 end PilotsSafe
 

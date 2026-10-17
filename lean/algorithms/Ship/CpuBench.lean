@@ -56,16 +56,7 @@ theorem hist_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Ru
     Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outHist (CpuBench.histUnr8 (← CpuBench.array 0)) : Prog Slot Lvl Unit)) ≠ .fault m := by
   check_body
 
-theorem mandel_fine : Fine (emitGo (do CpuBench.answer CpuBench.outAnswer (CpuBench.mandelUnr 8 (← CpuBench.nothing)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem mandel_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
-    (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outAnswer (CpuBench.mandelUnr 8 (← CpuBench.nothing)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outAnswer (CpuBench.mandelUnr 8 (← CpuBench.nothing)) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry mandel : (do CpuBench.answer CpuBench.outAnswer (CpuBench.mandelUnr 8 (← CpuBench.nothing))) under Run dataLen outLen
 
 theorem chase_fine : Fine (emitGo (do CpuBench.answer CpuBench.outAnswer (CpuBench.chaseLoop (← CpuBench.array 2)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩

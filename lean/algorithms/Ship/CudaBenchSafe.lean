@@ -46,25 +46,9 @@ abbrev CudaSoftmaxPersistRun (dl ol : UInt64) : World → Prop := Contracts.TSta
    .room .arena CudaSoftmaxPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
    .cell (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.CTX_OFF) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.PTX_SOURCE_OFF) (CudaSoftmaxPersist.BIND_K1_OFF - CudaSoftmaxPersist.PTX_SOURCE_OFF), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_BLOCK_REDUCE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_GLOBAL_REDUCE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_NORMALIZE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_SMALL_SOFTMAX) (16)]
 
-theorem CudaSoftmaxPersist_load_fine : Fine (emitGo (CudaSoftmaxPersist.loadCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry CudaSoftmaxPersist_load : CudaSoftmaxPersist.loadCode under CudaSoftmaxPersistLoad dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaSoftmaxPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistLoad dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem CudaSoftmaxPersist_prep_fine : Fine (emitGo (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaSoftmaxPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry CudaSoftmaxPersist_prep : CudaSoftmaxPersist.prepCode under CudaSoftmaxPersistRun dataLen outLen
 
 theorem CudaSoftmaxPersist_core_fine : Fine (emitGo (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -116,15 +100,7 @@ theorem CudaGemvPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w 
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
   check_body
 
-theorem CudaGemvPersist_prep_fine : Fine (emitGo (CudaGemvPersist.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaGemvPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaGemvPersistRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry CudaGemvPersist_prep : CudaGemvPersist.prepCode under CudaGemvPersistRun dataLen outLen
 
 abbrev CudaGemvPersistInfer (dl ol m n : UInt64) : World → Prop := Contracts.TState.holds
   [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
@@ -170,35 +146,11 @@ abbrev CudaRmsNormPersistRun (dl ol : UInt64) : World → Prop := Contracts.TSta
    .room .arena CudaRmsNormPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
    .cell (regionBase .arena + UInt64.ofNat CudaRmsNormPersist.CTX_OFF) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaRmsNormPersist.PTX_SOURCE_OFF) (CudaRmsNormPersist.BIND_DESC_OFF - CudaRmsNormPersist.PTX_SOURCE_OFF)]
 
-theorem CudaRmsNormPersist_load_fine : Fine (emitGo (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry CudaRmsNormPersist_load : CudaRmsNormPersist.loadCode under CudaRmsNormPersistLoad dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaRmsNormPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaRmsNormPersistLoad dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry CudaRmsNormPersist_prep : CudaRmsNormPersist.prepCode under CudaRmsNormPersistRun dataLen outLen
 
-theorem CudaRmsNormPersist_prep_fine : Fine (emitGo (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaRmsNormPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaRmsNormPersistRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem CudaRmsNormPersist_infer_fine : Fine (emitGo (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaRmsNormPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaRmsNormPersistRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry CudaRmsNormPersist_infer : CudaRmsNormPersist.inferCode under CudaRmsNormPersistRun dataLen outLen
 
 -- CudaDecodeAttention
 
@@ -210,25 +162,9 @@ abbrev CudaDecodeAttentionRun (dl ol : UInt64) : World → Prop := Contracts.TSt
    .room .arena CudaDecodeAttention.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
    .cell (regionBase .arena + UInt64.ofNat CudaDecodeAttention.CTX_OFF) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaDecodeAttention.PTX_SOURCE_OFF) (CudaDecodeAttention.BIND_DESC_OFF - CudaDecodeAttention.PTX_SOURCE_OFF)]
 
-theorem CudaDecodeAttention_load_fine : Fine (emitGo (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry CudaDecodeAttention_load : CudaDecodeAttention.loadCode under CudaDecodeAttentionLoad dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaDecodeAttention_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionLoad dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem CudaDecodeAttention_prep_fine : Fine (emitGo (CudaDecodeAttention.prepCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem CudaDecodeAttention_prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.prepCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.prepCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry CudaDecodeAttention_prep : CudaDecodeAttention.prepCode under CudaDecodeAttentionRun dataLen outLen
 
 theorem CudaDecodeAttention_finalize_fine : Fine (emitGo (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩

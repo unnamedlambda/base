@@ -46,145 +46,33 @@ abbrev Run (d o : Nat) : World → Prop := Contracts.TState.holds
    .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 8)) MlpCifar.SLOT,
    .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 9)) MlpCifar.SLOT]
 
-theorem fetchZ1_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.z1B 8192 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry fetchZ1 : MlpCifar.fetchCode MlpCifar.z1B 8192 under ((Run 0 8192))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchZ1_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 8192) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.z1B 8192 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.z1B 8192 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry fetchDh : MlpCifar.fetchCode MlpCifar.dhB 8192 under ((Run 0 8192))
 
-theorem fetchDh_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.dhB 8192 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry fetchAdj : MlpCifar.fetchCode MlpCifar.adjB 8192 under ((Run 0 8192))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchDh_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 8192) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dhB 8192 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dhB 8192 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry fetchDw1 : MlpCifar.fetchCode MlpCifar.dw1B 3145728 under ((Run 0 3145728))
 
-theorem fetchAdj_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.adjB 8192 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry fetchDw2 : MlpCifar.fetchCode MlpCifar.dw2B 32768 under ((Run 0 32768))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchAdj_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 8192) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.adjB 8192 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.adjB 8192 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry fetchW1 : MlpCifar.fetchCode MlpCifar.w1B 3145728 under ((Run 0 3145728))
 
-theorem fetchDw1_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.dw1B 3145728 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry fetchW2 : MlpCifar.fetchCode MlpCifar.w2B 32768 under ((Run 0 32768))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchDw1_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 3145728) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dw1B 3145728 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dw1B 3145728 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry runFwd : MlpCifar.runSeq MlpCifar.fwdSteps under ((Run 0 0))
 
-theorem fetchDw2_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.dw2B 32768 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry runBwd : MlpCifar.runSeq MlpCifar.bwdSteps under ((Run 0 0))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchDw2_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 32768) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dw2B 32768 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dw2B 32768 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry runSoftmax : MlpCifar.launchSlot 3 MlpCifar.B under ((Run 0 0))
 
-theorem fetchW1_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.w1B 3145728 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry uploadBias : MlpCifar.uploadCode MlpCifar.biasB (MlpCifar.C * 4) under ((Run 128 0))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchW1_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 3145728) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.w1B 3145728 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.w1B 3145728 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry fetchDlog : MlpCifar.fetchCode MlpCifar.dlogB (MlpCifar.B * MlpCifar.C * 4) under ((Run 0 1024))
 
-theorem fetchW2_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.w2B 32768 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry runFwdBlas : MlpCifar.runMixed MlpCifar.fwdBlasSteps under ((Run 0 0))
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchW2_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 32768) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.w2B 32768 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.w2B 32768 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem runFwd_fine : Fine (emitGo (MlpCifar.runSeq MlpCifar.fwdSteps : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem runFwd_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.fwdSteps : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.fwdSteps : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem runBwd_fine : Fine (emitGo (MlpCifar.runSeq MlpCifar.bwdSteps : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem runBwd_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.bwdSteps : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.bwdSteps : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem runSoftmax_fine : Fine (emitGo (MlpCifar.launchSlot 3 MlpCifar.B : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem runSoftmax_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.launchSlot 3 MlpCifar.B : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.launchSlot 3 MlpCifar.B : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem uploadBias_fine : Fine (emitGo (MlpCifar.uploadCode MlpCifar.biasB (MlpCifar.C * 4) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem uploadBias_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 128 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.uploadCode MlpCifar.biasB (MlpCifar.C * 4) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.uploadCode MlpCifar.biasB (MlpCifar.C * 4) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem fetchDlog_fine : Fine (emitGo (MlpCifar.fetchCode MlpCifar.dlogB (MlpCifar.B * MlpCifar.C * 4) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem fetchDlog_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 1024) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dlogB (MlpCifar.B * MlpCifar.C * 4) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.fetchCode MlpCifar.dlogB (MlpCifar.B * MlpCifar.C * 4) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem runFwdBlas_fine : Fine (emitGo (MlpCifar.runMixed MlpCifar.fwdBlasSteps : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem runFwdBlas_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.fwdBlasSteps : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.fwdBlasSteps : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem runBwdBlas_fine : Fine (emitGo (MlpCifar.runMixed MlpCifar.bwdBlasSteps : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem runBwdBlas_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : (Run 0 0) w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.bwdBlasSteps : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.bwdBlasSteps : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry runBwdBlas : MlpCifar.runMixed MlpCifar.bwdBlasSteps under ((Run 0 0))
 
 end MlpCifarSafe2
 

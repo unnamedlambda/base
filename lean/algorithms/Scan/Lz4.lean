@@ -138,10 +138,7 @@ def lz4Surface : Surface :=
       , (`Lz4Whole.shipped64_run_correct, [`Lz4Ship.LayoutOK])
         -- …and applied to concrete addresses and a concrete memory, so the
         -- contract cannot be silently unsatisfiable
-      , (`Lz4Whole.run_correct_witness, [])
-        -- the same, at the emitted program's own launch count and grid
-      , (`Lz4Whole.shipped32_run_at_emitted, [`Lz4Ship.LayoutOK, `Eq])
-      , (`Lz4Whole.shipped64_run_at_emitted, [`Lz4Ship.LayoutOK, `Eq]) ]
+      , (`Lz4Whole.run_correct_witness, []) ]
     reachedExempt :=
       -- named in a `simp only` list where it never fires, so it is live at
       -- ELABORATION and absent from the proof term.  Reachability is computed
@@ -197,8 +194,8 @@ def roots : List Name :=
   , `Lz4Interleave.halt_after_272
   , `Lz4Interleave.pc272_unique
   , `Lz4Interleave.launchAgrees_of_confined
-    -- …and the model those host facts are read through: sound on the block
-    -- `launchesOf` starts from, at both shipped geometries
+    -- the block model `Clif.launchesOf` reads a host program through: sound on
+    -- the entry block of the emitted one, at both shipped geometries
   , `Lz4NonVacuity.warp32_entry_sound
   , `Lz4NonVacuity.warp32_entry_arg
   , `Lz4NonVacuity.warp32_entry_size
@@ -206,22 +203,9 @@ def roots : List Name :=
   , `Lz4NonVacuity.warp64_entry_ok
   , `Lz4NonVacuity.warp32_blocks_ty_ok
   , `Lz4NonVacuity.warp64_blocks_ty_ok
-    -- the emitted HOST program: what device operations it performs, and that the
-    -- launch geometry is the one the kernel proof assumes
-  , `Lz4Host.host_ops32
-  , `Lz4Host.host_ops64
-  , `Lz4Host.host_grid_is_numBlk32
-  , `Lz4Host.host_grid_is_numBlk64
-  , `Lz4Host.host_calls32
-  , `Lz4Host.host_calls64
-  , `Lz4Host.host_single_allocation
+    -- the emitted HOST program: both kernel parameters are bound to one buffer
+    -- (the calls it makes are `Lz4CompSafe.warp15_calls`, in `Ship.Lz4Comp`)
   , `Lz4Host.bind_table_same_buffer
-  , `Lz4Host.host_loop_is_rLaunches32
-  , `Lz4Host.host_loop_is_rLaunches64
-  , `Lz4Host.host_launch_in_loop_body32
-  , `Lz4Host.host_launch_in_loop_body64
-  , `Lz4Host.hostShape32
-  , `Lz4Host.hostShape64
     -- where the kernel can touch global memory at all, enumerated from the
     -- shipped program, so `KernelConfined` is a located obligation
   , `Lz4Sites.reads_at_site
@@ -329,17 +313,8 @@ def roots : List Name :=
   , `Lz4Whole.shipped32_run_correct
   , `Lz4Whole.shipped64_run_correct
   , `Lz4Whole.run_correct_witness
-    -- …and the launch count and grid the run is stated at, read out of the
-    -- emitted CLIF rather than taken from the generator's constants
-  , `Lz4Whole.emittedLaunches32
-  , `Lz4Whole.emittedLaunches64
-  , `Lz4Whole.emittedGrid32
-  , `Lz4Whole.emittedGrid64
-  , `Lz4Whole.shipped32_run_at_emitted
-  , `Lz4Whole.shipped64_run_at_emitted
     -- the ledger itself: this fails to elaborate if a named theorem moves
   , `Lz4Assumptions.anchors
-  , `Lz4Assumptions.hostAnchors
   ]
 
 end Lz4Scan
@@ -351,27 +326,7 @@ end Lz4Scan
 -- to the measured cost to still be a canary if that ever stops being true.
 /-- Claims that rest on the compiler, via `native_decide`. -/
 def nativeRoster : List Name :=
-  [ `Lz4Host.host_ops32
-   , `Lz4Host.host_ops64
-   , `Lz4Host.host_grid_is_numBlk32
-   , `Lz4Host.host_grid_is_numBlk64
-   , `Lz4Host.host_calls32
-   , `Lz4Host.host_calls64
-   , `Lz4Host.host_single_allocation
-   , `Lz4Host.host_loop_is_rLaunches32
-   , `Lz4Host.host_loop_is_rLaunches64
-   , `Lz4Host.host_launch_in_loop_body32
-   , `Lz4Host.host_launch_in_loop_body64
-   , `Lz4Host.hostShape32
-   , `Lz4Host.hostShape64
-   , `Lz4Whole.emittedLaunches32
-   , `Lz4Whole.emittedLaunches64
-   , `Lz4Whole.emittedGrid32
-   , `Lz4Whole.emittedGrid64
-   , `Lz4Whole.shipped32_run_at_emitted
-   , `Lz4Whole.shipped64_run_at_emitted
-   , `Lz4Assumptions.hostAnchors
-   , `Lz4NonVacuity.warp32_entry_sound
+  [ `Lz4NonVacuity.warp32_entry_sound
    , `Lz4NonVacuity.warp32_entry_arg
    , `Lz4NonVacuity.warp32_entry_size
    , `Lz4NonVacuity.warp32_entry_ok

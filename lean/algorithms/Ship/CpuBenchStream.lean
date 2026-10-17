@@ -19,16 +19,7 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace CpuBenchSafe
 
-theorem stream_fine : Fine (emitGo (do CpuBench.answer CpuBench.outCopy (CpuBench.copySimd (← CpuBench.array 3)) : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem stream_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
-    (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outCopy (CpuBench.copySimd (← CpuBench.array 3)) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (do CpuBench.answer CpuBench.outCopy (CpuBench.copySimd (← CpuBench.array 3)) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry stream : (do CpuBench.answer CpuBench.outCopy (CpuBench.copySimd (← CpuBench.array 3))) under Run dataLen outLen
 
 end CpuBenchSafe
 

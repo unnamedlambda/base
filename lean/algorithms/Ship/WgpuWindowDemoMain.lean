@@ -32,21 +32,9 @@ theorem WindowDemo_main_fine :
     Fine (emitGo (WindowDemo.mainBody : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem WindowDemo_main_display_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoMainOn true w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry WindowDemo_main_display : WindowDemo.mainBody under (WindowDemoMainOn true)
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem WindowDemo_main_headless_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoMainOn false w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry WindowDemo_main_headless : WindowDemo.mainBody under (WindowDemoMainOn false)
 
 /-- **The game neither misuses a call nor faults**, whether or not there is a display. -/
 theorem WindowDemo_main_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)

@@ -57,8 +57,9 @@ import all Init.Data.List.Sort.Basic
     Its placement clause is an equation, `outPtr = inPtr + totIn`, both halves of
     which are facts about the shipped program: the kernel computes its output base
     from its input base (`prologueInstrs` index 1), and the host makes ONE
-    allocation bound to both parameters (`Lz4Host.host_single_allocation`,
-    `bind_table_same_buffer`).  `Lz4NonVacuity.layoutOK_of_alloc` derives every
+    allocation bound to both parameters (every run makes one
+    `cudaCreateBuffer`, `Lz4CompSafe.warp15_calls` in `Ship.Lz4Comp`; both
+    bind slots name it, `Lz4Host.bind_table_same_buffer`).  `Lz4NonVacuity.layoutOK_of_alloc` derives every
     per-warp clause from that one equation.  What remains is that
     `cudaCreateBuffer n` yields `n` contiguous addressable bytes — row 5.
 
@@ -73,18 +74,17 @@ import all Init.Data.List.Sort.Basic
   (`launches_correct`) take it — they are stated about any run.  At the shipped
   geometries it is a conclusion, built by `Lz4Interleave.launchesTo_of_layout`.
 
-  ## Two endpoints, and what each costs
+  ## The launch count and the grid
 
-  They differ only in where the launch count and the warp bound come from.
-
-  * `shipped32_run_correct` uses `rLaunches` and `numBlk`, the generator's own
-    constants.  It stays inside the three ordinary axioms.
-  * `shipped32_run_at_emitted` uses the trip count and grid read back out of the
-    emitted CLIF, so a generator change that altered either would break it.  That
-    costs the Lean compiler: recovering device operations from a CLIF program is
-    `native_decide`.  `Lz4Assumptions.hostAnchors` is kept separate from
-    `anchors` for the same reason, and `Lz4Scan` names every claim that reaches
-    it.
+  `shipped32_run_correct` is stated at `rLaunches` launches and `numBlk` warps,
+  the generator's own constants.  That the host program launches exactly that
+  many times on exactly that grid is `Lz4CompSafe.warp15_calls` and
+  `warp16_calls` (`Ship.Lz4Comp`): every run of the emitted body that ends
+  makes the calls `Lz4CompSafe.warpCalls` admits, a pattern written with the
+  same `rLaunches` and `WP.gridX`, so a generator change that altered either
+  breaks it.  It is proven of runs, by the checker; what it rests on beyond the
+  three ordinary axioms is the binding table's offset, a number the compiler
+  computes because the kernel cannot serialize the PTX text to check it.
 
   ## Known gaps that are not hypotheses
 
@@ -142,6 +142,9 @@ structure Anchors where
   /-- The payload image and the offsets derived from it agree. -/
   payloadLen : ∀ w : WP, (warpPayloadDSL w).length = w.bindOff + 8
   payloadFits : ∀ w : WP, (warpPayloadDSL w).length ≤ w.memSize
+  /-- Both bind slots of the launch name buffer 0. -/
+  bindTable : ∀ w : WP, ∃ pre : List UInt8, pre.length = w.bindOff ∧
+    warpPayloadDSL w = pre ++ (AlgorithmLib.uint32ToBytes 0 ++ AlgorithmLib.uint32ToBytes 0)
 
 def anchors : Anchors :=
   { shipped32   := shipped32_correct
@@ -150,20 +153,7 @@ def anchors : Anchors :=
     whole64     := fun i o s g h => Lz4Whole.shipped64_run_correct i o s g h
     disjoint    := warp_regions_disjoint
     payloadLen  := payload_length
-    payloadFits := payload_fits }
-
-/-- **The host program's shape, anchored separately.**
-
-    Kept out of `Anchors` because reading device operations back out of the
-    emitted CLIF is `native_decide` — `Lz4Scan` reports both of these as reaching
-    the Lean compiler.  `anchors` stays inside the three ordinary axioms, and
-    what costs the compiler is visible as its own value. -/
-structure HostAnchors where
-  shape32 : Lz4Host.HostShape 15
-  shape64 : Lz4Host.HostShape 16
-
-def hostAnchors : HostAnchors :=
-  { shape32 := Lz4Host.hostShape32
-    shape64 := Lz4Host.hostShape64 }
+    payloadFits := payload_fits
+    bindTable   := Lz4Host.bind_table_same_buffer }
 
 end Lz4Assumptions

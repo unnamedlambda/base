@@ -142,10 +142,11 @@ theorem Rewritten.copyIn (m : Mem) (a : UInt64) (src : ByteArray) :
   | none => exact Rewritten.refl m
   | some m' => exact Rewritten.of_eq (copyIn_frozen h) (copyIn_sizes_eq h)
 
-/-- **What a call of the engine's own libraries leaves**: every lifecycle
-    part, memory rewritten in place, each handle held but the one it closes,
-    and the handle an open answers. -/
+/-- **What a call of the engine's own libraries leaves**: the observations
+    made so far, every lifecycle part, memory rewritten in place, each handle
+    held but the one it closes, and the handle an open answers. -/
 structure LibStep (e : Ext) (bits : List UInt64) (w : World) (r : Option V) (w' : World) : Prop where
+  obs : w'.obs = w.obs
   dev : w'.dev = w.dev
   lmdb : w'.lmdb = w.lmdb
   win : w'.win = w.win
@@ -286,7 +287,7 @@ theorem wl_step {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := wlCall_of h
   obtain ⟨wl, inp, he⟩ := wlEffect_shape c w
   have hwl : ((wlEffect c w).2).wl = wl := by rw [he]
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_⟩
   · intro k a hk hl
     cases k with
     | window =>
@@ -397,7 +398,7 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
     (h : serialCall f bits w = some (r, w')) : LibStep (.serial f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := serialCall_of h
   obtain ⟨ser, he⟩ := serEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_⟩
   · intro k a hk hl
     cases k with
     | port =>
@@ -506,7 +507,7 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
     (h : usbCall f bits w = some (r, w')) : LibStep (.usb f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := usbCall_of h
   obtain ⟨usb, he⟩ := usbEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_⟩
   · intro k a hk hl
     cases k with
     | usbDevice =>
@@ -547,7 +548,7 @@ theorem cpu_step {f : CpuFn} {bits : List UInt64} {w : World} {r : Option V} {w'
   split at h
   · cases h
   · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl, ?_⟩
+    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl, ?_⟩
     intro k x hk; simp [Ext.opens] at hk
 
 -- ---------------------------------------------------------------------------
@@ -557,7 +558,7 @@ theorem cpu_step {f : CpuFn} {bits : List UInt64} {w : World} {r : Option V} {w'
 /-- A call that only rewrites memory and opens nothing. -/
 theorem LibStep.of_mem {e : Ext} {bits : List UInt64} {w : World} {r : Option V} {m : Mem}
     (hm : Rewritten w.mem m) (ho : e.opens = none) : LibStep e bits w r { w with mem := m } :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hm, fun k _ _ hl => by cases k <;> exact hl,
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hm, fun k _ _ hl => by cases k <;> exact hl,
     fun k _ hk => by rw [ho] at hk; cases hk⟩
 
 theorem inSpan_iff (a b : UInt64) :
@@ -623,12 +624,12 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     · cases h
     split at h
     · cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun k _ _ hl => hl, ?_⟩
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun k _ _ hl => hl, ?_⟩
       intro k x _ hx h0
       exact (answer_zero rfl hx h0).elim
     · rename_i hz hroom
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_⟩,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_⟩,
         fun k a _ hl => ?_, ?_⟩
       · simp only [Mem.sizes, Mem.region, ByteArray.size_append]; omega
       · cases k
@@ -650,7 +651,7 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
       exact LibStep.of_mem (Rewritten.refl _) rfl
     · obtain ⟨⟨off, n⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq rfl (funext fun r => by cases r <;> rfl),
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq rfl (funext fun r => by cases r <;> rfl),
         fun k a hk hl => ?_, ?_⟩
       · cases k
         all_goals first | exact hl | exact absurd rfl hk

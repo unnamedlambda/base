@@ -882,6 +882,178 @@ def extKeepsA (e : Ext) (as : List AV) (f : Fact) : Bool :=
       | none => false
   | _ => Contracts.extKeeps e [] f
 
+def preCudaLaunchNamedOnStream (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, kp, np, nb, bp, _, _, _, _, _, _, sid] =>
+      cudaB S c && S.contains .oracles && S.contains (.part .capturing false) && cstrB S kp &&
+        cstrB S np && streamReady S sid &&
+        (match nb.bits with
+         | some n => memN S bp (4 * (asI32 n).toNat)
+         | none => false)
+  | _ => false
+
+def preCudaUploadAsync (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
+  match as with
+  | [c, _, s, n, sid] =>
+      cudaB S c && S.contains (.part .capturing false) && memBR S rb 2 3 s n && streamReady S sid
+  | _ => false
+
+def preCudaUploadOffsetAsync (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
+  match as with
+  | [c, _, _, s, n, sid] =>
+      cudaB S c && S.contains (.part .capturing false) && memBR S rb 3 4 s n && streamReady S sid
+  | _ => false
+
+def preCudaDownloadAsync (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
+  match as with
+  | [c, _, d, n, sid] =>
+      cudaB S c && S.contains (.part .capturing false) && memBR S rb 2 3 d n && streamReady S sid
+  | _ => false
+
+def preCublasSgemvOnStream (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, tr, m, n, _, a, x, _, y, sid] =>
+      cudaB S c && S.contains (.part .capturing false) && S.contains .oracles && streamReady S sid &&
+        (match tr.bits, m.bits, n.bits, a.bits, x.bits, y.bits with
+         | some tr, some m, some n, some a, some x, some y =>
+             match devBufOf S a, devBufOf S x, devBufOf S y with
+             | some na, some nx, some ny =>
+                 decide (0 < asI32 m) && decide (0 < asI32 n) &&
+                   decide (4 * ((asI32 m).toNat * (asI32 n).toNat) ≤ na.toNat) &&
+                   decide (4 * (if asI32 tr != 0 then (asI32 m).toNat else (asI32 n).toNat) ≤ nx.toNat) &&
+                   decide (4 * (if asI32 tr != 0 then (asI32 n).toNat else (asI32 m).toNat) ≤ ny.toNat)
+             | _, _, _ => false
+         | _, _, _, _, _, _ => false)
+  | _ => false
+
+def preCublasSgemmOnStream (S : TState) (as : List AV) : Bool :=
+  match as, allBits as with
+  | [c, _, _, _, _, _, _, _, _, _, _, _, _, _, _, sid, _, _, _, _, _, _],
+    some [_, ta, tb, m, n, k, _, a, sa, b, sb, _, cc, sc, batch, _, oa, ob, oc, la, lb, lc] =>
+      cudaB S c && S.contains (.part .capturing false) && S.contains .oracles && streamReady S sid &&
+        (match devBufOf S a, devBufOf S b, devBufOf S cc with
+         | some na, some nb, some nc =>
+             gemmStridedFitsN 4 4 4 ta tb m n k sa sb sc batch oa ob oc la lb lc na.toNat nb.toNat nc.toNat
+         | _, _, _ => false)
+  | _, _ => false
+
+def preCublasGemmStridedBatchedExBf16 (S : TState) (as : List AV) : Bool :=
+  match as, allBits as with
+  | [c, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _],
+    some [_, ta, tb, m, n, k, _, a, sa, b, sb, _, cc, sc, batch, oa, ob, oc, la, lb, lc] =>
+      cudaB S c && S.contains (.part .capturing false) && S.contains .oracles && S.contains .devSeq &&
+        (match devBufOf S a, devBufOf S b, devBufOf S cc with
+         | some na, some nb, some nc =>
+             gemmStridedFitsN 2 2 4 ta tb m n k sa sb sc batch oa ob oc la lb lc na.toNat nb.toNat nc.toNat
+         | _, _, _ => false)
+  | _, _ => false
+
+/-- `gemmBf16Fits` on buffer sizes. -/
+def gemmBf16FitsN (ta tb m n k oa ob oc la lb lc : UInt64) (A B C : Nat) : Bool :=
+  let M := (asI32 m).toNat
+  let N := (asI32 n).toNat
+  let K := (asI32 k).toNat
+  let ra := if asI32 ta != 0 then K else M
+  let ca := if asI32 ta != 0 then M else K
+  let rb := if asI32 tb != 0 then N else K
+  let cb := if asI32 tb != 0 then K else N
+  let lda := if asI32 la != 0 then (asI32 la).toNat else ra
+  let ldb := if asI32 lb != 0 then (asI32 lb).toNat else rb
+  let ldc := if asI32 lc != 0 then (asI32 lc).toNat else M
+  decide (ra ≤ lda) && decide (rb ≤ ldb) && decide (M ≤ ldc)
+    && decide (2 * ((asI64 oa).toNat + colMajorSpan ra ca lda) ≤ A)
+    && decide (2 * ((asI64 ob).toNat + colMajorSpan rb cb ldb) ≤ B)
+    && decide (4 * ((asI64 oc).toNat + colMajorSpan M N ldc) ≤ C)
+
+theorem gemmBf16Fits_eq (ta tb m n k oa ob oc la lb lc : UInt64) (A B C : ByteArray) :
+    gemmBf16Fits ta tb m n k oa ob oc la lb lc A B C =
+      gemmBf16FitsN ta tb m n k oa ob oc la lb lc A.size B.size C.size := rfl
+
+def preCublasGemmExBf16 (S : TState) (as : List AV) : Bool :=
+  match as, allBits as with
+  | [c, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _],
+    some [_, ta, tb, m, n, k, _, a, b, _, cc, oa, ob, oc, la, lb, lc] =>
+      cudaB S c && S.contains (.part .capturing false) && S.contains .oracles && S.contains .devSeq &&
+        (match devBufOf S a, devBufOf S b, devBufOf S cc with
+         | some na, some nb, some nc =>
+             gemmBf16FitsN ta tb m n k oa ob oc la lb lc na.toNat nb.toNat nc.toNat
+         | _, _, _ => false)
+  | _, _ => false
+
+def preStdinReadline (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [b, dO, n] =>
+      match b.bits, dO.bits, n.bits with
+      | some base, some d, some k => k != 0 && memN S (.known (.sc .i64 (base + d))) k.toNat
+      | _, _, _ => false
+  | _ => false
+
+def preThreadCleanup (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [s] => memN S s 8 && slotOk S .thread threadCtx s
+  | _ => false
+
+def preFileCreateDirAll (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [p] => pathB S p
+  | _ => false
+
+def preFileWriteFromPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
+  match as with
+  | [pp, s, _, n] => pathB S pp && memBR S rb 1 3 s n
+  | _ => false
+
+def preStdoutWrite (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [b, so, n] =>
+      match b.bits, so.bits, n.bits with
+      | some base, some s, some k => memN S (.known (.sc .i64 (base + s))) k.toNat
+      | _, _, _ => false
+  | _ => false
+
+def preCudaFreeBuffer (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, _] => cudaB S c && readyIn S defaultParty
+  | _ => false
+
+def preCublasPtrArray (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, _, _, _, _] => cudaB S c && readyIn S defaultParty
+  | _ => false
+
+/-- An allocation that fits what is left of page-locked memory, by the bound
+    the typestate has on what is used. -/
+def preCudaPinnedAlloc (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, n] =>
+      cudaB S c &&
+        (match n.bits with
+         | some k => S.any fun
+             | .pinnedUsed u => decide (u + 63 + k.toNat ≤ regionSpan.toNat)
+             | _ => false
+         | none => false)
+  | _ => false
+
+def preGpuUploadPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
+  match as with
+  | [c, _, s, n] => ctxB S .gpu gpuCtx c && memBR S rb 2 3 s n
+  | _ => false
+
+def preGpuDownloadPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
+  match as with
+  | [c, _, _, d, n] => ctxB S .gpu gpuCtx c && memBR S rb 3 4 d n
+  | _ => false
+
+def preThreadInit (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [s] => S.contains (.part .thread false) && memN S s 8
+  | _ => false
+
+def preThreadJoin (S : TState) (as : List AV) : Bool :=
+  match as with
+  | [c, _] => ctxB S .thread threadCtx c
+  | _ => false
+
 /-- A call whose contract asks nothing but its arguments' number. -/
 def preArity (n : Nat) (as : List AV) : Bool := as.length == n
 
@@ -902,7 +1074,7 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .cudaEventDestroy | .cudaGraphDestroy | .cudaPinnedFree | .cudaPinnedPtr => preCtxN S 2 false as
   | .cudaGraphUpload => preCtxN S 3 false as
   | .cudaPinnedPtrAt => preCtxN S 4 false as
-  | .cudaGraphBeginCapture | .cudaStreamDestroy | .cudaStreamSync => preCtxN S 2 true as
+  | .cudaGraphBeginCapture | .cudaGraphEndCapture | .cudaStreamDestroy | .cudaStreamSync => preCtxN S 2 true as
   | .cudaEventRecord => preCtxN S 3 true as
   | .cudaInit => preCudaInit S as
   | .cudaCleanup => preCudaCleanup S as
@@ -948,6 +1120,26 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .htInsert => preHtInsert S as
   | .htLookup => preHtLookup S as
   | .lmdbCursorScan => preLmdbCursorScan S as
+  | .fileCreateDirAll => preFileCreateDirAll S as
+  | .fileWriteFromPtr => preFileWriteFromPtr S rb as
+  | .stdoutWrite => preStdoutWrite S as
+  | .cudaFreeBuffer => preCudaFreeBuffer S as
+  | .cublasPtrArray => preCublasPtrArray S as
+  | .cudaPinnedAlloc => preCudaPinnedAlloc S as
+  | .gpuUploadPtr => preGpuUploadPtr S rb as
+  | .gpuDownloadPtr => preGpuDownloadPtr S rb as
+  | .threadInit => preThreadInit S as
+  | .threadJoin => preThreadJoin S as
+  | .stdinReadline => preStdinReadline S as
+  | .threadCleanup => preThreadCleanup S as
+  | .cudaLaunchNamedOnStream => preCudaLaunchNamedOnStream S as
+  | .cudaUploadAsync => preCudaUploadAsync S rb as
+  | .cudaUploadOffsetAsync => preCudaUploadOffsetAsync S rb as
+  | .cudaDownloadAsync => preCudaDownloadAsync S rb as
+  | .cublasSgemvOnStream => preCublasSgemvOnStream S as
+  | .cublasSgemmOnStream => preCublasSgemmOnStream S as
+  | .cublasGemmStridedBatchedExBf16 => preCublasGemmStridedBatchedExBf16 S as
+  | .cublasGemmExBf16 => preCublasGemmExBf16 S as
   | _ => false
 
 /-- **What a device call answers, by the facts**: a stream's or an event's

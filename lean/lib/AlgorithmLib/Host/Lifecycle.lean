@@ -479,11 +479,13 @@ theorem pinned_cudaDownloadAsync {bits : List UInt64} {w : World} {r : Option V}
               rw [sizes_with_busy, copyIn_sizes_eq hm0, forParty_sizes]
   · cases h
 
-/-- **What a call to `f` keeps of the world**, and what it answers: the parts it
-    does not move, the kernel and cuBLAS oracles, the size of every region but
-    the pinned one, the pinned one's too unless the call allocates there, and a
-    scalar of the type `f`'s signature gives. -/
+/-- **What a call to `f` keeps of the world**, and what it answers: the
+    observations made so far, the parts it does not move, the kernel and cuBLAS
+    oracles, the size of every region but the pinned one, the pinned one's too
+    unless the call allocates there, and a scalar of the type `f`'s signature
+    gives. -/
 structure Keeps (f : IR.Ffi) (r : Option V) (w w' : World) : Prop where
+  obs : w'.obs = w.obs
   parts : KeepsParts f w w'
   oracles : w'.kernel = w.kernel ∧ w'.vendor = w.vendor
   rooms : KeepsRooms w w'
@@ -495,9 +497,15 @@ macro "scalar_close" : tactic => `(tactic| (
   intro v hv
   cases hv <;> exact ⟨_, rfl⟩))
 
+/-- Close one answer of a contract: the observations as they were. -/
+macro "obs_close" : tactic => `(tactic| first
+  | rfl
+  | (unfold World.pump; split <;> rfl))
+
 /-- Close `Keeps` at one answer of a contract. -/
 macro "keeps_close" : tactic => `(tactic| (
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+  · obs_close
   · part_close
   · oracle_close
   · room_close
@@ -519,10 +527,11 @@ macro "keeps_entry " h:ident : tactic => `(tactic| (
 set_option maxHeartbeats 4000000 in
 theorem keeps_cudaDownloadAsync {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : callBits .cudaDownloadAsync bits w = some (r, w')) : Keeps .cudaDownloadAsync r w w' := by
-  refine ⟨?_, ?_, rooms_cudaDownloadAsync h, fun _ => pinned_cudaDownloadAsync h, ?_⟩
+  refine ⟨?_, ?_, ?_, rooms_cudaDownloadAsync h, fun _ => pinned_cudaDownloadAsync h, ?_⟩
   all_goals
     change ffiCudaDownloadAsync bits w = some (r, w') at h
     unfold ffiCudaDownloadAsync at h
+  · walk h; all_goals obs_close
   · walk h; all_goals part_close
   · walk h; all_goals oracle_close
   · walk h; all_goals scalar_close
@@ -551,6 +560,11 @@ elab "derive_keeps" : command => do
       match f, h with $alts:matchAlt*))
 
 derive_keeps
+
+/-- **No call adds to or drops from the observations**: a call is observed
+    where it is made, before it runs. -/
+theorem callBits_obs (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : callBits f bits w = some (r, w')) : w'.obs = w.obs := (callBits_keeps f h).obs
 
 /-- **Every call keeps every part it does not move.** -/
 theorem callBits_parts (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}

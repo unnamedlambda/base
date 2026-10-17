@@ -37,65 +37,15 @@ abbrev WindowDemoTestIO (dl ol : UInt64) : World → Prop := Contracts.TState.ho
 theorem WindowDemo_layout : WindowDemo.layoutMeta.totalSize = 930008 ∧ WindowDemo.f.shader.offset = 80 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
-theorem WindowDemo_renderPixel_fine :
-    Fine (emitGo (WindowDemo.testRenderPixel : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry WindowDemo_renderPixel : WindowDemo.testRenderPixel under WindowDemoTestIO dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem WindowDemo_renderPixel_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testRenderPixel : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testRenderPixel : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry WindowDemo_quitOnClose : WindowDemo.testQuitOnClose under WindowDemoTestIO dataLen outLen
 
-theorem WindowDemo_quitOnClose_fine :
-    Fine (emitGo (WindowDemo.testQuitOnClose : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry WindowDemo_moveRight : WindowDemo.testMoveRight under WindowDemoTestIO dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem WindowDemo_quitOnClose_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testQuitOnClose : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry WindowDemo_moveLeft : WindowDemo.testMoveLeft under WindowDemoTestIO dataLen outLen
 
-theorem WindowDemo_moveRight_fine :
-    Fine (emitGo (WindowDemo.testMoveRight : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem WindowDemo_moveRight_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveRight : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveRight : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem WindowDemo_moveLeft_fine :
-    Fine (emitGo (WindowDemo.testMoveLeft : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem WindowDemo_moveLeft_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveLeft : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveLeft : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem WindowDemo_moveUpClamp_fine :
-    Fine (emitGo (WindowDemo.testMoveUpClamp : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem WindowDemo_moveUpClamp_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoTestIO dataLen outLen w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveUpClamp : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.testMoveUpClamp : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry WindowDemo_moveUpClamp : WindowDemo.testMoveUpClamp under WindowDemoTestIO dataLen outLen
 
 -- WindowDemo: the game, on a display or on none
 

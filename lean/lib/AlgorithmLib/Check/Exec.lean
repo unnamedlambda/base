@@ -1,5 +1,5 @@
 module
-public import AlgorithmLib.Check.Rel
+public import AlgorithmLib.Check.Trace
 import all Init.Data.Repr
 @[expose] public section
 
@@ -10,7 +10,8 @@ import all Init.Data.Repr
 statement by its transfer function, a branch by both arms and a join, a loop by
 iterating one trip until the state it carries round stops changing. It answers
 what the body may end with — a state for falling off its end, and the states
-each `br` and `cont` leave with — or why it refuses.
+each `br` and `cont` leave with — and a pattern over the calls any run of it
+makes, or why it refuses.
 -/
 
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.Hoare
@@ -514,6 +515,21 @@ def absStmtsH (fo : Bool) (hist : List (Nat × Stmt)) (A : AS) : List Stmt → E
 
 def absStmts (fo : Bool) (A : AS) (ss : List Stmt) : Except String AS := absStmtsH fo [] A ss
 
+/-- The call a statement makes, as the state it runs from records it: each
+    argument's bits where the state knows them. -/
+def recOf (A : AS) : Stmt → List CallRec
+  | .call c args | .callVoid c args => [⟨c, args.map fun r => (A.get r).bits⟩]
+  | _ => []
+
+/-- The calls a straight run makes, in order, each recorded from the state its
+    statement runs from. -/
+def callRecs (fo : Bool) (A : AS) : List Stmt → List CallRec
+  | [] => []
+  | s :: ss =>
+      recOf A s ++ match absStmt fo A s with
+        | .ok A' => callRecs fo A' ss
+        | .error _ => []
+
 /-- Where a call's answer is one of two the contract tells apart, the state
     after it for each, from `A'`, the state after it: `fileRead`, asked for a
     known positive number of bytes, answers `-1` or at most that many. -/
@@ -599,25 +615,32 @@ def AS.beq (A B : AS) : Bool :=
     piece from the state written out. `fo`: whether the body may fault, so
     that only its calls are checked; `guess`: whether the run only guesses
     which carries step together, each loop guessing whether or not it is
-    refused without. -/
+    refused without. `tr`: whether the run records the calls of each straight
+    run; one that does not says only that it may make any. -/
 structure Cert where
   loops : List (List Nat × Carry) := []
   states : List (List Nat × AS) := []
   fo : Bool := false
   guess : Bool := false
+  tr : Bool := false
 
-instance : Append Cert := ⟨fun a b => ⟨a.loops ++ b.loops, a.states ++ b.states, a.fo, a.guess⟩⟩
+instance : Append Cert := ⟨fun a b => ⟨a.loops ++ b.loops, a.states ++ b.states, a.fo, a.guess, a.tr⟩⟩
 
 /-- What a region may end with, and the invariant each loop in it settled at:
     each `br` and `cont` with the state it leaves from and the slots it
-    passes. -/
+    passes. `tr` is a pattern over the calls a run of the region makes,
+    however it ends. `cnt`, of one trip of a loop: where the trip is counted
+    (`tripCnt`), the carry that counts, its bound, and the calls of the
+    condition prefix and of the body. -/
 structure AOut where
   ok : Option AS
   brk : List (Nat × AS × List R)
   cont : List (Nat × AS × List R)
   certs : Cert := {}
+  tr : Tr
+  cnt : Option (Nat × UInt64 × Tr × Tr) := none
 
-def AOut.none : AOut := ⟨Option.none, [], [], {}⟩
+def AOut.none : AOut := ⟨Option.none, [], [], {}, .never, Option.none⟩
 
 def Carry.join (a b : Carry) : Carry :=
   ⟨List.zipWith AV.join a.vals b.vals, factsMeet a.facts b.facts, List.zipWith Sym.join a.syms b.syms,
@@ -780,7 +803,8 @@ def settle (path : List Nat) (trip : Carry → Except String (List Carry × List
             if c'.beq c then
               match joinAll exits with
               | .error e => .error e
-              | .ok j => .ok ⟨j, out.brk, out.cont, { out.certs with loops := (path, c) :: out.certs.loops }⟩
+              | .ok j => .ok ⟨j, out.brk, out.cont, { out.certs with loops := (path, c) :: out.certs.loops },
+                  .star out.tr, out.cnt⟩
             else
               match n with
               | 0 => .error "loop invariant did not settle"
@@ -800,7 +824,8 @@ def checkLoop (path : List Nat) (trip : Carry → Except String (List Carry × L
         if backs.all (·.vals.length == ci.vals.length) && (backs.foldl Carry.join ci).beq ci then
           match joinAll exits with
           | .error e => .error e
-          | .ok j => .ok ⟨j, out.brk, out.cont, { out.certs with loops := (path, ci) :: out.certs.loops }⟩
+          | .ok j => .ok ⟨j, out.brk, out.cont, { out.certs with loops := (path, ci) :: out.certs.loops },
+              .star out.tr, out.cnt⟩
         else .error "the loop goes round with a state its invariant does not cover"
   else .error "the invariant given has a different number of carries"
 
@@ -886,9 +911,57 @@ def pin (cert : Cert) (path : List Nat) (A : AS) : Except String AS :=
     from `n0` it is bound from. -/
 def copySyms (n0 k : Nat) : List Sym := (List.range k).map fun i => { dfn := some (lin1 (n0 + i) 1) }
 
+/-- Whether slot `a` is, wherever `A` holds, slot `x` and one more, modulo
+    `2 ^ 64`. -/
+def stepsOne (A : AS) (a x : R) : Bool :=
+  let L := (A.ctx.foldKnown (A.ctx.deepen ivDepth (((lin1 a 1).sub (lin1 x 1)).sub (Lin.const 1)))).norm
+  decide (L.terms = []) && decide (L.k % 2 ^ 64 = 0)
+
+/-- Whether a loop that goes on while slot `x` is below a bound counts its
+    trips with it: the test exits when it fails, `x` is one of the carries,
+    neither the prefix nor the body leaves by a `br` or a `cont`, and the body
+    goes round with that carry, a 64-bit number, one more. -/
+def cntOk (l : Loop) (n0 k : Nat) (op ob : AOut) (x : R) : Bool :=
+  !l.exitOnTrue && op.brk.isEmpty && op.cont.isEmpty && ob.brk.isEmpty && ob.cont.isEmpty &&
+    decide (n0 ≤ x ∧ x < n0 + k) &&
+    (match ob.ok with
+     | some A2 => decide (x - n0 < l.cont.length) &&
+         decide ((A2.get (l.cont.getD (x - n0) 0)).scTy = some .i64) &&
+         stepsOne A2 (l.cont.getD (x - n0) 0) x
+     | none => true)
+
+/-- **A counted trip**: the loop goes on exactly while one carry is below a
+    bound `n` the state knows, and counts its trips with it (`cntOk`). Answers
+    the carry, the bound, and the calls of the prefix and of the body. -/
+def tripCnt (l : Loop) (n0 k : Nat) (op : AOut) (Ap : AS) (ob : AOut) : Option (Nat × UInt64 × Tr × Tr) :=
+  match Ap.get l.flag with
+  | .cmp .ult x y =>
+      match Ap.get y with
+      | .known (.sc .i64 n) => if cntOk l n0 k op ob x then some (x - n0, n, op.tr, ob.tr) else none
+      | _ => none
+  | _ => none
+
+/-- The calls of a loop whose trips are counted (`q`) and whose counting carry
+    is entered with a known number no larger than its bound: the prefix's and
+    the body's, as many times as the bound is above it, then the prefix's.
+    Otherwise `t`. -/
+def cntTr (A : AS) (l : Loop) (t : Tr) (q : Option (Nat × UInt64 × Tr × Tr)) : Tr :=
+  match q with
+  | some (j, n, P, B) =>
+      match A.get (l.init.getD j 0) with
+      | .known (.sc .i64 c0) =>
+          if j < l.init.length ∧ c0.toNat ≤ n.toNat then .seq (.rep (n.toNat - c0.toNat) (.seq P B)) P else t
+      | _ => t
+  | none => t
+
+/-- A loop's result with its calls counted where its trips are. -/
+def AOut.counted (o : AOut) (A : AS) (l : Loop) : AOut :=
+  ⟨o.ok, o.brk, o.cont, o.certs, cntTr A l o.tr o.cnt, Option.none⟩
+
 /-- One trip of a top-tested loop, from what its condition prefix ended with
     (`op`) and a way to run its body: the carries that go round again, the
-    states it leaves with, and the `br`s and `cont`s past it. -/
+    states it leaves with, and the `br`s and `cont`s past it; its calls are
+    the prefix's, then none or the body's. -/
 def loopTrip (l : Loop) (n0 k preEnd ab : Nat) (Y : List R) (c : Carry) (op : AOut)
     (runBody : AS → Except String AOut) : Except String (List Carry × List AS × AOut) :=
   let backs := conts0 op.cont Y c n0
@@ -896,13 +969,13 @@ def loopTrip (l : Loop) (n0 k preEnd ab : Nat) (Y : List R) (c : Carry) (op : AO
   let outB := depthDown op.brk
   let outC := depthDown op.cont
   match op.ok with
-  | none => .ok (backs, exits, ⟨none, outB, outC, op.certs⟩)
+  | none => .ok (backs, exits, ⟨none, outB, outC, op.certs, op.tr, Option.none⟩)
   | some Ap =>
       let exitT : List AS := match refine Ap l.flag l.exitOnTrue with
         | some Ax => [Ax.bindAt ab (l.exitR.map Ax.get) (l.exitR.map (exitSym Ax Y n0))]
         | none => []
       match refine Ap l.flag (!l.exitOnTrue) with
-      | none => .ok (backs, exits ++ exitT, ⟨none, outB, outC, op.certs⟩)
+      | none => .ok (backs, exits ++ exitT, ⟨none, outB, outC, op.certs, op.tr, Option.none⟩)
       | some Ag =>
           match runBody (Ag.bindAt preEnd ((List.range k).map fun i => Ag.get (n0 + i)) (copySyms n0 k)) with
           | .error e => .error e
@@ -911,7 +984,8 @@ def loopTrip (l : Loop) (n0 k preEnd ab : Nat) (Y : List R) (c : Carry) (op : AO
                 | some A2 => [backCarry A2 Y c n0 l.cont]
                 | none => []
               .ok (backs ++ conts0 ob.cont Y c n0 ++ fall, exits ++ exitT ++ brks0 ob.brk ab Y n0,
-                ⟨none, outB ++ depthDown ob.brk, outC ++ depthDown ob.cont, op.certs ++ ob.certs⟩)
+                ⟨none, outB ++ depthDown ob.brk, outC ++ depthDown ob.cont, op.certs ++ ob.certs,
+                  .seq op.tr (.alt (.lit []) ob.tr), tripCnt l n0 k op Ap ob⟩)
 
 /-- One trip of a bottom-tested loop, from what its body ended with: the
     carries that go round again where the back-edge test can say so, the
@@ -930,7 +1004,7 @@ def dloopTrip (l : DLoop) (n0 ab : Nat) (Y : List R) (c : Carry) (ob : AOut) : L
       | none => []
     | none => []
   (conts0 ob.cont Y c n0 ++ goes, brks0 ob.brk ab Y n0 ++ leaves,
-    ⟨none, depthDown ob.brk, depthDown ob.cont, ob.certs⟩)
+    ⟨none, depthDown ob.brk, depthDown ob.cont, ob.certs, ob.tr, Option.none⟩)
 
 /-- The state a bottom-tested loop is entered with: where it has a guard, what
     the guard saying go teaches; `none` where it cannot say go. -/
@@ -951,14 +1025,17 @@ def dSkip (A : AS) (l : DLoop) (ab : Nat) (Y : List R) : Option AS :=
 mutual
 
 /-- What a piece at `path` may end with, from `A`. A loop with an invariant in
-    `cert` is checked against it; one without is iterated until it settles. -/
+    `cert` is checked against it; one without is iterated until it settles. A
+    straight run's calls are the records of its statements, a branch's either
+    arm's, a loop's any number of its trips', or exactly as many as it makes
+    where they are counted. -/
 def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOut
   | .straight ss =>
       match absStmts cert.fo A ss with
       | .error e => .error e
-      | .ok A' => .ok ⟨some A', [], [], {}⟩
-  | .br d args => .ok ⟨none, [(d, A, args)], [], {}⟩
-  | .cont d args => .ok ⟨none, [], [(d, A, args)], {}⟩
+      | .ok A' => .ok ⟨some A', [], [], {}, if cert.tr then .lit (callRecs cert.fo A ss) else .any, Option.none⟩
+  | .br d args => .ok ⟨none, [(d, A, args)], [], {}, .lit [], Option.none⟩
+  | .cont d args => .ok ⟨none, [], [(d, A, args)], {}, .lit [], Option.none⟩
   | .ite m thn els thnR elsR =>
       let thnEnd := slotsOf A.len thn
       let joinAt := slotsOf thnEnd els
@@ -972,7 +1049,7 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
       | .ok ot, .ok oe =>
           match joinOpt (ot.ok.map fun A' => A'.bindAt joinAt (thnR.map A'.get))
               (oe.ok.map fun A' => A'.bindAt joinAt (elsR.map A'.get)) with
-          | .ok j => .ok ⟨j, ot.brk ++ oe.brk, ot.cont ++ oe.cont, ot.certs ++ oe.certs⟩
+          | .ok j => .ok ⟨j, ot.brk ++ oe.brk, ot.cont ++ oe.cont, ot.certs ++ oe.certs, .alt ot.tr oe.tr, Option.none⟩
           | .error e => .error e
       | .error e, _ => .error e
       | _, .error e => .error e
@@ -988,7 +1065,10 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
         | .ok op => loopTrip l n0 k preEnd ab Y c op fun Ab => execC ct (1 :: path) 0 Ab body
       let c0 : Carry := ⟨((l.init.map A.get).map AV.portable).map (AV.enrich A.facts), A.facts,
         l.init.map (closeSym A Y), l.init, certIvs cert path, []⟩
-      if l.init.length = k then runLoopIv cert path (tripOf cert) (tripOf { cert with fo := true, guess := true }) c0
+      if l.init.length = k then
+        match runLoopIv cert path (tripOf cert) (tripOf { cert with fo := true, guess := true }) c0 with
+        | .error e => .error e
+        | .ok o => .ok (o.counted A l)
       else .error "a loop entered with a different number of carries"
   | .dloop l body =>
       let n0 := A.len
@@ -997,7 +1077,7 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
       let Y := loopCands n0 body
       if l.init.length = k then
         match dEnter A l with
-        | none => .ok ⟨dSkip A l ab Y, [], [], {}⟩
+        | none => .ok ⟨dSkip A l ab Y, [], [], {}, .lit [], Option.none⟩
         | some Ae =>
             let tripOf := fun (ct : Cert) (c : Carry) =>
               match execC ct (0 :: path) 0 ((Ae.forgetHands.withFacts c.facts).bindAt n0 c.vals (c.headSyms n0)) body with
@@ -1008,14 +1088,16 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
             | .error e => .error e
             | .ok o =>
                 match joinOpt o.ok (dSkip A l ab Y) with
-                | .ok j => .ok ⟨j, o.brk, o.cont, o.certs⟩
+                | .ok j => .ok ⟨j, o.brk, o.cont, o.certs, o.tr, Option.none⟩
                 | .error e => .error e
       else .error "a loop entered with a different number of carries"
 
 /-- What a region whose pieces sit at `i :: base`, `(i + 1) :: base`, ... may
-    end with, from `A`. -/
+    end with, from `A`. Its calls are its first piece's and then the rest's;
+    where that piece may leave by a `br` or a `cont`, its alone or then the
+    rest's. -/
 def execC (cert : Cert) (base : List Nat) (i : Nat) (A0 : AS) : List Piece → Except String AOut
-  | [] => .ok ⟨some A0, [], [], {}⟩
+  | [] => .ok ⟨some A0, [], [], {}, .lit [], Option.none⟩
   | p :: ps =>
       match pin cert (i :: base) A0 with
       | .error e => .error e
@@ -1027,7 +1109,8 @@ def execC (cert : Cert) (base : List Nat) (i : Nat) (A0 : AS) : List Piece → E
               match execC cert (2 :: i :: base) (i + 1) C1 ps, execC cert (3 :: i :: base) (i + 1) C2 ps with
               | .ok o1, .ok o2 =>
                   match joinOpt o1.ok o2.ok with
-                  | .ok j => .ok ⟨j, o1.brk ++ o2.brk, o1.cont ++ o2.cont, here ++ o1.certs ++ o2.certs⟩
+                  | .ok j => .ok ⟨j, o1.brk ++ o2.brk, o1.cont ++ o2.cont, here ++ o1.certs ++ o2.certs,
+                      .seq .any (.alt o1.tr o2.tr), Option.none⟩
                   | .error e => .error e
               | .error e, _ => .error e
               | _, .error e => .error e
@@ -1036,11 +1119,13 @@ def execC (cert : Cert) (base : List Nat) (i : Nat) (A0 : AS) : List Piece → E
               | .error e => .error e
               | .ok o =>
                   match o.ok with
-                  | none => .ok ⟨none, o.brk, o.cont, here ++ o.certs⟩
+                  | none => .ok ⟨none, o.brk, o.cont, here ++ o.certs, o.tr, Option.none⟩
                   | some A' =>
                       match execC cert base (i + 1) A' ps with
                       | .error e => .error e
-                      | .ok o' => .ok ⟨o'.ok, o.brk ++ o'.brk, o.cont ++ o'.cont, here ++ o.certs ++ o'.certs⟩
+                      | .ok o' => .ok ⟨o'.ok, o.brk ++ o'.brk, o.cont ++ o'.cont, here ++ o.certs ++ o'.certs,
+                          if o.brk.isEmpty && o.cont.isEmpty then .seq o.tr o'.tr
+                          else .seq o.tr (.alt (.lit []) o'.tr), Option.none⟩
 
 end
 

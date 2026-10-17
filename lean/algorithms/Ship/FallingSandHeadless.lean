@@ -16,12 +16,6 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace WgpuSafe
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem FallingSand_main_headless_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : FallingSandMainOn false w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (FallingSand.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry FallingSand_main_headless : FallingSand.mainBody under (FallingSandMainOn false)
 
 end WgpuSafe

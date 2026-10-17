@@ -49,184 +49,40 @@ abbrev BackwardWideRun : World → Prop := Contracts.TState.holds
    .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_SGD_OFF) (BackwardWide.PTX_ADJ_OFF - BackwardWide.PTX_SGD_OFF),
    .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_ADJ_OFF) (BackwardWide.BIND_OFF - BackwardWide.PTX_ADJ_OFF)]
 
-theorem BackwardWide_load_fine : Fine (emitGo (BackwardWide.loadFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_load : BackwardWide.loadFn under BackwardWideLoad
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideLoad w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.loadFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.loadFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_run : BackwardWide.runFn under BackwardWideRun
 
-theorem BackwardWide_run_fine : Fine (emitGo (BackwardWide.runFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_fetch : BackwardWide.fetchFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_runDw : BackwardWide.runDwFn under BackwardWideRun
 
-theorem BackwardWide_fetch_fine : Fine (emitGo (BackwardWide.fetchFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_fetchDw : BackwardWide.fetchDwFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_runSiluBwd : BackwardWide.runSiluBwdFn under BackwardWideRun
 
-theorem BackwardWide_runDw_fine : Fine (emitGo (BackwardWide.runDwFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_runT : BackwardWide.runTFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runDw_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runDwFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runDwFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_runQ : BackwardWide.runQFn under BackwardWideRun
 
-theorem BackwardWide_fetchDw_fine : Fine (emitGo (BackwardWide.fetchDwFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_runS : BackwardWide.runSFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_fetchDw_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchDwFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchDwFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_runDxr : BackwardWide.runDxrFn under BackwardWideRun
 
-theorem BackwardWide_runSiluBwd_fine : Fine (emitGo (BackwardWide.runSiluBwdFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_fetchDxr : BackwardWide.fetchDxrFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runSiluBwd_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runSiluBwdFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runSiluBwdFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_runFwd : BackwardWide.runFwdFn under BackwardWideRun
 
-theorem BackwardWide_runT_fine : Fine (emitGo (BackwardWide.runTFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_runY : BackwardWide.runYFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runT_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runTFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runTFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_runDy : BackwardWide.runDyFn under BackwardWideRun
 
-theorem BackwardWide_runQ_fine : Fine (emitGo (BackwardWide.runQFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_runSgd : BackwardWide.runSgdFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runQ_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runQFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runQFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_fetchY : BackwardWide.fetchYFn under BackwardWideRun
 
-theorem BackwardWide_runS_fine : Fine (emitGo (BackwardWide.runSFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry BackwardWide_runAdj : BackwardWide.runAdjFn under BackwardWideRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runS_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runSFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runSFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_runDxr_fine : Fine (emitGo (BackwardWide.runDxrFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runDxr_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runDxrFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runDxrFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_fetchDxr_fine : Fine (emitGo (BackwardWide.fetchDxrFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_fetchDxr_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchDxrFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchDxrFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_runFwd_fine : Fine (emitGo (BackwardWide.runFwdFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runFwd_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runFwdFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runFwdFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_runY_fine : Fine (emitGo (BackwardWide.runYFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runY_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runYFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runYFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_runDy_fine : Fine (emitGo (BackwardWide.runDyFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runDy_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runDyFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runDyFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_runSgd_fine : Fine (emitGo (BackwardWide.runSgdFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runSgd_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runSgdFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runSgdFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_fetchY_fine : Fine (emitGo (BackwardWide.fetchYFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_fetchY_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchYFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.fetchYFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_runAdj_fine : Fine (emitGo (BackwardWide.runAdjFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runAdj_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runAdjFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runAdjFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem BackwardWide_runBwdAll_fine : Fine (emitGo (BackwardWide.runBwdAllFn : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem BackwardWide_runBwdAll_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runBwdAllFn : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runBwdAllFn : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BackwardWide_runBwdAll : BackwardWide.runBwdAllFn under BackwardWideRun
 
 end CudaSafe

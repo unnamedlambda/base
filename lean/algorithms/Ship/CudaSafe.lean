@@ -40,45 +40,13 @@ abbrev SiluWarpRun : World → Prop := Contracts.TState.holds
    .room .arena SiluWarp.MEM_SIZE, .room .out (SiluWarp.N * 4),
    .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat SiluWarp.PTX_OFF), .cstr (regionBase .arena + UInt64.ofNat SiluWarp.PTX_L_OFF)]
 
-theorem SiluWarp_load_fine : Fine (emitGo (SiluWarp.loadFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry SiluWarp_load : SiluWarp.loadFnCode under SiluWarpLoad
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem SiluWarp_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpLoad w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry SiluWarp_run : SiluWarp.runFnCode under SiluWarpRun
 
-theorem SiluWarp_run_fine : Fine (emitGo (SiluWarp.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry SiluWarp_runLoop : SiluWarp.runLoopFnCode under SiluWarpRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem SiluWarp_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem SiluWarp_runLoop_fine : Fine (emitGo (SiluWarp.runLoopFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem SiluWarp_runLoop_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runLoopFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.runLoopFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem SiluWarp_fetch_fine : Fine (emitGo (SiluWarp.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem SiluWarp_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SiluWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (SiluWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry SiluWarp_fetch : SiluWarp.fetchFnCode under SiluWarpRun
 
 -- WarpSumSq
 
@@ -90,35 +58,11 @@ abbrev WarpSumSqRun : World → Prop := Contracts.TState.holds
    .room .arena WarpSumSq.MEM_SIZE, .room .out (WarpSumSq.GRID * 4),
    .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat WarpSumSq.PTX_OFF)]
 
-theorem WarpSumSq_load_fine : Fine (emitGo (WarpSumSq.loadFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry WarpSumSq_load : WarpSumSq.loadFnCode under WarpSumSqLoad
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem WarpSumSq_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WarpSumSqLoad w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry WarpSumSq_run : WarpSumSq.runFnCode under WarpSumSqRun
 
-theorem WarpSumSq_run_fine : Fine (emitGo (WarpSumSq.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem WarpSumSq_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WarpSumSqRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem WarpSumSq_fetch_fine : Fine (emitGo (WarpSumSq.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem WarpSumSq_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WarpSumSqRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WarpSumSq.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry WarpSumSq_fetch : WarpSumSq.fetchFnCode under WarpSumSqRun
 
 -- MlpWarp
 
@@ -130,35 +74,11 @@ abbrev MlpWarpRun : World → Prop := Contracts.TState.holds
    .room .arena MlpWarp.MEM_SIZE, .room .out (MlpWarp.NOUT * 4),
    .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat MlpWarp.PTX_OFF)]
 
-theorem MlpWarp_load_fine : Fine (emitGo (MlpWarp.loadFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry MlpWarp_load : MlpWarp.loadFnCode under MlpWarpLoad
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem MlpWarp_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MlpWarpLoad w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry MlpWarp_run : MlpWarp.runFnCode under MlpWarpRun
 
-theorem MlpWarp_run_fine : Fine (emitGo (MlpWarp.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem MlpWarp_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MlpWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem MlpWarp_fetch_fine : Fine (emitGo (MlpWarp.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem MlpWarp_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MlpWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (MlpWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry MlpWarp_fetch : MlpWarp.fetchFnCode under MlpWarpRun
 
 -- GradWarp
 
@@ -170,44 +90,12 @@ abbrev GradWarpRun : World → Prop := Contracts.TState.holds
    .room .arena GradWarp.MEM_SIZE, .room .out (GradWarp.NOUT * 4),
    .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat GradWarp.PTX_OFF), .cstr (regionBase .arena + UInt64.ofNat GradWarp.PTX_D_OFF)]
 
-theorem GradWarp_load_fine : Fine (emitGo (GradWarp.loadFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry GradWarp_load : GradWarp.loadFnCode under GradWarpLoad
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem GradWarp_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpLoad w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.loadFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry GradWarp_run : GradWarp.runFnCode under GradWarpRun
 
-theorem GradWarp_run_fine : Fine (emitGo (GradWarp.runFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry GradWarp_runD : GradWarp.runDFnCode under GradWarpRun
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem GradWarp_run_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem GradWarp_runD_fine : Fine (emitGo (GradWarp.runDFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem GradWarp_runD_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runDFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.runDFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem GradWarp_fetch_fine : Fine (emitGo (GradWarp.fetchFnCode : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem GradWarp_fetch_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : GradWarpRun w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (GradWarp.fetchFnCode : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry GradWarp_fetch : GradWarp.fetchFnCode under GradWarpRun
 
 end CudaSafe

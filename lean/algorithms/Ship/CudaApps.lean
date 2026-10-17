@@ -31,16 +31,7 @@ abbrev MatmulMain : World → Prop := Contracts.TState.holds
    .room .arena (Matmul.DATA_OFF + (Matmul.M * Matmul.K + Matmul.K * Matmul.N + Matmul.M * Matmul.N) * 4),
    .cstrIn (regionBase .arena + UInt64.ofNat Matmul.PTX_OFF) Matmul.PTX_REGION]
 
-theorem Matmul_fine :
-    Fine (emitGo (Matmul.code Matmul.M Matmul.K Matmul.N : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Matmul_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : MatmulMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Matmul.code Matmul.M Matmul.K Matmul.N : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Matmul.code Matmul.M Matmul.K Matmul.N : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Matmul : Matmul.code Matmul.M Matmul.K Matmul.N under MatmulMain
 
 -- Scene, at the scene it ships with
 
@@ -49,16 +40,7 @@ abbrev SceneMain : World → Prop := Contracts.TState.holds
    .room .arena (Scene.pixelsOff + Scene.pixelBytes Scene.defaultScene),
    .cstrIn (regionBase .arena + UInt64.ofNat Scene.ptxOff) Scene.ptxRegion]
 
-theorem Scene_fine :
-    Fine (emitGo (Scene.code Scene.defaultScene : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Scene_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SceneMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Scene.code Scene.defaultScene : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Scene.code Scene.defaultScene : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Scene : Scene.code Scene.defaultScene under SceneMain
 
 -- BlackHole, at the scene it ships with
 
@@ -69,16 +51,7 @@ abbrev BlackHoleMain : World → Prop := Contracts.TState.holds
    .cstrIn (regionBase .arena + UInt64.ofNat BlackHole.nameOffRender) BlackHole.nameRegion,
    .cstrIn (regionBase .arena + UInt64.ofNat BlackHole.nameOffComposite) BlackHole.nameRegion]
 
-theorem BlackHole_fine :
-    Fine (emitGo (BlackHole.code BlackHole.defaultBlackHole : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem BlackHole_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BlackHoleMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BlackHole.code BlackHole.defaultBlackHole : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (BlackHole.code BlackHole.defaultBlackHole : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry BlackHole : BlackHole.code BlackHole.defaultBlackHole under BlackHoleMain
 
 end CudaAppsSafe
 

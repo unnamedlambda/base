@@ -33,15 +33,7 @@ abbrev DrawMain : World → Prop := Contracts.TState.holds
   [.part .gpuAdapter true, .part .frozen false, .part .gpu false, .room .arena Draw.layoutMeta.totalSize,
    .cstrIn (regionBase .arena + UInt64.ofNat Draw.f.shader.offset) 8192]
 
-theorem Draw_fine : Fine (emitGo (Draw.code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Draw_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : DrawMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Draw.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Draw.code : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Draw : Draw.code under DrawMain
 
 -- Raytrace
 
@@ -49,15 +41,7 @@ abbrev RaytraceMain : World → Prop := Contracts.TState.holds
   [.part .gpuAdapter true, .part .frozen false, .part .gpu false, .room .arena (Raytrace.pixels_off + Raytrace.pixelBytes),
    .cstrIn (regionBase .arena + UInt64.ofNat Raytrace.shader_off) Raytrace.shaderRegionSize]
 
-theorem Raytrace_fine : Fine (emitGo (Raytrace.code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Raytrace_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : RaytraceMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raytrace.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raytrace.code : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Raytrace : Raytrace.code under RaytraceMain
 
 -- Fft
 
@@ -65,15 +49,7 @@ abbrev FftMain : World → Prop := Contracts.TState.holds
   [.part .gpuAdapter true, .part .frozen false, .part .gpu false, .room .arena (Fft.meta_off + Fft.metaSize),
    .cstrIn (regionBase .arena + UInt64.ofNat Fft.shader_off) Fft.shaderRegionSize]
 
-theorem Fft_fine : Fine (emitGo (Fft.code : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Fft_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : FftMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Fft.code : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Fft.code : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Fft : Fft.code under FftMain
 
 -- Compress, at the block size it ships with
 
@@ -83,16 +59,7 @@ abbrev CompressMain (dl ol : UInt64) : World → Prop := Contracts.TState.holds
    .cstrIn (regionBase .arena + UInt64.ofNat Compress.shader_off) Compress.shaderRegionSize,
    .roomArg .data dl, .roomArg .out ol]
 
-theorem Compress_fine : Fine (emitGo (Compress.code 16384 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 1000000 in
-theorem Compress_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CompressMain dataLen outLen w)
-    (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Compress.code 16384 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Compress.code 16384 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry Compress : (Compress.code 16384) under CompressMain dataLen outLen
 
 end WgpuSafe
 

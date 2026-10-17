@@ -32,35 +32,11 @@ abbrev Run (dl ol : UInt64) : World → Prop := Contracts.TState.holds
    .room .arena (CudaPipeline.bindDescOff + 12 + 0x100), .roomArg .data dl, .roomArg .out ol,
    .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaPipeline.ptxSourceOff) (CudaPipeline.bindDescOff - CudaPipeline.ptxSourceOff)]
 
-theorem load_fine : Fine (emitGo (CudaPipeline.loadCode 2 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry load : (CudaPipeline.loadCode 2) under Load dataLen outLen
 
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Load dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.loadCode 2 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-      Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.loadCode 2 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry prep : (CudaPipeline.prepCode 2) under Run dataLen outLen
 
-theorem prep_fine : Fine (emitGo (CudaPipeline.prepCode 2 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem prep_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.prepCode 2 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-      Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.prepCode 2 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
-
-theorem infer_fine : Fine (emitGo (CudaPipeline.inferCode (1 : Fin 2) 256 : Prog Slot Lvl Unit) ⟨5, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 200000 in
-set_option maxHeartbeats 4000000 in
-theorem infer_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.inferCode (1 : Fin 2) 256 : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-      Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.inferCode (1 : Fin 2) 256 : Prog Slot Lvl Unit)) ≠ .fault m := by
-  check_body
+ship_entry infer : (CudaPipeline.inferCode (1 : Fin 2) 256) under Run dataLen outLen
 
 end CudaPipelineSafe
 
