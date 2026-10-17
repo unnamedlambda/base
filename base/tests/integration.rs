@@ -1,8 +1,7 @@
 use base::{Artifact, Driver};
 use std::fs;
 
-mod common;
-use common::*;
+use crate::common::*;
 use tempfile::TempDir;
 
 /// The artifact running `functions` in `memory`.

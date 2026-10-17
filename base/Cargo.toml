@@ -2,6 +2,8 @@
 name = "base"
 version = "0.1.0"
 edition = "2021"
+# The integration tests are one binary (`tests/main.rs`), linked once.
+autotests = false
 
 [dependencies]
 base-types = { path = "../base-types" }
@@ -59,3 +61,7 @@ path = "src/lib.rs"
 # so a non-Rust host links one file: linking a `staticlib` it would have to
 # name every transitive system library on its own link line.
 crate-type = ["rlib", "cdylib"]
+
+[[test]]
+name = "base"
+path = "tests/main.rs"
