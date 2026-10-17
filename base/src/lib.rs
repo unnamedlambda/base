@@ -17,25 +17,39 @@ mod link;
 mod jit;
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// The program is malformed.
     Clif(String),
-    /// The arena cannot be allocated, or its segments are malformed.
-    Arena(String),
-    /// No function has the name.
+    /// The arena is larger than this host can allocate.
+    ArenaTooLarge { size: u64 },
+    /// A data segment starts before the previous one ends.
+    SegmentOverlap { offset: u64, previous_end: usize },
+    /// A data segment ends past the arena.
+    SegmentPastEnd { offset: u64, len: usize, arena: usize },
+    /// No function has this name.
     NoSuchFunction(String),
     /// A read reaches past the arena.
-    Range(String),
+    Range { offset: usize, len: usize, arena: usize },
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Clif(m) => write!(f, "clif: {m}"),
-            Error::Arena(m) => write!(f, "arena: {m}"),
-            Error::NoSuchFunction(m) => write!(f, "no such function: {m}"),
-            Error::Range(m) => write!(f, "out of range: {m}"),
+            Error::ArenaTooLarge { size } => write!(f, "the arena is {size} bytes, more than this host can hold"),
+            Error::SegmentOverlap { offset, previous_end } => write!(
+                f,
+                "a segment at {offset} is out of order or overlaps the one before it, which ends at {previous_end}"
+            ),
+            Error::SegmentPastEnd { offset, len, arena } => {
+                write!(f, "a segment of {len} bytes at {offset} ends past the {arena} bytes of the arena")
+            }
+            Error::NoSuchFunction(name) => write!(f, "the artifact has no function named {name:?}"),
+            Error::Range { offset, len, arena } => {
+                write!(f, "{offset}..{offset}+{len} is outside the {arena} bytes of the arena")
+            }
         }
     }
 }
@@ -127,31 +141,21 @@ impl Drop for Driver {
 impl Driver {
     /// Allocates the artifact's arena and compiles its functions.
     pub fn load(artifact: Artifact) -> Result<Self, Error> {
-        let size = usize::try_from(artifact.arena_size).map_err(|_| {
-            Error::Arena(format!("the arena is {} bytes, more than this host can hold", artifact.arena_size))
-        })?;
+        let too_large = Error::ArenaTooLarge { size: artifact.arena_size };
+        let size = usize::try_from(artifact.arena_size).map_err(|_| too_large.clone())?;
         let mut free_from = 0usize;
         for s in &artifact.data {
             let at = usize::try_from(s.offset).ok().filter(|&at| at >= free_from);
             let Some(at) = at else {
-                return Err(Error::Arena(format!(
-                    "a segment at {} is out of order or overlaps the one before it, which ends at {free_from}",
-                    s.offset
-                )));
+                return Err(Error::SegmentOverlap { offset: s.offset, previous_end: free_from });
             };
             let end = at.checked_add(s.bytes.len());
             if end.is_none_or(|end| end > size) {
-                return Err(Error::Arena(format!(
-                    "a segment of {} bytes at {} ends past the {size} bytes of the arena",
-                    s.bytes.len(),
-                    s.offset
-                )));
+                return Err(Error::SegmentPastEnd { offset: s.offset, len: s.bytes.len(), arena: size });
             }
             free_from = at + s.bytes.len();
         }
-        let mut arena = Arena::zeroed(size).ok_or_else(|| {
-            Error::Arena(format!("the arena is {size} bytes, more than this host can hold"))
-        })?;
+        let mut arena = Arena::zeroed(size).ok_or(too_large)?;
         let bytes = arena.bytes_mut();
         for s in &artifact.data {
             let at = s.offset as usize;
@@ -182,10 +186,7 @@ impl Driver {
     pub fn read(&self, offset: usize, out: &mut [u8]) -> Result<(), Error> {
         let len = self.arena.len;
         if offset.checked_add(out.len()).is_none_or(|end| end > len) {
-            return Err(Error::Range(format!(
-                "{offset}..{offset}+{} is outside the {len} bytes of the arena",
-                out.len()
-            )));
+            return Err(Error::Range { offset, len: out.len(), arena: len });
         }
         let base = self.arena.ptr.as_ptr();
         let mut i = 0;
@@ -206,9 +207,7 @@ impl Driver {
 
     /// The function named `name`.
     pub fn function(&self, name: &str) -> Result<Function<'_>, Error> {
-        let f = *self.exports.get(name).ok_or_else(|| {
-            Error::NoSuchFunction(format!("the artifact has no function named {name:?}"))
-        })?;
+        let f = *self.exports.get(name).ok_or_else(|| Error::NoSuchFunction(name.to_owned()))?;
         Ok(Function { f, _driver: std::marker::PhantomData })
     }
 

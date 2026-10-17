@@ -94,6 +94,6 @@ fn read_refuses_past_the_end() {
     let mut two = [0u8; 2];
     assert!(driver.read(size - 2, &mut two).is_ok());
     let e = driver.read(size - 1, &mut two).unwrap_err();
-    assert!(matches!(e, base::Error::Range(_)), "{e}");
+    assert!(matches!(e, base::Error::Range { .. }), "{e}");
     assert!(driver.read(usize::MAX, &mut two).is_err());
 }

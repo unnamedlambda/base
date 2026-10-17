@@ -122,8 +122,8 @@ fn functions_are_found_by_name_only() {
     let d = driver(artifact(functions(vec![answering(1), answering(2).named("two")]), 64, vec![]));
     assert_eq!(call_with(&d, "two", &[], &mut []), 2);
     for name in ["u0:0", "one", ""] {
-        let Err(base::Error::NoSuchFunction(msg)) = d.function(name) else { panic!("{name:?} should not be found") };
-        assert!(msg.contains(&format!("{name:?}")), "{msg}");
+        let Err(base::Error::NoSuchFunction(missing)) = d.function(name) else { panic!("{name:?} should not be found") };
+        assert_eq!(missing, name);
     }
 }
 
