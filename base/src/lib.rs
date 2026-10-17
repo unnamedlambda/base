@@ -9,13 +9,8 @@ pub use base_types::Artifact;
 use std::{
     collections::HashMap,
     ptr::NonNull,
-    sync::{
-        atomic::{AtomicU64, AtomicU8, Ordering},
-        Once,
-    },
+    sync::atomic::{AtomicU64, AtomicU8, Ordering},
 };
-use tracing::{info, info_span};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 pub mod capi;
 mod clif_decode;
@@ -214,10 +209,7 @@ impl Driver {
         functions: &[base_types::clif::Function],
         arena: Arena,
     ) -> Result<Self, Error> {
-        let _span = info_span!("base_driver_load", memory_size = arena.len).entered();
-        info!("loading artifact");
-
-        let driver = if functions.is_empty() {
+        Ok(if functions.is_empty() {
             Driver { arena, exports: HashMap::new(), _module: None }
         } else {
             // The program's code is linked to the arena's address, so it is
@@ -228,9 +220,7 @@ impl Driver {
                 exports: program.exports,
                 _module: Some(program.module),
             }
-        };
-        info!("driver ready");
-        Ok(driver)
+        })
     }
 
     /// The arena, borrowed exclusively: nothing can execute while the slice is
@@ -327,36 +317,14 @@ pub unsafe fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
     unsafe { driver.execute(name, &[], &mut []) }
 }
 
-pub fn init_tracing() {
-    static INIT: Once = Once::new();
-
-    INIT.call_once(|| {
-        tracing_subscriber::registry()
-            .with(
-                fmt::layer()
-                    .with_writer(std::io::stderr)
-                    .with_target(true)
-                    .with_thread_ids(true)
-                    .with_filter(
-                        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off")),
-                    ),
-            )
-            .init();
-    });
-}
-
-/// The program as CLIF text — what was built, rather than what the caller
-/// believes was built. For eyeballing a test or a generated artifact; nothing
-/// in the pipeline reads it.
-pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
+/// Each function decoded as the engine decodes it, with the names its
+/// callees stand for: Cranelift prints a callee as the `FuncId` it was
+/// declared with, so the stub resolver records what each id stood for.
+fn decoded(artifact: &Artifact) -> Result<Vec<(cranelift_codegen::ir::Function, Vec<String>)>, String> {
     use base_types::clif::Callee;
-    let mut out = String::new();
-    let isa = cranelift_native::builder().map_err(|e| e.to_string())?;
-    let cc = cranelift_codegen::isa::CallConv::triple_default(isa.triple());
+    let cc = jit::isa().default_call_conv();
+    let mut out = Vec::with_capacity(artifact.functions.len());
     for (i, f) in artifact.functions.iter().enumerate() {
-        // Cranelift prints a callee as the `FuncId` it was declared with, so
-        // the stub resolver records what each id stood for and the names are
-        // put back afterward.
         let mut names: Vec<String> = Vec::new();
         let mut resolve = |c: Callee| {
             let (name, sig) = match c {
@@ -379,11 +347,43 @@ pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
             Ok((clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false }, sig))
         };
         let mut module = clif_decode::Module { primitives: &artifact.primitives, arena: 0, resolve: &mut resolve };
-        let mut text = format!("{}", clif_decode::decode_function(f, i, cc, &mut module)?);
+        let func = clif_decode::decode_function(f, i, cc, &mut module)?;
+        out.push((func, names));
+    }
+    Ok(out)
+}
+
+/// The program as CLIF text: what the engine builds from it, rather than what
+/// its author believes it built. For reading a program; nothing in the
+/// pipeline reads it.
+pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
+    let mut out = String::new();
+    for (func, names) in decoded(artifact)? {
+        let mut text = format!("{}", func.display());
         for (i, name) in names.iter().enumerate().rev() {
             text = text.replace(&format!("= u0:{i} sig"), &format!("= {name} sig"));
         }
         out.push_str(&text);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// The machine code the engine compiles each function to, as Cranelift prints
+/// it: what came out of the backend, for the host this runs on, with the
+/// flags a load compiles with. For reading a program; nothing in the pipeline
+/// reads it.
+pub fn disassemble(artifact: &Artifact) -> Result<String, String> {
+    let isa = jit::isa();
+    let mut out = String::new();
+    for (i, (func, _)) in decoded(artifact)?.into_iter().enumerate() {
+        let mut ctx = cranelift_codegen::Context::for_function(func);
+        ctx.set_disasm(true);
+        let code = ctx
+            .compile(&*isa, &mut Default::default())
+            .map_err(|e| format!("compiling u0:{i}: {:?}", e.inner))?;
+        out.push_str(&format!("=== u0:{i} ===\n"));
+        out.push_str(code.vcode.as_deref().unwrap_or(""));
         out.push('\n');
     }
     Ok(out)

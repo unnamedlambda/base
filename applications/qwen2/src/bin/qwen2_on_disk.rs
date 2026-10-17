@@ -4,7 +4,7 @@
 //! storage strategy differs.  Useful on systems where the model is larger than
 //! VRAM (e.g. point at a 32B weights file on NVMe).
 
-use base::{init_tracing, Driver, Artifact};
+use base::{Driver, Artifact};
 
 const QWEN2_ON_DISK_BINARY: &[u8] = lean_artifacts::QWEN2_ON_DISK;
 
@@ -15,7 +15,6 @@ const QWEN2_ON_DISK_BINARY: &[u8] = lean_artifacts::QWEN2_ON_DISK;
 const KV_CACHE_FILE: &str = "/tmp/qwen2_kvcache.bin";
 
 fn main() {
-    init_tracing();
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {

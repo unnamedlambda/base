@@ -3,7 +3,6 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::Module;
 
 use crate::clif_decode::Resolved;
-use tracing::info;
 
 /// What a host calls a function as: the input, its length, the output, its
 /// length, answering the status. The arena is not an argument: a function
@@ -40,6 +39,21 @@ const CODE_RESERVE_PER_INST: usize = 64;
 /// region no larger than that keeps every call within the module in range.
 const CODE_RESERVE_MAX: usize = 128 << 20;
 
+/// The host's ISA, as every program is compiled for it: optimized for speed,
+/// frames probed.
+pub(crate) fn isa() -> cranelift_codegen::isa::OwnedTargetIsa {
+    let mut flag_builder = settings::builder();
+    flag_builder.set("opt_level", "speed").unwrap();
+    // A program runs on its caller's stack. A frame larger than the guard
+    // page could otherwise step past it and write whatever is mapped below,
+    // where probing it first faults on the guard: an overflow ends the
+    // process, as the C API says, and frames under a page are not probed.
+    flag_builder.set("enable_probestack", "true").unwrap();
+    flag_builder.set("probestack_strategy", "inline").unwrap();
+    let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
+    isa_builder.finish(settings::Flags::new(flag_builder)).unwrap()
+}
+
 /// The JIT module every compilation starts from: host ISA, speed, all FFI
 /// symbols registered, and code placed in one contiguous region.
 ///
@@ -52,19 +66,7 @@ fn new_module(
     insts: usize,
     symbols: &[(String, usize)],
 ) -> Result<cranelift_jit::JITModule, String> {
-    let mut flag_builder = settings::builder();
-    flag_builder.set("opt_level", "speed").unwrap();
-    // A program runs on its caller's stack. A frame larger than the guard
-    // page could otherwise step past it and write whatever is mapped below,
-    // where probing it first faults on the guard: an overflow ends the
-    // process, as the C API says, and frames under a page are not probed.
-    flag_builder.set("enable_probestack", "true").unwrap();
-    flag_builder.set("probestack_strategy", "inline").unwrap();
-    let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
-    let isa = isa_builder
-        .finish(settings::Flags::new(flag_builder))
-        .unwrap();
-    let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    let mut builder = JITBuilder::with_isa(isa(), cranelift_module::default_libcall_names());
     register_symbols(&mut builder, symbols);
     let reserve = CODE_RESERVE_MIN
         .saturating_add(insts.saturating_mul(CODE_RESERVE_PER_INST))
@@ -104,7 +106,6 @@ pub(crate) fn compile(
     arena: *mut u8,
 ) -> Result<Program, String> {
     let exports = exports_of(functions)?;
-    info!(functions = functions.len(), "compiling CLIF functions");
     let insts = functions
         .iter()
         .flat_map(|f| &f.blocks)
@@ -169,19 +170,8 @@ pub(crate) fn compile(
         decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut m)?);
     }
 
-    let dump = std::env::var("BASE_DISASM").is_ok();
-    // The decoded function in Cranelift's own textual form. The artifact
-    // carries instruction records, not text, so this is the only way to read
-    // what was handed to the backend rather than what came out of it.
-    let dump_clif = std::env::var("BASE_DUMP_CLIF").is_ok();
     for (i, func) in decoded.into_iter().enumerate() {
-        if dump_clif {
-            eprintln!("=== clif fn {i} ===\n{}", func.display());
-        }
         let mut ctx = cranelift_codegen::Context::for_function(func);
-        if dump {
-            ctx.set_disasm(true);
-        }
         let exported = match &functions[i].name {
             Some(name) => format!(
                 " (named {name:?}, so a host calls it: it takes the input and output \
@@ -194,15 +184,9 @@ pub(crate) fn compile(
             // Debug rather than Display: a verifier rejection names the
             // offending instructions only in the former.
             .map_err(|e| format!("compiling u0:{i}{exported}: {e:?}"))?;
-        if dump {
-            if let Some(vc) = ctx.compiled_code().and_then(|c| c.vcode.as_deref()) {
-                eprintln!("=== fn {i} ===\n{vc}");
-            }
-        }
     }
 
     module.finalize_definitions().map_err(|e| format!("{e}"))?;
-    info!(count = func_ids.len(), "CLIF compiled successfully");
     let exports = exports
         .into_iter()
         // SAFETY: each was declared at `FunctionPtr`'s signature and its body

@@ -5,13 +5,12 @@
 //! tokenizer, stdin/stdout chat loop). End-to-end behavior is covered by
 //! `tests/golden_cli.rs`.
 
-use base::{init_tracing, Driver, Artifact};
+use base::{Driver, Artifact};
 
 const QWEN2_BINARY: &[u8] = lean_artifacts::QWEN2;
 
 
 fn main() {
-    init_tracing();
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {

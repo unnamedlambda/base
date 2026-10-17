@@ -1,11 +1,10 @@
-use base::{init_tracing, run, Artifact};
+use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
     lean_artifacts::CSV_APP;
 
 
 fn main() {
-    init_tracing();
 
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
 

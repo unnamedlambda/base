@@ -5,8 +5,6 @@ edition = "2021"
 
 [dependencies]
 base-types = { path = "../base-types" }
-tracing = { version = "0.1", features = ["release_max_level_off"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 cranelift-codegen = "0.123"
 cranelift-jit = "0.123"
 cranelift-module = "0.123"
