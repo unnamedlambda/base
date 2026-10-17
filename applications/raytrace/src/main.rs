@@ -7,7 +7,8 @@ fn main() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
 
     let start = std::time::Instant::now();
-    match run(artifact, "main") {
+    // SAFETY: the artifact is the one Lean built for this application.
+    match unsafe { run(artifact, "main") } {
         Ok(_) => {
             let elapsed = start.elapsed();
             eprintln!(

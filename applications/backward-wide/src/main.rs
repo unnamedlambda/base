@@ -63,18 +63,18 @@ fn main() {
     let run = "run";
     let fetch = "fetch";
 
-    base.execute("main", &bytes, &mut []).expect("load");
-    base.execute(run, b"", &mut []).expect("run");
+    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
+    unsafe { base.execute(run, b"", &mut []) }.expect("run");
 
     let reps = 50;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute(run, b"", &mut []).expect("run");
+        unsafe { base.execute(run, b"", &mut []) }.expect("run");
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
 
     let mut out = vec![0u8; N * 4];
-    base.execute(fetch, b"", &mut out).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
     let gpu: Vec<f32> = floats(&out);
 
     // Reference, in the *committed* order the kernel is proven against:
@@ -112,15 +112,15 @@ fn main() {
     // ── the weight gradient: dW[i][j] = adj[i] * x[j] ────────────────────────
     let run_dw = "runDw";
     let fetch_dw = "fetchDw";
-    base.execute(run_dw, b"", &mut []).expect("runDw");
+    unsafe { base.execute(run_dw, b"", &mut []) }.expect("runDw");
     let t1 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute(run_dw, b"", &mut []).expect("runDw");
+        unsafe { base.execute(run_dw, b"", &mut []) }.expect("runDw");
     }
     let dt_dw = t1.elapsed().as_secs_f64() / reps as f64;
 
     let mut dwbytes = vec![0u8; N * N * 4];
-    base.execute(fetch_dw, b"", &mut dwbytes).expect("fetchDw");
+    unsafe { base.execute(fetch_dw, b"", &mut dwbytes) }.expect("fetchDw");
     let dw: Vec<f32> = floats(&dwbytes);
 
     let mut dw_exact = 0usize;
@@ -139,16 +139,16 @@ fn main() {
 
     // ── the activation backward: ds = dy * silu'(z), derivative from sderiv ──
     let run_sb = "runSiluBwd";
-    base.execute(run_sb, b"", &mut []).expect("runSiluBwd");
+    unsafe { base.execute(run_sb, b"", &mut []) }.expect("runSiluBwd");
     let t2 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute(run_sb, b"", &mut []).expect("runSiluBwd");
+        unsafe { base.execute(run_sb, b"", &mut []) }.expect("runSiluBwd");
     }
     let dt_sb = t2.elapsed().as_secs_f64() / reps as f64;
 
     // It writes `adj`, so re-running dW now reads the GPU-computed adjoint.
-    base.execute(run_dw, b"", &mut []).expect("runDw");
-    base.execute(fetch_dw, b"", &mut dwbytes).expect("fetchDw");
+    unsafe { base.execute(run_dw, b"", &mut []) }.expect("runDw");
+    unsafe { base.execute(fetch_dw, b"", &mut dwbytes) }.expect("fetchDw");
     let dw2: Vec<f32> = floats(&dwbytes);
 
     let mut chain_worst = 0f32;
@@ -168,19 +168,19 @@ fn main() {
 
     // ── RMSNorm backward: t = dy⊙γ, Q = Σx², S = Σtx, then the epilogue ─────
     for name in ["runT", "runQ", "runS", "runDxr"] {
-        base.execute(name, b"", &mut [])
+        unsafe { base.execute(name, b"", &mut []) }
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }
     let t3 = std::time::Instant::now();
     for _ in 0..reps {
         for entry in ["runT", "runQ", "runS", "runDxr"] {
-            base.execute(entry, b"", &mut []).unwrap();
+            unsafe { base.execute(entry, b"", &mut []) }.unwrap();
         }
     }
     let dt_rms = t3.elapsed().as_secs_f64() / reps as f64;
 
     let mut dxrbytes = vec![0u8; N * 4];
-    base.execute("fetchDxr", b"", &mut dxrbytes)
+    unsafe { base.execute("fetchDxr", b"", &mut dxrbytes) }
         .expect("fetchDxr");
     let dxr: Vec<f32> = floats(&dxrbytes);
 
@@ -215,10 +215,10 @@ fn main() {
     // that the activation backward *followed by* the transposed matvec gives
     // dx = Wᵀ·(dy⊙silu'(z)). Running that exact order is what makes the demo
     // demonstrate the theorem rather than a neighbour of it.
-    base.execute(run_sb, b"", &mut []).expect("runSiluBwd");
-    base.execute(run, b"", &mut []).expect("run");
+    unsafe { base.execute(run_sb, b"", &mut []) }.expect("runSiluBwd");
+    unsafe { base.execute(run, b"", &mut []) }.expect("run");
     let mut chain_out = vec![0u8; N * 4];
-    base.execute(fetch, b"", &mut chain_out).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut chain_out) }.expect("fetch");
     let dx_chained: Vec<f32> = floats(&chain_out);
 
     // Host reference in the committed order, from the *composed* spec.
@@ -239,9 +239,9 @@ fn main() {
     // own instructions and matches it against `bwdPipelineFull`. Three
     // separate host calls never exhibited that order inside any one program,
     // so the theorem would have been about a program nothing ran. This runs it.
-    base.execute("runBwdAll", b"", &mut []).expect("runBwdAll");
+    unsafe { base.execute("runBwdAll", b"", &mut []) }.expect("runBwdAll");
     let mut fused_out = vec![0u8; N * 4];
-    base.execute(fetch, b"", &mut fused_out).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut fused_out) }.expect("fetch");
     let dx_fused: Vec<f32> = floats(&fused_out);
     let fused_worst = dx_fused
         .iter()
@@ -249,7 +249,7 @@ fn main() {
         .map(|(a, b)| (a - b).abs())
         .fold(0f32, f32::max);
     let mut dw_fused = vec![0u8; N * N * 4];
-    base.execute(fetch_dw, b"", &mut dw_fused).expect("fetchDw");
+    unsafe { base.execute(fetch_dw, b"", &mut dw_fused) }.expect("fetchDw");
     println!("fused function  : runBwdAll — the 3 launches `bwdAllTable` binds");
     println!("worst abs. diff : {fused_worst:.3e}  vs the same three calls separately");
     assert_eq!(fused_worst, 0.0, "the fused function must be bit-identical");
@@ -282,14 +282,14 @@ fn train(
 
     let loss = |base: &mut Driver| -> f32 {
         let mut out = vec![0u8; N * 4];
-        base.execute(fetch_y, b"", &mut out).expect("fetchY");
+        unsafe { base.execute(fetch_y, b"", &mut out) }.expect("fetchY");
         let y: Vec<f32> = floats(&out);
         0.5 * (0..N).map(|i| (y[i] - ystar[i]).powi(2)).sum::<f32>()
     };
 
     // One forward to establish the starting loss.
     for entry in ["runFwd", "runY"] {
-        base.execute(entry, b"", &mut []).unwrap();
+        unsafe { base.execute(entry, b"", &mut []) }.unwrap();
     }
     let l0 = loss(base);
 
@@ -303,13 +303,13 @@ fn train(
     let t0 = std::time::Instant::now();
     for it in 1..=iters {
         for entry in step {
-            base.execute(entry, b"", &mut []).unwrap();
+            unsafe { base.execute(entry, b"", &mut []) }.unwrap();
         }
         if it % 25 == 0 || it == 1 {
             // The step's forward ran *before* its update, so y is one step
             // stale; refresh it so the row is the loss at the current W.
             for entry in ["runFwd", "runY"] {
-                base.execute(entry, b"", &mut []).unwrap();
+                unsafe { base.execute(entry, b"", &mut []) }.unwrap();
             }
             let l = loss(base);
             losses.push(l);
@@ -328,7 +328,7 @@ fn train(
     // parallel to `x`. That is a property of the *shape* of the gradient, not
     // a restatement of how it was computed.
     let mut dwbytes = vec![0u8; N * N * 4];
-    base.execute("fetchDw", b"", &mut dwbytes).unwrap();
+    unsafe { base.execute("fetchDw", b"", &mut dwbytes) }.unwrap();
     let dw: Vec<f32> = floats(&dwbytes);
     let xnorm: f32 = xa.iter().map(|v| v * v).sum();
     let mut rank1_worst = 0f32;
@@ -351,10 +351,10 @@ fn train(
     println!("\nper-kernel cost of one training step:");
     let mut total = 0f64;
     for k in step {
-        base.execute(k, b"", &mut []).unwrap();
+        unsafe { base.execute(k, b"", &mut []) }.unwrap();
         let t = std::time::Instant::now();
         for _ in 0..200 {
-            base.execute(k, b"", &mut []).unwrap();
+            unsafe { base.execute(k, b"", &mut []) }.unwrap();
         }
         let dt = t.elapsed().as_secs_f64() / 200.0;
         total += dt;

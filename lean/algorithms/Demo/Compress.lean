@@ -241,7 +241,7 @@ def compressionShader (bs : Nat) : String :=
 --
 -- fn u0:0: noop (required by CraneliftUnit)
 -- fn u0:1: orchestrator
---   1. cl_file_read (input file → shared memory, returns byte count)
+--   1. readFile (input file → shared memory, returns byte count)
 --   2. cl_gpu_init
 --   3. cl_gpu_create_buffer ×3 (input, output, metadata)
 --   4. cl_gpu_upload (input data to GPU)
@@ -249,7 +249,8 @@ def compressionShader (bs : Nat) : String :=
 --   6. cl_gpu_dispatch (numBlocks, 1, 1)
 --   7. cl_gpu_download ×2 (output, metadata)
 --   8. cl_gpu_cleanup
---   9. cl_file_write (compressed output — concatenated blocks with size header)
+--   9. replaceFileAt, then writeFileAt per block (compressed output — concatenated
+--      blocks with size header)
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.Prog in

@@ -74,10 +74,10 @@ fn main() {
 
     let mut base = Driver::load(artifact).expect("Driver::load");
     let go = |b: &mut Driver, name: &str, data: &[u8], out: &mut [u8]| {
-        b.execute(name, data, out).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        unsafe { b.execute(name, data, out) }.unwrap_or_else(|e| panic!("{name}: {e:?}"));
     };
 
-    base.execute("main", &blob, &mut []).expect("load");
+    unsafe { base.execute("main", &blob, &mut []) }.expect("load");
     println!("MLP {IN} → {H} → {CLASSES} (padded to {C}), batch {B}, lr = 1/{}", (1.0 / LR) as u32);
     println!("host packing: {} bytes, matches Lean's hostIn\n", blob.len());
 
@@ -218,7 +218,7 @@ fn main() {
     // The optimiser above has already stepped W1/W2, so reset to the weights
     // the references were computed with before comparing.
     let mut blas_ok = true;
-    base.execute("main", &blob, &mut []).expect("reload");
+    unsafe { base.execute("main", &blob, &mut []) }.expect("reload");
     go(&mut base, "uploadBias", &le(&bias), &mut []);
     go(&mut base, "uploadOneHot", &le(&onehot), &mut []);
     go(&mut base, "uploadX", &le(&x), &mut []);
@@ -277,11 +277,11 @@ fn main() {
     let xb = le(&x);
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute("uploadX", &xb, &mut []).unwrap();
-        base.execute("runFwd", b"", &mut []).unwrap();
-        base.execute("fetchLogits", b"", &mut buf_bc).unwrap();
-        base.execute("uploadOneHot", &oh, &mut []).unwrap();
-        base.execute("runBwd", b"", &mut []).unwrap();
+        unsafe { base.execute("uploadX", &xb, &mut []) }.unwrap();
+        unsafe { base.execute("runFwd", b"", &mut []) }.unwrap();
+        unsafe { base.execute("fetchLogits", b"", &mut buf_bc) }.unwrap();
+        unsafe { base.execute("uploadOneHot", &oh, &mut []) }.unwrap();
+        unsafe { base.execute("runBwd", b"", &mut []) }.unwrap();
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (fused: 2 runs, 2 uploads, 1 download)", "step", dt * 1e6);
@@ -289,11 +289,11 @@ fn main() {
 
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute("uploadX", &xb, &mut []).unwrap();
-        base.execute("runFwdBlas", b"", &mut []).unwrap();
-        base.execute("fetchLogits", b"", &mut buf_bc).unwrap();
-        base.execute("uploadOneHot", &oh, &mut []).unwrap();
-        base.execute("runBwdBlas", b"", &mut []).unwrap();
+        unsafe { base.execute("uploadX", &xb, &mut []) }.unwrap();
+        unsafe { base.execute("runFwdBlas", b"", &mut []) }.unwrap();
+        unsafe { base.execute("fetchLogits", b"", &mut buf_bc) }.unwrap();
+        unsafe { base.execute("uploadOneHot", &oh, &mut []) }.unwrap();
+        unsafe { base.execute("runBwdBlas", b"", &mut []) }.unwrap();
     }
     let dtb = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (cuBLAS for the 5 GEMMs)", "step/blas", dtb * 1e6);

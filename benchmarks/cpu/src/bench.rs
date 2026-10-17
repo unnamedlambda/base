@@ -82,7 +82,7 @@ pub fn main() {
     // Map the machine code, once, as a program would at startup; every body
     // must have loaded, or an `_asm` row would be timing its fallback.
     let mut slots = vec![0u8; 8 * 64];
-    drv.execute("asm_load", &[], &mut slots).expect("asm_load runs");
+    unsafe { drv.execute("asm_load", &[], &mut slots) }.expect("asm_load runs");
     let word = |k: usize| u64::from_le_bytes(slots[8 * k..8 * k + 8].try_into().unwrap());
     let bodies = word(0) as usize;
     assert!(bodies > 0 && (1..=bodies).all(|k| word(k) != 0),
@@ -91,7 +91,7 @@ pub fn main() {
     let inp = make_input();
     let mut out_buf = Lines::<u8>::zeroed(OUT_BYTES);
     let out = &mut out_buf[..];
-    let t = time(&[Col::Base("noop".into())], |_| { black_box(drv.execute("noop", &[], out).unwrap()); });
+    let t = time(&[Col::Base("noop".into())], |_| { black_box(unsafe { drv.execute("noop", &[], out) }.unwrap()); });
     println!("execute\tnoop\t{:.1}", t[0]);
 
     for (w, kernel, input) in workloads() {
@@ -110,7 +110,7 @@ pub fn main() {
             }
             // the answer's slot, so an entry that never wrote it is caught
             out[..8].fill(0);
-            drv.execute(&entry, data, out).unwrap();
+            unsafe { drv.execute(&entry, data, out) }.unwrap();
             let got = u64::from_le_bytes(out[..8].try_into().unwrap());
             assert_eq!(got, want, "{entry} answers {got:#x}, the Rust kernel {want:#x}");
             cols.push((col.to_string(), Col::Base(entry)));
@@ -118,7 +118,7 @@ pub fn main() {
         let (labels, cols): (Vec<String>, Vec<Col>) = cols.into_iter().unzip();
         let ts = time(&cols, |c| match c {
             Col::Rust(k) => { black_box(k(black_box(&inp))); }
-            Col::Base(e) => { black_box(drv.execute(e, black_box(data), out).unwrap()); }
+            Col::Base(e) => { black_box(unsafe { drv.execute(e, black_box(data), out) }.unwrap()); }
         });
         for (label, t) in labels.iter().zip(ts) {
             println!("{w}\t{label}\t{t:.1}");

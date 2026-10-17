@@ -26,16 +26,16 @@ fn main() {
     let fetch = "fetch";
 
     // upload once
-    base.execute("main", &bytes, &mut []).expect("load");
+    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
     // warm up, then time the LAUNCH ONLY
-    base.execute(run, b"", &mut []).expect("run");
+    unsafe { base.execute(run, b"", &mut []) }.expect("run");
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute(run, b"", &mut []).expect("run");
+        unsafe { base.execute(run, b"", &mut []) }.expect("run");
     }
     let elapsed = t0.elapsed().as_secs_f64() / reps as f64;
-    base.execute(fetch, b"", &mut out).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
 
     let bytes_read = (N * 4) as f64;
     println!("working set : {:.0} MiB", bytes_read / 1048576.0);

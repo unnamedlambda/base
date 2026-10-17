@@ -17,11 +17,11 @@ namespace Sha256
 -- SHA-256 hasher
 --
 -- Single CLIF function:
---   1. cl_file_read — load input file into memory
+--   1. readFile — load input file into memory
 --   2. SHA-256 padding (append 0x80, zeros, 64-bit BE bit length)
 --   3. Process each 64-byte block: message schedule + 64-round compression
 --   4. Format 8 x u32 hash state as 64 hex chars
---   5. cl_file_write — write hex digest + newline
+--   5. replaceFileAt — write hex digest + newline
 --
 -- All 32-bit SHA-256 arithmetic done in i64 with band mask32 (0xFFFFFFFF).
 -- Only ireduce.i32 for stores.

@@ -38,7 +38,7 @@ fn rayon_producers_and_consumers_share_the_ring() {
             s.spawn(|_| {
                 let mut mine = Vec::new();
                 let mut item = [0u8; 8];
-                while pop.call(&[], &mut item) == 1 {
+                while unsafe { pop.call(&[], &mut item) } == 1 {
                     mine.push(u64::from_le_bytes(item));
                 }
                 popped.lock().unwrap().extend(mine);
@@ -47,9 +47,9 @@ fn rayon_producers_and_consumers_share_the_ring() {
         s.spawn(|_| {
             // Any work at all can make the items: here, a parallel map.
             (0..ITEMS).into_par_iter().map(|i| i * 3 + 1).for_each(|item| {
-                assert_eq!(push.call(&item.to_le_bytes(), &mut []), 1);
+                assert_eq!(unsafe { push.call(&item.to_le_bytes(), &mut []) }, 1);
             });
-            close.call(&[], &mut []);
+            unsafe { close.call(&[], &mut []) };
         });
     });
 
@@ -59,6 +59,6 @@ fn rayon_producers_and_consumers_share_the_ring() {
     assert_eq!(popped.len(), expected.len(), "every item popped once");
     assert_eq!(popped, expected);
     // Closed and drained: a push is refused and a pop finds nothing.
-    assert_eq!(push.call(&7u64.to_le_bytes(), &mut []), 0);
-    assert_eq!(pop.call(&[], &mut [0u8; 8]), 0);
+    assert_eq!(unsafe { push.call(&7u64.to_le_bytes(), &mut []) }, 0);
+    assert_eq!(unsafe { pop.call(&[], &mut [0u8; 8]) }, 0);
 }

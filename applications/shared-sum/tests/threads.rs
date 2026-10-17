@@ -45,7 +45,7 @@ fn concurrent_adds_on_one_driver_all_land() {
                 for i in 0..CALLS {
                     let input = bytes(t, i);
                     let mut before = [0u8; 8];
-                    let sum = driver.execute("add", &input, &mut before).unwrap() as u64;
+                    let sum = unsafe { driver.execute("add", &input, &mut before) }.unwrap() as u64;
                     assert_eq!(sum, input.iter().map(|&b| b as u64).sum::<u64>());
                     spans.lock().unwrap().push((u64::from_le_bytes(before), sum));
                 }
@@ -73,9 +73,9 @@ fn concurrent_adds_on_one_driver_all_land() {
             }
         }
     }
-    assert_eq!(driver.execute("total", &[], &mut []).unwrap() as u64, sent);
+    assert_eq!(unsafe { driver.execute("total", &[], &mut []) }.unwrap() as u64, sent);
     assert_eq!(read_u64(&driver, TOTAL_AT), sent);
-    assert_eq!(driver.execute("calls", &[], &mut []).unwrap() as usize, THREADS * CALLS);
+    assert_eq!(unsafe { driver.execute("calls", &[], &mut []) }.unwrap() as usize, THREADS * CALLS);
     assert_eq!(read_u64(&driver, CALLS_AT) as usize, THREADS * CALLS);
     for (b, &n) in hist.iter().enumerate() {
         assert_eq!(read_u64(&driver, HIST_AT + 8 * b), n, "histogram counter {b}");

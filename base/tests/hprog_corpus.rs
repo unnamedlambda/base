@@ -87,7 +87,7 @@ fn interpreter_and_machine_agree() {
 
     let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; corpus.expected.len()];
-    b.execute("main", &[], &mut out).expect("execute");
+    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
 
     /// A NaN of `w` bytes, read little-endian from the front of `b`.
     fn is_nan(b: &[u8], w: usize) -> bool {

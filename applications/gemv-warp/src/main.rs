@@ -76,21 +76,21 @@ fn bench(
         ]
     };
 
-    base.execute("main", &bytes, &mut []).expect("load");
+    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
 
     let mut times = Vec::new();
     let mut outs: Vec<Vec<f32>> = Vec::new();
     for (_, alg) in &runs {
         times.push(time(&mut base, *alg, reps));
         let mut buf = vec![0u8; m * 4];
-        base.execute(fetch, b"", &mut buf).expect("fetch");
+        unsafe { base.execute(fetch, b"", &mut buf) }.expect("fetch");
         outs.push(floats(&buf));
     }
     // cuBLAS is a baseline for the dot only; there is no sgemv for x·x.
     let t_blas = if dot {
         let t = time(&mut base, "blas", reps);
         let mut buf = vec![0u8; m * 4];
-        base.execute(fetch, b"", &mut buf).expect("fetch");
+        unsafe { base.execute(fetch, b"", &mut buf) }.expect("fetch");
         Some((t, floats(&buf)))
     } else {
         None

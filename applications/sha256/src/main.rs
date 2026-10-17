@@ -25,7 +25,8 @@ fn main() {
     );
     artifact.write(INPUT_FILENAME_OFF, &[path_bytes, &[0]].concat());
 
-    match run(artifact, "main") {
+    // SAFETY: the artifact is the one Lean built for this application.
+    match unsafe { run(artifact, "main") } {
         Ok(_) => match std::fs::read_to_string("sha256_output.txt") {
             Ok(result) => print!("{}", result),
             Err(e) => eprintln!("Failed to read output: {}", e),

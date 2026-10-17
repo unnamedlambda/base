@@ -28,7 +28,7 @@ const NEEDLES: [u8; 3] = [b',', b'\n', b' '];
 
 fn counts(base: &mut Driver, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
     let mut out = [0u8; 8 * NEEDLES.len()];
-    base.execute(entry, data, &mut out)
+    unsafe { base.execute(entry, data, &mut out) }
         .expect("execute failed");
     let mut got = [0u64; NEEDLES.len()];
     for (i, slot) in got.iter_mut().enumerate() {

@@ -54,6 +54,12 @@ fn new_module(
 ) -> Result<cranelift_jit::JITModule, String> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
+    // A program runs on its caller's stack. A frame larger than the guard
+    // page could otherwise step past it and write whatever is mapped below,
+    // where probing it first faults on the guard: an overflow ends the
+    // process, as the C API says, and frames under a page are not probed.
+    flag_builder.set("enable_probestack", "true").unwrap();
+    flag_builder.set("probestack_strategy", "inline").unwrap();
     let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))

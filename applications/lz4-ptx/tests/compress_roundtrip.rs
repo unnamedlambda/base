@@ -67,7 +67,7 @@ fn check_artifact(artifact: &[u8], block: usize, num_blk: usize) {
     // The blocks, then the geometry the program was built for, six i64s.
     let blocks = num_blk * out_stride;
     let mut out = vec![0u8; blocks + 48];
-    base.execute("main", &original, &mut out).expect("run");
+    unsafe { base.execute("main", &original, &mut out) }.expect("run");
     let geom = |i: usize| {
         i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as usize
     };

@@ -45,7 +45,7 @@ fn create_cranelift_algorithm(
 
 /// Compile `artifact` and call `name` once.
 fn run(artifact: Artifact, name: impl AsRef<str>) -> Result<i64, base::Error> {
-    base::run(artifact, name.as_ref())
+    unsafe { base::run(artifact, name.as_ref()) }
 }
 
 /// `functions`, each one the test did not name exported as its `u0:N`.
@@ -433,8 +433,8 @@ fn test_clif_call_multiple_functions() {
     // Demonstrates JIT-once, run-many: one Base, two execute() calls picking different
     // fn_idx into the same compiled module.
     let base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(&at(0), &[], &mut []).unwrap();
-    base.execute(&at(1), &[], &mut []).unwrap();
+    unsafe { base.execute(&at(0), &[], &mut []) }.unwrap();
+    unsafe { base.execute(&at(1), &[], &mut []) }.unwrap();
 
     assert!(test_file_a.exists());
     let contents_a = fs::read(&test_file_a).unwrap();
@@ -536,9 +536,9 @@ fn test_clif_call_sequential_mutations() {
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(&at(0), &[], &mut []).unwrap();
-    base.execute(&at(1), &[], &mut []).unwrap();
-    base.execute(&at(2), &[], &mut []).unwrap();
+    unsafe { base.execute(&at(0), &[], &mut []) }.unwrap();
+    unsafe { base.execute(&at(1), &[], &mut []) }.unwrap();
+    unsafe { base.execute(&at(2), &[], &mut []) }.unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -645,8 +645,8 @@ fn test_clif_call_file_read_write() {
 
     // Two execute() calls on one Base: fn0 reads input file, fn1 writes output file.
     let base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(&at(0), &[], &mut []).unwrap();
-    base.execute(&at(1), &[], &mut []).unwrap();
+    unsafe { base.execute(&at(0), &[], &mut []) }.unwrap();
+    unsafe { base.execute(&at(1), &[], &mut []) }.unwrap();
 
     assert!(output_file.exists());
     let output_data = fs::read(&output_file).unwrap();
@@ -678,13 +678,13 @@ fn test_base_multi_execute_different_data() {
 
     // First execute: input = 10, expect 30
     let data1 = 10i64.to_le_bytes();
-    base.execute(&at(0), &data1, &mut [])
+    unsafe { base.execute(&at(0), &data1, &mut []) }
         .unwrap();
     assert_eq!(read_i64(&base, 200), 30);
 
     // Second execute: input = 100, expect 300
     let data2 = 100i64.to_le_bytes();
-    base.execute(&at(0), &data2, &mut [])
+    unsafe { base.execute(&at(0), &data2, &mut []) }
         .unwrap();
     assert_eq!(read_i64(&base, 200), 300);
 }
@@ -722,12 +722,12 @@ fn test_base_multi_execute_different_actions() {
 
     // First execute: call fn0 only
     let alg1 = at(0);
-    base.execute(&alg1, &vec![0u8; 4096], &mut []).unwrap();
+    unsafe { base.execute(&alg1, &vec![0u8; 4096], &mut []) }.unwrap();
     assert_eq!(read_i64(&base, 200), 42);
 
     // Second execute: call fn1 only
     let alg2 = at(1);
-    base.execute(&alg2, &vec![0u8; 4096], &mut []).unwrap();
+    unsafe { base.execute(&alg2, &vec![0u8; 4096], &mut []) }.unwrap();
     assert_eq!(read_i64(&base, 200), 99);
 }
 
@@ -756,19 +756,19 @@ fn test_base_multi_execute_accumulates_in_memory() {
 
     // Execute 1: add 10 → total = 10
     let d1 = 10i64.to_le_bytes();
-    base.execute(&at(0), &d1, &mut [])
+    unsafe { base.execute(&at(0), &d1, &mut []) }
         .unwrap();
     assert_eq!(read_i64(&base, 200), 10);
 
     // Execute 2: add 25 → total = 35
     let d2 = 25i64.to_le_bytes();
-    base.execute(&at(0), &d2, &mut [])
+    unsafe { base.execute(&at(0), &d2, &mut []) }
         .unwrap();
     assert_eq!(read_i64(&base, 200), 35);
 
     // Execute 3: add 5 → total = 40
     let d3 = 5i64.to_le_bytes();
-    base.execute(&at(0), &d3, &mut [])
+    unsafe { base.execute(&at(0), &d3, &mut []) }
         .unwrap();
     assert_eq!(read_i64(&base, 200), 40);
 }
@@ -803,7 +803,7 @@ fn test_base_multi_execute_with_file_io() {
     mem1[512..520].copy_from_slice(&42u64.to_le_bytes());
     let config1 = artifact(exported(clif_prog.clone()), 4096, image(mem1));
     let base = Driver::load(config1).unwrap();
-    base.execute(&at(0), &[], &mut [])
+    unsafe { base.execute(&at(0), &[], &mut []) }
     .unwrap();
     assert!(file1.exists());
     let data1 = fs::read(&file1).unwrap();
@@ -815,9 +815,7 @@ fn test_base_multi_execute_with_file_io() {
     mem2[512..520].copy_from_slice(&99u64.to_le_bytes());
     let config2 = artifact(exported(clif_prog.clone()), 4096, image(mem2));
     let base2 = Driver::load(config2).unwrap();
-    base2
-        .execute(&at(0), &[], &mut [])
-        .unwrap();
+    unsafe { base2.execute(&at(0), &[], &mut []) }.unwrap();
     assert!(file2.exists());
     let data2 = fs::read(&file2).unwrap();
     assert_eq!(u64::from_le_bytes(data2[..8].try_into().unwrap()), 99);
@@ -842,15 +840,15 @@ fn test_base_multi_execute_varying_cranelift_units() {
     let base = Driver::load(config).unwrap();
 
     // Execute with 0 units
-    base.execute(&at(0), &vec![0u8; 4096], &mut [])
+    unsafe { base.execute(&at(0), &vec![0u8; 4096], &mut []) }
     .unwrap();
 
     // Execute with 2 units
-    base.execute(&at(0), &vec![0u8; 4096], &mut [])
+    unsafe { base.execute(&at(0), &vec![0u8; 4096], &mut []) }
     .unwrap();
 
     // Execute with 4 units
-    base.execute(&at(0), &vec![0u8; 4096], &mut [])
+    unsafe { base.execute(&at(0), &vec![0u8; 4096], &mut []) }
     .unwrap();
 }
 
@@ -879,7 +877,7 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     let base = Driver::load(config).unwrap();
 
     let data = 99i64.to_le_bytes();
-    base.execute(&at(0), &data, &mut [])
+    unsafe { base.execute(&at(0), &data, &mut []) }
         .unwrap();
 
     assert_eq!(read_i64(&base, 300), 110); // 11 + 99
@@ -914,12 +912,12 @@ fn test_base_persistent_memory_survives_across_executes() {
     let base = Driver::load(config).unwrap();
 
     // Execute 1: seed 77 at offset 200
-    base.execute(&at(0), &[], &mut [])
+    unsafe { base.execute(&at(0), &[], &mut []) }
     .unwrap();
 
     // Execute 2: input=5 via pointer, read persistent 77 from offset 200
     let data = 5i64.to_le_bytes();
-    base.execute(&at(1), &data, &mut [])
+    unsafe { base.execute(&at(1), &data, &mut []) }
         .unwrap();
 
     // 5 (data pointer) + 77 (persistent) = 82
@@ -948,7 +946,7 @@ fn test_base_empty_data_leaves_memory_intact() {
 
     // Three executes with empty memory — counter should increment each time
     for expected in 1..=3 {
-        base.execute(&at(0), &[], &mut [])
+        unsafe { base.execute(&at(0), &[], &mut []) }
             .unwrap();
         assert_eq!(read_i64(&base, 200), expected);
     }
@@ -979,7 +977,7 @@ fn test_base_data_pointer_updates_each_execute() {
     let mut d1 = vec![0u8; 16];
     d1[0..8].copy_from_slice(&10i64.to_le_bytes());
     d1[8..16].copy_from_slice(&20i64.to_le_bytes());
-    base.execute(&at(0), &d1, &mut [])
+    unsafe { base.execute(&at(0), &d1, &mut []) }
         .unwrap();
     assert_eq!(read_i64(&base, 200), 30);
 
@@ -987,7 +985,7 @@ fn test_base_data_pointer_updates_each_execute() {
     let mut d2 = vec![0u8; 16];
     d2[0..8].copy_from_slice(&100i64.to_le_bytes());
     d2[8..16].copy_from_slice(&200i64.to_le_bytes());
-    base.execute(&at(0), &d2, &mut [])
+    unsafe { base.execute(&at(0), &d2, &mut []) }
         .unwrap();
     assert_eq!(read_i64(&base, 200), 300);
 }
@@ -1023,14 +1021,14 @@ fn test_base_output_in_persistent_region() {
     // Execute 3 times with values 100, 200, 300
     for &val in &[100i64, 200, 300] {
         let d = val.to_le_bytes();
-        base.execute(&at(0), &d, &mut [])
+        unsafe { base.execute(&at(0), &d, &mut []) }
         .unwrap();
     }
 
     // Final read: count at 400 should be 3, values at 500/508/516 should be 100/200/300
     // One more execute to read output — pass a dummy input
     let d = 999i64.to_le_bytes();
-    base.execute(&at(0), &d, &mut [])
+    unsafe { base.execute(&at(0), &d, &mut []) }
         .unwrap();
 
     // count is now 4 (we did 4 executes), values: 100, 200, 300, 999
@@ -1051,7 +1049,7 @@ fn a_program_answers_the_status_it_returns() {
         program(function().entry(vec![iconst64(v(1), 7), ret_status(v(1))])),
     );
     let base = Driver::load(cfg).unwrap();
-    assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 7);
+    assert_eq!(unsafe { base.execute(&alg, &[], &mut []) }.unwrap(), 7);
 }
 
 /// A program that returns nothing has status 0, so a host reading a status
@@ -1064,7 +1062,7 @@ fn a_program_that_returns_nothing_has_status_zero() {
         program(function().entry(vec![ret()])),
     );
     let base = Driver::load(cfg).unwrap();
-    assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 0);
+    assert_eq!(unsafe { base.execute(&alg, &[], &mut []) }.unwrap(), 0);
 }
 
 /// What a function answers is its signature's, so a return answering anything
@@ -1171,7 +1169,7 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
 
     let alg = at(0);
 
-    base.execute(&alg, &data, &mut []).unwrap();
+    unsafe { base.execute(&alg, &data, &mut []) }.unwrap();
     assert_eq!(
         read_i64(&base, 200),
         300,
@@ -1203,7 +1201,7 @@ fn test_data_ptr_written_even_when_data_empty() {
     let alg = at(0);
 
     let base = Driver::load(config).unwrap();
-    base.execute(&alg, &[], &mut []).unwrap();
+    unsafe { base.execute(&alg, &[], &mut []) }.unwrap();
     assert_eq!(
         read_i64(&base, 200),
         0,
@@ -1234,7 +1232,7 @@ fn test_out_ptr_written_even_when_out_empty() {
     let alg = at(0);
 
     let base = Driver::load(config).unwrap();
-    base.execute(&alg, &[], &mut []).unwrap();
+    unsafe { base.execute(&alg, &[], &mut []) }.unwrap();
     assert_eq!(
         read_i64(&base, 200),
         0,
@@ -1272,7 +1270,7 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
 
     let alg = at(0);
 
-    base.execute(&alg, &data, &mut out).unwrap();
+    unsafe { base.execute(&alg, &data, &mut out) }.unwrap();
     let result = i64::from_le_bytes(out[0..8].try_into().unwrap());
     assert_eq!(
         result, 42,
@@ -1303,13 +1301,13 @@ fn test_execute_into_multiple_calls_different_data() {
     // Call 1: data=111
     let data1 = 111i64.to_le_bytes().to_vec();
     let mut out1 = vec![0u8; 8];
-    base.execute(&alg, &data1, &mut out1).unwrap();
+    unsafe { base.execute(&alg, &data1, &mut out1) }.unwrap();
     assert_eq!(i64::from_le_bytes(out1[0..8].try_into().unwrap()), 111);
 
     // Call 2: data=222, different buffers
     let data2 = 222i64.to_le_bytes().to_vec();
     let mut out2 = vec![0u8; 8];
-    base.execute(&alg, &data2, &mut out2).unwrap();
+    unsafe { base.execute(&alg, &data2, &mut out2) }.unwrap();
     assert_eq!(i64::from_le_bytes(out2[0..8].try_into().unwrap()), 222);
 
     // out1 should be unchanged from call 2
@@ -1349,7 +1347,7 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
 
     let alg = at(0);
 
-    base.execute(&alg, &data, &mut []).unwrap();
+    unsafe { base.execute(&alg, &data, &mut []) }.unwrap();
     assert_eq!(
         read_i64(&base, 200),
         999,
@@ -1391,7 +1389,7 @@ fn test_initial_memory_and_data_coexist() {
 
     // Dynamic input = 7
     let data = 7i64.to_le_bytes().to_vec();
-    base.execute(&alg, &data, &mut []).unwrap();
+    unsafe { base.execute(&alg, &data, &mut []) }.unwrap();
     assert_eq!(
         read_i64(&base, 200),
         91,
@@ -1429,7 +1427,7 @@ fn test_execute_into_out_buffer_larger_than_memory() {
     // Tiny shared memory (64 bytes) but large out buffer
     let data = vec![0u8; 8]; // need non-empty data so pointers at 8-16 get written, but we need out ptrs
     let mut out = vec![0u8; 32];
-    base.execute(&alg, &data, &mut out).unwrap();
+    unsafe { base.execute(&alg, &data, &mut out) }.unwrap();
 
     let v0 = i64::from_le_bytes(out[0..8].try_into().unwrap());
     let v1 = i64::from_le_bytes(out[8..16].try_into().unwrap());
@@ -1463,7 +1461,7 @@ fn test_run_with_data_argument() {
 
     let data = 777i64.to_le_bytes().to_vec();
     let base = Driver::load(config).unwrap();
-    base.execute(&alg, &data, &mut []).unwrap();
+    unsafe { base.execute(&alg, &data, &mut []) }.unwrap();
     assert_eq!(
         read_i64(&base, 200),
         777,
@@ -1492,7 +1490,7 @@ fn test_data_single_byte_still_writes_pointer() {
 
     let data = vec![42u8]; // single byte
     let base = Driver::load(config).unwrap();
-    base.execute(&alg, &data, &mut []).unwrap();
+    unsafe { base.execute(&alg, &data, &mut []) }.unwrap();
     assert_eq!(read_i64(&base, 200), 1, "data_len should be 1 for single-byte data");
 }
 
@@ -1521,14 +1519,14 @@ fn test_data_ptr_survives_across_multi_execute() {
 
     // Call 1: 8-byte buffer
     let data1 = 11i64.to_le_bytes().to_vec();
-    base.execute(&alg, &data1, &mut []).unwrap();
+    unsafe { base.execute(&alg, &data1, &mut []) }.unwrap();
     assert_eq!(read_i64(&base, 200), 11);
     assert_eq!(read_i64(&base, 208), 8);
 
     // Call 2: 16-byte buffer (different size!)
     let mut data2 = vec![0u8; 16];
     data2[0..8].copy_from_slice(&22i64.to_le_bytes());
-    base.execute(&alg, &data2, &mut []).unwrap();
+    unsafe { base.execute(&alg, &data2, &mut []) }.unwrap();
     assert_eq!(read_i64(&base, 200), 22);
     assert_eq!(read_i64(&base, 208), 16, "data_len should reflect new buffer size");
 }
@@ -1939,9 +1937,9 @@ fn an_entry_point_is_called_by_its_name() {
         answering(9).export("nine"),
     ])))
     .unwrap();
-    assert_eq!(base.execute("nine", &[], &mut []).unwrap(), 9);
-    assert_eq!(base.execute("seven", &[], &mut []).unwrap(), 7);
-    assert_eq!(base::run(named(programs(vec![answering(3).export("main")])), "main").unwrap(), 3);
+    assert_eq!(unsafe { base.execute("nine", &[], &mut []) }.unwrap(), 9);
+    assert_eq!(unsafe { base.execute("seven", &[], &mut []) }.unwrap(), 7);
+    assert_eq!(unsafe { base::run(named(programs(vec![answering(3).export("main")])), "main") }.unwrap(), 3);
 }
 
 /// A function nobody named is the program's own, and no name reaches it: not
@@ -1951,12 +1949,12 @@ fn an_unexported_function_is_not_callable() {
     let base = Driver::load(named(programs(vec![answering(1), answering(2).export("two")])))
         .unwrap();
     for name in ["u0:0", "one", ""] {
-        let Err(base::Error::NoSuchFunction(msg)) = base.execute(name, &[], &mut []) else {
+        let Err(base::Error::NoSuchFunction(msg)) = (unsafe { base.execute(name, &[], &mut []) }) else {
             panic!("{name:?} is not exported and should not be callable");
         };
         assert!(msg.contains(&format!("{name:?}")), "{msg}");
     }
-    assert_eq!(base.execute("two", &[], &mut []).unwrap(), 2);
+    assert_eq!(unsafe { base.execute("two", &[], &mut []) }.unwrap(), 2);
 }
 
 #[test]
@@ -2035,8 +2033,8 @@ fn names_survive_a_reordering() {
 
     for functions in [before, after] {
         let base = Driver::load(named(functions)).unwrap();
-        assert_eq!(base.execute("tens", &[], &mut []).unwrap(), 40);
-        assert_eq!(base.execute("seven", &[], &mut []).unwrap(), 7);
+        assert_eq!(unsafe { base.execute("tens", &[], &mut []) }.unwrap(), 40);
+        assert_eq!(unsafe { base.execute("seven", &[], &mut []) }.unwrap(), 7);
     }
 }
 
@@ -2152,7 +2150,7 @@ fn a_program_runs_machine_code_it_carries_as_data() {
         ret(),
     ]));
     let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(&at(0), &[], &mut []).unwrap();
+    unsafe { base.execute(&at(0), &[], &mut []) }.unwrap();
     assert_eq!(read_i64(&base, 200), 42);
     assert_eq!(base.arena()[300] as i64, arch);
 }
@@ -2182,7 +2180,7 @@ fn a_program_calls_back_a_host_function_it_is_handed() {
     let mut input = (f as usize as u64).to_le_bytes().to_vec();
     input.extend_from_slice(&[1, 2, 3]);
     let mut out = [0u8; 3];
-    assert_eq!(base.execute(&at(0), &input, &mut out).unwrap(), 103);
+    assert_eq!(unsafe { base.execute(&at(0), &input, &mut out) }.unwrap(), 103);
     assert_eq!(out, [2, 4, 6]);
 }
 

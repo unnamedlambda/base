@@ -22,9 +22,9 @@ fn driver() -> Driver {
 /// Call `entry` the way a host that does not know the output's size does: ask
 /// with no buffer, then call again with as many bytes as it answered.
 fn call(base: &mut Driver, entry: &str, data: &[u8]) -> Vec<u8> {
-    let need = base.execute(entry, data, &mut []).expect("execute");
+    let need = unsafe { base.execute(entry, data, &mut []) }.expect("execute");
     let mut out = vec![0u8; usize::try_from(need).expect("a size")];
-    assert_eq!(base.execute(entry, data, &mut out).expect("execute"), need);
+    assert_eq!(unsafe { base.execute(entry, data, &mut out) }.expect("execute"), need);
     out
 }
 
@@ -152,9 +152,9 @@ fn a_stale_bulk_reader_refuses() {
 fn a_buffer_too_small_is_left_alone() {
     let base = driver();
     for entry in ["schema", "stats", "bulk"] {
-        let need = base.execute(entry, INPUT, &mut []).expect("execute");
+        let need = unsafe { base.execute(entry, INPUT, &mut []) }.expect("execute");
         let mut out = vec![0xaau8; need as usize - 1];
-        assert_eq!(base.execute(entry, INPUT, &mut out).expect("execute"), need, "{entry}");
+        assert_eq!(unsafe { base.execute(entry, INPUT, &mut out) }.expect("execute"), need, "{entry}");
         assert!(out.iter().all(|&b| b == 0xaa), "{entry} wrote into a buffer too small for it");
     }
 }

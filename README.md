@@ -55,11 +55,12 @@ output buffers (`Driver::execute` does both, for a call made once).
 use base::{Artifact, Driver};
 
 let artifact = Artifact::from_bytes(lean_artifacts::BYTE_SCRUB)?;
-let mut driver = Driver::load(artifact)?;
+let driver = Driver::load(artifact)?;
 
 let input = [0u8; 4096];
 let mut output = [0u8; 4096];
-driver.execute("main", &input, &mut output)?;
+// SAFETY: the artifact is one Lean built and checked.
+unsafe { driver.execute("main", &input, &mut output) }?;
 assert!(!output.contains(&0));
 ```
 

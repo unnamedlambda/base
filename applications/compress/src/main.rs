@@ -32,7 +32,8 @@ fn main() {
     artifact.write(INPUT_FILENAME_OFF, &[path_bytes, &[0]].concat());
 
     let start = std::time::Instant::now();
-    match run(artifact, "main") {
+    // SAFETY: the artifact is the one Lean built for this application.
+    match unsafe { run(artifact, "main") } {
         Ok(_) => {
             let elapsed = start.elapsed();
             // Parse standard LZ4 frame to compute actual compressed data size

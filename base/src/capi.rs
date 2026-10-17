@@ -47,6 +47,26 @@
 //! a format: the generator that built the program is what knows what the bytes
 //! mean.
 //!
+//! # What a caller provides
+//!
+//! What every program assumes of its caller, as compiled C code does:
+//!
+//! - Nothing about the alignment of `in` and `out`: `in` and `out` may start at any address,
+//!   so a program reaches them with accesses that do not assume it.
+//! - The calling thread's stack, which the program runs on. Frames are
+//!   probed, so overflowing it reaches the guard page and ends the process,
+//!   as any trap does, rather than writing past it.
+//! - The default floating-point environment: rounding to nearest, subnormals
+//!   kept, no exceptions trapped, which is what the programs' float semantics
+//!   is.
+//!
+//! What else a call needs of `in`, `out` and the arena is the function's
+//! own contract, as `restrict` on a C function's parameters is that
+//! function's, not the loader's: base does nothing on a call that relies on
+//! it. A function Lean builds states that the three do not overlap, since
+//! its theorems treat them as three regions; a host that shares data without
+//! copying puts it in the arena, or passes pointers to it in `in`.
+//!
 //! # Threads
 //!
 //! Functions may be called from any number of threads at once, as any C
@@ -62,6 +82,15 @@
 //! `dlclose`. Keeping that is the host's part, and every host already has the
 //! means: a `std::shared_ptr` in C++, an `Arc` or a borrow in Rust, an object's
 //! reference count in Python.
+//!
+//! A program may start threads of its own (`cl_thread_start`), which run its
+//! code against its arena. One still running when the driver is freed runs
+//! on unmapped code, so a function that starts a thread finishes it before
+//! it returns, or leaves to a function the host calls later to finish it.
+//! That is the program's part, and nothing here checks it. The same holds of
+//! `in` and `out`: they are the program's for the call, and a thread or copy
+//! that still reads or writes them after the function returns is the
+//! program's error.
 //!
 //! # Errors
 //!
@@ -205,8 +234,9 @@ pub unsafe extern "C" fn base_driver_arena(driver: *const Driver, len: *mut usiz
 /// # Safety
 ///
 /// `driver` must come from [`base_driver_load`] and must not be used afterwards:
-/// no other call on it may still be running, and none may start. Freeing the
-/// same driver twice is undefined behaviour.
+/// no other call on it may still be running, none may start, and no thread a
+/// program of it started may still be running. Freeing the same driver twice
+/// is undefined behaviour.
 #[no_mangle]
 pub unsafe extern "C" fn base_driver_free(driver: *mut Driver) {
     if !driver.is_null() {

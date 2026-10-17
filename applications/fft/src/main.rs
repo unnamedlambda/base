@@ -26,7 +26,8 @@ fn main() {
     artifact.write(INPUT_FILENAME_OFF, &[path_bytes, &[0]].concat());
 
     let start = std::time::Instant::now();
-    match run(artifact, "main") {
+    // SAFETY: the artifact is the one Lean built for this application.
+    match unsafe { run(artifact, "main") } {
         Ok(_) => {
             let elapsed = start.elapsed();
             let input_size = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);

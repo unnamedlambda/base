@@ -24,7 +24,7 @@ const NEW: u8 = b' ';
 
 fn scrub(base: &mut Driver, entry: &str, data: &[u8]) -> Vec<u8> {
     let mut out = vec![0xAAu8; BYTES];
-    base.execute(entry, data, &mut out)
+    unsafe { base.execute(entry, data, &mut out) }
         .expect("execute failed");
     out
 }

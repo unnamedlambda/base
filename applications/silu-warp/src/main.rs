@@ -19,13 +19,13 @@ fn main() {
     let fetch = "fetch";
 
     let mut out = vec![0u8; N * 4];
-    base.execute("main", &bytes, &mut []).expect("load");
-    base.execute(run, b"", &mut []).expect("run");
+    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
+    unsafe { base.execute(run, b"", &mut []) }.expect("run");
     let reps = 50;
     let t0 = std::time::Instant::now();
-    for _ in 0..reps { base.execute(run, b"", &mut []).expect("run"); }
+    for _ in 0..reps { unsafe { base.execute(run, b"", &mut []) }.expect("run"); }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    base.execute(fetch, b"", &mut out).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
 
     let gpu: Vec<f32> = out.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
@@ -44,13 +44,13 @@ fn main() {
     println!("kernel time : {:.3} ms", dt * 1e3);
     // The same spec, 8 elements per lane: 8x fewer blocks.
     let run_loop = "runLoop";
-    base.execute(run_loop, b"", &mut []).expect("runLoop");
+    unsafe { base.execute(run_loop, b"", &mut []) }.expect("runLoop");
     let t1 = std::time::Instant::now();
-    for _ in 0..reps { base.execute(run_loop, b"", &mut []).expect("runLoop"); }
+    for _ in 0..reps { unsafe { base.execute(run_loop, b"", &mut []) }.expect("runLoop"); }
     let dt_loop = t1.elapsed().as_secs_f64() / reps as f64;
     // The looped kernel wrote the same buffer — check *its* output too.
     let mut out2 = vec![0u8; N * 4];
-    base.execute(fetch, b"", &mut out2).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut out2) }.expect("fetch");
     let gpu2: Vec<f32> = out2.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
     let mut same = 0usize;

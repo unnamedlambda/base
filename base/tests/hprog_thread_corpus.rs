@@ -33,7 +33,7 @@ fn interpreter_and_runtime_agree_on_threads() {
 
     let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    b.execute("main", &[], &mut out).expect("execute");
+    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
 
     let word = |bs: &[u8], k: usize| i64::from_le_bytes(bs[8 * k..8 * k + 8].try_into().unwrap());
     for (k, what) in [

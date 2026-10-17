@@ -43,15 +43,15 @@ fn main() {
     let fetch = "fetch";
 
     let mut out = vec![0u8; NIN * 4];
-    base.execute("main", &bytes, &mut []).expect("load");
-    base.execute(run, b"", &mut []).expect("run");
+    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
+    unsafe { base.execute(run, b"", &mut []) }.expect("run");
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute(run, b"", &mut []).expect("run");
+        unsafe { base.execute(run, b"", &mut []) }.expect("run");
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    base.execute(fetch, b"", &mut out).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
 
     let gpu: Vec<f32> = out
         .chunks_exact(4)
@@ -93,13 +93,13 @@ fn main() {
     // (`ZeroTermFree`, `ZeroLaws`) rather than being applied silently — see
     // `gradD_outputs_are_derivatives`.  This is the check that it *runs*.
     let mut out_d = vec![0u8; NIN * 4];
-    base.execute(run_d, b"", &mut []).expect("runD");
+    unsafe { base.execute(run_d, b"", &mut []) }.expect("runD");
     let t1 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute(run_d, b"", &mut []).expect("runD");
+        unsafe { base.execute(run_d, b"", &mut []) }.expect("runD");
     }
     let dt_d = t1.elapsed().as_secs_f64() / reps as f64;
-    base.execute(fetch, b"", &mut out_d).expect("fetch");
+    unsafe { base.execute(fetch, b"", &mut out_d) }.expect("fetch");
 
     let gpu_d: Vec<f32> = out_d
         .chunks_exact(4)

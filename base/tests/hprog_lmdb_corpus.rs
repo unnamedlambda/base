@@ -67,7 +67,7 @@ fn interpreter_and_library_agree() {
     let _ = std::fs::remove_dir_all(Path::new(DIRS));
     let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    b.execute("main", &[], &mut out).expect("execute");
+    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
     drop(b);
     let _ = std::fs::remove_dir_all(Path::new(DIRS));
 

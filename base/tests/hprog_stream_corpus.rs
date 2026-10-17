@@ -64,7 +64,7 @@ fn interpreter_and_device_agree() {
 
     let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    b.execute("main", &[], &mut out).expect("execute");
+    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
 
     let mut bad = Vec::new();
     for (k, what) in WHAT.iter().enumerate() {

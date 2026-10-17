@@ -163,11 +163,11 @@ fn main() {
 
     // ht
     let input = N.to_le_bytes().to_vec();
-    drv.execute("ht", &input, &mut out).unwrap();
+    unsafe { drv.execute("ht", &input, &mut out) }.unwrap();
     assert_eq!(answer(&out), rust_ht(N), "ht");
     let t = time(2, |c| match c {
         0 => { black_box(rust_ht(black_box(N))); }
-        _ => { drv.execute("ht", &input, &mut out).unwrap(); }
+        _ => { unsafe { drv.execute("ht", &input, &mut out) }.unwrap(); }
     });
     println!("ht\trust\t{:.0}\nht\tbase\t{:.0}", t[0], t[1]);
 
@@ -177,12 +177,12 @@ fn main() {
     input.extend(cstr(&dir_base));
     let mut out_rust = vec![0u8; OUT_BYTES];
     let want = rust_kv(&dir_rust, N, &mut out_rust);
-    drv.execute("kv", &input, &mut out).unwrap();
+    unsafe { drv.execute("kv", &input, &mut out) }.unwrap();
     assert_eq!(answer(&out), want, "kv count");
     assert!(out[64..] == out_rust[64..], "kv scans differ");
     let t = time(2, |c| match c {
         0 => { black_box(rust_kv(&dir_rust, N, &mut out_rust)); }
-        _ => { drv.execute("kv", &input, &mut out).unwrap(); }
+        _ => { unsafe { drv.execute("kv", &input, &mut out) }.unwrap(); }
     });
     println!("kv\trust\t{:.0}\nkv\tbase\t{:.0}", t[0], t[1]);
 
@@ -199,11 +199,11 @@ fn main() {
     std::fs::write(&file, &text).unwrap();
     let input = cstr(&file);
     let mut buf = Vec::with_capacity(WC_BYTES);
-    drv.execute("wc", &input, &mut out).unwrap();
+    unsafe { drv.execute("wc", &input, &mut out) }.unwrap();
     assert_eq!(answer(&out), rust_wc(&file, &mut buf), "wc");
     let t = time(2, |c| match c {
         0 => { black_box(rust_wc(black_box(&file), &mut buf)); }
-        _ => { drv.execute("wc", &input, &mut out).unwrap(); }
+        _ => { unsafe { drv.execute("wc", &input, &mut out) }.unwrap(); }
     });
     println!("wc\trust\t{:.0}\nwc\tbase\t{:.0}", t[0], t[1]);
 

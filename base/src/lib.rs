@@ -109,10 +109,22 @@ impl Function<'_> {
     /// call runs on its caller's thread against the one arena, and how calls
     /// share it is the program's to decide: with atomics, as `shared_sum`
     /// does, or by keeping to disjoint bytes.
-    pub fn call(&self, input: &[u8], output: &mut [u8]) -> i64 {
-        // SAFETY: a function the engine checked has `FunctionPtr`'s
-        // signature, mapped for as long as the driver this borrows; the
-        // buffers are valid for their lengths.
+    ///
+    /// # Safety
+    ///
+    /// A load answers whether the artifact is a program, not whether running
+    /// it is defined: that is the program's to keep, as with any foreign
+    /// function. It keeps every contract of the calls it makes and reaches
+    /// only its arena, its input and its output, which for an artifact Lean
+    /// built is what its no-misuse theorem states, under the capabilities the
+    /// theorem names. The thread calling it is in the default floating-point
+    /// environment, and `input` and `output` are as the function's own
+    /// contract asks: for one Lean built, not bytes of the arena.
+    pub unsafe fn call(&self, input: &[u8], output: &mut [u8]) -> i64 {
+        // SAFETY: the function has `FunctionPtr`'s signature, which loading
+        // declared and verified, and is mapped for as long as the driver this
+        // borrows; the buffers are valid for their lengths; the rest is the
+        // caller's, above.
         unsafe { (self.f)(input.as_ptr(), input.len(), output.as_mut_ptr(), output.len()) }
     }
 
@@ -144,10 +156,10 @@ impl Drop for Driver {
     /// mapped for the life of the process, and the region it was placed in is
     /// reserved up front, so every dropped `Driver` would leak that reservation.
     fn drop(&mut self) {
-        // Nothing runs the code once the driver goes: a host may call a
-        // function only while the driver lives, and a program's workers are
-        // joined by `cl_thread_cleanup` before the program that spawned them
-        // returns.
+        // Nothing runs the code once the driver goes: a host may call a function
+        // only while the driver lives, and a program finishes the
+        // threads it started before then: both are what a caller of
+        // `Function::call` keeps.
         if let Some(module) = self._module.take() {
             unsafe { module.free_memory() };
         }
@@ -296,15 +308,23 @@ impl Driver {
 
     /// Call the function named `name` with `input`, answering in `output`:
     /// [`Driver::function`], then [`Function::call`].
-    pub fn execute(&self, name: &str, input: &[u8], output: &mut [u8]) -> Result<i64, Error> {
-        Ok(self.function(name)?.call(input, output))
+    ///
+    /// # Safety
+    ///
+    /// As [`Function::call`].
+    pub unsafe fn execute(&self, name: &str, input: &[u8], output: &mut [u8]) -> Result<i64, Error> {
+        Ok(unsafe { self.function(name)?.call(input, output) })
     }
 }
 
 /// Compile an artifact and call its function named `name`, once.
-pub fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
+///
+/// # Safety
+///
+/// As [`Function::call`].
+pub unsafe fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
     let driver = Driver::load(artifact)?;
-    driver.execute(name, &[], &mut [])
+    unsafe { driver.execute(name, &[], &mut []) }
 }
 
 pub fn init_tracing() {

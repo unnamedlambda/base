@@ -208,10 +208,10 @@ pub const ROOFLINE_GBS: f64 = 360.0;
 
 /// Seconds per launch, after one warm-up.
 pub fn time(base: &mut Driver, entry: &str, reps: usize) -> f64 {
-    base.execute(entry, b"", &mut []).expect("warm-up launch");
+    unsafe { base.execute(entry, b"", &mut []) }.expect("warm-up launch");
     let t = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute(entry, b"", &mut []).expect("timed launch");
+        unsafe { base.execute(entry, b"", &mut []) }.expect("timed launch");
     }
     t.elapsed().as_secs_f64() / reps as f64
 }

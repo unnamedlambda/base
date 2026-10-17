@@ -43,6 +43,6 @@ fn main() {
     let base = Driver::load(artifact).expect("Driver::load");
 
     eprintln!("Starting qwen2_on_disk (weights={weights_path}, tokenizer={tokenizer_path})");
-    base.execute("main", &data, &mut [])
+    unsafe { base.execute("main", &data, &mut []) }
         .expect("qwen2_on_disk run");
 }

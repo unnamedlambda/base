@@ -11,7 +11,9 @@
  *
  * Threads: functions may be called from any number of threads at once, as
  * any C functions may. `base_driver_free` needs the driver to itself: no
- * function of it may be running, and none may be called after it.
+ * function of it may be running, none may be called after it, and no thread a
+ * program started may still be running. `in` and `out` are the program's for
+ * the call only.
  *
  * Waiting on a word of the arena, waking, and the clock are the system's own
  * calls, which programs make too, so a host's thread and a program's meet at
@@ -51,8 +53,21 @@ extern "C" {
 
 typedef struct BaseDriver BaseDriver;
 
-/* Every function a host calls: runs the program with `in`, answers in `out`,
- * which it reads and writes directly, and returns the program's status. */
+/* Every function a host calls: runs the program with `in`, answers in `out`, which it
+ * reads and writes directly, and returns the program's status. `in` may be
+ * NULL when `in_len` is 0, and `out` when `out_len` is.
+ *
+ * What every program assumes of its caller, as compiled C code does:
+ *  - Nothing about the alignment of `in` and `out`: they may start anywhere.
+ *  - The calling thread's stack, which the program runs on. One it overflows
+ *    ends the process, as any trap does.
+ *  - The default floating-point environment: rounding to nearest, subnormals
+ *    kept, no exceptions trapped.
+ *
+ * What else a call needs of `in`, `out` and the arena is the function's
+ * own contract, as `restrict` on a C function's parameters is that
+ * function's: base does nothing on a call that relies on it. A function
+ * Lean builds needs the three not to overlap. */
 typedef int64_t (*BaseFunction)(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len);
 
 /* Compile an artifact (the `.cbor` a generator writes) and allocate its
@@ -75,7 +90,8 @@ BaseFunction base_driver_function(const BaseDriver *driver, const uint8_t *name,
  * its own pages, mapped zeroed, so it starts page-aligned. */
 uint8_t *base_driver_arena(const BaseDriver *driver, size_t *len);
 
-/* Release a driver. NULL is accepted. No function of it may be running. */
+/* Release a driver. NULL is accepted. No function of it, and no thread a
+ * program of it started, may be running. */
 void base_driver_free(BaseDriver *driver);
 
 #ifdef __cplusplus

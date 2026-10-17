@@ -8,7 +8,7 @@ const ARTIFACT_BINARY: &[u8] =
 fn run_scenario(base: &mut Driver, entry: &str) -> (i64, i64, i64) {
     // The scenario answers pass, actual and expected in its out buffer.
     let mut out = [0u8; 24];
-    base.execute(entry, &[], &mut out).expect("execute failed");
+    unsafe { base.execute(entry, &[], &mut out) }.expect("execute failed");
     let col = |i: usize| i64::from_le_bytes(out[i * 8..i * 8 + 8].try_into().unwrap());
     (col(0), col(1), col(2))
 }

@@ -32,7 +32,8 @@ fn main() {
         artifact.write(OUTPUT_PATH_OFFSET, &path);
     }
 
-    match run(artifact, "main") {
+    // SAFETY: the artifact is the one Lean built for this application.
+    match unsafe { run(artifact, "main") } {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Execution failed: {:?}", e);

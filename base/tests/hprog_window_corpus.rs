@@ -50,7 +50,7 @@ fn interpreter_and_runtime_agree_without_a_display() {
     }
     let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    b.execute("main", &[], &mut out).expect("execute");
+    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
 
     let mut bad = Vec::new();
     for (k, what) in WHAT.iter().enumerate() {
@@ -116,7 +116,7 @@ fn interpreter_and_runtime_agree_with_a_display() {
 
     let b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    b.execute("main", &[], &mut out).expect("execute");
+    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
 
     let bad: Vec<String> = DISPLAY_WHAT
         .iter()
