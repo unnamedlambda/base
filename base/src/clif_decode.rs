@@ -15,7 +15,7 @@ use base_types::clif;
 use cranelift_codegen::cursor::{Cursor, FuncCursor};
 use cranelift_codegen::ir::instructions::InstructionFormat;
 use cranelift_codegen::ir::{
-    self, ArgumentExtension, ArgumentPurpose, ExtFuncData, ExternalName, InstBuilder, InstBuilderBase,
+    self, ArgumentExtension, ArgumentPurpose, ExtFuncData, ExternalName, InstBuilderBase,
     MemFlags, Opcode, Signature, TrapCode, UserExternalName, UserFuncName,
 };
 use cranelift_codegen::isa::CallConv;
@@ -376,207 +376,128 @@ fn bind(vals: &mut Vals, names: &[clif::Val], inst: ir::Inst, dfg: &ir::DataFlow
     Ok(())
 }
 
-fn emit(
-    func: &mut ir::Function,
-    blk: ir::Block,
-    inst: &clif::Inst,
-    vals: &mut Vals,
-    ctx: &Ctx,
-) -> Result<(), String> {
+/// An immediate cut to the width of the type it is at, as Cranelift's own
+/// builders cut it (`InstructionData::mask_immediates`, private to Cranelift).
+fn mask_immediates(data: &mut ir::InstructionData, ct: ir::Type) {
+    let cut = |imm: &mut ir::immediates::Imm64| {
+        if !ct.is_invalid() && ct.bits() < 64 {
+            *imm = (imm.bits() & ((1i64 << ct.bits()) - 1)).into();
+        }
+    };
+    match data {
+        ir::InstructionData::UnaryImm { imm, .. } => cut(imm),
+        ir::InstructionData::BinaryImm64 { opcode: Opcode::SdivImm | Opcode::SremImm, imm, .. } => cut(imm),
+        _ => {}
+    }
+}
+
+fn emit(func: &mut ir::Function, blk: ir::Block, inst: &clif::Inst, vals: &mut Vals, ctx: &Ctx) -> Result<(), String> {
     use clif::Inst as I;
     use ir::InstructionData as D;
     use InstructionFormat as F;
     let mut cur = FuncCursor::new(func).at_bottom(blk);
-
-    // Each format the same way: its opcode, checked against the format; its
-    // controlling type, from the data it is made of; then the instruction,
-    // built by the format's own builder where that masks an immediate to the
-    // type and from the data itself otherwise; and its results bound.
-    macro_rules! build {
-        ($res:expr, $name:expr, $named:expr, $format:ident, |$op:ident| $data:expr, |$t:ident, $d:ident| $make:expr) => {{
-            let $op = opcode($name, F::$format)?;
-            let $d = $data;
-            let $t = ctrl_type($op, $named.as_ref(), &$d, &cur.func.dfg)?;
-            let (inst, dfg) = $make;
-            bind(vals, $res, inst, dfg)?;
-        }};
-    }
-    fn list(cur: &mut FuncCursor<'_>, vs: &[ir::Value]) -> ir::ValueList {
-        ir::ValueList::from_slice(vs, &mut cur.func.dfg.value_lists)
-    }
-    fn block_call(cur: &mut FuncCursor<'_>, ctx: &Ctx, vals: &Vals, c: &clif::BlockCall) -> Result<ir::BlockCall, String> {
+    let list = |cur: &mut FuncCursor<'_>, vs: &[ir::Value]| ir::ValueList::from_slice(vs, &mut cur.func.dfg.value_lists);
+    let block_call = |cur: &mut FuncCursor<'_>, c: &clif::BlockCall| -> Result<ir::BlockCall, String> {
         let n = c.0 .0;
         let blk = *ctx.blocks.get(&n).ok_or_else(|| format!("a branch to block{n}, which there is not"))?;
         let args: Vec<ir::BlockArg> = vals.get_all(&c.1)?.into_iter().map(ir::BlockArg::Value).collect();
         Ok(ir::BlockCall::new(blk, args, &mut cur.func.dfg.value_lists))
-    }
+    };
     let slot = |s: u32| ctx.slots.get(s as usize).copied().ok_or_else(|| format!("stack slot {s}, which there is not"));
     let cond = |c: &str| ir::condcodes::IntCC::from_str(c).map_err(|_| format!("{c:?} is not an integer condition"));
     let fcond = |c: &str| ir::condcodes::FloatCC::from_str(c).map_err(|_| format!("{c:?} is not a float condition"));
+    let off = ir::immediates::Offset32::new;
 
-    match inst {
-        I::Unary(r, n, t, a) => {
-            let a = vals.get(*a)?;
-            build!(r, n, t, Unary, |op| D::Unary { opcode: op, arg: a }, |ct, _d| cur.ins().Unary(op, ct, a))
-        }
-        I::UnaryImm(r, n, t, k) => {
-            let imm: ir::immediates::Imm64 = (*k).into();
-            build!(r, n, t, UnaryImm, |op| D::UnaryImm { opcode: op, imm }, |ct, _d| cur.ins().UnaryImm(op, ct, imm))
-        }
+    let (results, named, mut data) = match inst {
+        I::Unary(r, n, t, a) => (r, t, D::Unary { opcode: opcode(n, F::Unary)?, arg: vals.get(*a)? }),
+        I::UnaryImm(r, n, t, k) => (r, t, D::UnaryImm { opcode: opcode(n, F::UnaryImm)?, imm: (*k).into() }),
         I::UnaryIeee32(r, n, t, bits) => {
-            let imm = ir::immediates::Ieee32::with_bits(*bits);
-            build!(r, n, t, UnaryIeee32, |op| D::UnaryIeee32 { opcode: op, imm }, |ct, _d| {
-                cur.ins().UnaryIeee32(op, ct, imm)
-            })
+            (r, t, D::UnaryIeee32 { opcode: opcode(n, F::UnaryIeee32)?, imm: ir::immediates::Ieee32::with_bits(*bits) })
         }
         I::UnaryIeee64(r, n, t, bits) => {
-            let imm = ir::immediates::Ieee64::with_bits(*bits);
-            build!(r, n, t, UnaryIeee64, |op| D::UnaryIeee64 { opcode: op, imm }, |ct, _d| {
-                cur.ins().UnaryIeee64(op, ct, imm)
-            })
+            (r, t, D::UnaryIeee64 { opcode: opcode(n, F::UnaryIeee64)?, imm: ir::immediates::Ieee64::with_bits(*bits) })
         }
         I::UnaryGlobalValue(r, n, t, clif::Global::Arena) => {
-            let gv = ctx.arena.ok_or("the arena is not declared")?;
-            build!(r, n, t, UnaryGlobalValue, |op| D::UnaryGlobalValue { opcode: op, global_value: gv }, |ct, d| {
-                cur.ins().build(d, ct)
-            })
+            let global_value = ctx.arena.ok_or("the arena is not declared")?;
+            (r, t, D::UnaryGlobalValue { opcode: opcode(n, F::UnaryGlobalValue)?, global_value })
         }
-        I::Binary(r, n, t, a, b) => {
-            let (a, b) = (vals.get(*a)?, vals.get(*b)?);
-            build!(r, n, t, Binary, |op| D::Binary { opcode: op, args: [a, b] }, |ct, _d| cur.ins().Binary(op, ct, a, b))
-        }
-        I::BinaryImm8(r, n, t, a, k) => {
-            let a = vals.get(*a)?;
-            build!(r, n, t, BinaryImm8, |op| D::BinaryImm8 { opcode: op, arg: a, imm: *k }, |ct, _d| {
-                cur.ins().BinaryImm8(op, ct, *k, a)
-            })
-        }
+        I::Binary(r, n, t, a, b) => (r, t, D::Binary { opcode: opcode(n, F::Binary)?, args: [vals.get(*a)?, vals.get(*b)?] }),
+        I::BinaryImm8(r, n, t, a, k) => (r, t, D::BinaryImm8 { opcode: opcode(n, F::BinaryImm8)?, arg: vals.get(*a)?, imm: *k }),
         I::BinaryImm64(r, n, t, a, k) => {
-            let a = vals.get(*a)?;
-            let imm: ir::immediates::Imm64 = (*k).into();
-            build!(r, n, t, BinaryImm64, |op| D::BinaryImm64 { opcode: op, arg: a, imm }, |ct, _d| {
-                cur.ins().BinaryImm64(op, ct, imm, a)
-            })
+            (r, t, D::BinaryImm64 { opcode: opcode(n, F::BinaryImm64)?, arg: vals.get(*a)?, imm: (*k).into() })
         }
         I::Ternary(r, n, t, a, b, c) => {
-            let (a, b, c) = (vals.get(*a)?, vals.get(*b)?, vals.get(*c)?);
-            build!(r, n, t, Ternary, |op| D::Ternary { opcode: op, args: [a, b, c] }, |ct, _d| {
-                cur.ins().Ternary(op, ct, a, b, c)
-            })
+            (r, t, D::Ternary { opcode: opcode(n, F::Ternary)?, args: [vals.get(*a)?, vals.get(*b)?, vals.get(*c)?] })
         }
         I::MultiAry(r, n, t, args) => {
-            let args = vals.get_all(args)?;
-            let args = list(&mut cur, &args);
-            build!(r, n, t, MultiAry, |op| D::MultiAry { opcode: op, args }, |ct, d| cur.ins().build(d, ct))
+            let args = list(&mut cur, &vals.get_all(args)?);
+            (r, t, D::MultiAry { opcode: opcode(n, F::MultiAry)?, args })
         }
-        I::NullAry(r, n, t) => {
-            build!(r, n, t, NullAry, |op| D::NullAry { opcode: op }, |ct, _d| cur.ins().NullAry(op, ct))
-        }
+        I::NullAry(r, n, t) => (r, t, D::NullAry { opcode: opcode(n, F::NullAry)? }),
         I::IntCompare(r, n, t, c, a, b) => {
-            let (c, a, b) = (cond(c)?, vals.get(*a)?, vals.get(*b)?);
-            build!(r, n, t, IntCompare, |op| D::IntCompare { opcode: op, args: [a, b], cond: c }, |ct, _d| {
-                cur.ins().IntCompare(op, ct, c, a, b)
-            })
+            (r, t, D::IntCompare { opcode: opcode(n, F::IntCompare)?, cond: cond(c)?, args: [vals.get(*a)?, vals.get(*b)?] })
         }
         I::FloatCompare(r, n, t, c, a, b) => {
-            let (c, a, b) = (fcond(c)?, vals.get(*a)?, vals.get(*b)?);
-            build!(r, n, t, FloatCompare, |op| D::FloatCompare { opcode: op, args: [a, b], cond: c }, |ct, _d| {
-                cur.ins().FloatCompare(op, ct, c, a, b)
-            })
+            (r, t, D::FloatCompare { opcode: opcode(n, F::FloatCompare)?, cond: fcond(c)?, args: [vals.get(*a)?, vals.get(*b)?] })
         }
-        I::Jump(r, n, t, dest) => {
-            let destination = block_call(&mut cur, ctx, vals, dest)?;
-            build!(r, n, t, Jump, |op| D::Jump { opcode: op, destination }, |ct, d| cur.ins().build(d, ct))
-        }
+        I::Jump(r, n, t, dest) => (r, t, D::Jump { opcode: opcode(n, F::Jump)?, destination: block_call(&mut cur, dest)? }),
         I::Brif(r, n, t, c, then, els) => {
             let arg = vals.get(*c)?;
-            let blocks = [block_call(&mut cur, ctx, vals, then)?, block_call(&mut cur, ctx, vals, els)?];
-            build!(r, n, t, Brif, |op| D::Brif { opcode: op, arg, blocks }, |ct, d| cur.ins().build(d, ct))
+            let blocks = [block_call(&mut cur, then)?, block_call(&mut cur, els)?];
+            (r, t, D::Brif { opcode: opcode(n, F::Brif)?, arg, blocks })
         }
         I::Call(r, n, t, c, args) => {
             let (func_ref, name, sig) = ctx.callees.get(c).ok_or_else(|| format!("a call to {c:?}, undeclared"))?;
             let args = vals.get_all(args)?;
             check_call(name, sig, &args, &cur.func.dfg)?;
-            let args = list(&mut cur, &args);
-            build!(r, n, t, Call, |op| D::Call { opcode: op, func_ref: *func_ref, args }, |ct, d| {
-                cur.ins().build(d, ct)
-            })
+            (r, t, D::Call { opcode: opcode(n, F::Call)?, func_ref: *func_ref, args: list(&mut cur, &args) })
         }
         I::CallIndirect(r, n, t, s, callee, args) => {
             let (sig_ref, sig) = ctx.sigs.get(s).ok_or("an indirect call to an undeclared signature")?;
             let args = vals.get_all(args)?;
             check_call("an indirect callee", sig, &args, &cur.func.dfg)?;
             let args = list(&mut cur, &[&[vals.get(*callee)?][..], &args].concat());
-            build!(r, n, t, CallIndirect, |op| D::CallIndirect { opcode: op, sig_ref: *sig_ref, args }, |ct, d| {
-                cur.ins().build(d, ct)
-            })
+            (r, t, D::CallIndirect { opcode: opcode(n, F::CallIndirect)?, sig_ref: *sig_ref, args })
         }
         I::FuncAddr(r, n, t, c) => {
             let (func_ref, _, _) = ctx.callees.get(c).ok_or_else(|| format!("func_addr of {c:?}, undeclared"))?;
-            build!(r, n, t, FuncAddr, |op| D::FuncAddr { opcode: op, func_ref: *func_ref }, |ct, d| {
-                cur.ins().build(d, ct)
-            })
+            (r, t, D::FuncAddr { opcode: opcode(n, F::FuncAddr)?, func_ref: *func_ref })
         }
         I::AtomicRmw(r, n, t, f, rmw, a, x) => {
+            let op = opcode(n, F::AtomicRmw)?;
             let rmw = ir::AtomicRmwOp::from_str(rmw).map_err(|_| format!("{rmw:?} is not an atomic operation"))?;
-            let (a, x) = (vals.get(*a)?, vals.get(*x)?);
-            let flags = flags(opcode(n, F::AtomicRmw)?, f)?;
-            build!(r, n, t, AtomicRmw, |op| D::AtomicRmw { opcode: op, args: [a, x], flags, op: rmw }, |ct, _d| {
-                cur.ins().AtomicRmw(op, ct, flags, rmw, a, x)
-            })
+            (r, t, D::AtomicRmw { opcode: op, args: [vals.get(*a)?, vals.get(*x)?], flags: flags(op, f)?, op: rmw })
         }
         I::AtomicCas(r, n, t, f, a, e, x) => {
-            let (a, e, x) = (vals.get(*a)?, vals.get(*e)?, vals.get(*x)?);
-            let flags = flags(opcode(n, F::AtomicCas)?, f)?;
-            build!(r, n, t, AtomicCas, |op| D::AtomicCas { opcode: op, args: [a, e, x], flags }, |ct, _d| {
-                cur.ins().AtomicCas(op, ct, flags, a, e, x)
-            })
+            let op = opcode(n, F::AtomicCas)?;
+            (r, t, D::AtomicCas { opcode: op, args: [vals.get(*a)?, vals.get(*e)?, vals.get(*x)?], flags: flags(op, f)? })
         }
-        I::Load(r, n, t, f, a, off) => {
-            let a = vals.get(*a)?;
-            let off = ir::immediates::Offset32::new(*off);
-            let flags = flags(opcode(n, F::Load)?, f)?;
-            build!(r, n, t, Load, |op| D::Load { opcode: op, arg: a, flags, offset: off }, |ct, _d| {
-                cur.ins().Load(op, ct, flags, off, a)
-            })
+        I::Load(r, n, t, f, a, o) => {
+            let op = opcode(n, F::Load)?;
+            (r, t, D::Load { opcode: op, arg: vals.get(*a)?, flags: flags(op, f)?, offset: off(*o) })
         }
         I::LoadNoOffset(r, n, t, f, a) => {
-            let a = vals.get(*a)?;
-            let flags = flags(opcode(n, F::LoadNoOffset)?, f)?;
-            build!(r, n, t, LoadNoOffset, |op| D::LoadNoOffset { opcode: op, arg: a, flags }, |ct, _d| {
-                cur.ins().LoadNoOffset(op, ct, flags, a)
-            })
+            let op = opcode(n, F::LoadNoOffset)?;
+            (r, t, D::LoadNoOffset { opcode: op, arg: vals.get(*a)?, flags: flags(op, f)? })
         }
-        I::Store(r, n, t, f, v, a, off) => {
-            let (v, a) = (vals.get(*v)?, vals.get(*a)?);
-            let off = ir::immediates::Offset32::new(*off);
-            let flags = flags(opcode(n, F::Store)?, f)?;
-            build!(r, n, t, Store, |op| D::Store { opcode: op, args: [v, a], flags, offset: off }, |ct, _d| {
-                cur.ins().Store(op, ct, flags, off, v, a)
-            })
+        I::Store(r, n, t, f, v, a, o) => {
+            let op = opcode(n, F::Store)?;
+            (r, t, D::Store { opcode: op, args: [vals.get(*v)?, vals.get(*a)?], flags: flags(op, f)?, offset: off(*o) })
         }
         I::StoreNoOffset(r, n, t, f, v, a) => {
-            let (v, a) = (vals.get(*v)?, vals.get(*a)?);
-            let flags = flags(opcode(n, F::StoreNoOffset)?, f)?;
-            build!(r, n, t, StoreNoOffset, |op| D::StoreNoOffset { opcode: op, args: [v, a], flags }, |ct, _d| {
-                cur.ins().StoreNoOffset(op, ct, flags, v, a)
-            })
+            let op = opcode(n, F::StoreNoOffset)?;
+            (r, t, D::StoreNoOffset { opcode: op, args: [vals.get(*v)?, vals.get(*a)?], flags: flags(op, f)? })
         }
-        I::StackLoad(r, n, t, s, off) => {
-            let stack_slot = slot(*s)?;
-            let offset = ir::immediates::Offset32::new(*off);
-            build!(r, n, t, StackLoad, |op| D::StackLoad { opcode: op, stack_slot, offset }, |ct, _d| {
-                cur.ins().StackLoad(op, ct, stack_slot, offset)
-            })
+        I::StackLoad(r, n, t, s, o) => {
+            (r, t, D::StackLoad { opcode: opcode(n, F::StackLoad)?, stack_slot: slot(*s)?, offset: off(*o) })
         }
-        I::StackStore(r, n, t, v, s, off) => {
-            let v = vals.get(*v)?;
-            let stack_slot = slot(*s)?;
-            let offset = ir::immediates::Offset32::new(*off);
-            build!(r, n, t, StackStore, |op| D::StackStore { opcode: op, arg: v, stack_slot, offset }, |ct, _d| {
-                cur.ins().StackStore(op, ct, stack_slot, offset, v)
-            })
+        I::StackStore(r, n, t, v, s, o) => {
+            let arg = vals.get(*v)?;
+            (r, t, D::StackStore { opcode: opcode(n, F::StackStore)?, arg, stack_slot: slot(*s)?, offset: off(*o) })
         }
-    }
-    Ok(())
+    };
+    let ct = ctrl_type(data.opcode(), named.as_ref(), &data, &cur.func.dfg)?;
+    mask_immediates(&mut data, ct);
+    let (inst, dfg) = cur.ins().build(data, ct);
+    bind(vals, results, inst, dfg)
 }
