@@ -14,7 +14,7 @@
 # cap. The cap alone is not enough: a Lean process maps its imports' .olean
 # files, and at the cap the kernel reclaims and refaults those file pages
 # before it kills anything, which stalls the whole machine. The watchdog
-# kills the build when its cgroup passes 5.3G or the machine has under 2.5G
+# kills the build when its cgroup passes 9.3G or the machine has under 2.5G
 # available, so the session never sees sustained pressure. The build starts
 # with as many Lean processes as fit; after a kill it tries again with fewer,
 # and Lake keeps every module that finished, so a kill costs only the modules
@@ -44,7 +44,7 @@ LOG="${LEAN_BUILD_LOG:-$ROOT/target/lean_build.log}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 
-# Kill the scope `$1` when it passes 5.3G or the machine runs short, and say so
+# Kill the scope `$1` when it passes 9.3G or the machine runs short, and say so
 # in the log; ends when the scope does.
 watchdog() {
   local cg="/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/$1.scope"
@@ -53,7 +53,7 @@ watchdog() {
   while [ -d "$cg" ]; do
     cur=$(cat "$cg/memory.current" 2>/dev/null || echo 0)
     av=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
-    if [ "$cur" -gt $((5300 * 1024 * 1024)) ] || [ "$av" -lt $((2500 * 1024)) ]; then
+    if [ "$cur" -gt $((9300 * 1024 * 1024)) ] || [ "$av" -lt $((2500 * 1024)) ]; then
       echo "== watchdog: build at $((cur / 1048576)) MiB, $((av / 1024)) MiB available; killing it" >> "$LOG"
       systemctl --user kill --signal=KILL "$1.scope" 2>/dev/null
       return
@@ -63,12 +63,12 @@ watchdog() {
 }
 
 status=1
-for jobs in 3 2 1; do
+for jobs in 6 5 4 3 2 1; do
   echo "== lake build with $jobs Lean processes at once" | tee -a "$LOG"
   from=$(( $(wc -l < "$LOG") + 1 ))
   unit="lean-build-$$-$jobs"
   watchdog "$unit" &
-  LEAN_NUM_THREADS=$jobs systemd-run --user --unit="$unit" --scope -q -p MemoryMax=6G -p MemorySwapMax=0 -- \
+  LEAN_NUM_THREADS=$jobs systemd-run --user --unit="$unit" --scope -q -p MemoryMax=10G -p MemorySwapMax=0 -- \
     nice -n 19 lake build "$@" >> "$LOG" 2>&1
   status=$?
   wait

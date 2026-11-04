@@ -3,8 +3,8 @@ public import AlgorithmLib.Proof.Loops
 meta import AlgorithmLib.Proof.Loops
 public import AlgorithmLib.Proof.ProgHoare
 meta import AlgorithmLib.Proof.ProgHoare
-public import AlgorithmLib.Host.ExtLife
-meta import AlgorithmLib.Host.ExtLife
+public import AlgorithmLib.Host.Heap
+meta import AlgorithmLib.Host.Heap
 public import AlgorithmLib.Surface.LibBase
 meta import AlgorithmLib.Surface.LibBase
 public import AlgorithmLib.Host.Summary
@@ -2808,6 +2808,21 @@ theorem CallsD.mono {L : Sem.Locals} {i : Nat} {args : List V} {w : World} {Q Q'
 /-- Noting a call writes nothing. -/
 theorem wrote_obs (w : World) (c : Callee) (vs : List V) (p : UInt64) : Wrote w (obsCall w c vs) p 0 :=
   ⟨MemSame.refl _, rfl, fun _ _ _ => rfl⟩
+
+theorem mapM_slots_nil {Γ : Env} : ([] : List R).mapM (fun r => Γ[r]?) = some [] := rfl
+
+theorem mapM_slots_cons {Γ : Env} {r : R} {rs : List R} {v : V} {vs : List V}
+    (h : Γ[r]? = some v) (t : rs.mapM (fun r => Γ[r]?) = some vs) :
+    (r :: rs).mapM (fun r => Γ[r]?) = some (v :: vs) := by
+  simp only [List.mapM_cons, h, t, Option.bind_eq_bind, Option.bind_some, Option.pure_def]
+
+/-- The values a call's argument slots hold, read slot by slot: each by `slot`,
+    falling back to `rfl` where a value is written differently from the one
+    the environment holds. Unifying the whole list at once unfolds the
+    environment through every slot, seconds per argument. -/
+macro "slots" : tactic => `(tactic| (simp only [Vals.slots]; repeat (first
+  | ((with_reducible refine mapM_slots_cons ?_ ?_); (first | slot | rfl))
+  | with_reducible exact mapM_slots_nil)))
 
 section fromProgram
 variable {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop} {Γ : Env} {w : World}

@@ -101,7 +101,7 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
   refine wp_iaddImm (by slot) ?_
   apply wp_iconst32
   -- htInit
-  refine wp_callD (cs := [.sc .i64 base]) rfl rfl
+  refine wp_callD (cs := [.sc .i64 base]) rfl (by slots)
     (init_at (i := 1) rfl (obsCall w _ _) base .arena 0 hc hd0 hna (Nat.le_trans (by decide) hsz) k) ?_
   rintro w1 ⟨⟨c, hl1, hcase⟩, O1⟩
   have M1 := keep _ _ O1 M0
@@ -109,7 +109,7 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
   refine wp_load64 (by slot) hl1 ?_
   rcases hcase with rfl | hA
   · -- no context: every call answers that there is none
-    refine wp_callA (cs := [.sc .i64 0]) rfl rfl (Ans.calls (i := 3) rfl (fun cfg => create_null cfg _) k) ?_
+    refine wp_callA (cs := [.sc .i64 0]) rfl (by slots) (Ans.calls (i := 3) rfl (fun cfg => create_null cfg _) k) ?_
     rintro x w2 ⟨-, hw2⟩
     have hl2 : w2.mem.load base 8 = some 0 := by rw [hw2]; exact hl1
     have hc2 : Calm w2 := by rw [hw2]; exact M1.1
@@ -118,14 +118,14 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
     apply wp_iconst64
     refine wp_band (by slot) (by slot) ?_
     refine wp_callD (cs := [.sc .i64 0, .sc .i64 (base + c64 16), ofInt .i32 8, .sc .i64 (base + c64 32),
-        ofInt .i32 8]) rfl rfl (Does.calls (i := 4) rfl (fun cfg => insert_null cfg _ _ _ _ _) k) ?_
+        ofInt .i32 8]) rfl (by slots) (Does.calls (i := 4) rfl (fun cfg => insert_null cfg _ _ _ _ _) k) ?_
     rintro w3 hw3
     have hl3 : w3.mem.load base 8 = some 0 := by rw [hw3]; exact hl2
     have hc3 : Calm w3 := by rw [hw3]; exact hc2
     clear hw3
     simp only [wp_ret]
     refine wp_callA (cs := [.sc .i64 0, .sc .i64 (base + c64 16), ofInt .i32 8, .sc .i64 (base + c64 128)])
-      rfl rfl (Ans.calls (i := 5) rfl (fun cfg => lookup_null cfg _ _ _ _) k) ?_
+      rfl (by slots) (Ans.calls (i := 5) rfl (fun cfg => lookup_null cfg _ _ _ _) k) ?_
     rintro x' w4 ⟨-, hw4⟩
     have hl4 : w4.mem.load base 8 = some 0 := by rw [hw4]; exact hl3
     have hc4 : Calm w4 := by rw [hw4]; exact hc3
@@ -133,20 +133,20 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
     simp only [wp_ret]
     apply wp_iconst64
     refine wp_band (by slot) (by slot) ?_
-    refine wp_callD (cs := [.sc .i64 base]) rfl rfl
+    refine wp_callD (cs := [.sc .i64 base]) rfl (by slots)
       (cleanup_calls (i := 2) rfl (obsCall w4 _ _) base 0 .arena 0 hc4 hd0 hna hl4 (Or.inl rfl) k) ?_
     rintro w5 ⟨h, -⟩
     simp only [wp_ret]
     exact h
   · -- a context holding the empty table
-    refine wp_callA (cs := [.sc .i64 c]) rfl rfl (create_at (i := 3) rfl (hA.obs _ _) (by decide) k) ?_
+    refine wp_callA (cs := [.sc .i64 c]) rfl (by slots) (create_at (i := 3) rfl (hA.obs _ _) (by decide) k) ?_
     rintro x w2 ⟨-, hA2, O2⟩
     have M2 := keep _ _ (O2.mono fun _ _ _ => trivial) M1
     simp only [wp_ret]
     apply wp_iconst64
     refine wp_band (by slot) (by slot) ?_
     refine wp_callD (cs := [.sc .i64 c, .sc .i64 (base + c64 16), .sc .i32 (UInt64.ofNat 8),
-        .sc .i64 (base + c64 32), .sc .i32 (UInt64.ofNat 8)]) rfl rfl
+        .sc .i64 (base + c64 32), .sc .i32 (UInt64.ofNat 8)]) rfl (by slots)
       (insert_at (i := 4) rfl (hA2.obs _ _) _ _ _ _ kb vb M2.2.1 M2.2.2.1 (by rw [hkl]) (by rw [hkl]; decide)
         (by rw [hvl]) (by rw [hvl]; decide) ok ov k) ?_
     rintro w3 ⟨hA3, O3⟩
@@ -166,14 +166,14 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
         simp [ByteArray.size]
       · exact ⟨_, h, fun p hp _ => absurd hp (Nat.not_lt_zero p)⟩
     refine wp_callA (cs := [.sc .i64 c, .sc .i64 (base + c64 16), .sc .i32 (UInt64.ofNat 8),
-        .sc .i64 (base + c64 128)]) rfl rfl
+        .sc .i64 (base + c64 128)]) rfl (by slots)
       (lookup_at (i := 5) rfl (hT3.obs _ _) _ _ _ kb M3.2.1 (by rw [hkl]) (by rw [hkl]; decide) oo
         (fun p hp hk => by rw [hsize p hp hk]; exact ⟨M3.2.2.2, mo _⟩) k) ?_
     rintro x' w4 ⟨hA4, -⟩
     simp only [wp_ret]
     apply wp_iconst64
     refine wp_band (by slot) (by slot) ?_
-    refine wp_callD (cs := [.sc .i64 base]) rfl rfl (cleanup_at (i := 2) rfl (hA4.obs _ _) k) ?_
+    refine wp_callD (cs := [.sc .i64 base]) rfl (by slots) (cleanup_at (i := 2) rfl (hA4.obs _ _) k) ?_
     rintro w5 ⟨h, -⟩
     simp only [wp_ret]
     exact h

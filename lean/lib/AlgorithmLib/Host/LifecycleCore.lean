@@ -342,35 +342,8 @@ macro "oracle_close" : tactic => `(tactic| first
 -- What the calls leave of memory's layout
 -- ---------------------------------------------------------------------------
 
-theorem foldl_set_size (off : Nat) (x : Nat → UInt8) : ∀ (l : List Nat) (bs : ByteArray),
-    (l.foldl (fun (b : ByteArray) i => b.set! (off + i) (x i)) bs).size = bs.size
-  | [], _ => rfl
-  | i :: l, bs => by
-      simp only [List.foldl_cons]
-      rw [foldl_set_size off x l, ByteArray.size_set!_eq]
-
-theorem store_sizes {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m')
-    (r : Region) : (m'.region r).size = (m.region r).size := by
-  unfold Mem.store at h
-  obtain ⟨⟨r0, off⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
-  dsimp only at h
-  split at h
-  · cases h
-  · cases h
-    by_cases e : r0 = r
-    · subst e
-      rw [Mem.region_setRegion_self]
-      exact foldl_set_size off (fun i => ((v >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8) _ _
-    · rw [Mem.region_setRegion_ne _ _ _ _ e]
-
 theorem copyIn_sizes {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m')
     (r : Region) : (m'.region r).size = (m.region r).size := ((copyIn_same h).size r).symm
-
-/-- Every region's size. -/
-def _root_.AlgorithmLib.HProg.Sem.Mem.sizes (m : Mem) (r : Region) : Nat := (m.region r).size
-
-theorem store_sizes_eq {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m') :
-    m'.sizes = m.sizes := funext (store_sizes h)
 
 theorem copyIn_sizes_eq {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m') :
     m'.sizes = m.sizes := funext (copyIn_sizes h)
