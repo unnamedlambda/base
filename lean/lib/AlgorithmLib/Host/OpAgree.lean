@@ -139,7 +139,7 @@ theorem agree_bitwise (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R
 theorem agree_floatBin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
     (f32op : Float32 → Float32 → Float32) (f64op : Float → Float → Float)
     (hc : o.check Δ = (do let ta ← Δ a; let tb ← Δ b; need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta))
-    (he : evalOp m Γ o = (do zipF (← get Γ a) (← get Γ b) f32op f64op))
+    (he : evalOp m Γ o = (do zipF m.fl (← get Γ a) (← get Γ b) f32op f64op))
     (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
   unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get]; rw [hΔ a, hΔ b]
   slot a with ha <;> slot b with hb <;> agree_simp
@@ -294,10 +294,10 @@ theorem agree_fmul (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m 
   agree_floatBin hΔ hΓ (· * ·) (· * ·) rfl rfl rfl rfl
 
 theorem agree_fmax (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmax a b) :=
-  agree_floatBits hΔ hΓ (pickExtreme true) rfl rfl rfl rfl
+  agree_floatBits hΔ hΓ (fun t x y => m.fl t (pickExtreme true t x y)) rfl rfl rfl rfl
 
 theorem agree_fmin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmin a b) :=
-  agree_floatBits hΔ hΓ (pickExtreme false) rfl rfl rfl rfl
+  agree_floatBits hΔ hΓ (fun t x y => m.fl t (pickExtreme false t x y)) rfl rfl rfl rfl
 
 theorem agree_icmp (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c : ICmpCond) (a b : R) : Agree m Δ Γ (.icmp c a b) := by
   agree_unfold; rw [hΔ a, hΔ b]
@@ -601,26 +601,39 @@ theorem evalOp_isSome_iff (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} (hn 
     obtain ⟨t, ht⟩ := Option.isSome_iff_exists.mp h
     exact evalOp_defined hΔ hΓ ht hn
 
-/-- An operation other than a load reads its operands and nothing else. -/
+/-- An operation other than a load reads its operands and nothing else, and a
+    float operation the platform's NaN results too. -/
 theorem evalOp_congr (m₁ m₂ : Mem) (Γ₁ Γ₂ : Env) (o : Op) (hl : ∀ op p, o ≠ .load op p)
+    (hn : floaty o = false ∨ m₁.nan = m₂.nan)
     (h : ∀ r ∈ o.regs, Γ₁[r]? = Γ₂[r]?) : evalOp m₁ Γ₁ o = evalOp m₂ Γ₂ o := by
+  have hfl : floaty o = true → m₁.fl = m₂.fl := fun hf => by
+    have hm := hn.resolve_left (by simp [hf])
+    funext t x; simp [Mem.fl, hm]
   cases o with
   | load op p => exact absurd rfl (hl op p)
   | iconst | fconst | memory | funcAddr => rfl
   | iadd a b | isub a b | imul a b | udiv a b | ishl a b | ushr a b | band a b | bandNot a b
-  | bor a b | bxor a b | icmp _ a b | fadd a b | fsub a b | fmul a b | fmax a b | fmin a b
-  | fcmp _ a b | ibin _ a b | ishift _ a b | fbin _ a b =>
+  | bor a b | bxor a b | icmp _ a b | ibin _ a b | ishift _ a b =>
     have ha := h a (by simp [Op.regs]); have hb := h b (by simp [Op.regs])
     simp only [evalOp, bin, shiftBin, Sem.get, ha, hb]
-  | ineg a | ctz a | popcnt a | ireduce32 a | uextend64 a | sextend64 a | fneg a | fpromote a
-  | vhighBits a | fcvtFromSint _ a | fcvtToUint _ a | splat _ a | extractlane a _ | bitcast _ a
-  | iun _ a | fun1 _ a | fconv _ _ a | iext _ _ a =>
+  | fadd a b | fsub a b | fmul a b | fmax a b | fmin a b | fcmp _ a b | fbin _ a b =>
+    have ha := h a (by simp [Op.regs]); have hb := h b (by simp [Op.regs])
+    simp only [evalOp, bin, shiftBin, Sem.get, ha, hb, hfl rfl]
+  | ineg a | ctz a | popcnt a | ireduce32 a | uextend64 a | sextend64 a
+  | vhighBits a | splat _ a | extractlane a _ | bitcast _ a | iun _ a | iext _ _ a =>
     have ha := h a (by simp [Op.regs])
     simp only [evalOp, un, Sem.get, ha]
-  | select c a b | bitselect c a b | fma c a b =>
+  | fneg a | fpromote a | fcvtFromSint _ a | fcvtToUint _ a | fun1 _ a | fconv _ _ a =>
+    have ha := h a (by simp [Op.regs])
+    simp only [evalOp, un, Sem.get, ha, hfl rfl]
+  | select c a b | bitselect c a b =>
     have hc := h c (by simp [Op.regs]); have ha := h a (by simp [Op.regs])
     have hb := h b (by simp [Op.regs])
     simp only [evalOp, Sem.get, hc, ha, hb]
+  | fma c a b =>
+    have hc := h c (by simp [Op.regs]); have ha := h a (by simp [Op.regs])
+    have hb := h b (by simp [Op.regs])
+    simp only [evalOp, Sem.get, hc, ha, hb, hfl rfl]
 
 /-- `Op.check` reads its operands' types and nothing else. -/
 theorem check_congr {g₁ g₂ : R → Option ClifTy} (o : Op) (h : ∀ r ∈ o.regs, g₁ r = g₂ r) :
@@ -686,7 +699,7 @@ theorem evalOp_answers {m : Mem} {Γ : Env} {g : R → Option ClifTy} {o : Op} {
   have hnl : ∀ op p, o ≠ .load op p := by intro op p e; subst e; simp [Op.mayTrap] at hn
   obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp (evalOp_defined (m := m) (fun _ => rfl) hsh hc' hn)
   refine ⟨v, ?_, evalOp_typed (fun _ => rfl) hsh hc' hv⟩
-  rw [evalOp_congr m m Γ Γ' o hnl (fun r hr => (hreg r hr).symm)]
+  rw [evalOp_congr m m Γ Γ' o hnl (Or.inr rfl) (fun r hr => (hreg r hr).symm)]
   exact hv
 
 end AlgorithmLib.HProg.Sem

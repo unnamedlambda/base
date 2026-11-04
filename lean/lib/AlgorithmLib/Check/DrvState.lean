@@ -11,7 +11,7 @@ import all Init.Data.Repr
 
 The typestates a theorem about a program in `Drv.App`'s layout states, in
 the driver's own terms. `loadTS` is what `main` starts from: the driver
-loaded and untouched, the entry points' names and each module's PTX in the
+loaded and untouched, no stream or event made yet, the entry points' names and each module's PTX in the
 arena, and the claim each PTX makes that each entry point in it takes one
 pointer per allocation its kernel is handed. `runTS` is what `main` leaves, which the
 other entry points start from (`runTSWith`, where `main` sizes allocations
@@ -29,21 +29,26 @@ open AlgorithmLib.HProg.Contracts (Fact TState)
 /-- The arena address `off` bytes in. -/
 abbrev at_ (off : Nat) : UInt64 := regionBase .arena + UInt64.ofNat off
 
+/-- The eight bytes from the layout's `ONE`: the single-precision `1` cuBLAS
+    reads as `α`, then the `0` it reads as `β` at `ZERO`. -/
+def scalarsCell : UInt64 := 0x3f800000
+
 /-- The parameter sizes a kernel's entry point declares. -/
 def sizes (k : KSpec) : List Nat := k.args.map fun _ => 8
 
-/-- What `main` starts from. -/
-def loadTS (a : App) : TState :=
+/-- What `main` starts from, the kernels' text `ptxs` where given (each
+    kernel's, in order, as `initialMemory` places it). -/
+def loadTS (a : App) (ptxs : List String := []) : TState :=
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq,
-   .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .room .arena a.memSize,
+   .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0, .ngraphs 0, .nexecs 0, .room .arena a.memSize,
    .text (at_ a.NAME) (some "main") 5 []] ++
-  (if a.blas then [.part (.has .cublas) true, .nblas 0] else []) ++
+  (if a.blas then [.part (.has .cublas) true, .nblas 0, .cell (at_ a.ONE) scalarsCell] else []) ++
   (a.indexed.filterMap fun (j, _) =>
     if a.entry j == "main" then none else some (.text (at_ (a.nameOff j)) (some (a.entry j)) 32 [])) ++
   a.indexed.filterMap fun (j, k) =>
     if a.modOwner j == j then
-      some (.text (at_ k.ptxOff) none k.ptxLen
-        (a.indexed.filterMap fun (j', k') => if a.modOwner j' == j then some (a.entry j', sizes k') else none))
+      some (.text (at_ k.ptxOff) ptxs[j]? k.ptxLen
+        (a.indexed.filterMap fun (j', k') => if a.modOwner j' == j then some (a.entry j', sizes k', k'.writes) else none))
     else none
 
 /-- What the other entry points start from: what `main` leaves, its
@@ -51,10 +56,11 @@ def loadTS (a : App) : TState :=
 def runTSWith (a : App) (szs : List Nat) : TState :=
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .devSeq, .oracles, .room .arena a.memSize] ++
-  (if a.blas then [.part (.has .cublas) true, .blasOn 0 0, .cell (at_ a.BLAS) (drvHandle kBlas 0)] else []) ++
+  (if a.blas then [.part (.has .cublas) true, .blasOn 0 0, .cell (at_ a.BLAS) (drvHandle kBlas 0),
+    .cell (at_ a.ONE) scalarsCell] else []) ++
   szs.zipIdx.flatMap (fun (n, i) =>
     [.alloc i n, .cell (at_ (a.bufSlot i)) (devPtr i)]) ++
-  (a.indexed.flatMap fun (j, k) => [.fn j (sizes k), .cell (at_ (a.fnSlot j)) (drvHandle kFunc j)]) ++
+  (a.indexed.flatMap fun (j, k) => [.fn j (sizes k) k.writes, .cell (at_ (a.fnSlot j)) (drvHandle kFunc j)]) ++
   ((List.range a.blocks.length).zip a.blocks).flatMap fun (b, args) =>
     ((List.range args.length).zip args).flatMap fun (p, i) =>
       [.cell (at_ (a.blockOff b + 8 * p)) (devPtr i), .cell (at_ (a.blockOff b + a.arrOff + 8 * p)) (at_ (a.blockOff b + 8 * p))]

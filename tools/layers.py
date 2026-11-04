@@ -26,14 +26,21 @@ LIB_BELOW = {
     "Surface": {"Core", "Vocab", "Host.Term"},
     "LZ4": {"Core", "Vocab"},
     # ML reads the launches a checked program makes (`ML.Launch.AppTrace`), so
-    # it sits above the checker.
-    "ML": {"Core", "Vocab", "Host", "Surface", "Check"},
+    # it sits above the checker, and writes its warp statements as kernel
+    # bodies (`ML.Ptx.Body`), so above the kernels.
+    "ML": {"Core", "Vocab", "Host", "Surface", "Check", "Kernel", "Proof"},
     # What is proved about programs the surface builds: combinator lemmas and
     # their instances.
     "Proof": {"Core", "Vocab", "Host", "Surface"},
     # The checker: a decision procedure over programs, proven sound by the
     # program logic it decides (`Proof.Typestate`) and the host model.
     "Check": {"Core", "Vocab", "Host", "Surface", "Proof"},
+    # GPU kernels as bodies: the PTX printer (`Kernel.Ptx`, on `Host.Term`
+    # alone, so generators may use it) and what a launch does (`Kernel.Run`).
+    "Kernel": {"Core", "Vocab", "Host", "Surface", "Proof"},
+    # What is proved of the compilers: that a kernel's PTX does what its body
+    # does (`Sound.PtxSound`), from the host's block semantics and PTX's.
+    "Sound": {"Core", "Vocab", "Host", "Surface", "Proof", "Kernel"},
 }
 # The ML library's own layers, lowest first: carriers, the mathematics, the
 # warp machine, the PTX lowering, the kernel schemas, the model as written

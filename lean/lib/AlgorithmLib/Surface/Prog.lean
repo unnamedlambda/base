@@ -488,7 +488,7 @@ def St.leave (outer inner : St) : List Piece × St :=
     (args : Vals Slot ps) (k : ResV Slot res → St → Option α × St) (s : St) : Option α × St :=
   let s := match r.callee with
     | .local i => s.useLocal i ps res
-    | .lib _ | .native | .host _ _ | .atomic _ | .ext _ => s
+    | .lib _ | .native | .host _ _ | .atomic _ | .ext _ | .intr _ => s
   let as := args.slots
   if res.isSome then
     let (v, s) := s.bind1 (.call r.callee as)
@@ -1243,6 +1243,7 @@ def callNames (p : Body) (params : List ClifTy := ptrParams) : List String :=
     | .host _ _ => "host"
     | .atomic _ => "atomic"
     | .ext e => s!"{e.lib.name}!{e.symbol}"
+    | .intr c => c.name
 
 /-- The term a body denotes, or why it is not one.
 

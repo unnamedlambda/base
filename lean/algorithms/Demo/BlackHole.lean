@@ -1446,7 +1446,7 @@ open AlgorithmLib.Prog
 def app (spec : BlackHoleSpec) : Drv.App :=
   let grid := ((imageWidth spec + 15) / 16, (imageHeight spec + 15) / 16, 1)
   { bufs := [hdrPixelBytes spec, pixelBytes spec],
-    kernels := [⟨ptxOff, ptxRegion, [0], grid, (16, 16, 1)⟩, ⟨ptxOff, ptxRegion, [0, 1], grid, (16, 16, 1)⟩],
+    kernels := [⟨ptxOff, ptxRegion, [0], grid, (16, 16, 1), []⟩, ⟨ptxOff, ptxRegion, [0, 1], grid, (16, 16, 1), []⟩],
     entries := ["render_hdr", "composite_bloom"],
     memSize := pixelsOff + pixelBytes spec, org := clifIrOff }
 

@@ -310,4 +310,41 @@ theorem TOp.localBelow (batch : Nat) (op : TOp) : op.localBelowB batch = true :=
   exact compactMap_lt _ c (TOp.stmt_bufsOf batch op hc)
 
 
+/-- The kernel a group of operations is emitted from: each member's statement,
+    renamed onto the group's own table, in order. -/
+def TOp.groupStmt (batch : Nat) (bs : List Buf) (ops : List TOp) : EWStmt :=
+  ops.foldl (fun acc op => .seq acc ((op.stmt batch).renameBuf (compactMap bs))) .skip
+
+theorem groupStmt_bufsOf (batch : Nat) (bs : List Buf) (ops : List TOp) :
+    ∀ acc : EWStmt,
+      (ops.foldl (fun acc op => .seq acc ((op.stmt batch).renameBuf (compactMap bs)))
+        acc).bufsOf
+        = acc.bufsOf ++ ops.flatMap (fun op => (op.stmt batch).bufsOf.map (compactMap bs)) := by
+  induction ops with
+  | nil => intro acc; simp
+  | cons o os ih =>
+      intro acc
+      simp [List.foldl, ih, EWStmt.bufsOf, EWStmt.bufsOf_renameBuf,
+            List.append_assoc]
+
+/-- The buffers a group's kernel binds: every member's, in first-use order. -/
+def unitBufs (batch : Nat) (ops : List TOp) : List Buf := (ops.flatMap (TOp.bufs batch)).eraseDups
+
+/-- A group's statement: each member's, renamed onto the group's own table.
+    `.seq` is the whole of the fusion: each warp keeps to its own chunk. -/
+def unitStmt (batch : Nat) (ops : List TOp) : EWStmt := TOp.groupStmt batch (unitBufs batch ops) ops
+
+/-- The blocks a group launches over: its first member's. -/
+def unitGrid (ops : List TOp) : Nat :=
+  match ops.head? with
+  | some op => op.gridOf
+  | none => 1
+
+/-- Every member's buffers are in the group's table, the table being the
+    members' buffers. -/
+theorem unit_covers (batch : Nat) (ops : List TOp) :
+    ∀ op ∈ ops, ∀ c ∈ (op.stmt batch).bufsOf, c ∈ unitBufs batch ops := by
+  intro op hop c hc
+  exact (mem_eraseDups _ _).mpr (List.mem_flatMap.mpr ⟨op, hop, TOp.stmt_bufsOf batch op hc⟩)
+
 end AlgorithmLib.ML

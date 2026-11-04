@@ -1,6 +1,7 @@
 import Scan.GptOssSurface
 import AlgorithmLib.ML
 import GptOss.Algorithm
+import GptOss.BodyProofs
 /-!
   # What the gpt-oss-20b artifact's claims rest on — and, mostly, do not yet
 
@@ -57,13 +58,13 @@ namespace GptOssScan
     The expert half contributes its seam guards rather than kernel theorems,
     for the reason the header gives: those kernels are outside the machine. -/
 def roots : List Name :=
-  [ ``GptOssAttention.rms_ptx_exact
-  , ``GptOssAttention.add_ptx_exact
-  , ``GptOssAttention.ropeQ_ptx_exact
-  , ``GptOssAttention.ropeK_ptx_exact
-  , ``GptOssAttention.kvStore_ptx_exact
+  [ ``GptOssProofs.rms_body
+  , ``GptOssProofs.add_body
+  , ``GptOssProofs.rope_body
+  , ``GptOssProofs.kv_body
+  , ``GptOssProofs.kv_fine
   , ``GptOssAttention.kvStore_writes
-  , ``GptOssAttention.sinkSoftmax_ptx_exact
+  , ``GptOssProofs.sm_body
   , ``GptOssAttention.sink_not_stored
   , ``GptOssAlgorithm.gptoss_slots_are_bound
   , ``GptOssAlgorithm.gptoss_store_is_unnamed
@@ -100,8 +101,8 @@ def openObligations : List String :=
      defines it. Evidence: the decode is checked bit-exact against `fp4Val` over \
      all 256 byte values crossed with the scale extremes, and the contraction \
      against an f32 fold. Closes by: extending the warp machine with a byte load \
-     and the shifts (Warp, WarpEmit and its five decidable predicates, PtxM, \
-     PtxFlat, PtxPrint's element stride), after which `mxDot_spec` hands the \
+     and the shifts (Warp, WarpEmit, the body route's lane semantics and \
+     printer), after which `mxDot_spec` hands the \
      existing `warpDotV4`/`dotStrided` theorems a dequantised buffer for free.",
     "Mxfp4DownGemvValue: the down-projection GEMV plus bias, same standing and \
      the same closure.",
@@ -204,8 +205,7 @@ end GptOssScan
     data, which is what `native_decide` is for and what `decide` cannot do at
     this size. The kernel theorems above are not on this list. -/
 def gptOssNativeRoster : List Name :=
-  [ ``GptOssAttention.sink_not_stored
-  , ``GptOssAlgorithm.gptoss_slots_are_bound
+  [ ``GptOssAlgorithm.gptoss_slots_are_bound
   , ``GptOssAlgorithm.gptoss_binds_allocated
   , ``GptOssAlgorithm.gptoss_alloc_covers
   , ``GptOssAlgorithm.gptoss_ptx_fits

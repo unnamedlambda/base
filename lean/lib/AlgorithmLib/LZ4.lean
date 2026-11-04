@@ -1,12 +1,8 @@
 module
-public import AlgorithmLib.LZ4.Confine
-meta import AlgorithmLib.LZ4.Confine
-public import AlgorithmLib.LZ4.SimtEmit
-meta import AlgorithmLib.LZ4.SimtEmit
-public import AlgorithmLib.LZ4.WarpEmit
-meta import AlgorithmLib.LZ4.WarpEmit
-public import AlgorithmLib.LZ4.WarpColl
-meta import AlgorithmLib.LZ4.WarpColl
+public import AlgorithmLib.LZ4.EvalValid
+meta import AlgorithmLib.LZ4.EvalValid
+public import AlgorithmLib.LZ4.U32Field
+meta import AlgorithmLib.LZ4.U32Field
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

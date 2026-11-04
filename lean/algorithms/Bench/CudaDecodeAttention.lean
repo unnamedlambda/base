@@ -130,7 +130,7 @@ open AlgorithmLib.Prog
 /-- **The program in the driver's standard layout**: six allocations, made by
     `main`, cuBLAS, and the softmax kernel handed scores, meta and probs. -/
 def app : Drv.App :=
-  { bufs := [0, 0, 0, 0, 0, 0], kernels := [⟨PTX_OFF, PTX_LEN, [2, 5, 3], (N_HEADS, 1, 1), (256, 1, 1)⟩],
+  { bufs := [0, 0, 0, 0, 0, 0], kernels := [⟨PTX_OFF, PTX_LEN, [2, 5, 3], (N_HEADS, 1, 1), (256, 1, 1), []⟩],
     memSize := PTX_OFF + PTX_LEN, blas := true, org := ORG }
 
 /-- Bring the driver and cuBLAS up and load the kernel; then, where the data

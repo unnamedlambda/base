@@ -1,8 +1,12 @@
 import Lean
 import Std
-import Warp.BackwardWide
+import AlgorithmLib.ML.Model.Frontend
+import AlgorithmLib.ML.Machine.Geometry
+import AlgorithmLib.ML.Launch.HostBridge
+import AlgorithmLib.Surface.Layout
 import AlgorithmLib.ML.Math.Backprop
 import AlgorithmLib.ML.Math.Quant
+import AlgorithmLib.ML.Kernel.BodyCheck
 open AlgorithmLib AlgorithmLib.ML
 
 namespace NonVacuity
@@ -35,36 +39,14 @@ example (st : WSt) :
 
 /-- Block-order independence, at concrete permuted lists. -/
 example (st : WSt) :
-    (runBlocks (mapStage idE (fun _ => (0 : Buf)) 1 4
+    (runBlocks (mapStage (R := Float32) idE (fun _ => (0 : Buf)) 1 4
         (fun _ => (by decide : (0:Buf) ≠ 1))).blk [0,1,2] st).mem
-      = (runBlocks (mapStage idE (fun _ => (0 : Buf)) 1 4
+      = (runBlocks (mapStage (R := Float32) idE (fun _ => (0 : Buf)) 1 4
         (fun _ => (by decide : (0:Buf) ≠ 1))).blk [2,0,1] st).mem :=
   runBlocks_perm_invariant _ (mapStage_exclusive _ _ _ _ _)
     (mapStage_idempotent _ _ _ _ _) _ _
     (by intro c h; show c < 4; simp at h; omega)
     (by intro c; constructor <;> (intro h; simp at h ⊢; omega)) st
-
-/-- At the first block. -/
-example (st : WSt) : (BackwardWide.dxStage.run (BackwardWide.sbStage.run st)).mem
-    BackwardWide.dxB 0
-      = bflyFold (dotStridedLane
-          (fun a => denote (fun i => st.mem (BackwardWide.siluBwdIn i) a)
-            BackwardWide.siluBwdSpec)
-          (st.mem BackwardWide.wB)
-          (fun i l => BackwardWide.adjIx.eval 0 i l)
-          (fun i l => BackwardWide.wIx.eval 0 i l) BackwardWide.K) ⟨0, by decide⟩ :=
-  BackwardWide.bwd_chain st 0 (by decide)
-
-/-- And at the last, where an off-by-one vacuity would hide. -/
-example (st : WSt) : (BackwardWide.dxStage.run (BackwardWide.sbStage.run st)).mem
-    BackwardWide.dxB 895
-      = bflyFold (dotStridedLane
-          (fun a => denote (fun i => st.mem (BackwardWide.siluBwdIn i) a)
-            BackwardWide.siluBwdSpec)
-          (st.mem BackwardWide.wB)
-          (fun i l => BackwardWide.adjIx.eval 895 i l)
-          (fun i l => BackwardWide.wIx.eval 895 i l) BackwardWide.K) ⟨0, by decide⟩ :=
-  BackwardWide.bwd_chain st 895 (by decide)
 
 example (env : Fin (layerCtx 4) → Int) (j : Fin 4) :
     denote env (sderiv (stdLoss 4) (stdXv 4 j))
@@ -75,15 +57,6 @@ example (env : Fin (layerCtx 4) → Int) (i j : Fin 4) :
     denote env (sderiv (stdLoss 4) (stdWv 4 i j))
       = denote env (.mul (stdAdj 4 i) (.var (stdXv 4 j))) :=
   stdLayer_dW env i j
-
-/-- A real execution chain exists and lands where `runGrid` says. -/
-example (m : MState) : ∃ m' : MState,
-    gridRuns (flatKernel (expandEW BackwardWide.siluBwd.ew)) 28 m m'
-      ∧ m'.toWSt = runGrid (expandEW BackwardWide.siluBwd.ew).elabIn 28 m.toWSt :=
-  flatGrid_realises _ (expandEW_expFree _)
-    (expandEW_idxFree _ (compileWKernel_idxFree _ _ _ _ _ _
-      (fun _ => (by decide : IdxE.IregFree elemIx)) (by decide)))
-    (expandEW_flat _ (compileWKernel_flat _ _ _ _ _ _)) 28 m
 
 /-- A kernel that stores to buffer 1 and reads buffer 0. -/
 def okKernel : EWStmt := .seq (.loadIdx 0 0 elemIx) (.storeLane 1 elemIx 0)
@@ -109,17 +82,14 @@ example : okKernel.BufBelow 2 := by decide
 /-- Rejects a kernel naming a buffer outside the table. -/
 example : ¬ outOfTableKernel.BufBelow 2 := by decide
 
-/-- A flat program whose branch target runs past the end. -/
-def badTargets : List FI := [.si (.movIC 0 0), .jmp 99]
-/-- …and one carrying an instruction the printer cannot render. -/
-def badPrintable : List FI := [.si (.loop 0 (.lit 0) [])]
+/-- A kernel every lane of which stores the same word. -/
+def racyKernel : EWStmt := .seq (.loadIdx 0 0 elemIx) (.storeLane 1 (.lit 0) 0)
 
-example : FlatTargetsOkB [FI.si (.movIC 0 0), FI.jmp 1] = true := by decide
-/-- Rejects an out-of-range branch. -/
-example : FlatTargetsOkB badTargets = false := by decide
-example : FlatPrintableB [FI.si (.movIC 0 0)] = true := by decide
-/-- Rejects an unrenderable instruction. -/
-example : FlatPrintableB badPrintable = false := by decide
+example : BodyCheck.launchOk 2 4 1 (fun _ => 1024) okKernel = true := by native_decide
+/-- Rejects a launch whose lanes store one word. -/
+example : BodyCheck.launchOk 2 4 1 (fun _ => 1024) racyKernel = false := by native_decide
+/-- Rejects a launch whose last block stores past its buffer. -/
+example : BodyCheck.launchOk 2 64 1 (fun _ => 1024) okKernel = false := by native_decide
 
 /-- A packed layout, and one with a gap the weaker `okB` would accept. -/
 example : AlgorithmLib.Layout.RegionMap.packedB 0

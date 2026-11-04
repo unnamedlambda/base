@@ -620,11 +620,25 @@ def cellPat (A : AS) (q : UInt64) : ArgPat :=
     | some (r, _) => (A.get r).pat
     | none => .any
 
-/-- The parameter values a kernel launch reads, as the state records them:
-    one per parameter of the function it names, each what the state knows of
-    the eight bytes the pointer to it points at, where it knows that pointer,
-    and none at all where the state does not name the function or show every
-    parameter readable. A call that is not a launch reads none. -/
+/-- What the state says a four-byte scalar at `p` holds: the low half of a
+    cell at its address, or the high half of one four bytes before it. -/
+def scalarPat (A : AS) (p : R) : ArgPat :=
+  match (A.get p).bits with
+  | some a =>
+      match cellOf A.facts a with
+      | some v => if cellOk a then .is (v &&& 0xffffffff) else .any
+      | none =>
+          match cellOf A.facts (a - 4) with
+          | some v => if cellOk (a - 4) then .is (v >>> 32) else .any
+          | none => .any
+  | none => .any
+
+/-- What a call reads from host memory, as the state records it. A kernel
+    launch, its parameter values: one per parameter of the function it names,
+    each what the state knows of the eight bytes the pointer to it points at,
+    where it knows that pointer, and none at all where the state does not name
+    the function or show every parameter readable. A strided-batched product,
+    its two scalars (`scalarPat`). Any other call reads none. -/
 def wordsOf (A : AS) : Callee → List R → Option (List ArgPat)
   | .ext (.cuda .launchKernel), [hf, _, _, _, _, _, _, _, _, pr, _] =>
       match (A.get hf).bits.bind (handleOf kFunc), (A.get pr).bits with
@@ -639,6 +653,8 @@ def wordsOf (A : AS) : Callee → List R → Option (List ArgPat)
               else none
           | none => none
       | _, _ => none
+  | .ext (.cublas .sgemmStridedBatched), [_, _, _, _, _, _, pa, _, _, _, _, _, _, pb, _, _, _, _] =>
+      some [scalarPat A pa, scalarPat A pb]
   | _, _ => some []
 
 /-- **The call rule.** The state after a call the checker accepts, its answer
@@ -743,6 +759,33 @@ def absStmtsH (fo lb : Bool) (hist : List (Nat × Stmt)) (A : AS) : List Stmt �
           "\n  facts but cells:\n    " ++ toString ((A.facts.filter (!·.isCell)).map fun x => repr x))
 
 def absStmts (fo lb : Bool) (A : AS) (ss : List Stmt) : Except String AS := absStmtsH fo lb [] A ss
+
+/-- Whether `[lo, hi)` misses every range of `keep`. -/
+def spanOut (keep : List (Nat × Nat)) (lo hi : Nat) : Bool := keep.all fun p => hi ≤ p.1 || p.2 ≤ lo
+
+/-- A store of `n` bytes of slot `v` to slot `a` that `keep` admits: a
+    scalar's, to bytes the state places, all outside `keep`. -/
+def storeOut (keep : List (Nat × Nat)) (A : AS) (v a : R) (n : Nat) : Bool :=
+  (A.get v).scTy.isSome && match storeSpan A.facts (A.get a) n with
+    | some (lo, hi) => spanOut keep lo hi
+    | none => false
+
+/-- A statement `keep` admits: where it names ranges, a store is one
+    `storeOut` admits and a call is not into a library. -/
+def stmtKept (keep : List (Nat × Nat)) (A : AS) : Stmt → Bool
+  | .store ty v a => keep.isEmpty || storeOut keep A v a (tyBytes ty)
+  | .storeUnaligned v a => keep.isEmpty || storeOut keep A v a (tyBytes ((A.get v).scTy.getD .i64))
+  | .istore8 v a => keep.isEmpty || storeOut keep A v a 1
+  | .call (.lib _) _ | .callVoid (.lib _) _ => keep.isEmpty
+  | _ => true
+
+/-- Every statement of a straight run is one `keep` admits, each from the
+    state the run reaches it in. -/
+def storesKept (keep : List (Nat × Nat)) (fo lb : Bool) (A : AS) : List Stmt → Bool
+  | [] => true
+  | s :: ss => stmtKept keep A s && match absStmt fo lb A s with
+      | .ok A' => storesKept keep fo lb A' ss
+      | .error _ => true
 
 /-- The call a statement makes, as the state it runs from records it: each
     argument's bits where the state knows them. -/
@@ -861,8 +904,13 @@ structure Cert where
   /-- Calls into the libraries a program is linked with are read by the
       libraries' statements. -/
   lib : Bool := false
+  /-- Address ranges `[lo, hi)` no store of the body may touch: where any is
+      given, every store is a scalar's to bytes the state places outside them,
+      and no call is into a library. -/
+  keep : List (Nat × Nat) := []
 
-instance : Append Cert := ⟨fun a b => ⟨a.loops ++ b.loops, a.states ++ b.states, a.fo, a.guess, a.tr, a.lib⟩⟩
+instance : Append Cert :=
+  ⟨fun a b => ⟨a.loops ++ b.loops, a.states ++ b.states, a.fo, a.guess, a.tr, a.lib, a.keep⟩⟩
 
 /-- What a region may end with, and the invariant each loop in it settled at:
     each `br` and `cont` with the state it leaves from and the slots it
@@ -1290,7 +1338,11 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
   | .straight ss =>
       match absStmts cert.fo cert.lib A ss with
       | .error e => .error e
-      | .ok A' => .ok ⟨some A', [], [], {}, if cert.tr && !cert.lib then .lit (callRecs cert.fo cert.lib A ss) else .any, Option.none⟩
+      | .ok A' =>
+          if storesKept cert.keep cert.fo cert.lib A ss then
+            .ok ⟨some A', [], [], {}, if cert.tr && !cert.lib then .lit (callRecs cert.fo cert.lib A ss) else .any,
+              Option.none⟩
+          else .error "a store may touch bytes the certificate keeps, or a call is into a library"
   | .br d args => .ok ⟨none, [(d, A, args)], [], {}, .lit [], Option.none⟩
   | .cont d args => .ok ⟨none, [], [(d, A, args)], {}, .lit [], Option.none⟩
   | .ite m thn els thnR elsR =>
@@ -1360,7 +1412,7 @@ def execC (cert : Cert) (base : List Nat) (i : Nat) (A0 : AS) : List Piece → E
       | .error e => .error e
       | .ok A =>
           let here : Cert := { states := [(i :: base, A)] }
-          match pieceCases cert.fo cert.lib A p with
+          match (if cert.keep.isEmpty then pieceCases cert.fo cert.lib A p else none) with
           | some (C1, C2) =>
               -- the rest of the region from each case, at paths of their own
               match execC cert (2 :: i :: base) (i + 1) C1 ps, execC cert (3 :: i :: base) (i + 1) C2 ps with

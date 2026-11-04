@@ -24,7 +24,7 @@ import all Init.Data.List.Sort.Basic
   * `grad_hasDerivAt`  — that the backward pass is the analytic derivative
   * `compileW`         — a warp kernel
   * `compileWKernel_correct` — that the kernel computes the spec, exactly
-  * `flatKernel_sound` — that the emitted PTX runs the kernel
+  * `BodyCheck.launch_body` — that launching its body kernel runs it
 
   **Softmax subtracts a shift** (`softmaxAt`): the shifted form is the model,
   and `softmax`, the textbook form, is kept for reference.

@@ -11,6 +11,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- Depth
 -- ---------------------------------------------------------------------------
 
@@ -34,22 +37,22 @@ theorem forget_append (a b : List (Node × Backend)) :
 
 /-- Lowering distributes over concatenation: a malformed node anywhere still
     fails the whole program, and otherwise the stages concatenate. -/
-theorem lowerNet_append (batch : Nat) : ∀ (a b : Net),
-    lowerNet batch (a ++ b)
+theorem lowerNet_append [LitNat R] (batch : Nat) : ∀ (a b : Net),
+    lowerNet (R := R) batch (a ++ b)
       = (lowerNet batch a).bind (fun sa => (lowerNet batch b).map (sa ++ ·)) := by
   intro a
   induction a with
-  | nil => intro b; cases h : lowerNet batch b <;> simp [lowerNet, h]
+  | nil => intro b; cases h : lowerNet (R := R) batch b <;> simp [lowerNet, h]
   | cons n ns ih =>
       intro b
       simp only [List.cons_append, lowerNet, ih b]
-      cases n.stage? batch with
+      cases n.stage? (R := R) batch with
       | none => rfl
       | some o =>
           cases o with
           | none => rfl
           | some S =>
-              cases lowerNet batch ns <;> cases lowerNet batch b <;> rfl
+              cases lowerNet (R := R) batch ns <;> cases lowerNet (R := R) batch b <;> rfl
 
 /-- A closed program: quantified over the variable representation, so it cannot
     inspect the buffer numbers it will be handed. -/
@@ -61,8 +64,8 @@ def TenProg.graph (base : Ref) (p : TenProg r c) : List (Node × Backend) :=
   Ten.graphOf (p RefV) base
 
 /-- The stages a program lowers to. -/
-noncomputable def TenProg.stages (batch : Nat) (base : Ref) (p : TenProg r c) :
-    Option (List XStage) :=
+noncomputable def TenProg.stages [LitNat R] (batch : Nat) (base : Ref) (p : TenProg r c) :
+    Option (List (XStage R)) :=
   lowerNet batch (forget (p.graph base))
 
 /-- **A schedule that erases to the model lowers to the model's stages.**
@@ -70,9 +73,11 @@ noncomputable def TenProg.stages (batch : Nat) (base : Ref) (p : TenProg r c) :
     Unlike `Node.sig`, `forget` keeps the elementwise `Expr`, so this compares
     the arithmetic as well as the wiring — a schedule that substituted a
     different activation does not satisfy the hypothesis. -/
-theorem TenProg.schedule_agrees (batch : Nat) (base : Ref) (sched model : TenProg r c)
+theorem TenProg.schedule_agrees [LitNat R] (batch : Nat) (base : Ref) (sched model : TenProg r c)
     (h : forget (sched.graph base) = forget (model.graph base)) :
-    sched.stages batch base = model.stages batch base := by
+    sched.stages (R := R) batch base = model.stages batch base := by
   simp only [TenProg.stages, h]
+
+end Carrier
 
 end AlgorithmLib.ML

@@ -27,7 +27,7 @@ open AlgorithmLib.HProg
 inductive V where
   | sc  (ty : ClifTy) (bits : UInt64)
   | vec (ty : ClifTy) (lanes : Array UInt64)
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, DecidableEq
 
 /-- The type a value carries, which is the type `Op.check` predicts for the
     operation that produced it. -/
@@ -91,18 +91,56 @@ inductive Region where
   /-- Page-locked host memory `cuMemAllocHost` hands out: addressable
       only inside a live allocation. -/
   | pinned
-  deriving Repr, BEq, DecidableEq, Inhabited
+  /-- Device buffer `i`: what a kernel addresses, one region per buffer its
+      launch binds. The address space holds `2^28` regions of `2^36` bytes, and
+      the host's and the functions' take the first six; the last is left
+      free, so an address one span past any region still fits. -/
+  | buf (i : Fin 268435449)
+  deriving Repr, DecidableEq, Inhabited
+
+/-- A region's number: its address is `idx · 2^36` up. The host's four come
+    first, functions are at 5, and device buffer `i` is `6 + i`. -/
+def Region.idx : Region → Nat
+  | .arena => 1 | .data => 2 | .out => 3 | .pinned => 4 | .buf i => 6 + i.val
+
+/-- The region a number names, if any. -/
+def Region.ofIdx : Nat → Option Region
+  | 1 => some .arena | 2 => some .data | 3 => some .out | 4 => some .pinned
+  | n + 6 => if h : n < 268435449 then some (.buf ⟨n, h⟩) else none
+  | _ => none
+
+/-- Every region's number is below `2^28 - 1`, so its base and two spans past it
+    fit an address. -/
+theorem Region.idx_lt (r : Region) : r.idx < 2 ^ 28 - 1 := by
+  cases r with
+  | buf i => simp only [Region.idx]; have := i.isLt; omega
+  | _ => decide
+
+theorem Region.ofIdx_idx (r : Region) : Region.ofIdx r.idx = some r := by
+  cases r with
+  | buf i => simp only [Region.idx]; rw [Nat.add_comm]; simp [Region.ofIdx, i.isLt]
+  | _ => rfl
+
+theorem Region.idx_of_ofIdx {n : Nat} {r : Region} (h : Region.ofIdx n = some r) : r.idx = n := by
+  match n, h with
+  | 1, h | 2, h | 3, h | 4, h => cases h; rfl
+  | n + 6, h =>
+    simp only [Region.ofIdx] at h
+    split at h
+    · cases h; simp only [Region.idx]; omega
+    · cases h
+
+theorem Region.idx_inj {r r' : Region} (h : r.idx = r'.idx) : r = r' := by
+  have e := Region.ofIdx_idx r
+  rw [h, Region.ofIdx_idx] at e
+  exact (Option.some.inj e).symm
+
+def regionSpan : UInt64 := 0x1000000000
 
 /-- Region bases are far apart and aligned to a power of two, so `base + off`
     arithmetic stays inside its region and a stray address is detectable
     instead of silently landing somewhere valid. -/
-def regionBase : Region → UInt64
-  | .arena => 0x1000000000
-  | .data  => 0x2000000000
-  | .out   => 0x3000000000
-  | .pinned => 0x4000000000
-
-def regionSpan : UInt64 := 0x1000000000
+def regionBase (r : Region) : UInt64 := UInt64.ofNat (r.idx * 0x1000000000)
 
 /-- Where the program's functions are, as values: function `u0:i` is at
     `fnBase + i`, apart from every region, so an address a program takes of a
@@ -111,11 +149,10 @@ def fnBase : UInt64 := 0x5000000000
 
 def addrOf (r : Region) (off : Nat) : UInt64 := regionBase r + UInt64.ofNat off
 
-/-- Which region an address names, and how far into it. -/
+/-- Which region an address names, and how far into it: the region by its
+    number, the address divided by the span. -/
 def decodeAddr (a : UInt64) : Option (Region × Nat) :=
-  [Region.arena, .data, .out, .pinned].findSome? fun r =>
-    let b := regionBase r
-    if a ≥ b && a - b < regionSpan then some (r, (a - b).toNat) else none
+  (Region.ofIdx (a / regionSpan).toNat).map fun r => (r, (a % regionSpan).toNat)
 
 /-- An asynchronous copy still in flight over pinned bytes: which bytes, the
     party and tick the host must wait for, and whether the copy writes them (a
@@ -143,6 +180,13 @@ structure Mem where
       has waited for one, it may not write the bytes it covers, nor read them if
       the copy writes them. -/
   busy : List Busy := []
+  /-- Device buffers, by index: the memory a kernel runs on. -/
+  bufs : Nat → ByteArray := fun _ => ByteArray.empty
+  /-- What the platform's float arithmetic leaves where its result is a NaN,
+      from the bits computed at the type: a CPU keeps them, a GPU gives one
+      NaN whatever the operands (`Kernel.Hw`). Only the arithmetic consults it
+      (`Mem.fl`); a sign or bit operation moves a NaN's bits as they are. -/
+  nan : ClifTy → UInt64 → UInt64 := fun _ x => x
   deriving Inhabited
 
 def Mem.region : Mem → Region → ByteArray
@@ -150,12 +194,14 @@ def Mem.region : Mem → Region → ByteArray
   | m, .data => m.data
   | m, .out => m.out
   | m, .pinned => m.pinned
+  | m, .buf i => m.bufs i.val
 
 def Mem.setRegion (m : Mem) : Region → ByteArray → Mem
   | .arena, b => { m with arena := b }
   | .data, b => { m with data := b }
   | .out, b => { m with out := b }
   | .pinned, b => { m with pinned := b }
+  | .buf i, b => { m with bufs := fun j => if j = i.val then b else m.bufs j }
 
 /-- Whether `n` bytes at `off` in region `r` may be written: always, except in
     pinned memory, where they must lie inside one live allocation and clear of
@@ -180,6 +226,13 @@ def Mem.load (m : Mem) (a : UInt64) (n : Nat) : Option UInt64 := do
     some <| (List.range n).foldr
       (fun i acc => (acc <<< 8) ||| (bs.get! (off + i)).toUInt64) 0
 
+/-- A load reads the regions and what may be read of them, nothing else. -/
+theorem Mem.load_congr {m₁ m₂ : Mem} (hr : ∀ r, m₁.region r = m₂.region r) (hl : m₁.pinnedLive = m₂.pinnedLive)
+    (hb : m₁.busy = m₂.busy) (a : UInt64) (n : Nat) : m₁.load a n = m₂.load a n := by
+  have hrd : ∀ r o k, m₁.readable r o k = m₂.readable r o k := by
+    intro r o k; simp only [Mem.readable, hl, hb]
+  simp only [Mem.load, hr, hrd]
+
 def Mem.store (m : Mem) (a : UInt64) (n : Nat) (v : UInt64) : Option Mem := do
   let (r, off) ← decodeAddr a
   let bs := m.region r
@@ -189,6 +242,20 @@ def Mem.store (m : Mem) (a : UInt64) (n : Nat) (v : UInt64) : Option Mem := do
       (fun (b : ByteArray) i => b.set! (off + i) (((v >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8))
       bs
     some (m.setRegion r bs)
+
+/-- A store leaves the platform's NaN rule. -/
+theorem Mem.store_nan {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m') :
+    m'.nan = m.nan := by
+  unfold Mem.store at h
+  simp only [bind, Option.bind] at h
+  split at h
+  · cases h
+  rename_i p _
+  obtain ⟨r, off⟩ := p
+  dsimp only at h
+  split at h
+  · cases h
+  · cases h; cases r <;> rfl
 
 /-- How many bytes a value of this type occupies. -/
 def tyBytes (t : ClifTy) : Nat := t.width / 8
@@ -231,14 +298,14 @@ def un (Γ : Env) (a : R) (ok : ClifTy → Bool) (f : ClifTy → UInt64 → Opti
 
 /-- Elementwise on a vector pair, or on two scalars — how the float operations
     apply to both `f32`/`f64` and `f32x4`. -/
-def zipF (u v : V) (f32op : Float32 → Float32 → Float32)
+def zipF (fl : ClifTy → UInt64 → UInt64) (u v : V) (f32op : Float32 → Float32 → Float32)
     (f64op : Float → Float → Float) : Option V :=
   match u, v with
-  | .sc .f32 x, .sc .f32 y => some (.sc .f32 (ofF32 (f32op (f32 x) (f32 y))))
-  | .sc .f64 x, .sc .f64 y => some (.sc .f64 (ofF64 (f64op (f64 x) (f64 y))))
+  | .sc .f32 x, .sc .f32 y => some (.sc .f32 (fl .f32 (ofF32 (f32op (f32 x) (f32 y)))))
+  | .sc .f64 x, .sc .f64 y => some (.sc .f64 (fl .f64 (ofF64 (f64op (f64 x) (f64 y)))))
   | .vec .f32x4 xs, .vec .f32x4 ys =>
       if xs.size == ys.size then
-        some (.vec .f32x4 (xs.zipWith (fun x y => ofF32 (f32op (f32 x) (f32 y))) ys))
+        some (.vec .f32x4 (xs.zipWith (fun x y => fl .f32 (ofF32 (f32op (f32 x) (f32 y)))) ys))
       else none
   | _, _ => none
 
@@ -293,31 +360,18 @@ def isNaNBits (t : ClifTy) (x : UInt64) : Bool :=
             (x &&& 0x000fffffffffffff) != 0
   | _ => false
 
+/-- A float operation's result as a platform with NaN rule `nan` leaves it:
+    a NaN as the rule says, at the type's width, anything else as computed. -/
+def nanFix (nan : ClifTy → UInt64 → UInt64) (t : ClifTy) (x : UInt64) : UInt64 :=
+  if isNaNBits t x then nan t x &&& widthMask t else x
+
+/-- A float operation's result as memory `m`'s platform leaves it. -/
+def Mem.fl (m : Mem) : ClifTy → UInt64 → UInt64 := nanFix m.nan
+
 def signBit (t : ClifTy) (x : UInt64) : Bool :=
   match t with
   | .f32 => x &&& 0x80000000 != 0
   | _ => x &&& 0x8000000000000000 != 0
-
-def ltBits (t : ClifTy) (x y : UInt64) : Bool :=
-  match t with
-  | .f32 => f32 x < f32 y
-  | _ => f64 x < f64 y
-
-def eqBits (t : ClifTy) (x y : UInt64) : Bool :=
-  match t with
-  | .f32 => f32 x == f32 y
-  | _ => f64 x == f64 y
-
-/-- `fmax` (`wantMax`) and `fmin`, sharing everything but which end they take.
-    NaN wins outright; otherwise equal values are split by sign, which is how
-    the two zeros get ordered. -/
-def pickExtreme (wantMax : Bool) (t : ClifTy) (x y : UInt64) : UInt64 :=
-  if isNaNBits t x then x
-  else if isNaNBits t y then y
-  else if eqBits t x y then
-    (if signBit t x == wantMax then y else x)
-  else if ltBits t x y then (if wantMax then y else x)
-  else (if wantMax then x else y)
 
 def cmpInt : ICmpCond → ClifTy → UInt64 → UInt64 → Bool
   | .eq, _, x, y => x == y
@@ -331,15 +385,36 @@ def cmpInt : ICmpCond → ClifTy → UInt64 → UInt64 → Bool
   | .sgt, t, x, y => signed t x > signed t y
   | .sge, t, x, y => signed t x ≥ signed t y
 
-def cmpF32 : FloatCC → Float32 → Float32 → Bool
-  | .eq, x, y => x == y | .ne, x, y => !(x == y)
-  | .lt, x, y => x < y  | .le, x, y => x ≤ y
-  | .gt, x, y => y < x  | .ge, x, y => y ≤ x
+/-- Where a float's bits sit in the order of the values: its magnitude, signed,
+    so `-0` and `+0` meet, an infinity is beyond every finite value, and bits
+    order as the values do. A NaN has none (`fcmpBits`). -/
+def fkey (t : ClifTy) (x : UInt64) : Int :=
+  let m : Nat := match t with
+    | .f32 => (x &&& 0x7fffffff).toNat
+    | _ => (x &&& 0x7fffffffffffffff).toNat
+  if signBit t x then -(m : Int) else m
 
-def cmpF64 : FloatCC → Float → Float → Bool
-  | .eq, x, y => x == y | .ne, x, y => !(x == y)
-  | .lt, x, y => x < y  | .le, x, y => x ≤ y
-  | .gt, x, y => y < x  | .ge, x, y => y ≤ x
+/-- **A float comparison on bits**, as IEEE 754 orders the values: a NaN is
+    unordered, so only `ne` holds of it; otherwise the values compare as their
+    keys (`fkey`). -/
+def fcmpBits (c : FloatCC) (t : ClifTy) (x y : UInt64) : Bool :=
+  if isNaNBits t x || isNaNBits t y then (match c with | .ne => true | _ => false)
+  else
+    let a := fkey t x; let b := fkey t y
+    match c with
+    | .eq => a == b | .ne => a != b | .lt => decide (a < b) | .le => decide (a ≤ b)
+    | .gt => decide (b < a) | .ge => decide (b ≤ a)
+
+/-- `fmax` (`wantMax`) and `fmin`, sharing everything but which end they take.
+    NaN wins outright; otherwise the values compare as their keys (`fkey`),
+    and equal ones are split by sign, which is how the two zeros get ordered. -/
+def pickExtreme (wantMax : Bool) (t : ClifTy) (x y : UInt64) : UInt64 :=
+  if isNaNBits t x then x
+  else if isNaNBits t y then y
+  else if fkey t x == fkey t y then
+    (if signBit t x == wantMax then y else x)
+  else if fkey t x < fkey t y then (if wantMax then y else x)
+  else (if wantMax then x else y)
 
 def boolV (b : Bool) : V := .sc .i8 (if b then 1 else 0)
 
@@ -491,24 +566,26 @@ def FFmt.decode (f : FFmt) (x : Nat) : FVal :=
   else if ex == 0 then .fin neg man (1 - (f.bias : Int) - f.mbits)
   else .fin neg (man + 2 ^ f.mbits) ((ex : Int) - f.bias - f.mbits)
 
+/-- `n · 2^e` (`n ≠ 0`) rounded to nearest, ties to even: a significand of at
+    most `mbits + 1` bits and the exponent of its last place, never below the
+    subnormals'. -/
+def FFmt.sig (f : FFmt) (n : Nat) (e : Int) : Nat × Int :=
+  let q : Int := max ((n.log2 : Int) + e - f.mbits) (1 - (f.bias : Int) - f.mbits)
+  if q ≤ e then (n * 2 ^ (e - q).toNat, q)
+  else
+    let sh := (q - e).toNat
+    let m := n / 2 ^ sh
+    let r := n % 2 ^ sh
+    let half := 2 ^ sh / 2
+    let m := if r > half || (r == half && m % 2 == 1) then m + 1 else m
+    if m == 2 ^ (f.mbits + 1) then (m / 2, q + 1) else (m, q)
+
 /-- `±n · 2^e` rounded to nearest, ties to even, into the format's bits:
     subnormals, overflow to infinity and underflow to a signed zero included. -/
 def FFmt.round (f : FFmt) (neg : Bool) (n : Nat) (e : Int) : Nat :=
   let sgn := if neg then f.signAt else 0
   if n == 0 then sgn else
-  let top : Int := (n.log2 : Int) + e
-  let emin : Int := 1 - (f.bias : Int)
-  -- the exponent of the result's last place
-  let q : Int := max (top - f.mbits) (emin - f.mbits)
-  let (m, q) :=
-    if q ≤ e then (n * 2 ^ (e - q).toNat, q)
-    else
-      let sh := (q - e).toNat
-      let m := n / 2 ^ sh
-      let r := n % 2 ^ sh
-      let half := 2 ^ sh / 2
-      let m := if r > half || (r == half && m % 2 == 1) then m + 1 else m
-      if m == 2 ^ (f.mbits + 1) then (m / 2, q + 1) else (m, q)
+  let (m, q) := f.sig n e
   if m < 2 ^ f.mbits then sgn + m
   else
     let be := q + f.mbits + f.bias
@@ -558,6 +635,14 @@ def satToSint (ty : ClifTy) (x : Float) : V :=
   else if x ≥ Float.ofInt (hi + 1) then ofInt ty hi
   else if x ≥ 0 then ofInt ty x.toUInt64.toNat
   else ofInt ty (-((-x).toUInt64.toNat : Int))
+
+/-- An operation on floating-point numbers: the kernel cannot compute these
+    (`Float32` is opaque to it), and their NaN results are the platform's
+    (`Mem.nan`), so the checker does not fold them. -/
+def floaty : Op → Bool
+  | .fadd .. | .fsub .. | .fmul .. | .fmax .. | .fmin .. | .fcmp .. | .fbin .. | .fneg _
+  | .fpromote _ | .fcvtFromSint .. | .fcvtToUint .. | .fun1 .. | .fconv .. | .fma .. => true
+  | _ => false
 
 /-- What an operation computes, given the slots in scope. Where `Op.check`
     accepts it answers at the type the checker gives, unless a division traps
@@ -613,14 +698,14 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
       let masked ← zipAnyBits cv av (fun _ m x => m &&& x)
       let other ← zipAnyBits cv bv (fun _ m y => (~~~m) &&& y)
       zipAnyBits masked other (fun _ x y => x ||| y)
-  | .fadd a b => do zipF (← get Γ a) (← get Γ b) (· + ·) (· + ·)
-  | .fsub a b => do zipF (← get Γ a) (← get Γ b) (· - ·) (· - ·)
-  | .fmul a b => do zipF (← get Γ a) (← get Γ b) (· * ·) (· * ·)
+  | .fadd a b => do zipF m.fl (← get Γ a) (← get Γ b) (· + ·) (· + ·)
+  | .fsub a b => do zipF m.fl (← get Γ a) (← get Γ b) (· - ·) (· - ·)
+  | .fmul a b => do zipF m.fl (← get Γ a) (← get Γ b) (· * ·) (· * ·)
   -- `fmax`/`fmin` propagate NaN rather than returning the other operand, and
   -- they order the two zeros: `fmin (+0) (-0) = -0`, `fmax (+0) (-0) = +0`.
   -- Both were measured against the machine; see `HProgCorpus`.
-  | .fmax a b => do zipBits (← get Γ a) (← get Γ b) (pickExtreme true)
-  | .fmin a b => do zipBits (← get Γ a) (← get Γ b) (pickExtreme false)
+  | .fmax a b => do zipBits (← get Γ a) (← get Γ b) fun t x y => m.fl t (pickExtreme true t x y)
+  | .fmin a b => do zipBits (← get Γ a) (← get Γ b) fun t x y => m.fl t (pickExtreme false t x y)
   -- Negation is a sign-bit flip, so it applies to NaN too and cannot go
   -- through `Float` arithmetic, which does not preserve a NaN's sign.
   | .fneg a => do
@@ -631,18 +716,18 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
       | _ => none
   | .fpromote a => do
       let (.sc .f32 x) ← get Γ a | none
-      some (.sc .f64 (ofF64 (f32 x).toFloat))
+      some (.sc .f64 (m.fl .f64 (ofF64 (f32 x).toFloat)))
   | .fcmp c a b => do
       match ← get Γ a, ← get Γ b with
-      | .sc .f32 x, .sc .f32 y => some (boolV (cmpF32 c (f32 x) (f32 y)))
-      | .sc .f64 x, .sc .f64 y => some (boolV (cmpF64 c (f64 x) (f64 y)))
+      | .sc .f32 x, .sc .f32 y => some (boolV (fcmpBits c .f32 x y))
+      | .sc .f64 x, .sc .f64 y => some (boolV (fcmpBits c .f64 x y))
       -- On vectors the result is a per-lane mask of all-ones or all-zeros, at
       -- the lane's own width — which is why `bitselect` consumes it directly
       -- once it has been bitcast to the operand type.
       | .vec .f32x4 xs, .vec .f32x4 ys =>
           if xs.size == ys.size then
             some (.vec .f32x4 (xs.zipWith
-              (fun x y => if cmpF32 c (f32 x) (f32 y) then 0xffffffff else 0) ys))
+              (fun x y => if fcmpBits c .f32 x y then 0xffffffff else 0) ys))
           else none
       | _, _ => none
   | .fcvtFromSint ty a => do
@@ -685,18 +770,21 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
   | .iun k a => un Γ a (·.isInt) (iunOp k)
   | .fbin k a b => do
       match k with
-      | .fdiv => zipF (← get Γ a) (← get Γ b) (· / ·) (· / ·)
+      | .fdiv => zipF m.fl (← get Γ a) (← get Γ b) (· / ·) (· / ·)
       | .fcopysign => zipBits (← get Γ a) (← get Γ b) fun t x y =>
           let sm := fsignMask t
           (x &&& ~~~sm) ||| (y &&& sm)
-  | .fun1 k a => do mapFBits (← get Γ a) (funOp k)
+  | .fun1 k a => do
+      mapFBits (← get Γ a) fun t x => match k with
+        | .fabs => funOp .fabs t x
+        | _ => m.fl t (funOp k t x)
   | .fma a b c => do
       match ← get Γ a, ← get Γ b, ← get Γ c with
       | .sc t x, .sc t' y, .sc t'' z =>
-          if t.isFloat && t == t' && t == t'' then some (.sc t (fmaLane t x y z)) else none
+          if t.isFloat && t == t' && t == t'' then some (.sc t (m.fl t (fmaLane t x y z))) else none
       | .vec .f32x4 xs, .vec .f32x4 ys, .vec .f32x4 zs =>
           if xs.size == ys.size && xs.size == zs.size then
-            some (.vec .f32x4 ((xs.zip (ys.zip zs)).map fun (x, y, z) => fmaLane .f32 x y z))
+            some (.vec .f32x4 ((xs.zip (ys.zip zs)).map fun (x, y, z) => m.fl .f32 (fmaLane .f32 x y z)))
           else none
       | _, _, _ => none
   | .iext k ty a => do
@@ -719,7 +807,7 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
           | .f32 => some (.sc .f32 (ofF32 (Float32.ofNat n)))
           | .f64 => some (.sc .f64 (ofF64 (Float.ofNat n)))
           | _ => none
-      | .demote, .sc .f64 x => if ty == .f32 then some (.sc .f32 (ofF32 (f64 x).toFloat32)) else none
+      | .demote, .sc .f64 x => if ty == .f32 then some (.sc .f32 (m.fl .f32 (ofF32 (f64 x).toFloat32))) else none
       | _, _ => none
   | .load op a => do
       let (.sc _ addr) ← get Γ a | none
@@ -939,6 +1027,10 @@ structure Launch where
   /-- Every parameter word, in order, for a launch through the driver: the
       pointers that bind buffers and the scalars alike. -/
   args : List UInt64 := []
+  /-- The bound buffers the kernel may write: every one, unless the device
+      says which of the entry point's parameters it writes
+      (`Dev.kernelWrites`). The rest it only reads. -/
+  writes : List Nat := binds
 
 /-- One vendor routine call as the model sees it: which routine, and its scalar
     arguments in the order the entry point takes them. -/
@@ -1072,6 +1164,12 @@ structure Dev where
   blas : Array (Option UInt64) := #[]
   /-- Instantiated graphs by handle index, each the operations it runs. -/
   execs : Array (Option (Array DevOp)) := #[]
+  /-- **Which parameters a kernel writes**: for a module's text and an entry
+      point in it, a flag per parameter, `true` where the kernel may store
+      through it. `none` where nothing is known: then every buffer a launch
+      binds may be written. Like `kernel`, what a kernel's own proof pins
+      down (a parameter no thread stores through is only read). -/
+  kernelWrites : String → String → Option (List Bool) := fun _ _ => none
   deriving Inhabited
 
 /-- The live buffer an `i32` id names, if any. -/
@@ -1404,5 +1502,90 @@ instance [Repr α] : Repr (Outcome α) where
     | .stuck m => "stuck: " ++ m
     | .misuse m => "misuse: " ++ m
     | .fault m => "fault: " ++ m
+
+/-! ## f32 words stay f32 words -/
+
+/-- A `Float32`'s bits are a 32-bit word. -/
+theorem ofF32_lt (x : Float32) : (ofF32 x).toNat < 2 ^ 32 := by
+  simp only [ofF32, UInt32.toNat_toUInt64]; exact UInt32.toNat_lt _
+
+/-- A word below `2^32` is its own low half. -/
+theorem and_mask32 {x : UInt64} (h : x.toNat < 2 ^ 32) : x &&& 0xffffffff = x := by
+  apply UInt64.toNat_inj.mp
+  rw [UInt64.toNat_and]
+  show x.toNat &&& (2 ^ 32 - 1) = x.toNat
+  rw [Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt h]
+
+/-- An f32 result, a NaN as the platform leaves it, is a 32-bit word. -/
+theorem nanFix_lt (nan : ClifTy → UInt64 → UInt64) {x : UInt64} (hx : x.toNat < 2 ^ 32) :
+    (nanFix nan .f32 x).toNat < 2 ^ 32 := by
+  unfold nanFix
+  split
+  · rw [UInt64.toNat_and]; exact Nat.lt_of_le_of_lt Nat.and_le_right (by simp [widthMask])
+  · exact hx
+
+/-- The rounded significand has at most `mbits + 1` bits: shifted up, it is
+    at most that by the choice of exponent; rounded down, a carry out of the
+    top is halved. -/
+theorem sig_lt (f : FFmt) (n : Nat) (e : Int) : (f.sig n e).1 < 2 ^ (f.mbits + 1) := by
+  have hn : n < 2 ^ (n.log2 + 1) := Nat.lt_log2_self
+  unfold FFmt.sig
+  simp only
+  have hq1 : (n.log2 : Int) + e - f.mbits ≤
+      max ((n.log2 : Int) + e - f.mbits) (1 - (f.bias : Int) - f.mbits) := Int.le_max_left _ _
+  split
+  · rename_i hle
+    show n * 2 ^ _ < _
+    calc n * 2 ^ _ < 2 ^ (n.log2 + 1) * 2 ^ _ := Nat.mul_lt_mul_of_pos_right hn (Nat.two_pow_pos _)
+      _ = 2 ^ (n.log2 + 1 + _) := (Nat.pow_add _ _ _).symm
+      _ ≤ 2 ^ (f.mbits + 1) := Nat.pow_le_pow_right (by decide) (by omega)
+  · rename_i hgt
+    have h0 : n / 2 ^ (max ((n.log2 : Int) + e - f.mbits) (1 - (f.bias : Int) - f.mbits) - e).toNat
+        < 2 ^ (f.mbits + 1) := by
+      rw [Nat.div_lt_iff_lt_mul (Nat.two_pow_pos _), ← Nat.pow_add]
+      exact Nat.lt_of_lt_of_le hn (Nat.pow_le_pow_right (by decide) (by omega))
+    have carry : ∀ (m : Nat) (q : Int), m ≤ 2 ^ (f.mbits + 1) →
+        (if (m == 2 ^ (f.mbits + 1)) = true then (m / 2, q + 1) else (m, q)).1 < 2 ^ (f.mbits + 1) := by
+      intro m q hm
+      by_cases h : m = 2 ^ (f.mbits + 1)
+      · rw [if_pos (by simp [h])]; rw [h]; exact Nat.div_lt_self (Nat.two_pow_pos _) (by decide)
+      · rw [if_neg (by simp [h])]; omega
+    exact carry _ _ (by split <;> omega)
+
+theorem toNat_ofNat64 (n : Nat) : (UInt64.ofNat n).toNat = n % 2 ^ 64 := rfl
+
+/-- f32 rounding gives a 32-bit word. -/
+theorem round32_lt (neg : Bool) (n : Nat) (e : Int) : FFmt.round ⟨8, 23⟩ neg n e < 2 ^ 32 := by
+  have hs := sig_lt ⟨8, 23⟩ n e
+  unfold FFmt.round
+  generalize FFmt.sig ⟨8, 23⟩ n e = p at hs ⊢
+  obtain ⟨m, q⟩ := p
+  simp only [FFmt.signAt, FFmt.bias, FFmt.expAll] at *
+  have hsg : (if neg = true then 2 ^ (8 + 23) else 0) ≤ 2 ^ 31 := by split <;> simp
+  generalize (if neg = true then 2 ^ (8 + 23) else 0) = sgn at *
+  simp only [show (2 : Nat) ^ 23 = 8388608 from rfl, show (2 : Nat) ^ (23 + 1) = 16777216 from rfl,
+    show (2 : Nat) ^ 31 = 2147483648 from rfl, show (2 : Nat) ^ 32 = 4294967296 from rfl,
+    show (2 : Nat) ^ (8 - 1) - 1 = 127 from rfl, show (2 : Nat) ^ 8 - 1 = 255 from rfl] at *
+  split
+  · omega
+  split
+  · omega
+  split
+  · omega
+  · rename_i hbe; omega
+
+/-- **`fma` on f32 words gives an f32 word**: operands below `2^32` give a
+    result below `2^32`. -/
+theorem fmaLane32_lt (a b c : UInt64) (ha : a.toNat < 2 ^ 32) (hb : b.toNat < 2 ^ 32)
+    (hc : c.toNat < 2 ^ 32) : (fmaLane .f32 a b c).toNat < 2 ^ 32 := by
+  have hq : ∀ x : UInt64, x.toNat < 2 ^ 32 → (x ||| UInt64.ofNat (2 ^ (23 - 1))).toNat < 2 ^ 32 := by
+    intro x hx
+    rw [UInt64.toNat_or]
+    exact Nat.or_lt_two_pow hx (by simp)
+  have hinv := ofF32_lt ((0.0 : Float32) / 0.0)
+  unfold fmaLane
+  simp only [fmtOf, show (ClifTy.f32 == ClifTy.f64) = false from rfl,
+    FFmt.signAt, FFmt.expAll]
+  split <;> (try split) <;> (try split) <;> simp_all <;> (repeat' split) <;> (try simp only [toNat_ofNat64]) <;> first | omega | exact Nat.lt_of_le_of_lt (Nat.mod_le _ _) (round32_lt _ _ _) | simp
 
 end AlgorithmLib.HProg.Sem

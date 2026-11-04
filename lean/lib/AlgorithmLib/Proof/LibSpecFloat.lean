@@ -126,14 +126,28 @@ theorem wp_fconst64 {bits : UInt64} {Q : Slot .f64 → Env → World → Prop}
   wp_val (by simp [Op'.erase, evalOp, widthMask]; exact UInt64.and_neg_one) h
 
 theorem wp_fpromote {a : Slot .f32} {x : UInt32} {Q : Slot .f64 → Env → World → Prop}
-    (ha : Γ[a]? = some (.sc .f32 (s32 x))) (h : Q Γ.size (Γ.push (.sc .f64 (Libm.promote x))) w) :
+    (ha : Γ[a]? = some (.sc .f32 (s32 x))) (h : Q Γ.size (Γ.push (.sc .f64 (Libm.promote w.mem.nan x))) w) :
     wp cfg d J (fpromote a) Q Γ w :=
-  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, Libm.promote]) h
+  wp_val (by simp [Mem.fl, Op'.erase, evalOp, Sem.get, ha, Libm.promote]) h
+
+/-- An f32 result, a NaN as the platform leaves it, is its own 32-bit word. -/
+theorem s32_nanFix32 (nan : ClifTy → UInt64 → UInt64) (y : UInt64) (hy : y.toNat < 2 ^ 32) :
+    s32 (nanFix nan .f32 y).toUInt32 = nanFix nan .f32 y := by
+  have hl : (nanFix nan .f32 y).toNat < 2 ^ 32 := by
+    unfold nanFix
+    split
+    · rw [UInt64.toNat_and]; exact Nat.lt_of_le_of_lt Nat.and_le_right (by simp [widthMask])
+    · exact hy
+  apply UInt64.toNat_inj.mp
+  simp only [s32, UInt32.toNat_toUInt64, UInt64.toNat_toUInt32]
+  exact Nat.mod_eq_of_lt hl
 
 theorem wp_fdemote {a : Slot .f64} {x : UInt64} {Q : Slot .f32 → Env → World → Prop}
-    (ha : Γ[a]? = some (.sc .f64 x)) (h : Q Γ.size (Γ.push (.sc .f32 (s32 (Libm.demote x)))) w) :
+    (ha : Γ[a]? = some (.sc .f64 x)) (h : Q Γ.size (Γ.push (.sc .f32 (s32 (Libm.demote w.mem.nan x)))) w) :
     wp cfg d J (fdemote a) Q Γ w :=
-  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, Libm.demote, ofF32] <;> op_fin) h
+  wp_val (by
+    rw [Libm.demote, s32_nanFix32 _ _ (by simp only [ofF32, UInt32.toNat_toUInt64]; exact UInt32.toNat_lt _)]
+    simp [Mem.fl, Op'.erase, evalOp, Sem.get, ha]) h
 
 theorem wp_fcvtFromSint {a : Slot .i64} {x : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .i64 x)) (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dofI64 x))) w) :
@@ -149,23 +163,23 @@ theorem wp_fcvtToSint {a : Slot .f64} {x : UInt64} {Q : Slot .i64 → Env → Wo
 
 theorem wp_fadd64 {a b : Slot .f64} {x y : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x)) (hb : Γ[b]? = some (.sc .f64 y))
-    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dadd x y))) w) : wp cfg d J (fadd a b) Q Γ w :=
-  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.dadd]) h
+    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dadd w.mem.nan x y))) w) : wp cfg d J (fadd a b) Q Γ w :=
+  wp_val (by simp [Mem.fl, Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.dadd]) h
 
 theorem wp_fsub64 {a b : Slot .f64} {x y : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x)) (hb : Γ[b]? = some (.sc .f64 y))
-    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dsub x y))) w) : wp cfg d J (fsub a b) Q Γ w :=
-  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.dsub]) h
+    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dsub w.mem.nan x y))) w) : wp cfg d J (fsub a b) Q Γ w :=
+  wp_val (by simp [Mem.fl, Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.dsub]) h
 
 theorem wp_fmul64 {a b : Slot .f64} {x y : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x)) (hb : Γ[b]? = some (.sc .f64 y))
-    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dmul x y))) w) : wp cfg d J (fmul a b) Q Γ w :=
-  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.dmul]) h
+    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dmul w.mem.nan x y))) w) : wp cfg d J (fmul a b) Q Γ w :=
+  wp_val (by simp [Mem.fl, Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.dmul]) h
 
 theorem wp_fdiv64 {a b : Slot .f64} {x y : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x)) (hb : Γ[b]? = some (.sc .f64 y))
-    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.ddiv x y))) w) : wp cfg d J (fdiv a b) Q Γ w :=
-  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.ddiv]) h
+    (h : Q Γ.size (Γ.push (.sc .f64 (Libm.ddiv w.mem.nan x y))) w) : wp cfg d J (fdiv a b) Q Γ w :=
+  wp_val (by simp [Mem.fl, Op'.erase, evalOp, Sem.get, ha, hb, zipF, Libm.ddiv]) h
 
 theorem wp_fneg64 {a : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x)) (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dneg x))) w) :
@@ -173,9 +187,9 @@ theorem wp_fneg64 {a : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World 
   wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, Libm.dneg]) h
 
 theorem wp_floor64 {a : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World → Prop}
-    (ha : Γ[a]? = some (.sc .f64 x)) (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dfloor x))) w) :
+    (ha : Γ[a]? = some (.sc .f64 x)) (h : Q Γ.size (Γ.push (.sc .f64 (Libm.dfloor w.mem.nan x))) w) :
     wp cfg d J (floor a) Q Γ w :=
-  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, mapFBits, Libm.dfloor]) h
+  wp_val (by simp [Mem.fl, Op'.erase, evalOp, Sem.get, ha, mapFBits, Libm.dfloor]) h
 
 theorem wp_fcmp64 {c : FloatCC} {a b : Slot .f64} {x y : UInt64} {Q : Slot .i8 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x)) (hb : Γ[b]? = some (.sc .f64 y))
@@ -208,6 +222,91 @@ theorem wp_icmp32 {cc : ICmpCond} {a b : Slot .i32} {x y : UInt32} {Q : Slot .i8
     (ha : Γ[a]? = some (.sc .i32 (s32 x))) (hb : Γ[b]? = some (.sc .i32 (s32 y)))
     (h : Q Γ.size (Γ.push (boolV (cmpInt cc .i32 (s32 x) (s32 y)))) w) : wp cfg d J (icmp cc a b) Q Γ w :=
   wp_val (by simp [Op'.erase, evalOp, zipIntCmp, Sem.get, ha, hb] <;> op_fin) h
+
+theorem wp_iadd32 {a b : Slot .i32} {x y : UInt32} {Q : Slot .i32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .i32 (s32 x))) (hb : Γ[b]? = some (.sc .i32 (s32 y)))
+    (h : Q Γ.size (Γ.push (.sc .i32 (s32 (x + y)))) w) : wp cfg d J (iadd a b) Q Γ w :=
+  wp_val (by
+    simp [Op'.erase, evalOp, bin, Sem.get, ha, hb, norm, widthMask]
+    refine ⟨by decide, ?_⟩
+    apply UInt64.toNat_inj.mp
+    simp only [UInt64.toNat_and, UInt64.toNat_add, UInt64.toNat_mod, UInt32.toNat_toUInt64]
+    rw [show (4294967295 : UInt64).toNat = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
+    simp) h
+
+theorem wp_imul32 {a b : Slot .i32} {x y : UInt32} {Q : Slot .i32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .i32 (s32 x))) (hb : Γ[b]? = some (.sc .i32 (s32 y)))
+    (h : Q Γ.size (Γ.push (.sc .i32 (s32 (x * y)))) w) : wp cfg d J (imul a b) Q Γ w :=
+  wp_val (by
+    simp [Op'.erase, evalOp, bin, Sem.get, ha, hb, norm, widthMask]
+    refine ⟨by decide, ?_⟩
+    apply UInt64.toNat_inj.mp
+    simp only [UInt64.toNat_and, UInt64.toNat_mul, UInt64.toNat_mod, UInt32.toNat_toUInt64]
+    rw [show (4294967295 : UInt64).toNat = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
+    simp [Nat.mul_mod]) h
+
+theorem wp_loadF32 {a : Slot .i64} {p v : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .i64 p)) (hl : w.mem.load p 4 = some v)
+    (h : Q Γ.size (Γ.push (.sc .f32 v)) w) : wp cfg d J (loadF32 a) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hl, tyBytes, ClifTy.lanes, ClifTy.width] <;> op_fin) h
+
+theorem wp_fma32 {a b c : Slot .f32} {x y z : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .f32 x)) (hb : Γ[b]? = some (.sc .f32 y)) (hc : Γ[c]? = some (.sc .f32 z))
+    (h : Q Γ.size (Γ.push (.sc .f32 (w.mem.fl .f32 (fmaLane .f32 x y z)))) w) : wp cfg d J (fma a b c) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, hc] <;> op_fin) h
+
+theorem wp_storeF32 {v : Slot .f32} {a : Slot .i64} {x p : UInt64} {m : Mem} {Q : Unit → Env → World → Prop}
+    (hv : Γ[v]? = some (.sc .f32 x)) (ha : Γ[a]? = some (.sc .i64 p)) (hs : w.mem.store p 4 x = some m)
+    (h : Q () Γ { obsStore w p 4 x with mem := m }) : wp cfg d J (store v a) Q Γ w := by
+  simp [store, wp_store, wp_ret, runStmt, Sem.get, hv, ha, hs, tyBytes, ClifTy.width]
+  exact h
+
+theorem wp_fconst32 {bits : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (h : Q Γ.size (Γ.push (.sc .f32 (bits &&& widthMask .f32))) w) : wp cfg d J (fconst .f32 bits) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp]) h
+
+/-- Every word is its own low 64 bits. -/
+theorem and_mask64 (x : UInt64) : x &&& 18446744073709551615 = x := by
+  apply UInt64.toNat_inj.mp
+  rw [UInt64.toNat_and]
+  show x.toNat &&& (2 ^ 64 - 1) = x.toNat
+  rw [Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt x.toNat_lt]
+
+theorem wp_fmul32 {a b : Slot .f32} {x y : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .f32 x)) (hb : Γ[b]? = some (.sc .f32 y))
+    (h : Q Γ.size (Γ.push (.sc .f32 (w.mem.fl .f32 (ofF32 (f32 x * f32 y))))) w) : wp cfg d J (fmul a b) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, zipF]) h
+
+theorem wp_fdiv32 {a b : Slot .f32} {x y : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .f32 x)) (hb : Γ[b]? = some (.sc .f32 y))
+    (h : Q Γ.size (Γ.push (.sc .f32 (w.mem.fl .f32 (ofF32 (f32 x / f32 y))))) w) : wp cfg d J (fdiv a b) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, zipF]) h
+
+theorem wp_fneg32 {a : Slot .f32} {x : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .f32 x)) (h : Q Γ.size (Γ.push (.sc .f32 (x ^^^ 0x80000000))) w) :
+    wp cfg d J (fneg a) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha]) h
+
+theorem wp_sqrt32 {a : Slot .f32} {x : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .f32 x))
+    (h : Q Γ.size (Γ.push (.sc .f32 (w.mem.fl .f32 (funOp .sqrt .f32 x) &&& widthMask .f32))) w) :
+    wp cfg d J (sqrt a) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, mapFBits]) h
+
+theorem wp_fcmp32 {c : FloatCC} {a b : Slot .f32} {x y : UInt64} {Q : Slot .i8 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .f32 x)) (hb : Γ[b]? = some (.sc .f32 y))
+    (h : Q Γ.size (Γ.push (boolV (fcmpBits c .f32 x y))) w) : wp cfg d J (fcmp c a b) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb]) h
+
+theorem wp_selectF32 {c : Slot .i8} {a b : Slot .f32} {p : Bool} {x y : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (hc : Γ[c]? = some (boolV p)) (ha : Γ[a]? = some (.sc .f32 x)) (hb : Γ[b]? = some (.sc .f32 y))
+    (h : Q Γ.size (Γ.push (.sc .f32 (if p then x else y))) w) : wp cfg d J (select c a b) Q Γ w :=
+  wp_val (by cases p <;> simp [Op'.erase, evalOp, Sem.get, ha, hb, hc, boolV, Sem.isTrue, V.ty] <;> op_fin) h
+
+theorem wp_fadd32 {a b : Slot .f32} {x y : UInt64} {Q : Slot .f32 → Env → World → Prop}
+    (ha : Γ[a]? = some (.sc .f32 x)) (hb : Γ[b]? = some (.sc .f32 y))
+    (h : Q Γ.size (Γ.push (.sc .f32 (w.mem.fl .f32 (ofF32 (f32 x + f32 y))))) w) : wp cfg d J (fadd a b) Q Γ w :=
+  wp_val (by simp [Op'.erase, evalOp, Sem.get, ha, hb, zipF]) h
 
 theorem wp_ushrImm32 {a : Slot .i32} {x : UInt32} {imm : Int} {Q : Slot .i32 → Env → World → Prop}
     (hi : 0 ≤ imm ∧ imm < 32 := by decide) (ha : Γ[a]? = some (.sc .i32 (s32 x)))
@@ -367,5 +466,42 @@ theorem wp_ifte8J {jt : ClifTy} {cc : ICmpCond} {a b : Slot .i8} {p q : Bool} (u
     (hk : ∀ nJ G, Extends Γ G → G[nJ]? = some (.sc jt u) → Q (nJ ::ᵥ .nil) G w) :
     wp cfg d J (ifte cc a b thn els) Q Γ w :=
   wp_ifte8 _ ha hb ht he (joins_k hk)
+
+/-- f32 addition on words. -/
+def add32 (x y : UInt32) : UInt32 := (Float32.ofBits x + Float32.ofBits y).toBits
+
+/-- f32 addition on words, its NaN as the platform with rule `nan` leaves it. -/
+def add32N (nan : ClifTy → UInt64 → UInt64) (x y : UInt32) : UInt32 :=
+  (nanFix nan .f32 (s32 (add32 x y))).toUInt32
+
+/-- A float result at its width is a 32-bit word's. -/
+theorem s32_nanFix (nan : ClifTy → UInt64 → UInt64) (x : UInt32) :
+    s32 (nanFix nan .f32 (s32 x)).toUInt32 = nanFix nan .f32 (s32 x) :=
+  s32_nanFix32 nan _ (by simp [s32]; exact UInt32.toNat_lt _)
+
+theorem wp_fadd32w {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World} {a b : Slot .f32} {x y : UInt32}
+    {Q : Slot .f32 → Env → World → Prop} {nan : ClifTy → UInt64 → UInt64} (hn : w.mem.nan = nan)
+    (ha : Γ[a]? = some (.sc .f32 (s32 x))) (hb : Γ[b]? = some (.sc .f32 (s32 y)))
+    (h : Q Γ.size (Γ.push (.sc .f32 (s32 (add32N nan x y)))) w) : wp cfg d J (fadd a b) Q Γ w :=
+  wp_fadd32 ha hb (by
+    subst hn
+    have e : s32 (add32N w.mem.nan x y) = w.mem.fl .f32 (ofF32 (f32 (s32 x) + f32 (s32 y))) := by
+      rw [add32N, s32_nanFix]; simp only [Mem.fl]; congr 1; simp [add32, f32, ofF32, s32]
+    rw [← e]; exact h)
+
+theorem cmp64_ult (t : UInt32) (s : Nat) (k : Int) (hk : k = s) (hs : s < 2 ^ 32) :
+    cmpInt .ult .i64 (s32 t) (c64 k) = decide (t.toNat < s) := by
+  subst hk
+  have he : (s : Int).emod 18446744073709551616 = s := Int.emod_eq_of_lt (by omega) (by omega)
+  simp [cmpInt, c64, s32, UInt64.lt_iff_toNat_lt, he]
+  rw [Nat.mod_eq_of_lt (by omega)]
+
+theorem cmp64_eq0 (t : UInt32) : cmpInt .eq .i64 (s32 t) (c64 0) = decide (t = 0) := by
+  simp only [cmpInt, c64, s32]
+  rw [Bool.eq_iff_iff]
+  simp only [beq_iff_eq, decide_eq_true_eq]
+  constructor
+  · intro h; apply UInt32.toNat_inj.mp; have := congrArg UInt64.toNat h; simpa using this
+  · intro h; subst h; rfl
 
 end AlgorithmLib.LibSpec

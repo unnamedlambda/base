@@ -194,10 +194,10 @@ open AlgorithmLib.Prog
     by `main`, and the four kernels of one module. -/
 def app : Drv.App :=
   { bufs := [0, 0, 0, 0, 0],
-    kernels := [⟨PTX_OFF, PTX_LEN, [0, 2, 1], (1, 1, 1), (256, 1, 1)⟩,
-                ⟨PTX_OFF, PTX_LEN, [0, 2, 3], (1, 1, 1), (256, 1, 1)⟩,
-                ⟨PTX_OFF, PTX_LEN, [2, 3, 4], (1, 1, 1), (256, 1, 1)⟩,
-                ⟨PTX_OFF, PTX_LEN, [0, 2, 4, 1], (1, 1, 1), (256, 1, 1)⟩],
+    kernels := [⟨PTX_OFF, PTX_LEN, [0, 2, 1], (1, 1, 1), (256, 1, 1), []⟩,
+                ⟨PTX_OFF, PTX_LEN, [0, 2, 3], (1, 1, 1), (256, 1, 1), []⟩,
+                ⟨PTX_OFF, PTX_LEN, [2, 3, 4], (1, 1, 1), (256, 1, 1), []⟩,
+                ⟨PTX_OFF, PTX_LEN, [0, 2, 4, 1], (1, 1, 1), (256, 1, 1), []⟩],
     memSize := PTX_OFF + PTX_LEN, org := ORG,
     entries := ["small_softmax", "block_reduce", "global_reduce", "normalize"] }
 

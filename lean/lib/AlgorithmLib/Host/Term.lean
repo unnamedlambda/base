@@ -1185,4 +1185,13 @@ def compileBody (idx : Nat) (c : Code) (env : FnEnv)
       blocks := s.done.mergeSort (fun a b => a.ref.id ≤ b.ref.id)
     }
 
+/-- **`compileBody` through a checked door**: the function, or an error when
+    the body is not well-formed (`wf`) or reads a slot not bound on every path
+    to the read (`scopeOk`), which is what `compile_sound` assumes. -/
+def compileChecked (idx : Nat) (c : Code) (env : FnEnv) (params : List ClifTy) :
+    Except String FuncData :=
+  if !wf env params c then .error "the body is not well-formed"
+  else if !scopeOk params c then .error "the body reads a slot that is not bound on every path to the read"
+  else .ok (compileBody idx c env params)
+
 end AlgorithmLib.HProg

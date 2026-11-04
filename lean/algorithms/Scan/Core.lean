@@ -24,6 +24,12 @@ open Lean
 
 namespace TrustScan
 
+/-- A term without its binders' default values. `optParam α d` is `α`; `d`
+    is what elaboration inserts where a caller leaves the argument out, and
+    there it is part of the caller's term. -/
+partial def dropDefaults (e : Expr) : Expr :=
+  e.replace fun s => if s.isAppOfArity ``optParam 2 then some (dropDefaults s.appFn!.appArg!) else none
+
 /-- Transitive constant closure of a declaration's type and proof term. -/
 partial def closure (env : Environment) (seen : Std.HashSet Name) (n : Name) :
     Std.HashSet Name :=
@@ -33,8 +39,8 @@ partial def closure (env : Environment) (seen : Std.HashSet Name) (n : Name) :
     match env.find? n with
     | none => seen
     | some ci =>
-        let cs := ci.type.getUsedConstants ++
-                  (match ci.value? with | some v => v.getUsedConstants | none => #[])
+        let cs := (dropDefaults ci.type).getUsedConstants ++
+                  (match ci.value? with | some v => (dropDefaults v).getUsedConstants | none => #[])
         cs.foldl (fun acc c => closure env acc c) seen
 
 /-- The three axioms of ordinary classical Lean.  Anything else is a finding —

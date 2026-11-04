@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.LZ4.Simt
-meta import AlgorithmLib.LZ4.Simt
+public import AlgorithmLib.LZ4.Ptx
+meta import AlgorithmLib.LZ4.Ptx
 public import AlgorithmLib.LZ4.WarpSched
 meta import AlgorithmLib.LZ4.WarpSched
 import all Init.Data.Repr
@@ -8,7 +8,19 @@ import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
-open AlgorithmLib AlgorithmLib.LZ4Simt
+open AlgorithmLib
+
+/-- The comparisons a `setp` makes. -/
+inductive SCmp where
+  | eq | ne | lt | le | ge
+  deriving Repr, DecidableEq
+
+def SCmp.run : SCmp → UInt64 → UInt64 → Bool
+  | .eq, a, b => a == b
+  | .ne, a, b => a != b
+  | .lt, a, b => a < b
+  | .le, a, b => a ≤ b
+  | .ge, a, b => b ≤ a
 
 /-- Single-threaded warp state (cooperation collapsed to sequential semantics). -/
 structure WState where
@@ -21,10 +33,6 @@ def WState.setReg (st : WState) (d : String) (v : UInt64) : WState :=
 
 def WState.stgByte (st : WState) (addr val : UInt64) : WState :=
   { st with gmem := st.gmem.set! addr.toNat val.toUInt8 }
-
-def WState.stshU16 (st : WState) (addr val : UInt64) : WState :=
-  let s0 := st.smem.setIfInBounds addr.toNat val.toUInt8
-  { st with smem := s0.setIfInBounds (addr + 1).toNat (val >>> 8).toUInt8 }
 
 /-- Sequential lane-strided-collapsed copy of `n` bytes within gmem. -/
 def copyGmem (g : Array UInt8) (dst src : Nat) : Nat → Array UInt8
@@ -81,10 +89,9 @@ theorem copyGmem_getD : ∀ (n : Nat) (g : Array UInt8) (dst src i : Nat),
               show (src + 1) + j = src + (j + 1) by omega]
           simp [Array.getElem?_setIfInBounds_ne (by omega : dst ≠ src + (j + 1))]
 
--- ── Operators / arguments (flat, matching `SInstr`) ───────────────────────────
+-- ── Operators / arguments ──
 
-/-- Arithmetic ops (comparisons are `WStmt.setp`, carrying an `SCmp` directly so
-    they match the machine's `.setp` exactly — `WOp.run = SOp.run`). -/
+/-- Arithmetic ops (comparisons are `WStmt.setp`, carrying an `SCmp`). -/
 inductive WOp
   | add | sub | mul | band | bor | shl | shr | min
   deriving Repr, DecidableEq
@@ -95,26 +102,12 @@ def WOp.run : WOp → UInt64 → UInt64 → UInt64
   | .bor, a, b => a ||| b      | .shl, a, b => a <<< b
   | .shr, a, b => a >>> b      | .min, a, b => if a ≤ b then a else b
 
-def WOp.toS : WOp → SOp
-  | .add => .add | .sub => .sub | .mul => .mul | .band => .band
-  | .bor => .bor | .shl => .shl | .shr => .shr | .min => .min
-
-theorem WOp.run_eq_toS (o : WOp) (a b : UInt64) : o.run a b = o.toS.run a b := by
-  cases o <;> rfl
-
 inductive WArg | reg (n : String) | imm (v : Nat)
   deriving Repr, DecidableEq
 
 def WArg.eval (st : WState) : WArg → UInt64
   | .reg n => st.regs n
   | .imm v => UInt64.ofNat v
-
-/-- The `SArg` this compiles to (emit side). -/
-def WArg.toS : WArg → SArg
-  | .reg n => .reg n
-  | .imm v => .imm v
-
--- ── Collective model helpers (window-find / extend, self-contained on WState) ──
 
 /-- The model's `inp` view of gmem: the low `len` bytes. -/
 def gmemInp (g : Array UInt8) (len : Nat) : List UInt8 :=
@@ -158,8 +151,10 @@ def tableInsert (sm g : Array UInt8) (hashLog tbl searchLim ib sp upto : Nat) : 
 
 /-- Window-collective body given the (already-computed) window result `w` — with
     `w` an explicit argument, this def has light equation lemmas (unlike inlining
-    the concrete `window`/`tableOracle`, whose eq-lemmas overflow the kernel). -/
-def evalCoopWindowGo (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat)
+    the concrete `window`/`tableOracle`, whose eq-lemmas overflow the kernel).
+    Where no lane hits, `p0` is the window's end and `cand0` lane 0's candidate
+    `c0`, as the lanes compute them. -/
+def evalCoopWindowGo (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat) (c0 : UInt64)
     (w : Option (Nat × Nat)) (st : WState) : WState :=
   let s := (st.regs sp).toNat
   match w with
@@ -167,12 +162,14 @@ def evalCoopWindowGo (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Na
       let st1 := ((st.setReg found 1).setReg p0 (UInt64.ofNat p)).setReg cand0 (UInt64.ofNat c)
       { st1 with smem := tableInsert st.smem st.gmem hashLog tbl searchLim ib s (p - s) }
   | none =>
-      let st1 := st.setReg found 0
+      let st1 := ((st.setReg found 0).setReg p0 (st.regs sp + 32)).setReg cand0 c0
       { st1 with smem := tableInsert st.smem st.gmem hashLog tbl searchLim ib s 32 }
 
 def evalCoopWindow (found p0 cand0 sp : String) (inStride searchLim hashLog tbl : Nat)
     (st : WState) : WState :=
   evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim (st.regs "inBase").toNat
+    ((tableOracle st.gmem st.smem hashLog tbl (st.regs "inBase").toNat
+      (min (st.regs sp).toNat (inStride - 4))).elim 0xffffffff UInt64.ofNat)
     (AlgorithmLib.LZ4WarpFind.window (gmemInpAt st.gmem (st.regs "inBase").toNat inStride)
       (tableOracle st.gmem st.smem hashLog tbl (st.regs "inBase").toNat)
       searchLim (st.regs sp).toNat) st
@@ -182,32 +179,34 @@ theorem evalCoopWindow_eq_go (found p0 cand0 sp : String) (inStride searchLim ha
     (st : WState) :
     evalCoopWindow found p0 cand0 sp inStride searchLim hashLog tbl st
       = evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim (st.regs "inBase").toNat
+          ((tableOracle st.gmem st.smem hashLog tbl (st.regs "inBase").toNat
+          (min (st.regs sp).toNat (inStride - 4))).elim 0xffffffff UInt64.ofNat)
           (AlgorithmLib.LZ4WarpFind.window (gmemInpAt st.gmem (st.regs "inBase").toNat inStride)
             (tableOracle st.gmem st.smem hashLog tbl (st.regs "inBase").toNat)
             searchLim (st.regs sp).toNat) st := rfl
 
 /-- `evalCoopWindowGo` preserves `gmem` (both branches only touch regs + smem). -/
-theorem evalCoopWindowGo_gmem (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat)
+theorem evalCoopWindowGo_gmem (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat) (c0 : UInt64)
     (w : Option (Nat × Nat)) (st : WState) :
-    (evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim ib w st).gmem = st.gmem := by
+    (evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim ib c0 w st).gmem = st.gmem := by
   unfold evalCoopWindowGo; split <;> rfl
 
 /-- `evalCoopWindowGo`'s smem = `tableInsert` at the window-determined `upto`. -/
-theorem evalCoopWindowGo_smem (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat)
+theorem evalCoopWindowGo_smem (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat) (c0 : UInt64)
     (w : Option (Nat × Nat)) (st : WState) :
-    (evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim ib w st).smem
+    (evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim ib c0 w st).smem
       = tableInsert st.smem st.gmem hashLog tbl searchLim ib (st.regs sp).toNat
           (match w with | some (p, _) => p - (st.regs sp).toNat | none => 32) := by
   unfold evalCoopWindowGo; split <;> rfl
 
 /-- `evalCoopWindowGo`'s register update, per register `r`. -/
-theorem evalCoopWindowGo_regs (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat)
+theorem evalCoopWindowGo_regs (found p0 cand0 sp : String) (hashLog tbl searchLim ib : Nat) (c0 : UInt64)
     (w : Option (Nat × Nat)) (st : WState) (r : String) :
-    (evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim ib w st).regs r
+    (evalCoopWindowGo found p0 cand0 sp hashLog tbl searchLim ib c0 w st).regs r
       = (match w with
          | some (p, c) =>
              (((st.setReg found 1).setReg p0 (UInt64.ofNat p)).setReg cand0 (UInt64.ofNat c)).regs r
-         | none => (st.setReg found 0).regs r) := by
+         | none => (((st.setReg found 0).setReg p0 (st.regs sp + 32)).setReg cand0 c0).regs r) := by
   unfold evalCoopWindowGo; split <;> rfl
 
 /-- `eval` body for one extend 32-window. -/
@@ -264,10 +263,7 @@ inductive WStmt
   | bin    (o : WOp) (d a : String) (b : WArg)   -- d := a ⊕ b  (arith)
   | setp   (c : SCmp) (d a : String) (b : WArg)  -- d := (a ⋈ b) ? 1 : 0
   | mov    (d : String) (a : WArg)               -- d := a
-  | ldgB   (d addr : String) (off : Nat)         -- d := gmem[addr+off]  (byte)
-  | ldshU  (d addr : String)                     -- d := smem[addr]      (u16 LE)
   | stgB   (addr val : String)                   -- gmem[addr] := val    (byte)
-  | stshU  (addr val : String)                   -- smem[addr] := val    (u16 LE)
   | uif    (cond : String) (t e : WStmt)         -- if regs[cond] ≠ 0
   | uwhile (cond : String) (body : WStmt)        -- while regs[cond] ≠ 0 (fuel-bounded)
   | coopCopy (dst src len : String)              -- gmem[dst..] := gmem[src..] (len bytes)
@@ -283,13 +279,7 @@ def WStmt.eval : Nat → WStmt → WState → WState
   | _, .bin o d a b, st => st.setReg d (o.run (st.regs a) (b.eval st))
   | _, .setp c d a b, st => st.setReg d (if c.run (st.regs a) (b.eval st) then 1 else 0)
   | _, .mov d a, st => st.setReg d (a.eval st)
-  | _, .ldgB d addr off, st =>
-      st.setReg d (UInt64.ofNat (st.gmem.getD ((st.regs addr).toNat + off) 0).toNat)
-  | _, .ldshU d addr, st =>
-      let a := (st.regs addr).toNat
-      st.setReg d (UInt64.ofNat ((st.smem.getD a 0).toNat + 256 * (st.smem.getD (a + 1) 0).toNat))
   | _, .stgB addr val, st => st.stgByte (st.regs addr) (st.regs val)
-  | _, .stshU addr val, st => st.stshU16 (st.regs addr) (st.regs val)
   | fuel, .uif cond t e, st =>
       if (st.regs cond == 1) then t.eval fuel st else e.eval fuel st
   | 0, .uwhile _ _, st => st
@@ -303,5 +293,92 @@ def WStmt.eval : Nat → WStmt → WState → WState
       evalCoopWindow found p0 cand0 sp inStride searchLim hashLog tbl st
   | _, .coopExtendStep adv p0 cand0 ml inStride endCap, st =>
       evalCoopExtendStep adv p0 cand0 ml inStride endCap st
+
+/-- The loop's guard becomes false within `fuel` iterations, so the fuel-bounded
+    `eval` has actually terminated. Mirrors `eval`'s recursion exactly. -/
+def WhileHalts (cond : String) (body : WStmt) : Nat → WState → Prop
+  | 0, _ => False
+  | fuel + 1, ws =>
+      if (ws.regs cond == 1) then WhileHalts cond body fuel (body.eval fuel ws) else True
+
+-- ── A ballot's first set lane ──
+
+/-- Bit `j` of `foldl (acc ⊕= if P a then 2^(f a))` is set iff some selected
+    element maps to `j`.  Both `brev32` and `ballotOf` are instances. -/
+theorem testBit_foldl_or {α : Type} (P : α → Bool) (f : α → Nat) :
+    ∀ (l : List α) (init j : Nat),
+      (l.foldl (fun acc a => if P a then acc ||| 2 ^ (f a) else acc) init).testBit j
+        = (init.testBit j || l.any (fun a => P a && decide (f a = j))) := by
+  intro l
+  induction l with
+  | nil => intro init j; simp
+  | cons a t ih =>
+      intro init j
+      simp only [List.foldl_cons, List.any_cons]
+      rw [ih]
+      have hstep : (if P a then init ||| 2 ^ (f a) else init).testBit j
+          = (init.testBit j || (P a && decide (f a = j))) := by
+        by_cases hP : P a
+        · rw [if_pos hP, Nat.testBit_or, Nat.testBit_two_pow, hP, Bool.true_and]
+        · rw [if_neg hP]
+          have : P a = false := by simpa using hP
+          rw [this, Bool.false_and, Bool.or_false]
+      rw [hstep, Bool.or_assoc]
+
+/-- Least index `≥ start` in the window `[start, start+bound)` with `g` true;
+    `start+bound` if none.  With `(bound, start) = (32, 0)` this is exactly the
+    lane `clz∘brev∘ballot` returns (or `32` for an empty ballot). -/
+def firstSetNat (g : Nat → Bool) : Nat → Nat → Nat
+  | 0, start => start
+  | b + 1, start => if g start then start else firstSetNat g b (start + 1)
+
+/-- **The clean bridge**: the least-set-index view equals `firstHit`,
+    defaulting to `start+bound` (i.e. `32`) exactly when no lane hits. -/
+theorem firstSetNat_eq_firstHit (g : Nat → Bool) :
+    ∀ b start, firstSetNat g b start
+      = (AlgorithmLib.LZ4WarpSched.firstHit g b start).getD (start + b) := by
+  intro b
+  induction b with
+  | zero => intro start; simp [firstSetNat, AlgorithmLib.LZ4WarpSched.firstHit]
+  | succ n ih =>
+      intro start
+      unfold firstSetNat AlgorithmLib.LZ4WarpSched.firstHit
+      by_cases hg : g start = true
+      · rw [if_pos hg, if_pos hg]; simp
+      · rw [if_neg hg, if_neg hg, ih (start + 1)]
+        congr 1; omega
+
+/-- Specialization at the warp: `firstSetNat g 32 0 = (firstHit g 32 0).getD 32`. -/
+theorem firstSetNat_warp (g : Nat → Bool) :
+    firstSetNat g 32 0 = (AlgorithmLib.LZ4WarpSched.firstHit g 32 0).getD 32 := by
+  have := firstSetNat_eq_firstHit g 32 0
+  simpa using this
+
+/-- `find?` depends only on the predicate's values at list elements. -/
+theorem find?_congr {α : Type} {p q : α → Bool} :
+    ∀ (l : List α), (∀ a ∈ l, p a = q a) → l.find? p = l.find? q := by
+  intro l
+  induction l with
+  | nil => intro _; rfl
+  | cons a t ih =>
+      intro h
+      rw [List.find?_cons, List.find?_cons, h a (by simp)]
+      cases q a
+      · simp; exact ih (fun b hb => h b (by simp [hb]))
+      · simp
+
+/-- The recursive scan `firstSetNat` equals the `find?` over the same window. -/
+theorem firstSetNat_eq_find (g : Nat → Bool) :
+    ∀ b start, firstSetNat g b start = ((List.range' start b).find? g).getD (start + b) := by
+  intro b
+  induction b with
+  | zero => intro start; simp [firstSetNat, List.range']
+  | succ n ih =>
+      intro start
+      rw [firstSetNat, List.range'_succ]
+      by_cases hg : g start = true
+      · rw [if_pos hg, List.find?_cons_of_pos hg]; simp
+      · rw [if_neg hg, List.find?_cons_of_neg hg, ih (start + 1)]
+        congr 1; omega
 
 end AlgorithmLib.LZ4WarpDSL

@@ -21,6 +21,9 @@ case the check exists for.
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 
 /-- The buffers an operation reads. -/
 def TOp.reads : TOp → List Buf
@@ -42,7 +45,7 @@ def TOp.reads : TOp → List Buf
   | .rowdot4 a b c d _ _ _ _ _ _ _ _ => [a, b, c, d]
 
 /-- **An operation reads only `reads` and writes only its output.** -/
-theorem den_congr (op : TOp) (m m' : Buf → Nat → Float32)
+theorem den_congr (op : TOp) (m m' : Buf → Nat → R)
     (h : ∀ b ∈ op.reads, m b = m' b) (b : Buf) (a : Nat) (hb : m b a = m' b a) :
     (op.den m) b a = (op.den m') b a := by
   cases op <;>
@@ -53,7 +56,7 @@ theorem den_congr (op : TOp) (m m' : Buf → Nat → Float32)
     simp_all
 
 /-- **An operation writes only its own output.** -/
-theorem den_out (batch : Nat) (op : TOp) (m : Buf → Nat → Float32) (b : Buf)
+theorem den_out (batch : Nat) (op : TOp) (m : Buf → Nat → R) (b : Buf)
     (hb : b ≠ (TOp.outSize batch op).1) : (op.den m) b = m b := by
   cases op <;>
     simp only [TOp.outSize] at hb <;>
@@ -62,6 +65,30 @@ theorem den_out (batch : Nat) (op : TOp) (m : Buf → Nat → Float32) (b : Buf)
     split <;>
     simp_all
 
+/-- **A tape leaves a buffer none of its operations outputs as it was.** -/
+theorem foldl_den_out (batch : Nat) (b : Buf) : ∀ (ops : List TOp) (m : Buf → Nat → R),
+    (∀ op ∈ ops, b ≠ (TOp.outSize batch op).1) → (ops.foldl (fun mm o => o.den mm) m) b = m b := by
+  intro ops
+  induction ops with
+  | nil => intro _ _; rfl
+  | cons o os ih =>
+      intro m h
+      rw [List.foldl_cons, ih _ (fun op hop => h op (List.mem_cons_of_mem _ hop)),
+        den_out batch o m b (h o (List.mem_cons_self ..))]
+
+/-- **A tape run from two memories that agree on a table agrees on it**,
+    where each of its operations reads only buffers of the table. -/
+theorem foldl_den_congr (T : List Buf) : ∀ (ops : List TOp) (m m' : Buf → Nat → R),
+    (∀ op ∈ ops, ∀ b ∈ op.reads, b ∈ T) → (∀ b ∈ T, m b = m' b) →
+    ∀ b ∈ T, (ops.foldl (fun mm o => o.den mm) m) b = (ops.foldl (fun mm o => o.den mm) m') b := by
+  intro ops
+  induction ops with
+  | nil => intro m m' _ h; exact h
+  | cons o os ih =>
+      intro m m' hr h
+      refine ih _ _ (fun op hop => hr op (List.mem_cons_of_mem _ hop)) (fun b hb => funext fun a => ?_)
+      exact den_congr o m m' (fun c hc => h c (hr o (List.mem_cons_self ..) c hc)) b a (congrFun (h b hb) a)
+
 /-- **Two operations neither of which can observe the other commute.**
 
     The three conditions are the whole of it: they do not write the same buffer,
@@ -69,7 +96,7 @@ theorem den_out (batch : Nat) (op : TOp) (m : Buf → Nat → Float32) (b : Buf)
     computes, so this holds for a contraction as much as for a row pass — which
     is what makes it usable to bring a producer and its consumer together
     without knowing why they are being brought together. -/
-theorem den_swap (batch : Nat) (a b : TOp) (m : Buf → Nat → Float32)
+theorem den_swap (batch : Nat) (a b : TOp) (m : Buf → Nat → R)
     (hne : (TOp.outSize batch a).1 ≠ (TOp.outSize batch b).1)
     (hab : (TOp.outSize batch a).1 ∉ b.reads)
     (hba : (TOp.outSize batch b).1 ∉ a.reads) :
@@ -95,7 +122,7 @@ theorem den_swap (batch : Nat) (a b : TOp) (m : Buf → Nat → Float32)
           congrFun (den_out batch b m c hcb) x]
 
 /-- **Agreement off a buffer survives a whole tape that never reads it.** -/
-theorem foldl_den_frame (t : Buf) : ∀ (ops : List TOp) (m m' : Buf → Nat → Float32),
+theorem foldl_den_frame (t : Buf) : ∀ (ops : List TOp) (m m' : Buf → Nat → R),
     (∀ op ∈ ops, t ∉ op.reads) → (∀ b, b ≠ t → m b = m' b) →
     ∀ b, b ≠ t → (ops.foldl (fun mm o => o.den mm) m) b
                 = (ops.foldl (fun mm o => o.den mm) m') b := by
@@ -118,7 +145,7 @@ theorem fuse_pair_frame (x ss g t out : Ref) (f1 f2 : WFExp)
     (mA mB mC : BCast) (nP offP nC offC w rows : Nat)
     (hP : offP + w ≤ nP) (hC : offC + w ≤ nC) (hnP : 0 < nP)
     (htg : g ≠ t) (hot : out ≠ t)
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ t) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ t) :
     ((TOp.ziprow t g out f2 (.rowOf nP offP) mC nC offC w rows).den
       ((TOp.ziprow x ss t f1 mA mB nP offP w rows).den m)) b
       = (TOp.ziprow3 x ss g out (f2.fuseA f1) mA mB mC nC offC w rows).den m b := by
@@ -149,7 +176,7 @@ theorem fuse_tape_den (pre post : List TOp) (x ss g t out : Ref) (f1 f2 : WFExp)
     (hP : offP + w ≤ nP) (hC : offC + w ≤ nC) (hnP : 0 < nP)
     (htg : g ≠ t) (hot : out ≠ t)
     (hpost : ∀ op ∈ post, t ∉ op.reads)
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ t) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ t) :
     ((pre ++ [TOp.ziprow x ss t f1 mA mB nP offP w rows,
               TOp.ziprow t g out f2 (.rowOf nP offP) mC nC offC w rows] ++ post).foldl
         (fun mm o => o.den mm) m) b
@@ -168,7 +195,7 @@ theorem fuse_triple_frame (x ss y g t out : Ref) (f1 f2 : WFExp)
     (mA mB mC mD : BCast) (nP offP nC offC w rows : Nat)
     (hP : offP + w ≤ nP) (hC : offC + w ≤ nC) (hnP : 0 < nP)
     (htg : g ≠ t) (hot : out ≠ t)
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ t) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ t) :
     ((TOp.ziprow t g out f2 (.rowOf nP offP) mD nC offC w rows).den
       ((TOp.ziprow3 x ss y t f1 mA mB mC nP offP w rows).den m)) b
       = (TOp.ziprow4 x ss y g out (f2.fuseA4 f1) mA mB mC mD nC offC w rows).den m b := by
@@ -190,7 +217,7 @@ theorem fuse_tape3_den (pre post : List TOp) (x ss y g t out : Ref) (f1 f2 : WFE
     (hP : offP + w ≤ nP) (hC : offC + w ≤ nC) (hnP : 0 < nP)
     (htg : g ≠ t) (hot : out ≠ t)
     (hpost : ∀ op ∈ post, t ∉ op.reads)
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ t) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ t) :
     ((pre ++ [TOp.ziprow3 x ss y t f1 mA mB mC nP offP w rows,
               TOp.ziprow t g out f2 (.rowOf nP offP) mD nC offC w rows] ++ post).foldl
         (fun mm o => o.den mm) m) b
@@ -207,7 +234,7 @@ theorem fuse_rowdot_frame (x ss y g t out : Ref) (f1 : WFExp)
     (h1 : f1.tripleOnly = true) (mA mB mC mD : BCast) (nP offP n rows : Nat)
     (hP : offP + n ≤ nP) (hnP : 0 < nP) (hK : (n / 32) * 32 = n)
     (htg : g ≠ t) (hot : out ≠ t)
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ t) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ t) :
     ((TOp.rowdot t g out (.rowOf nP offP) mD n rows).den
       ((TOp.ziprow3 x ss y t f1 mA mB mC nP offP n rows).den m)) b
       = (TOp.rowdot4 x ss y g out f1 mA mB mC mD n rows).den m b := by
@@ -227,7 +254,7 @@ theorem fuse_tapeR_den (pre post : List TOp) (x ss y g t out : Ref) (f1 : WFExp)
     (hP : offP + n ≤ nP) (hnP : 0 < nP) (hK : (n / 32) * 32 = n)
     (htg : g ≠ t) (hot : out ≠ t)
     (hpost : ∀ op ∈ post, t ∉ op.reads)
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ t) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ t) :
     ((pre ++ [TOp.ziprow3 x ss y t f1 mA mB mC nP offP n rows,
               TOp.rowdot t g out (.rowOf nP offP) mD n rows] ++ post).foldl
         (fun mm o => o.den mm) m) b
@@ -260,7 +287,7 @@ def TOp.orient (tmp : Buf) : TOp → TOp
   | op => op
 
 /-- **Commuting a row pass changes nothing it computes.** -/
-theorem TOp.orient_den (tmp : Buf) (op : TOp) (m : Buf → Nat → Float32) :
+theorem TOp.orient_den (tmp : Buf) (op : TOp) (m : Buf → Nat → R) :
     (op.orient tmp).den m = op.den m := by
   cases op with
   | ziprow a b o f mA mB n off w rows =>
@@ -288,7 +315,7 @@ def orientTape (outOf : TOp → Buf) : List TOp → List TOp
 
 /-- **Orienting a tape preserves what it computes**, on every buffer — unlike
     fusion, which is allowed to stop writing the temporary it removes. -/
-theorem orientTape_den (outOf : TOp → Buf) : ∀ (t : List TOp) (m : Buf → Nat → Float32),
+theorem orientTape_den (outOf : TOp → Buf) : ∀ (t : List TOp) (m : Buf → Nat → R),
     (orientTape outOf t).foldl (fun mm o => o.den mm) m
       = t.foldl (fun mm o => o.den mm) m := by
   intro t
@@ -374,7 +401,7 @@ theorem split_at_pair : ∀ (t : List TOp) (i : Nat) (a b : TOp),
     was accepted at all, it was accepted because the conditions hold. -/
 theorem fuseNormAt_den (i : Nat) (t t' : List TOp) (tmp : Buf)
     (h : fuseNormAt i t = some (tmp, t'))
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ tmp) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ tmp) :
     (t'.foldl (fun mm o => o.den mm) m) b
       = (t.foldl (fun mm o => o.den mm) m) b := by
   unfold fuseNormAt at h
@@ -457,7 +484,7 @@ def swapAt (batch i : Nat) (t : List TOp) : Option (List TOp) :=
 /-- **An exchange the library accepted changes nothing the tape computes** —
     on every buffer, since nothing was removed. -/
 theorem swapAt_den (batch i : Nat) (t t' : List TOp) (h : swapAt batch i t = some t')
-    (m : Buf → Nat → Float32) :
+    (m : Buf → Nat → R) :
     t'.foldl (fun mm o => o.den mm) m = t.foldl (fun mm o => o.den mm) m := by
   unfold swapAt at h
   split at h
@@ -492,7 +519,7 @@ def bubbleTo (batch i : Nat) : Nat → Nat → List TOp → Option (List TOp)
 
 /-- **…and a hoist is a composition of exchanges, so it too changes nothing.** -/
 theorem bubbleTo_den (batch i : Nat) : ∀ (fuel j : Nat) (t t' : List TOp),
-    bubbleTo batch i fuel j t = some t' → ∀ (m : Buf → Nat → Float32),
+    bubbleTo batch i fuel j t = some t' → ∀ (m : Buf → Nat → R),
     t'.foldl (fun mm o => o.den mm) m = t.foldl (fun mm o => o.den mm) m := by
   intro fuel
   induction fuel with
@@ -532,7 +559,7 @@ def bubbleDown (batch j : Nat) : Nat → Nat → List TOp → Option (List TOp)
 
 /-- **…and it too changes nothing**, being a composition of exchanges. -/
 theorem bubbleDown_den (batch j : Nat) : ∀ (fuel i : Nat) (t t' : List TOp),
-    bubbleDown batch j fuel i t = some t' → ∀ (m : Buf → Nat → Float32),
+    bubbleDown batch j fuel i t = some t' → ∀ (m : Buf → Nat → R),
     t'.foldl (fun mm o => o.den mm) m = t.foldl (fun mm o => o.den mm) m := by
   intro fuel
   induction fuel with
@@ -568,7 +595,7 @@ def sinkTo (batch : Nat) (tmp : Buf) (t : List TOp) : Option (List TOp) :=
     | some j => bubbleDown batch j j i t
 
 theorem sinkTo_den (batch : Nat) (tmp : Buf) (t t' : List TOp)
-    (h : sinkTo batch tmp t = some t') (m : Buf → Nat → Float32) :
+    (h : sinkTo batch tmp t = some t') (m : Buf → Nat → R) :
     t'.foldl (fun mm o => o.den mm) m = t.foldl (fun mm o => o.den mm) m := by
   unfold sinkTo at h
   split at h
@@ -588,7 +615,7 @@ def applySinks (batch : Nat) : List Buf → List TOp → List TOp
 /-- **Sinking preserves the tape's mathematics on every buffer**, with no side
     condition, for any list of intermediates. -/
 theorem applySinks_den (batch : Nat) : ∀ (bs : List Buf) (t : List TOp)
-    (m : Buf → Nat → Float32),
+    (m : Buf → Nat → R),
     (applySinks batch bs t).foldl (fun mm o => o.den mm) m
       = t.foldl (fun mm o => o.den mm) m := by
   intro bs
@@ -622,7 +649,7 @@ def hoistTo (batch : Nat) (tmp : Buf) (t : List TOp) : Option (List TOp) :=
     | some j => bubbleTo batch i j j t
 
 theorem hoistTo_den (batch : Nat) (tmp : Buf) (t t' : List TOp)
-    (h : hoistTo batch tmp t = some t') (m : Buf → Nat → Float32) :
+    (h : hoistTo batch tmp t = some t') (m : Buf → Nat → R) :
     t'.foldl (fun mm o => o.den mm) m = t.foldl (fun mm o => o.den mm) m := by
   unfold hoistTo at h
   split at h
@@ -643,7 +670,7 @@ def applyHoists (batch : Nat) : List Buf → List TOp → List TOp
 /-- **Hoisting preserves the tape's mathematics on every buffer**, for any list
     of intermediates.  Unlike fusion this carries no side condition at all. -/
 theorem applyHoists_den (batch : Nat) : ∀ (bs : List Buf) (t : List TOp)
-    (m : Buf → Nat → Float32),
+    (m : Buf → Nat → R),
     (applyHoists batch bs t).foldl (fun mm o => o.den mm) m
       = t.foldl (fun mm o => o.den mm) m := by
   intro bs
@@ -726,11 +753,13 @@ def fuseAt (tbl : List (String × Buf)) (t : List TOp) (s : FuseSite) :
     name resolved to. -/
 theorem fuseAt_den (tbl : List (String × Buf)) (t t' : List TOp) (s : FuseSite) (tmp : Buf)
     (h : fuseAt tbl t s = some (tmp, t'))
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ≠ tmp) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ≠ tmp) :
     (t'.foldl (fun mm o => o.den mm) m) b
       = (t.foldl (fun mm o => o.den mm) m) b := by
   simp only [fuseAt, Option.bind_eq_some_iff] at h
   obtain ⟨i, _, hi⟩ := h
   exact fuseNormAt_den i t t' tmp hi m b hb
+
+end Carrier
 
 end AlgorithmLib.ML

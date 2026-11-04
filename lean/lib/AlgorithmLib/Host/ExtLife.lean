@@ -825,7 +825,7 @@ def extKeeps (e : Ext) (bits : List UInt64) : Fact → Bool
   | .cstrIn a n => e.aside && !(e.frame.touches bits a n)
   | .roomArg _ _ | .devBuf _ _ => e.aside
   | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => e.aside
-  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => e.aside
+  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ _ | .modText _ _ | .fnText _ _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => e.aside
   | .nwg _ | .wgo _ _ | .wg1 _ _ => e.aside
   | .wgText a n _ => e.aside && !(e.frame.touches bits a n)
   | .text _ _ _ _ => false
@@ -891,7 +891,7 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       rw [st.dev]; exact hx
   | pinnedUsed _ => simp [extKeeps] at hk
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl st.dev hx
-  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl st.dev hx
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ _ | modText _ _ | fnText _ _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl st.dev hx
   | text _ _ _ _ => simp [extKeeps] at hk
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl st.wg hx
   | wgText a n sh =>

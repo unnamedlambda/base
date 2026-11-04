@@ -140,6 +140,55 @@ theorem load_store8 {m m' : Mem} {a v : UInt64} (h : m.store a 8 v = some m') : 
       refine (foldr_fun_congr _ (fun i => (byteOfV v i).toUInt64) _ _ fun j hj => ?_).trans (reassemble8 v)
       exact congrArg UInt8.toUInt64 (foldl_set!_at off v 8 _ j (List.mem_range.mp hj) (by omega))
 
+/-- **A four-byte store reads back.** -/
+theorem load_store4 {m m' : Mem} {a v : UInt64} (hv : v.toNat < 2 ^ 32) (h : m.store a 4 v = some m') :
+    m'.load a 4 = some v := by
+  have hsz := fun r => store_sizes h r
+  unfold Mem.store at h
+  cases hd : decodeAddr a with
+  | none => simp [hd] at h
+  | some p =>
+    obtain ⟨r, off⟩ := p
+    simp only [hd, Option.bind_eq_bind, Option.bind_some] at h
+    split at h
+    · cases h
+    · rename_i hc
+      simp only [Bool.or_eq_true, decide_eq_true_eq, not_or, Bool.not_eq_true', Bool.not_eq_false] at hc
+      injection h with h
+      subst h
+      rw [load_of hd (by rw [hsz]; omega)
+        (by rw [readable_setRegion]; exact readable_of_reachable (by simpa using hc.2))]
+      congr 1
+      rw [Sem.region_setRegion_self]
+      unfold bytesAt
+      refine (foldr_fun_congr _ (fun i => (byteOfV v i).toUInt64) _ _ fun j hj => ?_).trans (reassemble4 v hv)
+      exact congrArg UInt8.toUInt64 (foldl_set!_at off v 4 _ j (List.mem_range.mp hj) (by omega))
+
+/-- **A one-byte store reads back.** -/
+theorem load_store1 {m m' : Mem} {a v : UInt64} (h : m.store a 1 v = some m') :
+    m'.load a 1 = some (byteOfV v 0).toUInt64 := by
+  have hsz := fun r => store_sizes h r
+  unfold Mem.store at h
+  cases hd : decodeAddr a with
+  | none => simp [hd] at h
+  | some p =>
+    obtain ⟨r, off⟩ := p
+    simp only [hd, Option.bind_eq_bind, Option.bind_some] at h
+    split at h
+    · cases h
+    · rename_i hc
+      simp only [Bool.or_eq_true, decide_eq_true_eq, not_or, Bool.not_eq_true', Bool.not_eq_false] at hc
+      injection h with h
+      subst h
+      rw [load_of hd (by rw [hsz]; omega)
+        (by rw [readable_setRegion]; exact readable_of_reachable (by simpa using hc.2))]
+      congr 1
+      rw [Sem.region_setRegion_self]
+      unfold bytesAt
+      refine (foldr_fun_congr _ (fun i => (byteOfV v i).toUInt64) _ _ fun j hj => ?_).trans ?_
+      · exact congrArg UInt8.toUInt64 (foldl_set!_at off v 1 _ j (List.mem_range.mp hj) (by omega))
+      · simp [List.range, List.range.loop]
+
 /-- **A store leaves the bytes it does not cover**: a load of bytes in another
     region, or clear of the stored ones, reads what it read. -/
 theorem load_store_clear {m m' : Mem} {a b : UInt64} {n k : Nat} {v : UInt64} {r r' : Region} {off off' : Nat}
@@ -937,6 +986,64 @@ theorem copyOut_bytes {w : World} {p : UInt64} {bs : List UInt8} (h : Bytes w p 
     rw [hb, List.take_succ_eq_append_getElem (by omega)]
     simp [ByteArray.push]
 
+/-- A byte of an extract is the byte it was cut from. -/
+theorem extract_get! {B : ByteArray} {s e i : Nat} (hi : s + i < e) (he : e ≤ B.size) :
+    (B.extract s e).get! i = B.get! (s + i) := by
+  have h1 : i < (B.extract s e).size := by simp [ByteArray.size_extract]; omega
+  have h2 : s + i < B.size := by omega
+  have := ByteArray.getElem_extract (b := B) (start := s) (stop := e) h1
+  rw [ByteArray.get!, ByteArray.get!, getElem!_pos _ _ (by simpa using h1), getElem!_pos _ _ (by simpa using h2)]
+  simp [ByteArray.getElem_eq_getElem_data] at this ⊢
+
+/-- One-byte stores at `a + k` for the `k` of `l` leave a byte at no such
+    address. -/
+theorem stores_other {a a' : UInt64} {f : Nat → UInt64} :
+    ∀ (l : List Nat) (mm mm' : Mem), (∀ k ∈ l, a' ≠ a + UInt64.ofNat k) →
+      l.foldlM (fun mm k => mm.store (a + UInt64.ofNat k) 1 (f k)) mm = some mm' →
+      mm'.load a' 1 = mm.load a' 1
+  | [], mm, mm', _, h => by simp at h; subst h; rfl
+  | k :: l, mm, mm', hl, h => by
+      simp only [List.foldlM_cons, Option.bind_eq_bind] at h
+      obtain ⟨m1, h1, h⟩ := Option.bind_eq_some_iff.mp h
+      rw [stores_other l m1 mm' (fun j hj => hl j (List.mem_cons_of_mem _ hj)) h]
+      exact Mem.store_other h1 a' fun i hi e => by
+        have : i = 0 := by omega
+        subst this
+        exact hl k (List.mem_cons_self ..) (by simpa using e)
+
+/-- **Every byte `copyIn` writes reads back.** -/
+theorem copyIn_load {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m')
+    (hs : src.size ≤ 2 ^ 64) : ∀ i < src.size, m'.load (a + UInt64.ofNat i) 1 = some (src.get! i).toUInt64 := by
+  have hne : ∀ i j, i < src.size → j < src.size → i ≠ j → a + UInt64.ofNat i ≠ a + UInt64.ofNat j := by
+    intro i j hi hj hij e
+    have e' := congrArg UInt64.toNat e
+    have ha := UInt64.toNat_lt_size a
+    simp only [UInt64.toNat_add, UInt64.toNat_ofNat'] at e'
+    rw [Nat.mod_eq_of_lt (show i < 2 ^ 64 by omega), Nat.mod_eq_of_lt (show j < 2 ^ 64 by omega)] at e'
+    simp only [UInt64.size] at ha
+    omega
+  suffices ∀ (l : List Nat) (mm mm' : Mem), l.Nodup → (∀ k ∈ l, k < src.size) →
+      l.foldlM (fun mm k => mm.store (a + UInt64.ofNat k) 1 (src.get! k).toUInt64) mm = some mm' →
+      ∀ i ∈ l, mm'.load (a + UInt64.ofNat i) 1 = some (src.get! i).toUInt64 from
+    fun i hi => this _ m m' (List.nodup_range) (fun k hk => List.mem_range.mp hk) h i (List.mem_range.mpr hi)
+  intro l
+  induction l with
+  | nil => intro _ _ _ _ _ i hi; cases hi
+  | cons k l ih =>
+      intro mm mm' hnd hl h i hi
+      simp only [List.foldlM_cons, Option.bind_eq_bind] at h
+      obtain ⟨m1, h1, h2⟩ := Option.bind_eq_some_iff.mp h
+      have hk : k ∉ l := (List.nodup_cons.mp hnd).1
+      by_cases hik : i = k
+      · subst hik
+        have hfr := stores_other (f := fun k => (src.get! k).toUInt64) l m1 mm' (fun j hj e =>
+          hne j i (hl j (List.mem_cons_of_mem _ hj)) (hl i (List.mem_cons_self ..))
+            (fun e' => hk (e' ▸ hj)) e.symm) h2
+        rw [hfr, load_store1 h1]
+        exact congrArg (fun b => some (UInt8.toUInt64 b)) (byte_back _)
+      · exact ih m1 mm' (List.nodup_cons.mp hnd).2 (fun j hj => hl j (List.mem_cons_of_mem _ hj)) h2 i
+          ((List.mem_cons.mp hi).resolve_left hik)
+
 /-- Bytes with room that can be reached can be written. -/
 theorem store_ok {m : Mem} {a v : UInt64} {n : Nat} {r : Region} {off : Nat} (hd : decodeAddr a = some (r, off))
     (hs : off + n ≤ (m.region r).size) (hr : m.reachable r off n = true) : ∃ m', m.store a n v = some m' := by
@@ -1070,17 +1177,30 @@ theorem copyIn_room {w : World} {p : UInt64} {bs : List UInt8} (h : Room w p bs.
 /-- The address a decoded address is. -/
 theorem toNat_of_decode {a : UInt64} {r : Region} {off : Nat} (h : decodeAddr a = some (r, off)) :
     a.toNat = (regionBase r).toNat + off := by
+  have hi := Region.idx_lt r
   obtain ⟨rfl, ho⟩ := Sem.decodeAddr_some h
   rw [Sem.regionSpan_toNat] at ho
-  rw [UInt64.toNat_add, UInt64.toNat_ofNat']
-  cases r <;> simp [regionBase] <;> omega
+  rw [UInt64.toNat_add, UInt64.toNat_ofNat', Sem.regionBase_toNat_eq r, Nat.mod_eq_of_lt (a := off) (by omega)]
+  exact Nat.mod_eq_of_lt (by omega)
 
 /-- Runs in different regions, or apart in one, are apart as numbers. -/
 theorem apart_of_decode {a b : UInt64} {r r' : Region} {off off' n : Nat} (ha : decodeAddr a = some (r, off))
     (hb : decodeAddr b = some (r', off')) (hn : off + n ≤ 2 ^ 36) (hn' : off' + n ≤ 2 ^ 36)
     (hc : r ≠ r' ∨ off + n ≤ off' ∨ off' + n ≤ off) : a.toNat + n ≤ b.toNat ∨ b.toNat + n ≤ a.toNat := by
-  rw [toNat_of_decode ha, toNat_of_decode hb]
-  cases r <;> cases r' <;> simp [regionBase] at hc ⊢ <;> omega
+  rw [toNat_of_decode ha, toNat_of_decode hb, Sem.regionBase_toNat_eq r,
+    Sem.regionBase_toNat_eq r']
+  by_cases e : r = r'
+  · subst e
+    rcases hc with hc | hc | hc
+    · exact absurd rfl hc
+    · omega
+    · omega
+  · have : r.idx ≠ r'.idx := fun h => e (Region.idx_inj h)
+    rcases Nat.lt_or_gt_of_ne this with h | h
+    · have : r.idx * 2 ^ 36 + 2 ^ 36 ≤ r'.idx * 2 ^ 36 := by rw [← Nat.succ_mul]; exact Nat.mul_le_mul_right _ h
+      omega
+    · have : r'.idx * 2 ^ 36 + 2 ^ 36 ≤ r.idx * 2 ^ 36 := by rw [← Nat.succ_mul]; exact Nat.mul_le_mul_right _ h
+      omega
 
 /-- A run inside a block has room. -/
 theorem Blk.room {w : World} {x : UInt64} {n : Nat} (h : Blk w x n) (hc : Calm w) {j k : Nat} (hjk : j + k ≤ n) :
@@ -1161,8 +1281,11 @@ theorem decode_in_blk {d : UInt64} {n j : Nat} {od : Nat} (hd : decodeAddr d = s
     have h2 := toNat_of_decode hd
     obtain ⟨-, ho⟩ := Sem.decodeAddr_some h
     rw [Sem.regionSpan_toNat] at ho
-    rw [UInt64.toNat_add, UInt64.toNat_ofNat'] at h1
-    cases r <;> simp [regionBase] at h1 h2 <;> omega
+    rw [UInt64.toNat_add, UInt64.toNat_ofNat', Sem.regionBase_toNat_eq r] at h1
+    rw [Sem.regionBase_toNat_eq] at h2
+    have hr := Region.idx_lt r
+    have h5 : r.idx = 5 := by simp only [Region.idx] at h2; omega
+    revert h5; cases r <;> simp [Region.idx] <;> omega
 
 /-- A run inside one block is clear of a block apart from it. -/
 theorem Apart.clear {w : World} {d y : UInt64} {n' k j n : Nat} (hd : Blk w d n') (ha : Apart d n' y k)

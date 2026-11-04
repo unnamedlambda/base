@@ -168,8 +168,7 @@ inductive VendorKernel where
   | cudaGraphLaunch
   deriving Repr, DecidableEq
 
-/-- **The vendor function the call is**, by its symbol: what a device write's
-    record names (`ML.LaunchRec.fnName`). -/
+/-- **The vendor function the call is**, by the symbol the library exports. -/
 def VendorKernel.symbol : VendorKernel → String
   | .cublasSgemv | .cublasSgemvOnStream => (IR.Ext.cublas .sgemv).symbol
   | .cublasSgemm => (IR.Ext.cublas .sgemm).symbol
@@ -228,9 +227,8 @@ def VendorKernel.assumes : VendorKernel → List Law
   -- What the copy lands is what the driver model's `cuMemcpyHtoD` moves,
   -- rather than an equation this development states.
   | .uploadPtr                         => []
-  -- A replay performs the *recorded* sequence.  Which stages those are is
-  -- proven (`qwen_capture_records_the_run`); that replay performs them is the
-  -- driver's contract, and no equation here states it.
+  -- A replay performs the operations its capture recorded: the driver model
+  -- states it (`Dev.runGraph`), not an equation here.
   | .cudaGraphLaunch                   => []
 
 /-- **Every primitive the enum knows.**

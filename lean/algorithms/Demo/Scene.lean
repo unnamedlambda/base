@@ -947,7 +947,7 @@ open AlgorithmLib.Prog
 def app (spec : SceneSpec) : Drv.App :=
   { bufs := [pixelBytes spec],
     kernels := [⟨ptxOff, ptxRegion, [0], ((imageWidth spec + 15) / 16, (imageHeight spec + 15) / 16, 1),
-      (16, 16, 1)⟩],
+      (16, 16, 1), []⟩],
     memSize := pixelsOff + pixelBytes spec, org := clifIrOff }
 
 /-- Bring the driver up, render into the allocation, download the pixels

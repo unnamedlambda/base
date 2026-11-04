@@ -11,8 +11,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.ML.Machine.Geometry
 meta import AlgorithmLib.ML.Machine.Geometry
-public import AlgorithmLib.ML.Ptx.Print
-meta import AlgorithmLib.ML.Ptx.Print
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
 public import AlgorithmLib.Surface.Drv
 meta import AlgorithmLib.Surface.Drv
 public import AlgorithmLib.Host.Driver
@@ -27,15 +27,16 @@ import all Init.Data.List.Sort.Basic
   The kernel body is `AlgorithmLib.ML.warpSumSqV4Store`, which is proven to
   compute `denote env spec` exactly (`warpSumSqV4Store_implements`).  It is
   written in the emittable mirror `EWStmt`, whose expansion into the proven
-  machine language is `rfl` (`eKernel_elab` below), and lowered to PTX by
-  `AlgorithmLib.ML.emitProvenKernel`, whose instruction list is proven correct
-  by `flatKernel_sound`.
+  machine language is `rfl` (`eKernel_elab` below), and its body kernel
+  (`Body.kernel`) is what ships: launching it lands the spec in each block's
+  output word (`sumsq_body`).
 
   This file supplies the surrounding CLIF: allocate device buffers, upload the
   caller's input, launch one warp, sync, download the single-float result.
 
-  What is proven: the kernel computes the spec.
-  What is trusted: the `EWStmt → PTX` lowering (A4/A11) and this CLIF wrapper.
+  What is proven: launching the kernel computes the spec, at the words the
+  hardware computes on.
+  What is trusted: the printer from a body to PTX text and this CLIF wrapper.
 -/
 
 open Lean
@@ -79,15 +80,11 @@ def eKernel : EWStmt :=
 theorem eKernel_elab (cta : Nat) :
     eKernel.elabIn cta = warpSumSqV4Store (cta * CHUNK) inBuf outBuf cta K := rfl
 
-def ptx : String := emitProvenKernel "main" eKernel
+def ptx : String := Body.text "main" 2 0 eKernel
 
 /-! ### Seam guards (`A47` G2) -/
 theorem sumsq_guards :
-    eKernel.BufBelow 2
-      ∧ eKernel.StageEligibleB 1 = true
-      ∧ FlatTargetsOkB (flatKernel (expandEW eKernel)) = true
-      ∧ FlatPrintableB (flatKernel (expandEW eKernel)) = true := by
-  refine ⟨by decide, by decide, ?_, ?_⟩ <;> native_decide
+    eKernel.BufBelow 2 ∧ eKernel.StageEligibleB 1 = true := ⟨by decide, by decide⟩
 
 /-- Each block folds `CHUNK` elements; `GRID` blocks cover `N`. -/
 theorem sumsq_geometry : GRID * CHUNK = N := by decide
@@ -106,7 +103,7 @@ open AlgorithmLib.Prog
     partials' allocations, and the kernel, handed them in that order. -/
 def app : Drv.App :=
   { bufs := [N * 4, GRID * 4],
-    kernels := [⟨PTX_OFF, MEM_SIZE - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩],
+    kernels := [⟨PTX_OFF, MEM_SIZE - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1), []⟩],
     memSize := MEM_SIZE }
 
 /-- `load`: allocate device buffers and upload once. -/
@@ -167,36 +164,6 @@ def Warp.SumSq.main (args : List String) : IO Unit := do
   emitArtifacts outDir (WarpSumSq.artifacts clif)
 
 namespace WarpSumSq
-
-/-- **The PTX that ships computes the user's spec.**
-
-    Read the chain right to left: `warpSumSqV4E` is an ordinary spec-language
-    term; `warpSumSqV4Store_implements` says the warp kernel's *store* lands
-    exactly its denotation; `eKernel_elab` says the emittable kernel expands to
-    that warp kernel; and `flatKernel_sound` says the emitted instruction list —
-    executed by a program counter, over real branches, from instruction 0 in an
-    arbitrary machine state — performs it.
-
-    Exact `Float` equality, for every block, **with no hypothesis at all** —
-    this kernel contains no `exp`, so the one declared approximation in the
-    stack does not touch it. -/
-theorem ptx_computes_spec (cta : Nat) (m : MState)
-    {Γ : Nat} (env : Fin Γ → Float32) (be : Nat → Expr Γ)
-    (hb : ∀ i, denote env (be i) = m.mem inBuf i) :
-    ∃ k m', steps cta (flatKernel (expandEW eKernel)) k (0, m)
-          = some ((flatKernel (expandEW eKernel)).length, m')
-      ∧ m'.mem outBuf cta = denote env (warpSumSqV4E (cta * CHUNK) be K) := by
-  obtain ⟨k, m', hs, hw⟩ :=
-    flatKernel_sound_idxFree cta (expandEW eKernel) (expandEW_expFree eKernel)
-      (expandEW_idxFree eKernel (by decide))
-      (expandEW_flat eKernel (by decide)) m
-  refine ⟨k, m', hs, ?_⟩
-  have hm : m'.mem outBuf cta
-      = (((expandEW eKernel).elabIn cta).run m.toWSt).mem outBuf cta :=
-    congrArg (fun st => st.mem outBuf cta) hw
-  have hid : (expandEW eKernel).elabIn cta = eKernel.elabIn cta := rfl
-  rw [hm, hid, eKernel_elab cta]
-  exact warpSumSqV4Store_implements _ inBuf outBuf cta K m.toWSt env be hb
 
 end WarpSumSq
 

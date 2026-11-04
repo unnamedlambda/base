@@ -613,13 +613,13 @@ theorem runLaunch_sizes {d d' : Dev} {k : Launch → List ByteArray → List Byt
   simp only [keeps_ok hk, Bool.false_eq_true, if_false, Option.some.injEq] at h
   subst h
   have hsz := hk l ins
-  suffices ∀ (ids : List Nat) (outs ins : List ByteArray) (d : Dev),
+  suffices ∀ (P : Nat × ByteArray → Bool) (ids : List Nat) (outs ins : List ByteArray) (d : Dev),
       ids.mapM (fun i => d.get? (Int.ofNat i)) = some ins → outs.map ByteArray.size = ins.map ByteArray.size →
-      let d' := (ids.zip outs).foldl (fun d (id, o) => d.put id (some o)) d
+      let d' := ((ids.zip outs).filter P).foldl (fun d (id, o) => d.put id (some o)) d
       d'.live = d.live ∧ d'.streams = d.streams ∧ d'.capture = d.capture ∧ d'.events = d.events ∧
         d'.race = d.race ∧ ∀ i, (d'.get? i).map ByteArray.size = (d.get? i).map ByteArray.size from
-    this ids _ ins d hins hsz
-  intro ids
+    this _ ids _ ins d hins hsz
+  intro P ids
   induction ids with
   | nil => intro outs ins d _ _; exact ⟨rfl, rfl, rfl, rfl, rfl, fun _ => rfl⟩
   | cons id ids ih =>
@@ -633,7 +633,11 @@ theorem runLaunch_sizes {d d' : Dev} {k : Launch → List ByteArray → List Byt
           simp only [Option.pure_def, Option.some.injEq] at hm
           subst hm
           simp only [List.map_cons, List.cons.injEq] at hs
-          simp only [List.zip_cons_cons, List.foldl_cons]
+          simp only [List.zip_cons_cons]
+          by_cases hn : P (id, o) = false
+          · rw [List.filter_cons_of_neg (by simp [hn])]
+            exact ih os xs d hxs hs.2
+          rw [List.filter_cons_of_pos (by simpa using hn), List.foldl_cons]
           have hput : ∀ i, ((d.put id (some o)).get? i).map ByteArray.size = (d.get? i).map ByteArray.size :=
             fun i => get?_put_size d id o i (fun y hy => by
               have : d.get? id = d.get? (Int.ofNat id) := rfl

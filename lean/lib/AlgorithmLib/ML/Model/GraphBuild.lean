@@ -11,6 +11,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- Writing the graph as equations
 -- ---------------------------------------------------------------------------
 
@@ -94,8 +97,8 @@ def forget (ps : List (Node × Backend)) : Net := ps.map Prod.fst
 
 /-- Lower a scheduled graph: each node to its stage, carrying the choice the
     schedule made.  A malformed node fails the whole lowering. -/
-noncomputable def lowerPairs (batch : Nat) :
-    List (Node × Backend) → Option (List (Backend × XStage))
+noncomputable def lowerPairs [LitNat R] (batch : Nat) :
+    List (Node × Backend) → Option (List (Backend × (XStage R)))
   | []           => some []
   | (n, b) :: ps =>
       match n.stage? batch with
@@ -109,38 +112,38 @@ noncomputable def lowerPairs (batch : Nat) :
     so a schedule can only change *which implementation* runs, never *what*
     runs.  This is the structural half of the guarantee; `lowerAll_denote` is
     the semantic half. -/
-theorem lowerPairs_forget (batch : Nat) :
+theorem lowerPairs_forget [LitNat R] (batch : Nat) :
     ∀ (ps : List (Node × Backend)),
-      (lowerPairs batch ps).map (List.map Prod.snd) = lowerNet batch (forget ps) := by
+      (lowerPairs (R := R) batch ps).map (List.map Prod.snd) = lowerNet batch (forget ps) := by
   intro ps
   induction ps with
   | nil => rfl
   | cons p ps ih =>
       obtain ⟨n, b⟩ := p
-      show (match n.stage? batch with
+      show (match n.stage? (R := R) batch with
             | none => none
             | some none => lowerPairs batch ps
             | some (some S) => (lowerPairs batch ps).map ((b, S) :: ·)).map _
-          = match n.stage? batch with
+          = match n.stage? (R := R) batch with
             | none => none
             | some none => lowerNet batch (forget ps)
             | some (some S) => (lowerNet batch (forget ps)).map (S :: ·)
-      cases n.stage? batch with
+      cases n.stage? (R := R) batch with
       | none => rfl
       | some o =>
           cases o with
           | none => exact ih
           | some S =>
               rw [← ih]
-              cases lowerPairs batch ps <;> rfl
+              cases lowerPairs (R := R) batch ps <;> rfl
 
 /-- **Two programs that erase to the same model lower to the same stages.**
     The schedule-checking theorem: write the schedule as a program, and if it
     is the model with implementations chosen, nothing about *what* is computed
     can have moved. -/
-theorem schedule_agrees (batch : Nat) (sched model : List (Node × Backend))
+theorem schedule_agrees [LitNat R] (batch : Nat) (sched model : List (Node × Backend))
     (h : forget sched = forget model) :
-    (lowerPairs batch sched).map (List.map Prod.snd)
+    (lowerPairs (R := R) batch sched).map (List.map Prod.snd)
       = (lowerPairs batch model).map (List.map Prod.snd) := by
   rw [lowerPairs_forget, lowerPairs_forget, h]
 
@@ -177,5 +180,7 @@ def Node.sig : Node → Nat × List Ref × List Nat
       (13, [a, b, c, d, o], [mA.tag, mB.tag, mC.tag, mD.tag, n, r])
 
 -- ---------------------------------------------------------------------------
+
+end Carrier
 
 end AlgorithmLib.ML

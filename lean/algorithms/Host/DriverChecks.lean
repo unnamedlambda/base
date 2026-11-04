@@ -87,7 +87,7 @@ abbrev LaunchStart : World → Prop := Contracts.TState.holds
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq, .oracles,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
-   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8])]]
+   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8], [])]]
 
 ship_entry launchOnce : launchOnce under LaunchStart
 
@@ -173,7 +173,7 @@ abbrev StreamLaunchStart : World → Prop := Contracts.TState.holds
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq, .oracles,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0, .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
-   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8])]]
+   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8], [])]]
 
 ship_entry streamLaunch : streamLaunch under StreamLaunchStart
 
@@ -254,7 +254,7 @@ abbrev GraphStart : World → Prop := Contracts.TState.holds
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0, .ngraphs 0, .nexecs 0,
    .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
-   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8])]]
+   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8], [])]]
 
 ship_entry graphReplay : graphReplay under GraphStart
 
@@ -323,7 +323,7 @@ abbrev ForkStart : World → Prop := Contracts.TState.holds
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .nblas 0, .streams [], .events 0, .ngraphs 0, .nexecs 0,
    .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
-   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8])]]
+   .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8], [])]]
 
 ship_entry forkJoin : forkJoin under ForkStart
 
@@ -355,7 +355,7 @@ theorem sizedUpload_no_misuse (cfg : Cfg) (dataLen outLen n : UInt64) (w : World
     Sem.run cfg (runArgs dataLen outLen) w (emit (sizedUpload : Prog Slot Lvl Unit)) ≠ .fault m := by
   check_body
   -- the copy's bytes, at `n`'s value, lie in the allocation of `n` floats
-  have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+  have hp : devPtrOf 412316860416 = some (0, 0) := by decide
   simp [Check.Obl.Holds, Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
     Check.PExpr.eval, Check.PArg.bits, hp]
 
@@ -386,7 +386,7 @@ theorem sizedDownload_no_misuse (cfg : Cfg) (dataLen outLen n : UInt64) (w : Wor
     Sem.run cfg (runArgs dataLen outLen) w (emit (sizedDownload : Prog Slot Lvl Unit)) ≠ .fault m := by
   check_body
   -- the copy's bytes, no more than the allocation's, lie in it
-  have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+  have hp : devPtrOf 412316860416 = some (0, 0) := by decide
   intro hc
   simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,

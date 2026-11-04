@@ -133,9 +133,8 @@ structure Kernel where
   body      : PTX Unit := pure ()
   geom      : Kernel.Geom
   ptxOff    : Nat                          -- where its PTX null-term string lives
-  /-- Emit this text instead of rendering `body`.  Set when the kernel has been
-      migrated onto the proven lowering, whose PTX comes from
-      `ML.emitProvenKernel` rather than from the raw builder. -/
+  /-- Emit this text instead of rendering `body`.  Set for a body kernel,
+      whose PTX comes from `ML.Body.text` rather than from the raw builder. -/
   ptxText   : Option String := none
 
 namespace Kernel

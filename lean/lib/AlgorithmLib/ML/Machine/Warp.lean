@@ -16,9 +16,8 @@ import all Init.Data.List.Sort.Basic
   languages, and "hand-tuned kernels stay provably correct" is aspirational for
   exactly the tuning that makes a kernel fast.
 
-  This file starts closing that.  It mirrors `AlgorithmLib.LZ4Simt` — which
-  already does 32-lane lockstep for *integers*, with `vote`/`shfl`/`barwarp` —
-  but carries `Float32`, which is what ML kernels need.
+  This file starts closing that: a 32-lane lockstep machine with
+  `vote`/`shfl`/`barwarp`, carrying `Float32`, which is what ML kernels need.
 
   ## The reassociation trap
 
@@ -213,50 +212,43 @@ def strideIxV4Cta (chunk : Nat) : IdxE :=
   .add (.add (.mul .loopI (.lit (4 * W))) (.mul .laneId (.lit 4)))
        (.mul .ctaId (.lit chunk))
 
-/-- An external operation, identified by name, with the contract it is assumed
-    to satisfy.  `deterministic` records whether the vendor path is pinned to a
-    reproducible mode — cuBLAS split-K with atomics is *not*, and a claim of
-    bit-exact reproducibility depends on it. -/
-structure ExternOp where
-  name          : String
-  deterministic : Bool
-  /-- What the operation is assumed to compute: output memory from input. -/
-  spec          : (Nat → Float32) → (Nat → Float32)
-
-/-- Warp state: a per-lane float register file plus global memory.
-    Memory is shared across lanes; registers are not. -/
-structure WSt where
-  regs : Nat → Lane → Float32
-  mem  : Buf → Nat → Float32
+/-- Warp state: a per-lane register file plus global memory, at a carrier
+    (`Float32` unless said). Memory is shared across lanes; registers are
+    not. -/
+structure WSt (R : Type := Float32) where
+  regs : Nat → Lane → R
+  mem  : Buf → Nat → R
   /-- Shared memory: on-chip, block-scoped, ~100x lower latency than global.
       This is what tiling stages data through. -/
-  smem : Nat → Float32
+  smem : Nat → R
 
-theorem WSt.ext {a b : WSt} (hr : a.regs = b.regs) (hm : a.mem = b.mem)
+theorem WSt.ext {R : Type} {a b : WSt R} (hr : a.regs = b.regs) (hm : a.mem = b.mem)
     (hs : a.smem = b.smem) : a = b := by
   cases a; cases b; simp_all
 
 namespace WSt
 
+variable {R : Type}
+
 /-- Lockstep write: every lane updates register `r` simultaneously. -/
-def setReg (st : WSt) (r : Nat) (f : Lane → Float32) : WSt :=
+def setReg (st : WSt R) (r : Nat) (f : Lane → R) : WSt R :=
   { st with regs := fun x => if x = r then f else st.regs x }
 
 /-- A single global store.  Reduction epilogues write one value from one lane,
     so this is the shape that matters. -/
-def store1 (st : WSt) (b : Buf) (i : Nat) (v : Float32) : WSt :=
+def store1 (st : WSt R) (b : Buf) (i : Nat) (v : R) : WSt R :=
   { st with mem := fun c j => if c = b ∧ j = i then v else st.mem c j }
 
-@[simp] theorem regs_setReg_same (st : WSt) (r : Nat) (f : Lane → Float32) :
+@[simp] theorem regs_setReg_same (st : WSt R) (r : Nat) (f : Lane → R) :
     (st.setReg r f).regs r = f := by simp [setReg]
 
-@[simp] theorem regs_setReg_other (st : WSt) (r r' : Nat) (f : Lane → Float32)
+@[simp] theorem regs_setReg_other (st : WSt R) (r r' : Nat) (f : Lane → R)
     (h : r' ≠ r) : (st.setReg r f).regs r' = st.regs r' := by simp [setReg, h]
 
-@[simp] theorem mem_setReg (st : WSt) (r : Nat) (f : Lane → Float32) :
+@[simp] theorem mem_setReg (st : WSt R) (r : Nat) (f : Lane → R) :
     (st.setReg r f).mem = st.mem := rfl
 
-@[simp] theorem mem_store1_same (st : WSt) (b : Buf) (i : Nat) (v : Float32) :
+@[simp] theorem mem_store1_same (st : WSt R) (b : Buf) (i : Nat) (v : R) :
     (st.store1 b i v).mem b i = v := by simp [store1]
 
 end WSt
@@ -287,9 +279,9 @@ inductive WFExp where
       why an argmax can be written without one. -/
   | geF   : WFExp → WFExp → WFExp
 
-def WFExp.eval (st : WSt) (l : Lane) : WFExp → Float32
+def WFExp.eval {R : Type} [NumOps R] [NumLit R] (st : WSt R) (l : Lane) : WFExp → R
   | .reg r     => st.regs r l
-  | .lit v     => v
+  | .lit v     => NumLit.lit v
   | .add a b   => NumOps.add (a.eval st l) (b.eval st l)
   | .mul a b   => NumOps.mul (a.eval st l) (b.eval st l)
   | .neg a     => NumOps.neg (a.eval st l)
@@ -298,7 +290,7 @@ def WFExp.eval (st : WSt) (l : Lane) : WFExp → Float32
   | .ex2 a     => NumOps.ex2 (a.eval st l)
   | .rsqrt a   => NumOps.rsqrt (a.eval st l)
   | .maxW a b  => NumOps.max (a.eval st l) (b.eval st l)
-  | .geF a b   => NumOps.ifGe (a.eval st l) (b.eval st l) 1.0 0.0
+  | .geF a b   => NumOps.ifGe (a.eval st l) (b.eval st l) (NumLit.lit 1.0) (NumLit.lit 0.0)
 
 -- ---------------------------------------------------------------------------
 -- Warp statements
@@ -337,18 +329,12 @@ inductive WStmt where
       lockstep.  Present so tiled kernels are writable now and remain correct
       when the model is widened to a block. -/
   | barrier    : WStmt
-  /-- An external kernel invocation — cuBLAS GEMM, cuDNN, a vendor library.
-      Modelled as an opaque, deterministic memory transformer with a *named
-      contract*: `spec` is what the vendor promises.  Everything composed
-      around it stays proven; the one assumption is that the vendor meets its
-      contract, and it is recorded rather than implicit. -/
-  | extern     : ExternOp → Buf → Buf → WStmt
   /-- `st.global.f32` from every lane to its own address — the map epilogue.
       Lanes are applied in order, so a colliding address is resolved
-      last-lane-wins (the same convention `LZ4Simt.storeBytes` uses). -/
+      last-lane-wins. -/
   | storeLane  : Buf → (Lane → Nat) → Nat → WStmt
 
-def WStmt.run (s : WStmt) (st : WSt) : WSt :=
+def WStmt.run {R : Type} [NumOps R] [NumLit R] (s : WStmt) (st : WSt R) : WSt R :=
   match s with
   | .skip           => st
   | .seq a b        => b.run (a.run st)
@@ -361,8 +347,6 @@ def WStmt.run (s : WStmt) (st : WSt) : WSt :=
           d2 (fun l => st.mem b (ix l + 2))).setReg d3 (fun l => st.mem b (ix l + 3))
   | .forN n f       => (List.range n).foldl (fun s' i => (f i).run s') st
   | .storeLane0 b i r => st.store1 b i (st.regs r ⟨0, by decide⟩)
-  | .extern op inB outB =>
-      { st with mem := fun c j => if c = outB then op.spec (st.mem inB) j else st.mem c j }
   | .stSmem ix r =>
       -- lanes write in order; a colliding address resolves last-lane-wins
       let upd := (List.finRange W).foldl
@@ -373,26 +357,32 @@ def WStmt.run (s : WStmt) (st : WSt) : WSt :=
   | .storeLane b ix r =>
       (List.finRange W).foldl (fun s l => s.store1 b (ix l) (st.regs r l)) st
 
-@[simp] theorem wrun_skip (st : WSt) : WStmt.run .skip st = st := rfl
-@[simp] theorem wrun_seq (a b : WStmt) (st : WSt) :
+section Run
+variable {R : Type} [NumOps R] [NumLit R]
+
+@[simp] theorem wrun_skip (st : WSt R) : WStmt.run .skip st = st := rfl
+@[simp] theorem wrun_seq (a b : WStmt) (st : WSt R) :
     WStmt.run (.seq a b) st = b.run (a.run st) := rfl
-@[simp] theorem wrun_setR (r : Nat) (e : WFExp) (st : WSt) :
+@[simp] theorem wrun_setR (r : Nat) (e : WFExp) (st : WSt R) :
     WStmt.run (.setR r e) st = st.setReg r (fun l => e.eval st l) := rfl
-@[simp] theorem wrun_shflXor (d s m : Nat) (st : WSt) :
+@[simp] theorem wrun_shflXor (d s m : Nat) (st : WSt R) :
     WStmt.run (.shflXor d s m) st = st.setReg d (fun l => st.regs s (xorLane l m)) := rfl
-@[simp] theorem wrun_loadIdx (d : Nat) (b : Buf) (ix : Lane → Nat) (st : WSt) :
+@[simp] theorem wrun_loadIdx (d : Nat) (b : Buf) (ix : Lane → Nat) (st : WSt R) :
     WStmt.run (.loadIdx d b ix) st = st.setReg d (fun l => st.mem b (ix l)) := rfl
-@[simp] theorem wrun_loadV4 (d0 d1 d2 d3 : Nat) (b : Buf) (ix : Lane → Nat) (st : WSt) :
-    WStmt.run (.loadV4 d0 d1 d2 d3 b ix)
+@[simp] theorem wrun_loadV4 (d0 d1 d2 d3 : Nat) (b : Buf) (ix : Lane → Nat) :
+    WStmt.run (R := R) (.loadV4 d0 d1 d2 d3 b ix)
       = fun st => (((st.setReg d0 (fun l => st.mem b (ix l))).setReg d1
           (fun l => st.mem b (ix l + 1))).setReg d2
           (fun l => st.mem b (ix l + 2))).setReg d3 (fun l => st.mem b (ix l + 3)) := rfl
-@[simp] theorem wrun_forN (n : Nat) (f : Nat → WStmt) (st : WSt) :
+@[simp] theorem wrun_forN (n : Nat) (f : Nat → WStmt) (st : WSt R) :
     WStmt.run (.forN n f) st = (List.range n).foldl (fun s' i => (f i).run s') st := rfl
-@[simp] theorem wrun_setLaneF (d : Nat) (f : Lane → Nat) (st : WSt) :
+@[simp] theorem wrun_setLaneF (d : Nat) (f : Lane → Nat) (st : WSt R) :
     WStmt.run (.setLaneF d f) st = st.setReg d (fun l => NumOps.ofNat (f l)) := rfl
-@[simp] theorem wrun_storeLane0 (b : Buf) (i r : Nat) (st : WSt) :
+@[simp] theorem wrun_storeLane0 (b : Buf) (i r : Nat) (st : WSt R) :
     WStmt.run (.storeLane0 b i r) st = st.store1 b i (st.regs r ⟨0, by decide⟩) := rfl
+
+end Run
+
 -- ---------------------------------------------------------------------------
 -- Reading a store back
 -- ---------------------------------------------------------------------------
@@ -414,9 +404,9 @@ def WStmt.run (s : WStmt) (st : WSt) : WSt :=
 -/
 
 /-- An address no store in the list touches is unchanged. -/
-theorem storeFold_other {α : Type} (b : Buf) (f : α → Nat) (v : α → Float32)
+theorem storeFold_other {α R : Type} (b : Buf) (f : α → Nat) (v : α → R)
     (c : Buf) (j : Nat) :
-    ∀ (L : List α) (st : WSt), (∀ x ∈ L, ¬(c = b ∧ j = f x)) →
+    ∀ (L : List α) (st : WSt R), (∀ x ∈ L, ¬(c = b ∧ j = f x)) →
       ((L.foldl (fun s x => s.store1 b (f x) (v x)) st).mem c j) = st.mem c j := by
   intro L
   induction L with
@@ -430,9 +420,9 @@ theorem storeFold_other {α : Type} (b : Buf) (f : α → Nat) (v : α → Float
 
 /-- **Reading a store back.**  If some element writes address `a` and every
     element that writes `a` writes the same value, that is what memory holds. -/
-theorem storeFold_at {α : Type} (b : Buf) (f : α → Nat) (v : α → Float32)
-    (a : Nat) (w : Float32) :
-    ∀ (L : List α) (st : WSt),
+theorem storeFold_at {α R : Type} (b : Buf) (f : α → Nat) (v : α → R)
+    (a : Nat) (w : R) :
+    ∀ (L : List α) (st : WSt R),
       (∀ x ∈ L, f x = a → v x = w) → (∃ x ∈ L, f x = a) →
       ((L.foldl (fun s x => s.store1 b (f x) (v x)) st).mem b a) = w := by
   intro L
@@ -456,8 +446,11 @@ theorem storeFold_at {α : Type} (b : Buf) (f : α → Nat) (v : α → Float32)
         rw [if_pos ⟨rfl, rfl⟩]
         exact hall x (by simp) hx
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 /-- The per-lane store, read back at one lane's address. -/
-theorem storeLane_at (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt) (l0 : Lane)
+theorem storeLane_at (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt R) (l0 : Lane)
     (hagree : ∀ l, ix l = ix l0 → st.regs r l = st.regs r l0) :
     ((WStmt.storeLane b ix r).run st).mem b (ix l0) = st.regs r l0 := by
   show ((List.finRange W).foldl (fun s l => s.store1 b (ix l) (st.regs r l)) st).mem b (ix l0) = _
@@ -465,7 +458,7 @@ theorem storeLane_at (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt) (l0 : La
     (fun l _ h => hagree l h) ⟨l0, List.mem_finRange l0, rfl⟩
 
 /-- A store leaves every other buffer alone. -/
-theorem storeLane_otherBuf (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt)
+theorem storeLane_otherBuf (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt R)
     (c : Buf) (hc : c ≠ b) : ((WStmt.storeLane b ix r).run st).mem c = st.mem c := by
   funext j
   show ((List.finRange W).foldl (fun s l => s.store1 b (ix l) (st.regs r l)) st).mem c j = _
@@ -473,15 +466,15 @@ theorem storeLane_otherBuf (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt)
     (fun _ _ => fun hcon => hc hcon.1)
 
 /-- An address no lane writes is unchanged by the store. -/
-theorem storeLane_otherAddr (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt) (a : Nat)
+theorem storeLane_otherAddr (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt R) (a : Nat)
     (h : ∀ l, ix l ≠ a) : ((WStmt.storeLane b ix r).run st).mem b a = st.mem b a := by
   show ((List.finRange W).foldl (fun s l => s.store1 b (ix l) (st.regs r l)) st).mem b a = _
   exact storeFold_other b ix (st.regs r) b a (List.finRange W) st
     (fun l _ => fun hcon => h l hcon.2.symm)
 
 /-- A store leaves the register file alone. -/
-theorem storeFold_regs {α : Type} (b : Buf) (f : α → Nat) (v : α → Float32) :
-    ∀ (L : List α) (st : WSt),
+theorem storeFold_regs {α R : Type} (b : Buf) (f : α → Nat) (v : α → R) :
+    ∀ (L : List α) (st : WSt R),
       (L.foldl (fun s x => s.store1 b (f x) (v x)) st).regs = st.regs := by
   intro L
   induction L with
@@ -492,7 +485,7 @@ theorem storeFold_regs {α : Type} (b : Buf) (f : α → Nat) (v : α → Float3
       rw [ih]
       rfl
 
-@[simp] theorem storeLane_regs (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt) :
+@[simp] theorem storeLane_regs (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt R) :
     ((WStmt.storeLane b ix r).run st).regs = st.regs :=
   storeFold_regs b ix (st.regs r) (List.finRange W) st
 
@@ -503,7 +496,7 @@ theorem storeFold_regs {α : Type} (b : Buf) (f : α → Nat) (v : α → Float3
     land on the first's addresses.  `hAB` is exactly that, and it is one `omega`
     when the two address maps differ by a constant offset. -/
 theorem storeLane_two_first (b : Buf) (ixA ixB : Lane → Nat) (rA rB : Nat)
-    (S : WSt) (l0 : Lane) (hAB : ∀ l, ixB l ≠ ixA l0)
+    (S : WSt R) (l0 : Lane) (hAB : ∀ l, ixB l ≠ ixA l0)
     (hAA : ∀ l, ixA l = ixA l0 → S.regs rA l = S.regs rA l0) :
     ((WStmt.storeLane b ixB rB).run ((WStmt.storeLane b ixA rA).run S)).mem b (ixA l0)
       = S.regs rA l0 := by
@@ -512,7 +505,7 @@ theorem storeLane_two_first (b : Buf) (ixA ixB : Lane → Nat) (rA rB : Nat)
 
 /-- …and reading back the second, which simply wins. -/
 theorem storeLane_two_second (b : Buf) (ixA ixB : Lane → Nat) (rA rB : Nat)
-    (S : WSt) (l0 : Lane)
+    (S : WSt R) (l0 : Lane)
     (hBB : ∀ l, ixB l = ixB l0 → S.regs rB l = S.regs rB l0) :
     ((WStmt.storeLane b ixB rB).run ((WStmt.storeLane b ixA rA).run S)).mem b (ixB l0)
       = S.regs rB l0 :=
@@ -524,16 +517,17 @@ theorem storeLane_two_second (b : Buf) (ixA ixB : Lane → Nat) (rA rB : Nat)
 -- The butterfly reduction, and the tree it commits to
 -- ---------------------------------------------------------------------------
 
+
 /-- One butterfly round at `mask`: every lane adds its partner's value.
     This is the *specification* of a shuffle round — note it is a tree step,
     not a sequential accumulation. -/
-def bflyStep (m : Nat) (v : Lane → Float32) : Lane → Float32 :=
+def bflyStep (m : Nat) (v : Lane → R) : Lane → R :=
   fun l => NumOps.add (v l) (v (xorLane l m))
 
 /-- The full 5-round butterfly over a 32-lane warp.  Masks descend 16→1,
     matching `AlgorithmLib.PTX.warpReduceSum`.  Every lane ends holding the
     total, folded in this exact tree order. -/
-def bflyFold (v : Lane → Float32) : Lane → Float32 :=
+def bflyFold (v : Lane → R) : Lane → R :=
   bflyStep 1 (bflyStep 2 (bflyStep 4 (bflyStep 8 (bflyStep 16 v))))
 
 /-- One shuffle-and-add round: `tmp := shfl(acc, mask); acc := acc + tmp`. -/
@@ -552,10 +546,10 @@ def warpReduceSum (acc tmp : Nat) : WStmt :=
 
 /-- …and so does the whole network.  Needed by the pipeline layer, where a
     reduction's *only* memory effect must be its final single store. -/
-theorem warpReduceSum_mem (acc tmp : Nat) (st : WSt) :
+theorem warpReduceSum_mem (acc tmp : Nat) (st : WSt R) :
     ((warpReduceSum acc tmp).run st).mem = st.mem := rfl
 
-theorem warpRound_spec (acc tmp mask : Nat) (h : tmp ≠ acc) (st : WSt) :
+theorem warpRound_spec (acc tmp mask : Nat) (h : tmp ≠ acc) (st : WSt R) :
     ((warpRound acc tmp mask).run st).regs acc
       = bflyStep mask (st.regs acc) := by
   simp only [warpRound, wrun_seq, wrun_setR, wrun_shflXor, WSt.regs_setReg_same]
@@ -567,9 +561,9 @@ theorem warpRound_spec (acc tmp mask : Nat) (h : tmp ≠ acc) (st : WSt) :
 
     This is the theorem that makes a cross-lane reduction — the single most
     important primitive in a tuned GPU kernel — provable.  It is an exact
-    `Float32` equality, achieved by committing the spec to the tree the shuffle
+    equality at any carrier, achieved by committing the spec to the tree the shuffle
     network actually walks rather than to a sequential fold. -/
-theorem warpReduceSum_spec (acc tmp : Nat) (h : tmp ≠ acc) (st : WSt) :
+theorem warpReduceSum_spec (acc tmp : Nat) (h : tmp ≠ acc) (st : WSt R) :
     ((warpReduceSum acc tmp).run st).regs acc = bflyFold (st.regs acc) := by
   simp only [warpReduceSum, wrun_seq]
   rw [warpRound_spec acc tmp 1 h, warpRound_spec acc tmp 2 h,
@@ -604,7 +598,7 @@ abbrev v1 : Nat := 2
 abbrev v2 : Nat := 3
 abbrev v3 : Nat := 4
 
-def sq (x : Float32) : Float32 := NumOps.mul x x
+def sq (x : R) : R := NumOps.mul x x
 
 /-- Vectorised accumulation: one `v4` load per lane per iteration. -/
 def warpAccSqV4 (off : Nat) (b : Buf) (k : Nat) : WStmt :=
@@ -621,7 +615,7 @@ def warpAccSqV4 (off : Nat) (b : Buf) (k : Nat) : WStmt :=
     two have genuinely different specs.  Over `Float32` that distinction is
     observable, and pretending otherwise is exactly the bug this design
     prevents. -/
-def laneFoldV4 (off : Nat) (mem : Nat → Float32) (k : Nat) (l : Lane) : Float32 :=
+def laneFoldV4 (off : Nat) (mem : Nat → R) (k : Nat) (l : Lane) : R :=
   (List.range k).foldl
     (fun a i => NumOps.add (NumOps.add (NumOps.add
         (NumOps.add a (sq (mem (v4BaseOff off i l))))
@@ -631,7 +625,7 @@ def laneFoldV4 (off : Nat) (mem : Nat → Float32) (k : Nat) (l : Lane) : Float3
     (NumOps.ofNat 0)
 
 theorem warpAccSqV4_fold (off : Nat) (b : Buf) :
-    ∀ (L : List Nat) (st : WSt) (l : Lane),
+    ∀ (L : List Nat) (st : WSt R) (l : Lane),
       ((L.foldl (fun s' i =>
           (WStmt.seq (.loadV4 v0 v1 v2 v3 b (v4BaseOff off i))
             (.setR aR (.add (.add (.add (.add (.reg aR) (.mul (.reg v0) (.reg v0)))
@@ -683,12 +677,12 @@ theorem warpAccSqV4_fold (off : Nat) (b : Buf) :
       rfl
 
 /-- **The vectorised phase is correct.** -/
-theorem warpAccSqV4_spec (off : Nat) (b : Buf) (k : Nat) (st : WSt) :
+theorem warpAccSqV4_spec [LitNat R] (off : Nat) (b : Buf) (k : Nat) (st : WSt R) :
     ((warpAccSqV4 off b k).run st).regs aR = laneFoldV4 off (st.mem b) k := by
   funext l
   show ((List.range k).foldl _ ((WStmt.setR aR (.lit (NumOps.ofNat 0))).run st)).regs aR l = _
   rw [warpAccSqV4_fold off b (List.range k) _ l]
-  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, laneFoldV4]
+  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, laneFoldV4, LitNat.ofNat]
   rfl
 
 /-- The full vectorised reduction: `v4` coalesced accumulate, then butterfly. -/
@@ -699,7 +693,7 @@ def warpSumSqV4 (off : Nat) (b : Buf) (k : Nat) : WStmt :=
 
     Four times fewer memory transactions than the scalar version, and its spec
     is stated honestly as a *different* fold — because it is one. -/
-theorem warpSumSqV4_spec (off : Nat) (b : Buf) (k : Nat) (st : WSt) :
+theorem warpSumSqV4_spec [LitNat R] (off : Nat) (b : Buf) (k : Nat) (st : WSt R) :
     ((warpSumSqV4 off b k).run st).regs aR = bflyFold (laneFoldV4 off (st.mem b) k) := by
   show ((warpReduceSum aR v0).run ((warpAccSqV4 off b k).run st)).regs aR = _
   rw [warpReduceSum_spec aR v0 (by decide), warpAccSqV4_spec off b k]
@@ -719,9 +713,9 @@ def warpSumSqV4Store (off : Nat) (b out : Buf) (oi : Nat) (k : Nat) : WStmt :=
 /-- **The kernel writes the right value to memory.**
 
     Not "computes it in a register" — actually lands it in the output buffer,
-    as an exact `Float32` equality against a spec that commits to the two-level
+    as an exact equality, at any carrier, against a spec that commits to the two-level
     fold the hardware performs. -/
-theorem warpSumSqV4Store_spec (off : Nat) (b out : Buf) (oi k : Nat) (st : WSt) :
+theorem warpSumSqV4Store_spec [LitNat R] (off : Nat) (b out : Buf) (oi k : Nat) (st : WSt R) :
     ((warpSumSqV4Store off b out oi k).run st).mem out oi
       = bflyFold (laneFoldV4 off (st.mem b) k) ⟨0, by decide⟩ := by
   show (((warpSumSqV4 off b k).run st).store1 out oi
@@ -761,8 +755,8 @@ def warpSumSqV4E (off : Nat) (be : Nat → Expr Γ) (k : Nat) : Expr Γ :=
   bflyStepE 1 (bflyStepE 2 (bflyStepE 4 (bflyStepE 8 (bflyStepE 16
     (laneFoldV4E off be k))))) ⟨0, by decide⟩
 
-theorem denote_laneFoldV4E (off : Nat) (env : Fin Γ → Float32) (be : Nat → Expr Γ) (k : Nat)
-    (mem : Nat → Float32) (hb : ∀ i, denote env (be i) = mem i) (l : Lane) :
+theorem denote_laneFoldV4E (off : Nat) (env : Fin Γ → R) (be : Nat → Expr Γ) (k : Nat)
+    (mem : Nat → R) (hb : ∀ i, denote env (be i) = mem i) (l : Lane) :
     denote env (laneFoldV4E off be k l) = laneFoldV4 off mem k l := by
   show denote env ((List.range k).foldl _ (.lit 0)) = (List.range k).foldl _ (NumOps.ofNat 0)
   have key : ∀ (L : List Nat) (acc : Expr Γ),
@@ -790,13 +784,13 @@ theorem denote_laneFoldV4E (off : Nat) (env : Fin Γ → Float32) (be : Nat → 
 
     `hb` is the layout link: it says buffer slot `i` holds what spec term
     `be i` denotes.  Given that, the kernel's *store* lands exactly
-    `denote env spec` — an exact `Float32` equality.
+    `denote env spec` — an exact equality at any carrier.
 
     This is the sentence the whole architecture exists to support: a kernel
     written with `ld.global.v4`, coalesced striding and a butterfly shuffle
     network — none of which appear in the spec — provably computes the spec. -/
-theorem warpSumSqV4Store_implements (off : Nat) (b out : Buf) (oi k : Nat) (st : WSt)
-    (env : Fin Γ → Float32) (be : Nat → Expr Γ)
+theorem warpSumSqV4Store_implements [LitNat R] (off : Nat) (b out : Buf) (oi k : Nat) (st : WSt R)
+    (env : Fin Γ → R) (be : Nat → Expr Γ)
     (hb : ∀ i, denote env (be i) = st.mem b i) :
     ((warpSumSqV4Store off b out oi k).run st).mem out oi
       = denote env (warpSumSqV4E off be k) := by
@@ -806,6 +800,8 @@ theorem warpSumSqV4Store_implements (off : Nat) (b out : Buf) (oi k : Nat) (st :
   simp only [bflyStepE, denote_add, bflyFold, bflyStep,
              denote_laneFoldV4E off env be k (st.mem b) hb]
 
+
+end Carrier
 
 -- ---------------------------------------------------------------------------
 -- Delegating to a vendor kernel, with the assumption named

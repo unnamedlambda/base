@@ -33,17 +33,20 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 open Classical in
 /-- **What one block of a stage does to memory.**
 
     `StageSpec.step` is the whole grid; this is one block of it, and it is the
     granularity an interchange argument needs. -/
-noncomputable def StageSpec.applyAt (S : StageSpec) (cta : Nat)
-    (m : Buf → Nat → Float32) : Buf → Nat → Float32 :=
+noncomputable def StageSpec.applyAt (S : (StageSpec R)) (cta : Nat)
+    (m : Buf → Nat → R) : Buf → Nat → R :=
   fun b a => if b = S.out ∧ S.dom cta a then S.val m cta a else m b a
 
 /-- Off a block's own output addresses, `applyAt` is the identity. -/
-theorem StageSpec.applyAt_off (S : StageSpec) (cta : Nat) (m : Buf → Nat → Float32)
+theorem StageSpec.applyAt_off (S : (StageSpec R)) (cta : Nat) (m : Buf → Nat → R)
     (b : Buf) (a : Nat) (h : ¬ (b = S.out ∧ S.dom cta a)) :
     S.applyAt cta m b a = m b a := by
   rw [StageSpec.applyAt, if_neg h]
@@ -52,7 +55,7 @@ theorem StageSpec.applyAt_off (S : StageSpec) (cta : Nat) (m : Buf → Nat → F
     does not write and `value` says what it puts where it does, and between
     them the resulting memory is determined by the entering memory alone —
     registers included in the state but not in the answer. -/
-theorem StageSpec.run_applyAt (S : StageSpec) (cta : Nat) (st : WSt) :
+theorem StageSpec.run_applyAt (S : (StageSpec R)) (cta : Nat) (st : WSt R) :
     ((S.blk cta).run st).mem = S.applyAt cta st.mem := by
   funext b a
   by_cases h : b = S.out ∧ S.dom cta a
@@ -72,15 +75,15 @@ theorem StageSpec.run_applyAt (S : StageSpec) (cta : Nat) (st : WSt) :
     The same shape as `TOp.groupStmt` — a left fold from `.skip` — because
     `EWStmt.elabAt` distributes over `.seq`, so elaborating a group's statement
     at block `cta` is exactly this. -/
-def groupBlk (ss : List StageSpec) (cta : Nat) : WStmt :=
+def groupBlk (ss : List (StageSpec R)) (cta : Nat) : WStmt :=
   ss.foldl (fun acc S => .seq acc (S.blk cta)) .skip
 
 /-- What the members do to memory, in order, at one block. -/
-noncomputable def blockApply (ss : List StageSpec) (cta : Nat)
-    (m : Buf → Nat → Float32) : Buf → Nat → Float32 :=
+noncomputable def blockApply (ss : List (StageSpec R)) (cta : Nat)
+    (m : Buf → Nat → R) : Buf → Nat → R :=
   ss.foldl (fun mm S => S.applyAt cta mm) m
 
-theorem groupBlk_run_aux (cta : Nat) : ∀ (ss : List StageSpec) (p : WStmt) (st : WSt),
+theorem groupBlk_run_aux (cta : Nat) : ∀ (ss : List (StageSpec R)) (p : WStmt) (st : WSt R),
     ((ss.foldl (fun acc S => .seq acc (S.blk cta)) p).run st)
       = ss.foldl (fun s S => (S.blk cta).run s) (p.run st) := by
   intro ss
@@ -92,7 +95,7 @@ theorem groupBlk_run_aux (cta : Nat) : ∀ (ss : List StageSpec) (p : WStmt) (st
       rw [ih (WStmt.seq p (S.blk cta)) st]
       rfl
 
-theorem foldl_run_mem (cta : Nat) : ∀ (ss : List StageSpec) (st : WSt),
+theorem foldl_run_mem (cta : Nat) : ∀ (ss : List (StageSpec R)) (st : WSt R),
     (ss.foldl (fun s S => (S.blk cta).run s) st).mem = blockApply ss cta st.mem := by
   intro ss
   induction ss with
@@ -104,17 +107,17 @@ theorem foldl_run_mem (cta : Nat) : ∀ (ss : List StageSpec) (st : WSt),
       rw [ih ((S.blk cta).run st), blockApply, S.run_applyAt cta st]
 
 /-- **One block of the fused launch does what its members do, in order.** -/
-theorem groupBlk_mem (ss : List StageSpec) (cta : Nat) (st : WSt) :
+theorem groupBlk_mem (ss : List (StageSpec R)) (cta : Nat) (st : WSt R) :
     ((groupBlk ss cta).run st).mem = blockApply ss cta st.mem := by
   rw [groupBlk, groupBlk_run_aux cta ss WStmt.skip st, foldl_run_mem cta ss]
   rfl
 
 /-- A whole grid, as a fold on memory. -/
 theorem runGrid_mem (blk : Nat → WStmt) (g : Nat)
-    (f : Nat → (Buf → Nat → Float32) → (Buf → Nat → Float32))
-    (hf : ∀ cta st, ((blk cta).run st).mem = f cta st.mem) : ∀ (st : WSt),
+    (f : Nat → (Buf → Nat → R) → (Buf → Nat → R))
+    (hf : ∀ cta st, ((blk cta).run st).mem = f cta st.mem) : ∀ (st : WSt R),
     (runGrid blk g st).mem = (List.range g).foldl (fun m cta => f cta m) st.mem := by
-  have key : ∀ (l : List Nat) (st : WSt),
+  have key : ∀ (l : List Nat) (st : WSt R),
       (l.foldl (fun s cta => (blk cta).run s) st).mem
         = l.foldl (fun m cta => f cta m) st.mem := by
     intro l
@@ -131,7 +134,7 @@ theorem runGrid_mem (blk : Nat → WStmt) (g : Nat)
 -- ---------------------------------------------------------------------------
 
 /-- Two memory transformers that may be run in either order. -/
-def Commute (f g : (Buf → Nat → Float32) → (Buf → Nat → Float32)) : Prop :=
+def Commute (f g : (Buf → Nat → R) → (Buf → Nat → R)) : Prop :=
   ∀ m, f (g m) = g (f m)
 
 /-- **The checkable form of non-interference.**
@@ -141,7 +144,7 @@ def Commute (f g : (Buf → Nat → Float32) → (Buf → Nat → Float32)) : Pr
     second pair of conditions is what a grouping pass means by *chunk-local*:
     a block reads its own rows, so another block's writes are not among its
     inputs. -/
-theorem commute_of_footprints (T U : StageSpec) (c' c : Nat)
+theorem commute_of_footprints (T U : (StageSpec R)) (c' c : Nat)
     (hd : ∀ a, ¬ (T.out = U.out ∧ T.dom c' a ∧ U.dom c a))
     (hTU : ∀ m a, T.dom c' a → T.val (U.applyAt c m) c' a = T.val m c' a)
     (hUT : ∀ m a, U.dom c a → U.val (T.applyAt c' m) c a = U.val m c a) :
@@ -161,8 +164,8 @@ theorem commute_of_footprints (T U : StageSpec) (c' c : Nat)
           StageSpec.applyAt, if_neg hU, StageSpec.applyAt, if_neg hT]
 
 /-- A block commutes with a whole other block's worth of members. -/
-theorem commute_blockApply (A : (Buf → Nat → Float32) → (Buf → Nat → Float32)) :
-    ∀ (ss : List StageSpec) (c : Nat), (∀ U ∈ ss, Commute A (U.applyAt c)) →
+theorem commute_blockApply (A : (Buf → Nat → R) → (Buf → Nat → R)) :
+    ∀ (ss : List (StageSpec R)) (c : Nat), (∀ U ∈ ss, Commute A (U.applyAt c)) →
       Commute A (blockApply ss c) := by
   intro ss
   induction ss with
@@ -185,9 +188,9 @@ theorem commute_blockApply (A : (Buf → Nat → Float32) → (Buf → Nat → F
     addresses it *does* depend on.  A stage carries no such field, because
     single-stage theorems never needed one — the interchange does, and it is
     the one thing standing between `commute_of_footprints` and a real group. -/
-def StageSpec.ReadsIn (S : StageSpec) (R : Nat → Buf → Nat → Prop) : Prop :=
-  ∀ (m m' : Buf → Nat → Float32) (cta a : Nat), S.dom cta a →
-    (∀ b a', R cta b a' → m b a' = m' b a') → S.val m cta a = S.val m' cta a
+def StageSpec.ReadsIn (S : (StageSpec R)) (Rd : Nat → Buf → Nat → Prop) : Prop :=
+  ∀ (m m' : Buf → Nat → R) (cta a : Nat), S.dom cta a →
+    (∀ b a', Rd cta b a' → m b a' = m' b a') → S.val m cta a = S.val m' cta a
 
 /-- **Non-interference from read footprints.**
 
@@ -196,7 +199,7 @@ def StageSpec.ReadsIn (S : StageSpec) (R : Nat → Buf → Nat → Prop) : Prop 
     writes.  `commute_of_footprints` asks the same thing about values under an
     update; this asks it about addresses, which is what a syntactic
     chunk-locality check computes. -/
-theorem commute_of_reads (T U : StageSpec) (RT RU : Nat → Buf → Nat → Prop)
+theorem commute_of_reads (T U : (StageSpec R)) (RT RU : Nat → Buf → Nat → Prop)
     (hT : T.ReadsIn RT) (hU : U.ReadsIn RU) (c' c : Nat)
     (hd : ∀ a, ¬ (T.out = U.out ∧ T.dom c' a ∧ U.dom c a))
     (hTU : ∀ b a, RT c' b a → ¬ (b = U.out ∧ U.dom c a))
@@ -218,7 +221,7 @@ theorem commute_of_reads (T U : StageSpec) (RT RU : Nat → Buf → Nat → Prop
     chunk is a question about `evA`/`evB` — about the schedule — and that is
     the question a grouping pass decides. -/
 theorem zipRowStage_readsIn (bA bB out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32) (ixA ixB : IdxE) (evA evB : Nat → Nat → Nat)
+    (g : R → R → R) (ixA ixB : IdxE) (evA evB : Nat → Nat → Nat)
     (n off K grid : Nat) (hw hf hA hB hAo hBo) :
     (zipRowStage bA bB out f g ixA ixB evA evB n off K grid hw hf hA hB hAo hBo).ReadsIn
       (fun cta b a' => (b = bA ∧ ∃ d, a' = evA cta d) ∨ (b = bB ∧ ∃ d, a' = evB cta d)) := by
@@ -227,9 +230,9 @@ theorem zipRowStage_readsIn (bA bB out : Buf) (f : WFExp)
   rw [h bA _ (Or.inl ⟨rfl, _, rfl⟩), h bB _ (Or.inr ⟨rfl, _, rfl⟩)]
 
 /-- **A dot-product stage reads its two operands and nothing else.** -/
-theorem reduceStage_readsIn (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
+theorem reduceStage_readsIn [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
     (hAo hBo) :
-    (reduceStage bA bB ixA ixB out K grid hAo hBo).ReadsIn
+    (reduceStage (R := R) bA bB ixA ixB out K grid hAo hBo).ReadsIn
       (fun cta b a' => (b = bA ∧ ∃ i l, a' = ixA.eval cta i l (fun _ _ => 0) (fun _ _ => 0))
                      ∨ (b = bB ∧ ∃ i l, a' = ixB.eval cta i l (fun _ _ => 0) (fun _ _ => 0))) := by
   intro m m' cta a _ h
@@ -242,7 +245,7 @@ theorem reduceStage_readsIn (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid :
 
 /-- A three-input row pass, likewise. -/
 theorem zipRow3Stage_readsIn (bA bB bC out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32) (ixA ixB ixC : IdxE)
+    (g : R → R → R → R) (ixA ixB ixC : IdxE)
     (evA evB evC : Nat → Nat → Nat) (n off K grid : Nat)
     (hw hf hA hB hC hAo hBo hCo) :
     (zipRow3Stage bA bB bC out f g ixA ixB ixC evA evB evC n off K grid
@@ -256,7 +259,7 @@ theorem zipRow3Stage_readsIn (bA bB bC out : Buf) (f : WFExp)
 
 /-- A four-input row pass, likewise. -/
 theorem zipRow4Stage_readsIn (bA bB bC bD out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32 → Float32) (ixA ixB ixC ixD : IdxE)
+    (g : R → R → R → R → R) (ixA ixB ixC ixD : IdxE)
     (evA evB evC evD : Nat → Nat → Nat) (n off K grid : Nat)
     (hw hf hA hB hC hD hAo hBo hCo hDo) :
     (zipRow4Stage bA bB bC bD out f g ixA ixB ixC ixD evA evB evC evD n off K grid
@@ -275,9 +278,9 @@ theorem zipRow4Stage_readsIn (bA bB bC bD out : Buf) (f : WFExp)
     indexed by the block, not by the address, and the member a block handles is
     recovered from the address.  Over-approximating is the safe direction: it
     makes the separation the caller has to prove stronger, never weaker. -/
-theorem dotBatchedStage_readsIn (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
+theorem dotBatchedStage_readsIn [LitNat R] (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
     (out : Buf) (B K grid : Nat) (hg hAo hBo) :
-    (dotBatchedStage bA bB ixA ixB out B K grid hg hAo hBo).ReadsIn
+    (dotBatchedStage (R := R) bA bB ixA ixB out B K grid hg hAo hBo).ReadsIn
       (fun cta bf a' =>
         (bf = bA ∧ ∃ i l, a' = ixA.eval cta i l (fun _ _ => 0) (fun _ _ => 0))
       ∨ (bf = bB ∧ ∃ s i l, a' = (ixB s).eval cta i l (fun _ _ => 0) (fun _ _ => 0))) := by
@@ -290,9 +293,9 @@ theorem dotBatchedStage_readsIn (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
     (fun i _ l' => h bB _ (Or.inr ⟨rfl, _, i, l', rfl⟩))
 
 /-- An outer product, likewise — over-approximated in the same index. -/
-theorem outerBatchedStage_readsIn (bA bB out : Buf) (ixA ixB : Nat → IdxE)
+theorem outerBatchedStage_readsIn [LitNat R] (bA bB out : Buf) (ixA ixB : Nat → IdxE)
     (n B K grid : Nat) (hn hAo hBo) :
-    (outerBatchedStage bA bB out ixA ixB n B K grid hn hAo hBo).ReadsIn
+    (outerBatchedStage (R := R) bA bB out ixA ixB n B K grid hn hAo hBo).ReadsIn
       (fun cta bf a' =>
         (bf = bA ∧ ∃ s i l, a' = (ixA s).eval cta i l (fun _ _ => 0) (fun _ _ => 0))
       ∨ (bf = bB ∧ ∃ s i l, a' = (ixB s).eval cta i l (fun _ _ => 0) (fun _ _ => 0))) := by
@@ -302,12 +305,12 @@ theorem outerBatchedStage_readsIn (bA bB out : Buf) (ixA ixB : Nat → IdxE)
     (fun s _ l' => h bB _ (Or.inr ⟨rfl, s, _, l', rfl⟩))
 
 /-- A strided maximum reads its operand at its own walk's addresses. -/
-theorem maxStridedLane_congr (mem mem' : Nat → Float32) (f : Nat → Lane → Nat)
-    (K : Nat) (init : Float32) (l : Lane)
+theorem maxStridedLane_congr (mem mem' : Nat → R) (f : Nat → Lane → Nat)
+    (K : Nat) (init : R) (l : Lane)
     (h : ∀ i, i < K → ∀ l', mem (f i l') = mem' (f i l')) :
     maxStridedLane mem f K init l = maxStridedLane mem' f K init l := by
   show (List.range K).foldl _ _ = (List.range K).foldl _ _
-  have key : ∀ (L : List Nat), (∀ i ∈ L, i < K) → ∀ acc : Float32,
+  have key : ∀ (L : List Nat), (∀ i ∈ L, i < K) → ∀ acc : R,
       L.foldl (fun acc i => NumOps.max acc (mem (f i l))) acc
         = L.foldl (fun acc i => NumOps.max acc (mem' (f i l))) acc := by
     intro L
@@ -321,8 +324,8 @@ theorem maxStridedLane_congr (mem mem' : Nat → Float32) (f : Nat → Lane → 
   exact key (List.range K) (fun i hi => List.mem_range.mp hi) _
 
 /-- A four-input strided contraction, likewise. -/
-theorem dotStridedLane4_congr (memA memA' memB memB' memC memC' memD memD' : Nat → Float32)
-    (fA fB fC fD : Nat → Lane → Nat) (g : Float32 → Float32 → Float32 → Float32)
+theorem dotStridedLane4_congr (memA memA' memB memB' memC memC' memD memD' : Nat → R)
+    (fA fB fC fD : Nat → Lane → Nat) (g : R → R → R → R)
     (K : Nat) (l : Lane)
     (hA : ∀ i, i < K → ∀ l', memA (fA i l') = memA' (fA i l'))
     (hB : ∀ i, i < K → ∀ l', memB (fB i l') = memB' (fB i l'))
@@ -331,7 +334,7 @@ theorem dotStridedLane4_congr (memA memA' memB memB' memC memC' memD memD' : Nat
     dotStridedLane4 memA memB memC memD fA fB fC fD g K l
       = dotStridedLane4 memA' memB' memC' memD' fA fB fC fD g K l := by
   show (List.range K).foldl _ _ = (List.range K).foldl _ _
-  have key : ∀ (L : List Nat), (∀ i ∈ L, i < K) → ∀ acc : Float32,
+  have key : ∀ (L : List Nat), (∀ i ∈ L, i < K) → ∀ acc : R,
       L.foldl (fun acc i => NumOps.add acc
         (NumOps.mul (g (memA (fA i l)) (memB (fB i l)) (memC (fC i l))) (memD (fD i l)))) acc
         = L.foldl (fun acc i => NumOps.add acc
@@ -351,17 +354,17 @@ theorem dotStridedLane4_congr (memA memA' memB memB' memC memC' memD memD' : Nat
 /-- A row maximum reads its one operand and nothing else. -/
 theorem maxRowStage_readsIn (b : Buf) (ix : IdxE) (out : Buf) (K grid : Nat)
     (init : Float32) (hbo) :
-    (maxRowStage b ix out K grid init hbo).ReadsIn
+    (maxRowStage (R := R) b ix out K grid init hbo).ReadsIn
       (fun cta bf a' =>
         bf = b ∧ ∃ i l, a' = ix.eval cta i l (fun _ _ => 0) (fun _ _ => 0)) := by
   intro m m' cta a _ h
   refine congrFun (congrArg (bflyFoldOp (fun x c => NumOps.max x c)) ?_) _
   funext l
-  exact maxStridedLane_congr _ _ _ K init l (fun i _ l' => h b _ ⟨rfl, i, l', rfl⟩)
+  exact maxStridedLane_congr _ _ _ K (NumLit.lit init) l (fun i _ l' => h b _ ⟨rfl, i, l', rfl⟩)
 
 /-- A four-input reduction, likewise. -/
-theorem reduce4Stage_readsIn (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32) (hf) (out : Buf) (K grid : Nat)
+theorem reduce4Stage_readsIn [LitNat R] (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (g : R → R → R → R) (hf) (out : Buf) (K grid : Nat)
     (hAo hBo hCo hDo) :
     (reduce4Stage bA bB bC bD ixA ixB ixC ixD f g hf out K grid hAo hBo hCo hDo).ReadsIn
       (fun cta bf a' =>
@@ -379,9 +382,9 @@ theorem reduce4Stage_readsIn (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : W
     (fun i _ l' => h bD _ (Or.inr (Or.inr (Or.inr ⟨rfl, i, l', rfl⟩))))
 
 /-- An elementwise pass reads its inputs at the address it writes. -/
-theorem mapStage_readsIn {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+theorem mapStage_readsIn [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
     (grid : Nat) (hio) :
-    (mapStage spec inB out grid hio).ReadsIn
+    (mapStage (R := R) spec inB out grid hio).ReadsIn
       (fun _ bf a' => ∃ i, bf = inB i ∧ a' = a') := by
   intro m m' cta a _ h
   show denote _ spec = denote _ spec
@@ -399,7 +402,7 @@ theorem mapStage_readsIn {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out
     Every block runs `A` then `G`; if `A` at one block commutes with `G` at any
     *other*, then all the `A`s can be run first.  `Nodup` is what says a block
     is not asked to commute with itself. -/
-theorem foldl_pullout (A G : Nat → (Buf → Nat → Float32) → (Buf → Nat → Float32))
+theorem foldl_pullout (A G : Nat → (Buf → Nat → R) → (Buf → Nat → R))
     (hc : ∀ c c', c ≠ c' → Commute (A c') (G c)) : ∀ (l : List Nat), l.Nodup →
     ∀ m, l.foldl (fun mm c => G c (A c mm)) m
         = l.foldl (fun mm c => G c mm) (l.foldl (fun mm c => A c mm) m) := by
@@ -425,10 +428,10 @@ theorem foldl_pullout (A G : Nat → (Buf → Nat → Float32) → (Buf → Nat 
       rw [ih (List.nodup_cons.mp hnd).2 (G c (A c m)), move t c hct (A c m)]
 
 /-- A stage's whole grid, as the fold of its blocks. -/
-theorem step_eq_foldl_applyAt (S : StageSpec) (hex : S.Exclusive)
-    (m : Buf → Nat → Float32) :
+theorem step_eq_foldl_applyAt (S : (StageSpec R)) (hex : S.Exclusive)
+    (m : Buf → Nat → R) :
     (List.range S.grid).foldl (fun mm cta => S.applyAt cta mm) m = S.step m := by
-  let st : WSt := ⟨fun _ _ => NumOps.ofNat 0, m, fun _ => NumOps.ofNat 0⟩
+  let st : WSt R := ⟨fun _ _ => NumOps.ofNat 0, m, fun _ => NumOps.ofNat 0⟩
   have h1 : (runGrid S.blk S.grid st).mem
       = (List.range S.grid).foldl (fun mm cta => S.applyAt cta mm) st.mem :=
     runGrid_mem S.blk S.grid (fun cta mm => S.applyAt cta mm)
@@ -443,10 +446,10 @@ theorem step_eq_foldl_applyAt (S : StageSpec) (hex : S.Exclusive)
     one.  The hypothesis is the whole of what fusion needs: two updates from
     *different blocks* commute.  Same-block order is untouched, which is why
     a chain of row passes may be fused and a cross-block reduction may not. -/
-theorem group_runs_as_pipeline : ∀ (ss : List StageSpec) (g : Nat),
+theorem group_runs_as_pipeline : ∀ (ss : List (StageSpec R)) (g : Nat),
     (∀ S ∈ ss, S.grid = g) → (∀ S ∈ ss, S.Exclusive) →
     (∀ T ∈ ss, ∀ U ∈ ss, ∀ c c' : Nat, c ≠ c' → Commute (T.applyAt c') (U.applyAt c)) →
-    ∀ (st : WSt), (runGrid (groupBlk ss) g st).mem = (Pipeline.mk ss).denote st.mem := by
+    ∀ (st : WSt R), (runGrid (groupBlk ss) g st).mem = (Pipeline.mk ss).denote st.mem := by
   intro ss
   induction ss with
   | nil =>
@@ -461,7 +464,7 @@ theorem group_runs_as_pipeline : ∀ (ss : List StageSpec) (g : Nat),
       intro g hg hex hc st
       rw [runGrid_mem (groupBlk (S :: rest)) g (fun cta m => blockApply (S :: rest) cta m)
             (fun cta s => groupBlk_mem (S :: rest) cta s) st]
-      have hsplit : ∀ (m : Buf → Nat → Float32),
+      have hsplit : ∀ (m : Buf → Nat → R),
           (List.range g).foldl (fun m cta => blockApply (S :: rest) cta m) m
             = (List.range g).foldl (fun m cta => blockApply rest cta m)
                 ((List.range g).foldl (fun m cta => S.applyAt cta m) m) := by
@@ -503,11 +506,11 @@ theorem group_runs_as_pipeline : ∀ (ss : List StageSpec) (g : Nat),
     address, so a block's inputs are inside its own chunk.  That is the whole
     argument, and it survives `gB i = o1`: a member reading the previous
     member's output reads only the rows its own block just wrote. -/
-theorem mapStage_commute {Γ Δ : Nat} (f : Expr Γ) (g : Expr Δ)
+theorem mapStage_commute [LitNat R] {Γ Δ : Nat} (f : Expr Γ) (g : Expr Δ)
     (fB : Fin Γ → Buf) (gB : Fin Δ → Buf) (o1 o2 : Buf) (g1 g2 : Nat)
     (h1 : ∀ i, fB i ≠ o1) (h2 : ∀ i, gB i ≠ o2)
     (c c' : Nat) (hne : c ≠ c') :
-    Commute ((mapStage f fB o1 g1 h1).applyAt c') ((mapStage g gB o2 g2 h2).applyAt c) := by
+    Commute ((mapStage (R := R) f fB o1 g1 h1).applyAt c') ((mapStage g gB o2 g2 h2).applyAt c) := by
   have hchunk : ∀ (x y : Nat) (a : Nat), x ≠ y →
       (∃ l : Lane, x * 32 + l.val = a) → (∃ l : Lane, y * 32 + l.val = a) → False := by
     rintro x y a hxy ⟨l, hl⟩ ⟨l', hl'⟩
@@ -529,10 +532,10 @@ theorem mapStage_commute {Γ Δ : Nat} (f : Expr Γ) (g : Expr Δ)
     exact StageSpec.applyAt_off _ c' m (gB i) a (fun hc => hchunk c c' a hne hd hc.2)
 
 /-- **…so the interchange holds of a real fused pair**, hypotheses and all. -/
-theorem mapStages_group_runs_as_pipeline {Γ Δ : Nat} (f : Expr Γ) (g : Expr Δ)
+theorem mapStages_group_runs_as_pipeline [LitNat R] {Γ Δ : Nat} (f : Expr Γ) (g : Expr Δ)
     (fB : Fin Γ → Buf) (gB : Fin Δ → Buf) (o1 o2 : Buf) (gr : Nat)
-    (h1 : ∀ i, fB i ≠ o1) (h2 : ∀ i, gB i ≠ o2) (st : WSt) :
-    (runGrid (groupBlk [mapStage f fB o1 gr h1, mapStage g gB o2 gr h2]) gr st).mem
+    (h1 : ∀ i, fB i ≠ o1) (h2 : ∀ i, gB i ≠ o2) (st : WSt R) :
+    (runGrid (groupBlk [mapStage (R := R) f fB o1 gr h1, mapStage g gB o2 gr h2]) gr st).mem
       = (Pipeline.mk [mapStage f fB o1 gr h1, mapStage g gB o2 gr h2]).denote st.mem := by
   refine group_runs_as_pipeline _ gr ?_ ?_ ?_ st
   · intro S hS; simp at hS; rcases hS with rfl | rfl <;> rfl
@@ -543,5 +546,7 @@ theorem mapStages_group_runs_as_pipeline {Γ Δ : Nat} (f : Expr Γ) (g : Expr �
     rcases hT with rfl | rfl <;> rcases hU with rfl | rfl <;>
       exact mapStage_commute _ _ _ _ _ _ _ _ _ _ c c' hne
 
+
+end Carrier
 
 end AlgorithmLib.ML

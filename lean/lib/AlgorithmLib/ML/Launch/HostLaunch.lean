@@ -61,8 +61,8 @@ theorem stage_drv_launch {w : World} {hf gx gy gz bx by_ bz shmem hstream params
     (hdims : (DrvLaunch.dimsOf gx gy gz bx by_ bz).any (· == 0) = false)
     (hr : ∀ a ∈ args, ∀ id off b, w.dev.range? a 0 = some (id, off, b) → Ready w.dev.race p id true)
     (hns : DrvLaunch.bindsOf w.dev args = ns) (hout : S.out ∈ ns)
-    (hM : Honest w.kernel ⟨ptx, entry, ns, DrvLaunch.dimsOf gx gy gz bx by_ bz, args⟩
-      (stageMachine S ns)) :
+    (hM : Honest w.kernel ⟨ptx, entry, ns, DrvLaunch.dimsOf gx gy gz bx by_ bz, args,
+      w.dev.writesOf (w.dev.kernelWrites ptx entry) args⟩ (stageMachine S ns)) :
     ∃ r w', cudaDrv .launchKernel [hf, gx, gy, gz, bx, by_, bz, shmem, hstream, params, 0] w
         = some (r, w') ∧
       ∀ a, (∃ cta, cta < S.grid ∧ S.dom cta a) →
@@ -70,7 +70,7 @@ theorem stage_drv_launch {w : World} {hf gx gy gz bx by_ bz shmem hstream params
           (S.step (viewMem (boundMem ns (ns.map (devMem w.dev)))) S.out a).toBits := by
   have hnd : ns.Nodup := hns ▸ DrvLaunch.nodup_eraseDups _
   subst hns
-  obtain ⟨r, w', h, hMr⟩ := DrvLaunch.drvLaunch_triple (shmem := shmem) (stageMachine S _)
+  obtain ⟨r, w', h, hMr, -⟩ := DrvLaunch.drvLaunch_triple (shmem := shmem) (stageMachine S _)
     hl hcap hk h1 h2 h3 h4 h5 h6 hdims hr hM
   refine ⟨r, w', h, fun a hown => ?_⟩
   have e := hMr ⟨fun _ _ => 0, viewMem (boundMem _ ((DrvLaunch.bindsOf w.dev args).map (devMem w.dev))),

@@ -2903,13 +2903,6 @@ theorem ranged_ne_any {f : AV → AV → Option AV} {ga gb av : AV}
   · rw [h1] at h; cases h
   · rw [h2] at h; cases h
 
-/-- An operation on floating-point numbers: the kernel cannot compute these
-    (`Float32` is opaque to it), so the checker does not fold them. -/
-def floaty : Op → Bool
-  | .fadd .. | .fsub .. | .fmul .. | .fmax .. | .fmin .. | .fcmp .. | .fbin .. | .fneg _
-  | .fpromote _ | .fcvtFromSint .. | .fcvtToUint .. | .fun1 .. | .fconv .. | .fma .. => true
-  | _ => false
-
 /-- A value of type `t` has that type and is shaped as `t` says. -/
 theorem TyV.typed {t : ClifTy} {v : V} (h : TyV t v) : v.ty = t ∧ v.Shaped := by
   unfold TyV at h
@@ -3040,7 +3033,8 @@ theorem absOp_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o :
     · rename_i hall
       obtain ⟨v, hv, rfl⟩ := Option.map_eq_some_iff.mp ho
       refine ⟨v, ?_, rfl⟩
-      rw [evalOp_congr w.mem default Γ Γ o (fun op p e => hnl op p e) (fun _ _ => rfl),
+      rw [evalOp_congr w.mem default Γ Γ o (fun op p e => hnl op p e)
+        (Or.inl (by simpa using (Bool.and_eq_true_iff.mp hall).1)) (fun _ _ => rfl),
         ← evalOp_positional default Γ _ o (fun i hi => ?_)]
       · exact hv
       · have hk := List.all_eq_true.mp (Bool.and_eq_true_iff.mp hall).2 _ (List.getElem_mem hi)

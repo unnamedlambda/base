@@ -139,7 +139,7 @@ def device0 : Contracts.TState :=
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0,
    .room .arena MEM, .room .out 64,
    .text (Sem.regionBase .arena + UInt64.ofNat NAME_MAIN) (some "main") 5 [],
-   .text (Sem.regionBase .arena + UInt64.ofNat PTX1) none (PTX2 - PTX1) [("main", [8])]]
+   .text (Sem.regionBase .arena + UInt64.ofNat PTX1) none (PTX2 - PTX1) [("main", [8], [])]]
 
 abbrev Device0 : Sem.World → Prop := device0.holds
 

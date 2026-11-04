@@ -5,7 +5,7 @@ import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
-open AlgorithmLib AlgorithmLib.LZ4WarpDSL AlgorithmLib.LZ4Simt AlgorithmLib.LZ4
+open AlgorithmLib AlgorithmLib.LZ4WarpDSL AlgorithmLib.LZ4
 
 namespace LZ4WarpEvalBytes
 

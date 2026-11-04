@@ -27,7 +27,7 @@ abbrev SatMain : World → Prop := Contracts.TState.holds
   [.room .arena Sat.totalMemory]
 
 theorem Sat_fine : Fine (emitGo (fnBody ptrParams (Sat.mainCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+  ⟨by native_decide, by native_decide⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in

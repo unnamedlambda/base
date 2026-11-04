@@ -25,7 +25,7 @@ open AlgorithmLib AlgorithmLib.ML AlgorithmLib.IR AlgorithmLib.Prog
 -- ---------------------------------------------------------------------------
 
 /-- Whether launch `k` is a contraction. -/
-def vIsGemm (k : Nat) : Bool := ((vUnitOps (vUnitArr.getD k [])).head? >>= vGemmOf).isSome
+def vIsGemm (k : Nat) : Bool := ((vUnitOps (vUnitArr.getD k [])).head? >>= TOp.vendorGemm).isSome
 
 /-- The launches that are kernels, in launch order: kernel `j` of the layout
     is launch `vKernUnits[j]`. -/
@@ -39,12 +39,15 @@ def vKernIx : Array Nat := Id.run do
   pure a
 
 /-- Launch `k` as a kernel of the layout: its slot's PTX, its group's
-    buffers, and `w` warps per block over its chunks. -/
+    buffers, of which it writes its members' outputs, and `w` warps per
+    block over its chunks. -/
 def vKSpec (k : Nat) : Drv.KSpec :=
   let u := vUnitArr.getD k []
   let w := vWarpsOf (vUnitGrid u)
+  let outs := (vUnitOps u).map (fun op => (TOp.outSize SQ op).1)
   { ptxOff := vSlotOff (vSlotIx k), ptxLen := vSlotSizes.getD (vSlotIx k) 0, args := vUnitBufs u,
-    grid := (vUnitGrid u / w, 1, 1), block := (32 * w, 1, 1) }
+    grid := (vUnitGrid u / w, 1, 1), block := (32 * w, 1, 1),
+    writes := (vUnitBufs u).map outs.contains }
 
 /-- Parameters a block holds: the widest group's buffers. -/
 def VCELLS : Nat := (vKernUnits.map (fun k => (vUnitBufs (vUnitArr.getD k [])).length)).foldl max 16
@@ -103,23 +106,11 @@ theorem vMemMap_ok :
 -- Issuing the tape
 -- ---------------------------------------------------------------------------
 
-/-- A contraction as a cuBLAS product on handle `h`. cuBLAS is column-major
-    and a row-major `(r x c)` is a column-major `(c x r)` of the same bytes, so
-    each contraction is one transpose choice; the leading dimensions are the
-    packed ones. -/
-def vGemm (base h : V .i64) (tA tB m n k a b c : Nat) : Prog V L Unit := do
-  let z ← iconst64 0
-  let _ ← ext (.cublas .sgemmStridedBatched) %[h, ← iconst32 tA, ← iconst32 tB, ← iconst32 m, ← iconst32 n,
-    ← iconst32 k, ← iaddImm base vApp.ONE, ← load64 (← iaddImm base (vApp.bufSlot a)),
-    ← iconst32 (if tA = 1 then k else m), z, ← load64 (← iaddImm base (vApp.bufSlot b)),
-    ← iconst32 (if tB = 1 then n else k), z, ← iaddImm base vApp.ZERO,
-    ← load64 (← iaddImm base (vApp.bufSlot c)), ← iconst32 m, z, ← iconst32 1]
-
 /-- Launch `k` on a stream, its contraction on that stream's handle `h`. -/
 def vLaunch (base stream h : V .i64) (k : Nat) : Prog V L Unit :=
   if vIsGemm k then
-    match (vUnitOps (vUnitArr.getD k [])).head? >>= vGemmOf with
-    | some (tA, tB, m, n, kk, a, b, c) => vGemm base h tA tB m n kk a b c
+    match (vUnitOps (vUnitArr.getD k [])).head? >>= TOp.vendorGemm with
+    | some (tA, tB, m, n, kk, a, b, c) => vApp.sgemm base h tA tB m n kk a b c
     | none => pure ()
   else vApp.runOn base stream (vKernIx.getD k 0)
 
@@ -183,7 +174,10 @@ def vUploadInputs (base data : V .i64) : Prog V L Unit := do
     write its parameters, upload the inputs, and make the pooled streams,
     each with its own cuBLAS handle, and the events. Each handle runs one
     product before any capture: cuBLAS readies a handle on its first call, and
-    readying one is not something a capture may record. -/
+    readying one is not something a capture may record. Those products all
+    write buffer `VBASE` and read the first input, so each is waited for
+    before the next stream is made: the uploads and the default handle's
+    product by the context, each pooled one by its stream. -/
 def vLoadFn : Prog V L Unit := do
   let base ← basePtr
   let data ← dataPtr
@@ -191,17 +185,18 @@ def vLoadFn : Prog V L Unit := do
   vUploadInputs base data
   let one ← iconst32 1
   let z32 ← iconst32 0
-  vGemm base (← load64 (← iaddImm base vApp.BLAS)) 0 0 1 1 1 0 0 VBASE
+  vApp.sgemm base (← load64 (← iaddImm base vApp.BLAS)) 0 0 1 1 1 0 0 VBASE
+  Drv.sync
   let _ ← ext (.cuda .streamCreate) %[← iaddImm base VSTREAM_OFF, one]
   for s in List.range VNSTRM do
     let _ ← ext (.cuda .streamCreate) %[← iaddImm base (vPoolOff s), one]
     let _ ← ext (.cublas .create) %[← iaddImm base (vHandleOff s)]
     let _ ← ext (.cublas .setStream) %[← load64 (← iaddImm base (vHandleOff s)),
       ← load64 (← iaddImm base (vPoolOff s))]
-    vGemm base (← load64 (← iaddImm base (vHandleOff s))) 0 0 1 1 1 0 0 VBASE
+    vApp.sgemm base (← load64 (← iaddImm base (vHandleOff s))) 0 0 1 1 1 0 0 VBASE
+    let _ ← ext (.cuda .streamSynchronize) %[← load64 (← iaddImm base (vPoolOff s))]
   for e in List.range VNEVENT do
     let _ ← ext (.cuda .eventCreate) %[← iaddImm base (vEventOff e), z32]
-  Drv.sync
 
 /-- **A range captured as the graph its dependences allow**, rather than as the
     chain its listing is, then instantiated and uploaded. The fork and join
@@ -213,7 +208,7 @@ def vLoadFn : Prog V L Unit := do
 def vCaptureAt (lo hi gSlot xSlot : Nat) : Prog V L Unit := do
   let base ← basePtr
   vIssue base lo hi
-  Drv.sync
+  let _ ← ext (.cuda .streamSynchronize) %[← iconst64 0]
   let s ← load64 (← iaddImm base VSTREAM_OFF)
   let _ ← ext (.cuda .beginCapture) %[s, ← iconst32 2]
   vFork base s

@@ -1,11 +1,11 @@
 import Scan.MlSurface
 import Warp.MlpCifar
+import Warp.MlpCifarBodies
 /-!
   # What the CIFAR classifier's claims rest on — computed, not documented
 
   A scanner of its own, for the same reason the others are: each generator
-  defines its own `main`, so `BackwardWideAlgorithm` and `MlpCifarAlgorithm`
-  cannot share a module.  The machinery is `ScanCore`, the
+  defines its own `main`, so two generators cannot share a module.  The machinery is `ScanCore`, the
   surface `MlSurface`.
 
   What makes this one worth having separately is that it covers a *whole
@@ -39,8 +39,6 @@ def roots : List Name :=
     `MlpCifar.fwd1_computes_spec
   , `MlpCifar.fwd2_computes_spec
   , `MlpCifar.h_stores
-  , `MlpCifar.fwd1_ptx_exact
-  , `MlpCifar.fwd2_ptx_exact
     -- backward
   , `MlpCifar.dh_computes_spec
   , `MlpCifar.adj_stores
@@ -49,10 +47,6 @@ def roots : List Name :=
   , `AlgorithmLib.ML.batch_addr_inj
   , `MlpCifar.dw1_stores
   , `MlpCifar.dw2_stores
-  , `MlpCifar.dh_ptx_exact
-  , `MlpCifar.dw1_ptx_exact
-  , `MlpCifar.dw2_ptx_exact
-  , `MlpCifar.map_ptx_exact
     -- the optimiser
   , `MlpCifar.sgd1_stores
   , `MlpCifar.sgd2_stores
@@ -62,11 +56,6 @@ def roots : List Name :=
   , `MlpCifar.fwdPipeline_runs
   , `MlpCifar.bwdPipeline_runs
   , `MlpCifar.stages_are_launches
-    -- the shipped bodies' launches are that pipeline
-  , `MlpCifar.fwd_realises
-  , `MlpCifar.bwd_realises
-  , `MlpCifar.fwd_host_computes
-  , `MlpCifar.bwd_host_computes
     -- a training run, not just a training step
   , `MlpCifar.mlp_training_run
   , `MlpCifar.mlp_host_swap
@@ -76,9 +65,6 @@ def roots : List Name :=
   , `MlpCifar.blas_law_bill
   , `MlpCifar.proven_law_bill
   , `MlpCifar.blas_plans_run
-  , `MlpCifar.fwd_blas_realises
-  , `MlpCifar.bwd_blas_realises
-  , `MlpCifar.blas_host_computes
     -- the backend is a lowering choice, and it cannot change the answer
   , `MlpCifar.builds_agree
   , `MlpCifar.builds_run
@@ -107,14 +93,8 @@ def roots : List Name :=
   , `MlpCifar.qwen_kernels_are_the_stages
   , `MlpCifar.qwen_slot_count
   , `MlpCifar.qwen_within_module_limit
-  , `MlpCifar.qwen_bufs_within_regs
   , `MlpCifar.qwen_kernel_width_is_bounded
   , `MlpCifar.qwen_bufs_bound
-  , `MlpCifar.qwen_targets
-  , `MlpCifar.qwen_printable
-  , `MlpCifar.qwen_regs_ok
-  , `MlpCifar.qwen_ro_policies_differ
-  , `MlpCifar.regs_ok_rejects_the_scratch
   , `MlpCifar.moe_slot_count
   , `MlpCifar.moe_kernels_are_the_stages
   , `MlpCifar.moe_slots_are_bound
@@ -122,6 +102,9 @@ def roots : List Name :=
   , `MlpCifar.moe_alloc_covers
   , `MlpCifar.moe_bufs_within_regs
   , `MlpCifar.moe_kernels_ok
+  , `MlpCifar.cifar_runs
+  , `MlpCifar.qwen_runs
+  , `MlpCifar.moe_runs
   , `MlpCifar.moe_ptx_fits
   , `MlpCifar.moe_grids_are_the_stages
   , `MlpCifar.mHostIn_packed
@@ -164,26 +147,6 @@ def roots : List Name :=
   , `MlpCifar.accum_binds_then_sums
   , `MlpCifar.badNet_rejected
     -- the emitted PTX is well-formed, fits, and every kernel is launched
-  , `MlpCifar.mlp_targets_fwd1
-  , `MlpCifar.mlp_targets_h
-  , `MlpCifar.mlp_targets_fwd2
-  , `MlpCifar.mlp_targets_dw2
-  , `MlpCifar.mlp_targets_dh
-  , `MlpCifar.mlp_targets_adj
-  , `MlpCifar.mlp_targets_dw1
-  , `MlpCifar.mlp_targets_sgd1
-  , `MlpCifar.mlp_targets_sgd2
-  , `MlpCifar.mlp_targets_sm
-  , `MlpCifar.mlp_printable_fwd1
-  , `MlpCifar.mlp_printable_h
-  , `MlpCifar.mlp_printable_fwd2
-  , `MlpCifar.mlp_printable_dw2
-  , `MlpCifar.mlp_printable_dh
-  , `MlpCifar.mlp_printable_adj
-  , `MlpCifar.mlp_printable_dw1
-  , `MlpCifar.mlp_printable_sgd1
-  , `MlpCifar.mlp_printable_sgd2
-  , `MlpCifar.mlp_printable_sm
   , `MlpCifar.mlp_stage_eligible
   , `MlpCifar.mlpPtx_fits
   , `MlpCifar.mlpMap_ok
@@ -195,10 +158,6 @@ def roots : List Name :=
   , `MlpCifar.qwen_fuse_site
   , `MlpCifar.cifar_labels
   , `MlpCifar.k3_labels
-  , `MlpCifar.qwen_capture_records_the_run
-  , `MlpCifar.qwen_replay_denote
-  , `MlpCifar.qwen_replay_realises
-  , `MlpCifar.qwen_run_realises
   , `MlpCifar.asserted_schedule_is_the_model
   , `MlpCifar.firstToBlas_sound
   , `MlpCifar.mlp_geometry
@@ -212,10 +171,12 @@ end MlpScan
 
 /-- Claims that rest on the compiler, via `native_decide`. -/
 def nativeRoster : List Name :=
-  [ `MlpCifar.qwen_ro_policies_differ
-   , `MlpCifar.moe_ptx_fits
+  [ `MlpCifar.moe_ptx_fits
    , `MlpCifar.qwen_ptx_fits
-   , `MlpCifar.mlpPtx_fits ]
+   , `MlpCifar.mlpPtx_fits
+   , `MlpCifar.cifar_runs
+   , `MlpCifar.qwen_runs
+   , `MlpCifar.moe_runs ]
 
 open TrustScan MlpScan in
 #eval runScan "mlp-cifar" roots nativeRoster

@@ -106,11 +106,11 @@ def GPTX_OFF : Nat := 0x0100
 
     The expert kernels are emitted straight-line over a generation-time trip
     count, so their text grows with the rows a warp takes: `down` at four rows
-    is some eighty kilobytes of it. The slot is sized for the kernel rather
+    is some 145 kilobytes of it. The slot is sized for the kernel rather
     than the kernel trimmed to the slot -- four slots at this stride cost under
-    half a megabyte of artifact, which is nothing beside what the shape is
-    worth on the one path a token is spent in. -/
-def GSLOT : Nat := 0x20000
+    a megabyte of artifact, which is nothing beside what the shape is worth on
+    the one path a token is spent in. -/
+def GSLOT : Nat := 0x30000
 def gSlotOff (i : Nat) : Nat := GPTX_OFF + i * GSLOT
 /-- Each allocation's device pointer, in buffer order. -/
 def GBIND_OFF : Nat := gSlotOff gptossPtx.length
@@ -354,10 +354,10 @@ def CAP : Nat := CAP_SWA
 /-! ## PTX slots -/
 
 def aPtx : List String :=
-  [ ptxRmsNorm, ptxAdd, emitProvenKernelN "main" 3 0 ropeQEW
-  , emitProvenKernelN "main" 3 0 ropeKEW
-  , ptxKVStore QO HD, ptxKVStore KO HD
-  , ptxSinkSoftmax, GptOssKernels.moduleFor GptOssKernels.narrowBf16 ]
+  [ GptOssKernels.Body.moduleOf rmsKernel, GptOssKernels.Body.moduleOf addKernel, GptOssKernels.Body.moduleOf (ropeKernel 0)
+  , GptOssKernels.Body.moduleOf (ropeKernel QO)
+  , GptOssKernels.Body.moduleOf (kvStoreKernel QO HD), GptOssKernels.Body.moduleOf (kvStoreKernel KO HD)
+  , GptOssKernels.Body.moduleOf sinkKernel, GptOssKernels.Body.moduleOf GptOssKernels.Body.narrow ]
 
 def S_RMS : Nat := 0
 def S_ADD : Nat := 1
@@ -408,7 +408,7 @@ theorem gptoss_attn_alloc_covers :
 
 /-- Wider slots than the mixture's: RMSNorm over 2880 elements unrolls ninety
     strided steps twice over, and the emitted text is what that costs. -/
-def ASLOT : Nat := 0x20000
+def ASLOT : Nat := 0x30000
 def APTX_OFF : Nat := 0x0100
 def aSlotOff (i : Nat) : Nat := APTX_OFF + i * ASLOT
 /-- Each allocation's device pointer, in buffer order. -/
@@ -711,7 +711,7 @@ theorem gptoss_layer_alloc_covers :
 
 /-! ## Memory map -/
 
-def LSLOT : Nat := 0x20000
+def LSLOT : Nat := 0x30000
 def LPTX_OFF : Nat := 0x0100
 def lSlotOff (i : Nat) : Nat := LPTX_OFF + i * LSLOT
 /-- Each allocation's device pointer, in buffer order. -/

@@ -18,6 +18,9 @@ against (`Model/TenDenote`), so it must not be produced by it.
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- ---------------------------------------------------------------------------
 -- Ownership arithmetic, once
 -- ---------------------------------------------------------------------------
@@ -74,7 +77,7 @@ theorem seg_own_iff (n off w g a : Nat) (hw : off + w ≤ n) :
 /-- The committed row-times-row reduction: a `K`-trip strided accumulation in
     each lane, folded by the butterfly.  This is the number a matvec puts at
     one output element. -/
-def rowDot (A B : Nat → Float32) (fA fB : Nat → Nat) (K : Nat) : Float32 :=
+def rowDot (A B : Nat → R) (fA fB : Nat → Nat) (K : Nat) : R :=
   bflyFold (dotStridedLane A B
     (fun i l => fA (i * 32 + l.val)) (fun i l => fB (i * 32 + l.val)) K)
     ⟨0, by decide⟩
@@ -87,7 +90,7 @@ open Classical in
     and the values are the committed folds.  No stage is mentioned: this is
     the statement the lowering is *checked against*, so it must not be
     produced by it. -/
-noncomputable def TOp.den (op : TOp) (m : Buf → Nat → Float32) : Buf → Nat → Float32 :=
+noncomputable def TOp.den (op : TOp) (m : Buf → Nat → R) : Buf → Nat → R :=
   match op with
   | .mv _ w x o b inW outW _ => fun b' a =>
       if b' = o ∧ a < b * outW then
@@ -141,7 +144,7 @@ noncomputable def TOp.den (op : TOp) (m : Buf → Nat → Float32) : Buf → Nat
       if b' = o ∧ a < rows then
         bflyFoldOp (fun p q => NumOps.max p q)
           (maxStridedLane (m x)
-            (fun t l => (stride32 (.mul .ctaId (.lit n))).eval a t l) (n / 32) init)
+            (fun t l => (stride32 (.mul .ctaId (.lit n))).eval a t l) (n / 32) (NumLit.lit init))
           ⟨0, by decide⟩
       else m b' a
   | .rowdot i j o mA mB n rows => fun b' a =>
@@ -175,5 +178,7 @@ noncomputable def TOp.den (op : TOp) (m : Buf → Nat → Float32) : Buf → Nat
       else m b' a
 
 
+
+end Carrier
 
 end AlgorithmLib.ML

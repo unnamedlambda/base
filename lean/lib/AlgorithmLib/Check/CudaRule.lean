@@ -64,16 +64,25 @@ def textOf (S : TState) (a : UInt64) : Option String :=
   S.findSome? fun | .text a' (some t) _ _ => if a' == a then some t else none | _ => none
 
 /-- The entry points loaded module `i` declares, as the typestate has them. -/
-def modOf (S : TState) (i : Nat) : Option (List (String × List Nat)) :=
+def modOf (S : TState) (i : Nat) : Option (List (String × List Nat × List Bool)) :=
   S.findSome? fun | .mod i' sg => if i' == i then some sg else none | _ => none
 
-/-- The entry points the typestate says the C string at `a` declares. -/
-def sigsOf (S : TState) (a : UInt64) : Option (List (String × List Nat)) :=
-  S.findSome? fun | .text a' _ _ sg => if a' == a then some sg else none | _ => none
+/-- What the typestate says of the C string at `a`: the string, where it
+    names it, and the entry points it declares. -/
+def sigsOf (S : TState) (a : UInt64) : Option (Option String × List (String × List Nat × List Bool)) :=
+  S.findSome? fun | .text a' t _ sg => if a' == a then some (t, sg) else none | _ => none
+
+/-- The text loaded module `i` holds, as the typestate has it. -/
+def modTextOf (S : TState) (i : Nat) : Option String :=
+  S.findSome? fun | .modText i' t => if i' == i then some t else none | _ => none
 
 /-- The parameter sizes of function `i`, as the typestate has them. -/
 def fnOf (S : TState) (i : Nat) : Option (List Nat) :=
-  S.findSome? fun | .fn i' sz => if i' == i then some sz else none | _ => none
+  S.findSome? fun | .fn i' sz _ => if i' == i then some sz else none | _ => none
+
+/-- Which parameters function `i` writes, as the typestate has them. -/
+def fnWritesOf (S : TState) (i : Nat) : Option (List Bool) :=
+  S.findSome? fun | .fn i' _ fl => if i' == i then some fl else none | _ => none
 
 /-- The eight bytes the typestate says memory holds at `a`. -/
 def cellOf (S : TState) (a : UInt64) : Option UInt64 :=
@@ -190,14 +199,27 @@ def allocAt? (S : TState) (x : UInt64) : Option (Option Nat) :=
           | some k => if k ≤ id then some none else none
           | none => none
 
+/-- The allocation each parameter of a launch through the array at `params`
+    points into, where the typestate knows each parameter's eight bytes:
+    `none` for one pointing into none. -/
+def launchOs (S : TState) (params : UInt64) (sizes : List Nat) : Option (List (Option Nat)) :=
+  sizes.zipIdx.mapM fun (sz, i) => do
+    let a ← cellOf S (params + UInt64.ofNat (8 * i))
+    if sz == 8 then allocAt? S (← cellOf S a) else none
+
 /-- The allocations a launch through the array at `params` binds, where the
     typestate knows each parameter's eight bytes: the allocations they point
     into, each once. -/
 def launchIds (S : TState) (params : UInt64) (sizes : List Nat) : Option (List Nat) := do
-  let os ← sizes.zipIdx.mapM fun (sz, i) => do
-    let a ← cellOf S (params + UInt64.ofNat (8 * i))
-    if sz == 8 then allocAt? S (← cellOf S a) else none
+  let os ← launchOs S params sizes
   some (os.filterMap id).eraseDups
+
+/-- The allocations such a launch writes: those the parameters `writes`
+    flags point into (a missing flag is written), each once. -/
+def launchWrites (S : TState) (params : UInt64) (sizes : List Nat) (writes : List Bool) :
+    Option (List Nat) := do
+  let os ← launchOs S params sizes
+  some (os.zipIdx.filterMap fun (o, i) => if writes.getD i true then o else none).eraseDups
 
 /-- The instantiated graph a handle names, where the typestate holds it live. -/
 def execOf (S : TState) (h : UInt64) : Option Nat :=
@@ -243,15 +265,17 @@ def cudaRow (S : TState) : CudaFn → List AV → Option (TState × AV)
           else none
       | _, _ => none
   | .memcpyHtoD, [_, src, n] =>
+      -- the host waits for the copy, after the default stream's knowing of
+      -- every access: so after it, the host does
       if cudaBase S && S.contains (.part .cuda true) && readyIn S defaultParty && memB S src n then
-        some (S.filter raceKeeps, cuOk)
+        some (S.filter raceKeeps ++ [.readyAll hostParty], cuOk)
       else none
   | .memcpyDtoH, [dst, _, n] =>
       if cudaBase S && S.contains (.part .cuda true) && readyIn S defaultParty && memB S dst n then
         -- where the length is not known, every fact about memory's contents goes
         some ((match n.bits with
           | some k => afterCopy dst.bits k.toNat S
-          | none => afterCopy none 0 S).filter raceKeeps, cuOk)
+          | none => afterCopy none 0 S).filter raceKeeps ++ [.readyAll hostParty], cuOk)
       else none
   | .memsetD8, [dst, _, n] =>
       match dst.bits, n.bits with
@@ -261,7 +285,7 @@ def cudaRow (S : TState) : CudaFn → List AV → Option (TState × AV)
           else none
       | _, _ => none
   | .ctxSynchronize, [] =>
-      if cudaBase S && S.contains (.part .cuda true) && S.contains .devSeq then
+      if cudaBase S && S.contains (.part .cuda true) then
         some (S.filter raceKeeps, cuOk)
       else none
   | .memFree, [p] =>
@@ -281,9 +305,9 @@ def cudaRow (S : TState) : CudaFn → List AV → Option (TState × AV)
       else none
   | .moduleLoadData, [p, img] =>
       match nmodsOf S, img.bits.bind (sigsOf S) with
-      | some k, some sg =>
+      | some k, some (t, sg) =>
           if cudaBase S && S.contains (.part .cuda true) && memN S p 8 then
-            some (.nmods (k + 1) :: .mod k sg ::
+            some (.nmods (k + 1) :: .mod k sg :: (t.map (.modText k)).toList ++
               (afterStore p.bits (some (drvHandle kModule k)) 8 S).filter (fun | .nmods _ => false | _ => true), cuOk)
           else none
       | _, _ => none
@@ -291,9 +315,9 @@ def cudaRow (S : TState) : CudaFn → List AV → Option (TState × AV)
       match nfuncsOf S, hm.bits.bind (handleOf kModule), pn.bits.bind (textOf S) with
       | some k, some mi, some name =>
           match (modOf S mi).bind (·.lookup name) with
-          | some sizes =>
+          | some (sizes, fl) =>
               if cudaBase S && S.contains (.part .cuda true) && memN S p 8 then
-                some (.nfuncs (k + 1) :: .fn k sizes ::
+                some (.nfuncs (k + 1) :: .fn k sizes fl :: ((modTextOf S mi).map (.fnText k · name)).toList ++
                   (afterStore p.bits (some (drvHandle kFunc k)) 8 S).filter (fun | .nfuncs _ => false | _ => true), cuOk)
               else none
           | none => none
@@ -310,14 +334,14 @@ def cudaRow (S : TState) : CudaFn → List AV → Option (TState × AV)
               -- against what the capture has recorded
               else if capBase S && S.contains (.part .cuda true) && S.contains .oracles &&
                   ex.bits == some 0 && argsReadable S P sizes then
-                match capOf S, launchIds S P sizes with
-                | some (cq, j, r, evs), some ids =>
+                match capOf S, launchIds S P sizes, (fnWritesOf S fi).bind (launchWrites S P sizes) with
+                | some (cq, j, r, evs), some ids, some ws =>
                     if capIn cq j q then
-                      match r.op q [] ids with
+                      match r.op q ids ws with
                       | some r' => some (withCap S cq j r' evs, cuOk)
                       | none => none
                     else none
-                | _, _ => none
+                | _, _, _ => none
               else none
           | _, _ => none
       | _, _ => none

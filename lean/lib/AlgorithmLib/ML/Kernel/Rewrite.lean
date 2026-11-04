@@ -95,6 +95,21 @@ opaque cublasSgemvResult (rows cols : Nat) (a : Fin rows → Fin cols → Float3
 def laneSum (v : Lane → Float32) : Float32 :=
   (List.finRange W).foldl (fun a l => NumOps.add a (v l)) (NumOps.ofNat 0)
 
+/-- `log₂ e`, the constant a body folds in to realise `exp` on hardware that
+    has only `ex2` (`F32`'s `exp` is `ex2` of `x · log₂ e`). -/
+def log2eF : Float32 := 1.4426950408889634
+
+/-- **`exp` is `ex2` of `x · log₂ e`.**
+
+    PTX has no `e^x` instruction, so `exp` is realised as `2^(x·log₂e)`.  This
+    proposition is *false* for IEEE floats — `ex2.approx` is documented at 2 ULP
+    and the f32 constant is not `log₂ e` exactly — which is exactly why it is a
+    named hypothesis and not a lemma.  At `F32` a body's `exp` is that rewrite
+    by definition, so it relates a spec stated over `Float32` to what a body
+    computes.  Measured cost on silu: max relative error 5.06e-7. -/
+def ExpIsEx2 : Prop :=
+  ∀ x : Float32, NumOps.exp x = NumOps.ex2 (NumOps.mul x log2eF)
+
 /-- **What relating the butterfly to a sequential sum would cost.**
 
     Not a theorem — a *proposition*, false for `Float32`, and the exact price of

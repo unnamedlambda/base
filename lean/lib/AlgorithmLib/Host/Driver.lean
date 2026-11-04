@@ -197,6 +197,13 @@ def launchWords (d : Dev) (m : Mem) (hf params : UInt64) : Option (List UInt64) 
   let ptx ← (d.modules[mi]?).join
   kernelArgs m params (← ptxParamSizes ptx entry)
 
+/-- The allocations a launch with parameter values `args` writes: those its
+    parameters point into, of the parameters `flags` marks written, each
+    once; every parameter, where `flags` says nothing of it. -/
+def Dev.writesOf (d : Dev) (flags : Option (List Bool)) (args : List UInt64) : List Nat :=
+  (args.zipIdx.filterMap fun (a, i) =>
+    if ((flags.bind (·[i]?)).getD true) then (d.range? a 0).map (·.1) else none).eraseDups
+
 /-- Every party the device has a clock for, waited for by the host. -/
 def Race.syncAll (r : Race) : Race :=
   (List.range r.clocks.size).foldl (fun r p => r.sync p) r
@@ -364,10 +371,11 @@ def cudaStep (f : CudaFn) (bits : List UInt64) (w : World) : Option (Option V ×
         let _ := shmem
         let sizes ← ptxParamSizes ptx entry
         let args ← kernelArgs w.mem params sizes
-        -- A parameter that points into a live allocation binds it.
+        -- A parameter that points into a live allocation binds it; the
+        -- kernel writes the ones bound by parameters it stores through.
         let ids := (args.filterMap fun a => (d.range? a 0).map (·.1)).eraseDups
-        let l : Launch := ⟨ptx, entry, ids, dims, args⟩
-        devOnly w (do cuRes (← d.devOp w p (.launch l ids) [] ids) cuSuccess)
+        let l : Launch := ⟨ptx, entry, ids, dims, args, d.writesOf (d.kernelWrites ptx entry) args⟩
+        devOnly w (do cuRes (← d.devOp w p (.launch l ids) ids l.writes) cuSuccess)
     | _ => none
   | .streamCreate => match bits with
     | [pstream, flags] =>

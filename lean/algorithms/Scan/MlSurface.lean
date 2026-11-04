@@ -86,19 +86,41 @@ def allowedOpaque : List Name :=
     * `Honours` — that a realisation performs each declared vendor step as
       its law says: what a plan's `run` rests on for the steps it does not
       prove.
+    * `Honest`, `KeepsSize` — that the device runs a launch as the machine
+      it is stated against says (for a ViT group, its statement kernel), and
+      that its kernels keep the sizes of the buffers they write: the GPU end
+      of the trusted base (the ledger's PTX-text and hardware rows), named in
+      the type of every claim made through the driver.
+    * `VendorGemmHonest`, `VendorKeeps` — that the device's vendor answers a
+      product as the vendor's GEMM (`cublasSgemmResult`) of its operands, and
+      keeps its output's size: the vendor's counterparts of `Honest` and
+      `KeepsSize`, named in the type of every claim about a product the
+      device runs.
+    * `TOp.Frame` — that a meaning of the operations a claim quantifies over
+      writes only each operation's output and reads only its inputs: the
+      claim's scope, which every meaning it is applied to (the denotations,
+      one reading contractions as a vendor computes them) must be shown to
+      keep, not an assumption about the world.
     * `LT.lt`, `Eq`, `Nat.le`, `Not` — index side-conditions (`i < D`, and
       `¬ (a < …)` selecting RoPE's upper half), not assumptions about the
       world.  `Not` is here for `rope_hi_is_spec`, whose upper-half selector
       carries one.
     * `Membership.mem` — a claim stated for every member of a shipped list
       carries `u ∈ theList` as its *scope*, not as an assumption: it says which
-      kernels the theorem is about.  `Vit.vit_ptx_exact` is stated this way
+      kernels the theorem is about.  `Vit.vit_body` is stated this way
       because it holds of each emitted group and there is no single group to
-      name. -/
+      name.
+    * `LaunchRuns`, `TapeLayout.LaunchRuns` — a claim about what a launch leaves
+      carries a run of the launch as its scope: it says which result the
+      theorem is about, and holds of every run. That a run exists is not
+      claimed by it. -/
 def allowedHyp : List Name :=
   [ `AlgorithmLib.ML.AllHold, `AlgorithmLib.ML.CuBlasIsMatvec,
     `AlgorithmLib.ML.CuBlasIsSomeReassoc,
     `AlgorithmLib.ML.Honours,
+    `AlgorithmLib.HProg.Contracts.Honest, `AlgorithmLib.HProg.Sem.KeepsSize, `AlgorithmLib.ML.TOp.Frame,
+    `AlgorithmLib.ML.VendorGemmHonest, `AlgorithmLib.HProg.Contracts.VendorKeeps,
+    `AlgorithmLib.Kernel.LaunchRuns, `AlgorithmLib.ML.TapeLayout.LaunchRuns,
     `LT.lt, `LE.le, `Eq, `Ne, `Nat.lt, `Nat.le, `Not, `Membership.mem ]
 
 /-- **Obligations *derived* from the declared surface**, each paired with the

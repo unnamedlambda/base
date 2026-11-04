@@ -19,7 +19,8 @@ import all Init.Data.List.Sort.Basic
   kernel written here can both be proven (via `elabAt`, which expands it into
   the proven machine language) and compiled.
 
-  The lowering to PTX is not in this file: see `PtxM`/`PtxFlat`/`PtxPrint`.
+  The lowering to PTX is not in this file: `ML.Ptx.Body` emits a statement's
+  body kernel, and `BodyWarp`/`BodyCheck` prove what launching it does.
 -/
 
 namespace AlgorithmLib.ML
@@ -52,8 +53,8 @@ inductive EWStmt where
   | stSm       : IdxE → Nat → EWStmt
   /-- `ld.shared.f32` — read a slot back, possibly one another warp wrote. -/
   | ldSm       : Nat → IdxE → EWStmt
-  /-- `bar.sync` — a no-op within a warp, and the synchronisation point a block
-      reduction is proven against (`Block.blockStore_perm`). -/
+  /-- `bar.sync` — a no-op within a warp, and the synchronisation point of a
+      block's shared memory. -/
   | barrier    : EWStmt
   | forN       : Nat → EWStmt → EWStmt
   /-- A loop whose trip count is read from integer memory at a fixed address —
@@ -95,18 +96,12 @@ def EWStmt.expand (s : EWStmt) : WStmt := s.elabAt 0 0
 
 /-! ## Lowering
 
-    An `EWStmt` reaches PTX through three proven passes:
+    An `EWStmt` reaches PTX as its body kernel (`Body.kernel`, printed by
+    `Kernel.Ptx`), and launching that kernel runs the statement on the warp
+    machine (`BodyWarp.launch_lockstep`, decided per launch by
+    `BodyCheck.launch_body`). -/
 
-    * `PtxM.lean`     — `emitEW`, proven against the warp machine
-    * `PtxFlat.lean`  — `flatEW`, proven against a program-counter machine with
-                        real branches
-    * `PtxPrint.lean` — `emitProvenKernel`, the text encoding
-
-    The three shipped kernels are emitted by `emitProvenKernel`. -/
-
-/-- Addresses only: no data-dependent index anywhere.  `ExpFree` implies this;
-    it is separate so that `expandEW`, which rewrites `exp` but never touches an
-    address, can state exactly what it preserves. -/
+/-- Addresses only: no data-dependent index anywhere. -/
 def EWStmt.IdxFree : EWStmt → Prop
   | .skip => True
   | .seq a b => a.IdxFree ∧ b.IdxFree
@@ -227,46 +222,6 @@ instance EWStmt.decIdxBelow (n : Nat) : ∀ s : EWStmt, Decidable (s.IdxBelow n)
   | .forN _ body => decIdxBelow n body
   | .forM _ _ body => decIdxBelow n body
   | .cvtIF _ ix => IdxE.decRegsBelow n ix
-
-/-- Statements the **branch** lowering covers.
-
-    Both loop forms are covered.  `forM`'s memory-bounded shape is seven
-    instructions rather than five — `mov` the address, `ld.global.u32` the
-    bound, then the familiar init/test/exit/body/increment/back-edge — and
-    `flatEW_sound` proves that shape at the shifted offsets.  The predicate
-    is a `Decidable` gate on the *leaves* being emittable, not a restriction
-    on loops. -/
-def EWStmt.Flat : EWStmt → Prop
-  | .skip => True
-  | .seq a b => a.Flat ∧ b.Flat
-  | .setR _ _ => True
-  | .shflXor _ _ _ => True
-  | .loadIdx _ _ _ => True
-  | .loadV4 _ _ _ _ _ _ => True
-  | .storeLane0 _ _ _ => True
-  | .storeLane _ _ _ => True
-  | .stSm _ _ => True
-  | .ldSm _ _ => True
-  | .barrier => True
-  | .forN _ body => body.Flat
-  | .forM _ _ body => body.Flat
-  | .cvtIF _ _ => True
-
-instance EWStmt.decFlat : ∀ s : EWStmt, Decidable s.Flat
-  | .skip => .isTrue trivial
-  | .seq a b => @instDecidableAnd _ _ (decFlat a) (decFlat b)
-  | .setR _ _ => .isTrue trivial
-  | .shflXor _ _ _ => .isTrue trivial
-  | .loadIdx _ _ _ => .isTrue trivial
-  | .loadV4 _ _ _ _ _ _ => .isTrue trivial
-  | .storeLane0 _ _ _ => .isTrue trivial
-  | .storeLane _ _ _ => .isTrue trivial
-  | .stSm _ _ => .isTrue trivial
-  | .ldSm _ _ => .isTrue trivial
-  | .barrier => .isTrue trivial
-  | .forN _ body => decFlat body
-  | .forM _ _ body => decFlat body
-  | .cvtIF _ _ => .isTrue trivial
 
 theorem IdxE.regsBelow_of_iregFree (n : Nat) : ∀ e : IdxE, e.IregFree → e.regsBelow n := by
   intro e

@@ -41,7 +41,7 @@ theorem prep_no_misuse (cfg : Cfg) (dataLen outLen n : UInt64) (w : World)
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaPipeline.prepCode 2 : Prog Slot Lvl Unit)) ≠ .fault m := by
   check_body
   -- the inputs' bytes are the allocation's
-  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  have hp : devPtrOf 481036337152 = some (1, 0) := by decide
   intro _
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
     Check.PExpr.eval, Check.PArg.bits, hp]
@@ -56,9 +56,9 @@ theorem infer_no_misuse (cfg : Cfg) (dataLen outLen n : UInt64) (w : World)
   -- the output's bytes, no more than one input's, lie in the second input
   intro hc
   simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
-  have hp : devPtrOf (4503668346847232 + n * 4) = some (1, (n * 4).toNat) := by
+  have hp : devPtrOf (481036337152 + n * 4) = some (1, (n * 4).toNat) := by
     unfold devPtrOf
-    have : (4503668346847232 + n * 4).toNat = 4503668346847232 + n.toNat * 4 := by
+    have : (481036337152 + n * 4).toNat = 481036337152 + n.toNat * 4 := by
       simp [UInt64.toNat_add, UInt64.toNat_mul]; omega
     rw [this]
     simp only [UInt64.toNat_mul]

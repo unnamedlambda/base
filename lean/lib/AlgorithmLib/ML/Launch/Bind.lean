@@ -9,7 +9,7 @@ import all Init.Data.List.Sort.Basic
   # Buffer binding: from kernel-local slots to the pipeline's buffers
 
   A `StageSpec` describes a kernel over the buffers *the kernel names* — `0`,
-  `1`, `2`, the parameters `emitProvenKernelN` declares.  Those numbers are
+  `1`, `2`, the parameters its body kernel declares.  Those numbers are
   local: RMSNorm writes its buffer `2` and so does the SiLU gate, and they are
   not the same memory.  Composing two stages into a `Pipeline` therefore could
   not be done at all, however many kernels had stages — which is exactly where
@@ -37,6 +37,9 @@ import all Init.Data.List.Sort.Basic
 -/
 
 namespace AlgorithmLib.ML
+
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
 
 /-- Distinct slots bind to distinct buffers.  Spelled out rather than taken
     from `Function.Injective` so this file needs no import. -/
@@ -104,19 +107,19 @@ theorem EWStmt.wbufs_renameBuf (f : Buf → Buf) :
 
 /-- `pull f st` is what the kernel sees: its slot `b` is the global buffer
     `f b`.  Registers and shared memory are per-warp and unaffected by a bind. -/
-def WSt.pull (f : Buf → Buf) (st : WSt) : WSt :=
+def WSt.pull (f : Buf → Buf) (st : WSt R) : WSt R :=
   { st with mem := fun b => st.mem (f b) }
 
-@[simp] theorem WSt.pull_mem (f : Buf → Buf) (st : WSt) (b : Buf) :
+@[simp] theorem WSt.pull_mem (f : Buf → Buf) (st : WSt R) (b : Buf) :
     (WSt.pull f st).mem b = st.mem (f b) := rfl
-@[simp] theorem WSt.pull_regs (f : Buf → Buf) (st : WSt) : (WSt.pull f st).regs = st.regs := rfl
-@[simp] theorem WSt.pull_smem (f : Buf → Buf) (st : WSt) : (WSt.pull f st).smem = st.smem := rfl
+@[simp] theorem WSt.pull_regs (f : Buf → Buf) (st : WSt R) : (WSt.pull f st).regs = st.regs := rfl
+@[simp] theorem WSt.pull_smem (f : Buf → Buf) (st : WSt R) : (WSt.pull f st).smem = st.smem := rfl
 
-theorem WSt.pull_setReg (f : Buf → Buf) (st : WSt) (r : Nat) (g : Lane → Float32) :
+theorem WSt.pull_setReg (f : Buf → Buf) (st : WSt R) (r : Nat) (g : Lane → R) :
     WSt.pull f (st.setReg r g) = (WSt.pull f st).setReg r g := rfl
 
 /-- A float expression reads registers only, and a bind does not touch those. -/
-theorem WFExp.eval_pull (f : Buf → Buf) (st : WSt) (l : Lane) :
+theorem WFExp.eval_pull (f : Buf → Buf) (st : WSt R) (l : Lane) :
     ∀ e : WFExp, e.eval (WSt.pull f st) l = e.eval st l := by
   intro e
   induction e with
@@ -135,8 +138,8 @@ theorem WFExp.eval_pull (f : Buf → Buf) (st : WSt) (l : Lane) :
 /-- The key commutation: a global store to `f b`, viewed locally, is a local
     store to `b`.  Injectivity is what stops a store to one slot showing up in
     another. -/
-theorem WSt.pull_store1 {f : Buf → Buf} (hf : BufInj f) (st : WSt) (b : Buf)
-    (a : Nat) (v : Float32) :
+theorem WSt.pull_store1 {f : Buf → Buf} (hf : BufInj f) (st : WSt R) (b : Buf)
+    (a : Nat) (v : R) :
     WSt.pull f (st.store1 (f b) a v) = (WSt.pull f st).store1 b a v := by
   refine WSt.ext rfl ?_ rfl
   funext c j
@@ -148,8 +151,8 @@ theorem WSt.pull_store1 {f : Buf → Buf} (hf : BufInj f) (st : WSt) (b : Buf)
 
 /-- …and therefore for the whole per-lane store fold. -/
 theorem pull_storeFold {f : Buf → Buf} (hf : BufInj f) (b : Buf) (ix : Lane → Nat)
-    (v : Lane → Float32) :
-    ∀ (L : List Lane) (st : WSt),
+    (v : Lane → R) :
+    ∀ (L : List Lane) (st : WSt R),
       WSt.pull f (L.foldl (fun s l => s.store1 (f b) (ix l) (v l)) st)
         = L.foldl (fun s l => s.store1 b (ix l) (v l)) (WSt.pull f st) := by
   intro L
@@ -167,8 +170,8 @@ theorem pull_storeFold {f : Buf → Buf} (hf : BufInj f) (b : Buf) (ix : Lane �
 
 /-- Loops: the body commutes at every iteration, so the fold does. -/
 theorem pull_forN (f : Buf → Buf) (g g' : Nat → WStmt)
-    (h : ∀ j (st : WSt), WSt.pull f ((g' j).run st) = (g j).run (WSt.pull f st)) :
-    ∀ (n : Nat) (st : WSt),
+    (h : ∀ j (st : WSt R), WSt.pull f ((g' j).run st) = (g j).run (WSt.pull f st)) :
+    ∀ (n : Nat) (st : WSt R),
       WSt.pull f ((WStmt.forN n g').run st) = (WStmt.forN n g).run (WSt.pull f st) := by
   intro n
   induction n with
@@ -194,7 +197,7 @@ theorem pull_forN (f : Buf → Buf) (g g' : Nat → WStmt)
     different kernel. -/
 theorem EWStmt.run_renameBuf {f : Buf → Buf} (hf : BufInj f) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
-    ∀ (s : EWStmt) (i : Nat) (st : WSt),
+    ∀ (s : EWStmt) (i : Nat) (st : WSt R),
       WSt.pull f (((s.renameBuf f).elabAt cta i ir im).run st)
         = (s.elabAt cta i ir (fun b => im (f b))).run (WSt.pull f st) := by
   intro s
@@ -275,7 +278,7 @@ theorem EWStmt.run_renameBuf {f : Buf → Buf} (hf : BufInj f) (cta : Nat)
 /-- The read-back form: a global buffer in the image of the bind holds what the
     local stage put in the corresponding slot. -/
 theorem EWStmt.run_renameBuf_at {f : Buf → Buf} (hf : BufInj f) (cta : Nat)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (s : EWStmt) (i : Nat) (st : WSt)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (s : EWStmt) (i : Nat) (st : WSt R)
     (b : Buf) (a : Nat) :
     (((s.renameBuf f).elabAt cta i ir im).run st).mem (f b) a
       = ((s.elabAt cta i ir (fun c => im (f c))).run (WSt.pull f st)).mem b a := by
@@ -408,8 +411,8 @@ open Classical in
     against.  Without it a bind could move the float buffers and leave the meta
     buffer pointing elsewhere, and the stage would describe a launch that reads
     its sequence length from the wrong place. -/
-def StageSpec.rename (S : StageSpec) (f : Buf → Buf) (hf : BufInj f)
-    (gim : Buf → Nat → Nat) (him : ∀ b ∈ S.ew.ibufs, gim (f b) = S.imem b) : StageSpec where
+def StageSpec.rename (S : (StageSpec R)) (f : Buf → Buf) (hf : BufInj f)
+    (gim : Buf → Nat → Nat) (him : ∀ b ∈ S.ew.ibufs, gim (f b) = S.imem b) : (StageSpec R) where
   ew    := S.ew.renameBuf f
   iregs := S.iregs
   imem  := gim
@@ -447,23 +450,23 @@ def StageSpec.rename (S : StageSpec) (f : Buf → Buf) (hf : BufInj f)
     exact S.valOnly (fun c => m (f c)) (fun c => m' (f c)) cta a hdom
       (fun c hc => hb (f c) (hf.ne hc)) hout
 
-@[simp] theorem StageSpec.rename_grid (S : StageSpec) (f hf gim him) :
+@[simp] theorem StageSpec.rename_grid (S : (StageSpec R)) (f hf gim him) :
     (S.rename f hf gim him).grid = S.grid := rfl
-@[simp] theorem StageSpec.rename_dom (S : StageSpec) (f hf gim him) :
+@[simp] theorem StageSpec.rename_dom (S : (StageSpec R)) (f hf gim him) :
     (S.rename f hf gim him).dom = S.dom := rfl
-@[simp] theorem StageSpec.rename_out (S : StageSpec) (f : Buf → Buf) (hf gim him) :
+@[simp] theorem StageSpec.rename_out (S : (StageSpec R)) (f : Buf → Buf) (hf gim him) :
     (S.rename f hf gim him).out = f S.out := rfl
 
 /-- Binding does not disturb ownership: `dom` and `grid` are carried across
     unchanged, so a stage that was exclusive stays exclusive. -/
-theorem StageSpec.rename_exclusive (S : StageSpec) (f : Buf → Buf) (hf : BufInj f)
+theorem StageSpec.rename_exclusive (S : (StageSpec R)) (f : Buf → Buf) (hf : BufInj f)
     (gim : Buf → Nat → Nat) (him : ∀ b ∈ S.ew.ibufs, gim (f b) = S.imem b)
     (hex : S.Exclusive) :
     (S.rename f hf gim him).Exclusive := hex
 
 /-- **The bind that does nothing** — a sanity instantiation, so `rename` cannot
     be vacuously true of a `f` no launch could use. -/
-theorem rename_id (S : StageSpec) (him : ∀ b ∈ S.ew.ibufs, S.imem b = S.imem b) :
+theorem rename_id (S : (StageSpec R)) (him : ∀ b ∈ S.ew.ibufs, S.imem b = S.imem b) :
     (S.rename id (fun _ _ h => h) S.imem him).out = S.out := rfl
 
 -- ---------------------------------------------------------------------------
@@ -471,7 +474,7 @@ theorem rename_id (S : StageSpec) (him : ∀ b ∈ S.ew.ibufs, S.imem b = S.imem
 -- ---------------------------------------------------------------------------
 
 /-- **A three-slot bind.**  The kernel's `%rd0/%rd1/%rd2` — the parameters
-    `emitProvenKernelN "main" 3` declares — become model buffers `a`, `b`, `c`.
+    a three-buffer body kernel declares — become model buffers `a`, `b`, `c`.
 
     Slots the kernel does not have are sent past `1000`, which is not padding:
     `run_renameBuf` needs the map injective on *all* of `Buf`, because `pull` is
@@ -534,5 +537,7 @@ theorem bind3_inj {a b c : Buf} (ha : a < 1000) (hb : b < 1000) (hc : c < 1000)
             · rw [hy2, bind3_2] at h; exact (bind3_far hc h.symm).elim
             · rw [bind3_val a b c y hy0 hy1 hy2] at h; exact Nat.add_right_cancel h
 
+
+end Carrier
 
 end AlgorithmLib.ML

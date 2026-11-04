@@ -259,9 +259,9 @@ def storeVarPresent (ptr idx value : V .i64) : Prog V L Unit :=
     own module. -/
 def app : Drv.App :=
   { bufs := [8, 8, 8, 8, 2048, 2048, 2048, 16, 26 * 2048],
-    kernels := [⟨f.ptx.offset, 512, [0, 1, 2], (1, 1, 1), (1, 1, 1)⟩,
-                ⟨f.arrayScalePtx.offset, 1536, [4, 7, 6], (1, 1, 1), (1, 1, 1)⟩,
-                ⟨f.arrayAddPtx.offset, 1536, [4, 5, 7, 6], (1, 1, 1), (1, 1, 1)⟩],
+    kernels := [⟨f.ptx.offset, 512, [0, 1, 2], (1, 1, 1), (1, 1, 1), []⟩,
+                ⟨f.arrayScalePtx.offset, 1536, [4, 7, 6], (1, 1, 1), (1, 1, 1), []⟩,
+                ⟨f.arrayAddPtx.offset, 1536, [4, 5, 7, 6], (1, 1, 1), (1, 1, 1), []⟩],
     memSize := layoutMeta.totalSize, org := f.drv.offset }
 
 def ZERO_BUF : Nat := 0

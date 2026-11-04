@@ -32,6 +32,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- ---------------------------------------------------------------------------
 -- One elementwise pass, re-chunked by row
 -- ---------------------------------------------------------------------------
@@ -69,9 +72,9 @@ theorem rowGuard_iff (w rows g a : Nat) (hw : 0 < w) (hg : rows * w = g * 32) :
     omega
 
 /-- **A two-operand elementwise pass is a row pass over the same addresses.** -/
-theorem TOp.ew2_as_ziprow (f : Expr 2) (x y o : Ref) (rows w g : Nat)
+theorem TOp.ew2_as_ziprow [LitNat R] (f : Expr 2) (x y o : Ref) (rows w g : Nat)
     (hw : 0 < w) (hg : rows * w = g * 32) (hl : f.laneable = true)
-    (m : Buf -> Nat -> Float32) :
+    (m : Buf -> Nat -> R) :
     (TOp.ziprow x y o f.toWF (.rowOf w 0) (.rowOf w 0) w 0 w rows).den m
       = (TOp.ew2 f x y o g).den m := by
   funext b' a
@@ -91,9 +94,9 @@ theorem TOp.ew2_as_ziprow (f : Expr 2) (x y o : Ref) (rows w g : Nat)
   · rw [if_neg (fun k => hb k.1), if_neg (fun k => hb k.1)]
 
 /-- **A three-operand elementwise pass is a three-operand row pass.** -/
-theorem TOp.ew3_as_ziprow3 (f : Expr 3) (x y z o : Ref) (rows w g : Nat)
+theorem TOp.ew3_as_ziprow3 [LitNat R] (f : Expr 3) (x y z o : Ref) (rows w g : Nat)
     (hw : 0 < w) (hg : rows * w = g * 32) (hl : f.laneable = true)
-    (m : Buf -> Nat -> Float32) :
+    (m : Buf -> Nat -> R) :
     (TOp.ziprow3 x y z o f.toWF (.rowOf w 0) (.rowOf w 0) (.rowOf w 0)
         w 0 w rows).den m
       = (TOp.ew3 f x y z o g).den m := by
@@ -117,9 +120,9 @@ theorem TOp.ew3_as_ziprow3 (f : Expr 3) (x y z o : Ref) (rows w g : Nat)
 
 
 /-- **A one-operand elementwise pass is a row pass reading one buffer twice.** -/
-theorem TOp.ew1_as_ziprow (f : Expr 1) (x o : Ref) (rows w g : Nat)
+theorem TOp.ew1_as_ziprow [LitNat R] (f : Expr 1) (x o : Ref) (rows w g : Nat)
     (hw : 0 < w) (hg : rows * w = g * 32) (hl : f.laneable = true)
-    (m : Buf -> Nat -> Float32) :
+    (m : Buf -> Nat -> R) :
     (TOp.ziprow x x o f.toWF (.rowOf w 0) (.rowOf w 0) w 0 w rows).den m
       = (TOp.ew1 f x o g).den m := by
   funext b' a
@@ -154,7 +157,7 @@ theorem TOp.ew1_as_ziprow (f : Expr 1) (x o : Ref) (rows w g : Nat)
 theorem ziprow_shift_den
     (i i' j o : Ref) (f : WFExp) (mA mA' mB : BCast) (n off w rows d : Nat)
     (hs : mA.shift d = some mA')
-    (m m' : Buf → Nat → Float32)
+    (m m' : Buf → Nat → R)
     (hA : ∀ a, m' i' (a + d) = m i a)
     (hB : ∀ a, m' j a = m j a)
     (a : Nat) (hr : a / n < rows) (h1 : off ≤ a % n) (h2 : a % n < off + w) :
@@ -174,7 +177,7 @@ theorem ziprow3_shift_den
     (n off w rows dA dB dC : Nat)
     (hsA : mA.shift dA = some mA') (hsB : mB.shift dB = some mB')
     (hsC : mC.shift dC = some mC')
-    (m m' : Buf → Nat → Float32)
+    (m m' : Buf → Nat → R)
     (hA : ∀ a, m' i' (a + dA) = m i a)
     (hB : ∀ a, m' j' (a + dB) = m j a)
     (hC : ∀ a, m' k' (a + dC) = m k a)
@@ -189,7 +192,7 @@ theorem ziprow3_shift_den
 /-- **A sum of squares is a dot of the row with itself.**  `rowDot` is *defined*
     as the butterfly over `dotStridedLane`, which is what `rowdot` denotes, and
     `.rowOf n 0` addresses `a * n + t * 32 + l` — exactly what `rowsq` walks. -/
-theorem TOp.rowsq_as_rowdot (x o : Ref) (n rows : Nat) (m : Buf → Nat → Float32) :
+theorem TOp.rowsq_as_rowdot (x o : Ref) (n rows : Nat) (m : Buf → Nat → R) :
     (TOp.rowdot x x o (.rowOf n 0) (.rowOf n 0) n rows).den m
       = (TOp.rowsq x o n rows).den m := by
   funext b' a
@@ -203,7 +206,7 @@ theorem TOp.rowsq_as_rowdot (x o : Ref) (n rows : Nat) (m : Buf → Nat → Floa
 /-- **Re-chunking preserves the function an operation computes.**  Whatever
     `rowShape` accepts, it returns an operation with the same denotation, so
     choosing a chunk shape is free of semantic consequence. -/
-theorem TOp.rowShape_den (rows : Nat) (op op' : TOp) (m : Buf -> Nat -> Float32)
+theorem TOp.rowShape_den [LitNat R] (rows : Nat) (op op' : TOp) (m : Buf -> Nat -> R)
     (h : op.rowShape rows = some op') : op'.den m = op.den m := by
   cases op
   case ew1 f x o g =>
@@ -242,7 +245,7 @@ theorem TOp.rowShape_den (rows : Nat) (op op' : TOp) (m : Buf -> Nat -> Float32)
   all_goals simp [TOp.rowShape] at h
 
 /-- …so the tape may be re-chunked operation by operation. -/
-theorem TOp.atRows_den (rows : Nat) (op : TOp) (m : Buf -> Nat -> Float32) :
+theorem TOp.atRows_den [LitNat R] (rows : Nat) (op : TOp) (m : Buf -> Nat -> R) :
     (op.atRows rows).den m = op.den m := by
   unfold TOp.atRows
   cases hh : op.rowShape rows with
@@ -255,7 +258,7 @@ theorem TOp.atRows_den (rows : Nat) (op : TOp) (m : Buf -> Nat -> Float32) :
     pass as a row pass — which is what lets it share a chunk shape with the row
     passes beside it, and so share their kernel — and the memory the tape leaves
     is the same memory. -/
-theorem TOp.atRows_map_den (f : TOp -> Nat) : ∀ (l : List TOp) (m : Buf -> Nat -> Float32),
+theorem TOp.atRows_map_den [LitNat R] (f : TOp -> Nat) : ∀ (l : List TOp) (m : Buf -> Nat -> R),
     (l.map (fun op => op.atRows (f op))).foldl (fun mm o => TOp.den o mm) m
       = l.foldl (fun mm o => TOp.den o mm) m := by
   intro l
@@ -271,12 +274,12 @@ theorem TOp.atRows_map_den (f : TOp -> Nat) : ∀ (l : List TOp) (m : Buf -> Nat
 
 /-- A strided-lane fold only sees its addresses, so two presentations of the
     same addresses fold identically — lane arguments included. -/
-theorem dotSL_congr (A B : Nat → Float32) (fA fB fA' fB' : Nat → Lane → Nat)
+theorem dotSL_congr (A B : Nat → R) (fA fB fA' fB' : Nat → Lane → Nat)
     (K : Nat) (l l' : Lane)
     (hA : ∀ i, fA i l = fA' i l') (hB : ∀ i, fB i l = fB' i l') :
     dotStridedLane A B fA fB K l = dotStridedLane A B fA' fB' K l' := by
   show (List.range K).foldl _ (NumOps.ofNat 0) = (List.range K).foldl _ (NumOps.ofNat 0)
-  have congr : ∀ (L : List Nat) (init : Float32),
+  have congr : ∀ (L : List Nat) (init : R),
       L.foldl (fun acc i => NumOps.add acc (NumOps.mul (A (fA i l)) (B (fB i l)))) init
         = L.foldl (fun acc i => NumOps.add acc (NumOps.mul (A (fA' i l')) (B (fB' i l')))) init := by
     intro L
@@ -350,11 +353,11 @@ theorem exists_t_iff (w base a : Nat) :
     function of the address (the owning block being recoverable from it). Given
     those two facts the step is a single conditional — which is the shape
     `TOp.den` is written in, so each operation reduces to supplying them. -/
-theorem step_of_shape (S : StageSpec) (hex : S.Exclusive)
-    (P : Nat → Prop) [DecidablePred P] (F : (Buf → Nat → Float32) → Nat → Float32)
+theorem step_of_shape (S : (StageSpec R)) (hex : S.Exclusive)
+    (P : Nat → Prop) [DecidablePred P] (F : (Buf → Nat → R) → Nat → R)
     (hown : ∀ a, (∃ cta, cta < S.grid ∧ S.dom cta a) ↔ P a)
     (hval : ∀ m cta a, cta < S.grid → S.dom cta a → S.val m cta a = F m a)
-    (m : Buf → Nat → Float32) (b' : Buf) (a : Nat) :
+    (m : Buf → Nat → R) (b' : Buf) (a : Nat) :
     S.step m b' a = if b' = S.out ∧ P a then F m a else m b' a := by
   by_cases hb : b' = S.out
   · subst hb
@@ -371,6 +374,16 @@ theorem step_of_shape (S : StageSpec) (hex : S.Exclusive)
 -- Each accepted operation's launch performs its mathematics
 -- ---------------------------------------------------------------------------
 
+/-- **A lowered operation's stage runs the operation's own statement**, against
+    no integer state, over the operation's grid. -/
+theorem TOp.stage_ew [LitNat R] (op : TOp) (batch : Nat) (X : (XStage R))
+    (h : (op.node.1).stage? batch = some (some X)) :
+    X.val.ew = op.stmt batch ∧ X.val.iregs = (fun _ _ => 0) ∧ X.val.imem = (fun _ _ => 0)
+      ∧ X.val.grid = op.gridOf := by
+  cases op <;> simp only [TOp.node, Node.stage?] at h <;> (try split at h) <;>
+    (try simp only [Option.some.injEq] at h) <;> (try subst h) <;>
+    first | exact ⟨rfl, rfl, rfl, rfl⟩ | simp at h
+
 /-- **One accepted operation's launch performs its mathematics.**
 
     For every op the lowering accepts, the stage's memory action *is* `den`:
@@ -378,8 +391,8 @@ theorem step_of_shape (S : StageSpec) (hex : S.Exclusive)
     the op, hence from the term's types — and the same committed folds.  An op
     whose stage covered a different rectangle than its type demands makes this
     unprovable at that constructor. -/
-theorem TOp.step_den (op : TOp) (batch : Nat) (X : XStage)
-    (h : (op.node.1).stage? batch = some (some X)) (m : Buf → Nat → Float32) :
+theorem TOp.step_den [LitNat R] (op : TOp) (batch : Nat) (X : (XStage R))
+    (h : (op.node.1).stage? batch = some (some X)) (m : Buf → Nat → R) :
     X.val.step m = op.den m := by
   cases op with
   | mv bk w x o b inW outW =>
@@ -585,7 +598,7 @@ theorem TOp.step_den (op : TOp) (batch : Nat) (X : XStage)
             (fun a => a < rows)
             (fun m a => bflyFoldOp (fun p q => NumOps.max p q)
               (maxStridedLane (m x)
-                (fun t l => (stride32 (.mul .ctaId (.lit n))).eval a t l) (n / 32) init)
+                (fun t l => (stride32 (.mul .ctaId (.lit n))).eval a t l) (n / 32) (NumLit.lit init))
               ⟨0, by decide⟩)
             (fun a => ⟨fun ⟨_, hc, hd⟩ => by subst hd; exact hc, fun ha => ⟨a, ha, rfl⟩⟩)
             (fun _ _ _ _ hd => by
@@ -798,8 +811,8 @@ theorem TOp.step_den (op : TOp) (batch : Nat) (X : XStage)
 /-- A tape operation always lowers to a launch or to nothing at all — never to
     "no launch needed".  Only `Node.input` is stage-free, and no tape operation
     is one, which is what makes the sequence's induction step unconditional. -/
-theorem TOp.stage_ne_skip (op : TOp) (batch : Nat) :
-    (op.node.1).stage? batch ≠ some none := by
+theorem TOp.stage_ne_skip [LitNat R] (op : TOp) (batch : Nat) :
+    (op.node.1).stage? (R := R) batch ≠ some none := by
   cases op <;> simp only [TOp.node, Node.stage?] <;>
     first
       | (split <;> simp)
@@ -810,9 +823,9 @@ theorem TOp.stage_ne_skip (op : TOp) (batch : Nat) :
     Op by op, at any length: the composite of the stages' steps is the
     composite of the operations' denotations.  This is the statement that makes
     a lowering which drops an extent unprovable rather than merely untested. -/
-theorem lowerTOps_den (batch : Nat) : ∀ (ops : List TOp) (ss : List XStage),
+theorem lowerTOps_den [LitNat R] (batch : Nat) : ∀ (ops : List TOp) (ss : List (XStage R)),
     lowerNet batch (forget (ops.map TOp.node)) = some ss →
-    ∀ m : Buf → Nat → Float32,
+    ∀ m : Buf → Nat → R,
       ss.foldl (fun mm S => S.val.step mm) m
         = ops.foldl (fun mm op => op.den mm) m := by
   intro ops
@@ -826,21 +839,21 @@ theorem lowerTOps_den (batch : Nat) : ∀ (ops : List TOp) (ss : List XStage),
       intro ss h m
       have hforget : forget ((op :: rest).map TOp.node)
           = op.node.1 :: forget (rest.map TOp.node) := rfl
-      have hun : lowerNet batch (op.node.1 :: forget (rest.map TOp.node))
-          = (match (op.node.1).stage? batch with
+      have hun : lowerNet (R := R) batch (op.node.1 :: forget (rest.map TOp.node))
+          = (match (op.node.1).stage? (R := R) batch with
              | none => none
              | some none => lowerNet batch (forget (rest.map TOp.node))
              | some (some S) =>
                  (lowerNet batch (forget (rest.map TOp.node))).map (S :: ·)) := rfl
       rw [hforget, hun] at h
-      cases hst : (op.node.1).stage? batch with
+      cases hst : (op.node.1).stage? (R := R) batch with
       | none => rw [hst] at h; exact absurd h (by simp)
       | some oS =>
           cases oS with
           | none => exact absurd hst (TOp.stage_ne_skip op batch)
           | some S =>
               rw [hst] at h
-              cases hrest : lowerNet batch (forget (rest.map TOp.node)) with
+              cases hrest : lowerNet (R := R) batch (forget (rest.map TOp.node)) with
               | none => rw [hrest] at h; exact absurd h (by simp)
               | some ss' =>
                   rw [hrest] at h
@@ -851,12 +864,56 @@ theorem lowerTOps_den (batch : Nat) : ∀ (ops : List TOp) (ss : List XStage),
                   rw [TOp.step_den op batch S hst m]
                   exact ih ss' hrest _
 
+/-- **Each stage a tape lowers to is its operation's**: the operation's own
+    statement, against no integer state, over the operation's grid, op for op. -/
+theorem lowerTOps_stages [LitNat R] (batch : Nat) : ∀ (ops : List TOp) (ss : List (XStage R)),
+    lowerNet batch (forget (ops.map TOp.node)) = some ss →
+    ss.map (fun X => X.val.ew) = ops.map (TOp.stmt batch) ∧ ss.map (fun X => X.val.grid) = ops.map TOp.gridOf
+      ∧ ∀ X ∈ ss, X.val.iregs = (fun _ _ => 0) ∧ X.val.imem = (fun _ _ => 0) := by
+  intro ops
+  induction ops with
+  | nil =>
+      intro ss h
+      simp only [List.map_nil, forget, lowerNet, Option.some.injEq] at h
+      subst h
+      exact ⟨rfl, rfl, fun _ h => absurd h (by simp)⟩
+  | cons op rest ih =>
+      intro ss h
+      have hforget : forget ((op :: rest).map TOp.node)
+          = op.node.1 :: forget (rest.map TOp.node) := rfl
+      have hun : lowerNet (R := R) batch (op.node.1 :: forget (rest.map TOp.node))
+          = (match (op.node.1).stage? (R := R) batch with
+             | none => none
+             | some none => lowerNet batch (forget (rest.map TOp.node))
+             | some (some S) =>
+                 (lowerNet batch (forget (rest.map TOp.node))).map (S :: ·)) := rfl
+      rw [hforget, hun] at h
+      cases hst : (op.node.1).stage? (R := R) batch with
+      | none => rw [hst] at h; exact absurd h (by simp)
+      | some oS =>
+          cases oS with
+          | none => exact absurd hst (TOp.stage_ne_skip op batch)
+          | some S =>
+              rw [hst] at h
+              cases hrest : lowerNet (R := R) batch (forget (rest.map TOp.node)) with
+              | none => rw [hrest] at h; exact absurd h (by simp)
+              | some ss' =>
+                  rw [hrest] at h
+                  have h' : S :: ss' = ss := Option.some.inj h
+                  subst h'
+                  obtain ⟨e1, e2, e3, e4⟩ := TOp.stage_ew op batch S hst
+                  obtain ⟨r1, r2, r3⟩ := ih ss' hrest
+                  refine ⟨by simp [e1, r1], by simp [e4, r2], fun X hX => ?_⟩
+                  rcases List.mem_cons.mp hX with rfl | hX
+                  · exact ⟨e2, e3⟩
+                  · exact r3 X hX
+
 /-- **Running the pipeline a term lowers to performs the term's mathematics.**
 
     The left end of the chain, closed: from the emitted launch sequence back to
     the tensor term, at any depth, by induction rather than by instance. -/
-theorem TenProg.run_den {r c : Nat} (batch base : Nat) (p : TenProg r c)
-    (ss : List XStage) (h : p.stages batch base = some ss) (st : WSt) :
+theorem TenProg.run_den [LitNat R] {r c : Nat} (batch base : Nat) (p : TenProg r c)
+    (ss : List (XStage R)) (h : p.stages batch base = some ss) (st : WSt R) :
     ((Pipeline.ofStages ss).run st).mem
       = (((p RefV).flat base).2.2).foldl (fun mm op => op.den mm) st.mem := by
   rw [Pipeline.ofStages_runs ss st]
@@ -884,7 +941,7 @@ theorem fuse_ziprow_den (x ss g t out : Ref) (f1 f2 : WFExp)
     (mA mB mC : BCast) (nP offP nC offC w rows : Nat)
     (hP : offP + w ≤ nP) (hC : offC + w ≤ nC) (hnP : 0 < nP)
     (htg : g ≠ t) (hot : out ≠ t)
-    (m : Buf → Nat → Float32) (a : Nat) :
+    (m : Buf → Nat → R) (a : Nat) :
     ((TOp.ziprow t g out f2 (.rowOf nP offP) mC nC offC w rows).den
       ((TOp.ziprow x ss t f1 mA mB nP offP w rows).den m)) out a
       = (TOp.ziprow3 x ss g out (f2.fuseA f1) mA mB mC nC offC w rows).den
@@ -947,7 +1004,7 @@ theorem fuse_ziprow3_den (x ss y g t out : Ref) (f1 f2 : WFExp)
     (mA mB mC mD : BCast) (nP offP nC offC w rows : Nat)
     (hP : offP + w ≤ nP) (hC : offC + w ≤ nC) (hnP : 0 < nP)
     (htg : g ≠ t) (hot : out ≠ t)
-    (m : Buf → Nat → Float32) (a : Nat) :
+    (m : Buf → Nat → R) (a : Nat) :
     ((TOp.ziprow t g out f2 (.rowOf nP offP) mD nC offC w rows).den
       ((TOp.ziprow3 x ss y t f1 mA mB mC nP offP w rows).den m)) out a
       = (TOp.ziprow4 x ss y g out (f2.fuseA4 f1) mA mB mC mD nC offC w rows).den
@@ -1008,7 +1065,7 @@ theorem fuse_rowdot_den (x ss y g t out : Ref) (f1 : WFExp)
     (h1 : f1.tripleOnly = true)
     (mA mB mC mD : BCast) (nP offP n rows : Nat)
     (hP : offP + n ≤ nP) (hnP : 0 < nP) (hK : (n / 32) * 32 = n)
-    (htg : g ≠ t) (hot : out ≠ t) (m : Buf → Nat → Float32) (a : Nat) :
+    (htg : g ≠ t) (hot : out ≠ t) (m : Buf → Nat → R) (a : Nat) :
     ((TOp.rowdot t g out (.rowOf nP offP) mD n rows).den
       ((TOp.ziprow3 x ss y t f1 mA mB mC nP offP n rows).den m)) out a
       = (TOp.rowdot4 x ss y g out f1 mA mB mC mD n rows).den m out a := by
@@ -1061,5 +1118,7 @@ theorem fuse_rowdot_den (x ss y g t out : Ref) (f1 : WFExp)
         if_neg (fun hc : out = out ∧ _ => hg hc.2)]
     show (if out = t ∧ _ then _ else m out a) = m out a
     rw [if_neg (fun hc : out = t ∧ _ => hot hc.1)]
+
+end Carrier
 
 end AlgorithmLib.ML

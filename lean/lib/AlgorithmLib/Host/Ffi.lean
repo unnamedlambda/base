@@ -275,14 +275,19 @@ def Dev.capturing (d : Dev) (p : Nat) : Bool :=
   | some c => c.origin == p || c.joined.contains p
   | none => false
 
-/-- Run a kernel launch now: its bound buffers get the oracle's contents, kept
-    at their lengths. -/
+/-- The answers a launch stores: the oracle's for each buffer bound to it
+    that it writes (`Launch.writes`), paired with the buffer. -/
+def Launch.stores (l : Launch) (ids : List Nat) (outs : List ByteArray) : List (Nat × ByteArray) :=
+  (ids.zip outs).filter (fun p => l.writes.contains p.1)
+
+/-- Run a kernel launch now: the bound buffers it writes get the oracle's
+    contents, kept at their lengths. -/
 def Dev.runLaunch (d : Dev) (kernel : Launch → List ByteArray → List ByteArray)
     (l : Launch) (ids : List Nat) : Option Dev := do
   let ins ← ids.mapM (fun i => d.get? (Int.ofNat i))
   let outs := kernel l ins
   if outs.length != ins.length || (outs.zip ins).any (fun (o, i) => o.size != i.size) then none
-  else some ((ids.zip outs).foldl (fun d (id, o) => d.put id (some o)) d)
+  else some ((l.stores ids outs).foldl (fun d (id, o) => d.put id (some o)) d)
 
 /-- Run a vendor routine now: its output buffer gets the oracle's contents, kept
     at its length. -/

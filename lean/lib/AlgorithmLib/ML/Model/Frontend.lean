@@ -319,12 +319,4 @@ theorem softmax_eq {n : Nat} (z : Vec n Γ) (i : Fin n) :
 def kernelOfFn (Γ : Nat) (f : Curried Γ Γ) (inB : Fin Γ → Buf) (out : Buf) :
     MapKernel Γ := mapKernel (ofFn Γ f) inB out
 
-/-- …and the emitted text runs it, from raw launch.  Inherited, not restated. -/
-theorem mapKernel_ofFn_ptx_exact (Γ : Nat) (f : Curried Γ Γ) (inB : Fin Γ → Buf)
-    (out : Buf) (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW (kernelOfFn Γ f inB out).ew)) k (0, m)
-          = some ((flatKernel (expandEW (kernelOfFn Γ f inB out).ew)).length, m')
-      ∧ m'.toWSt = ((expandEW (kernelOfFn Γ f inB out).ew).elabIn cta).run m.toWSt :=
-  mapKernel_ptx_exact (ofFn Γ f) inB out cta m
-
 end AlgorithmLib.ML

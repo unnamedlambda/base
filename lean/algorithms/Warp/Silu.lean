@@ -17,6 +17,8 @@ public import AlgorithmLib.Host.Driver
 meta import AlgorithmLib.Host.Driver
 public import AlgorithmLib.ML.Model.Frontend
 meta import AlgorithmLib.ML.Model.Frontend
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -26,7 +28,8 @@ import all Init.Data.List.Sort.Basic
 
   `Transformer.silu` is an ordinary `Expr`.  `compileW` turns it into machine
   code, `compileWKernel_correct` proves the result is the spec's denotation
-  from memory, and `emitProvenKernel` lowers it to PTX (proven: `flatKernel_sound`).  Nothing here was
+  from memory, and its body kernel (`Body.kernel`) is what ships: launching it
+  runs the statement (`silu_body`, `silu_loop_body`).  Nothing here was
   hand-written as a kernel.
 -/
 
@@ -55,7 +58,7 @@ def ix : IdxE := .add (.mul .ctaId (.lit 32)) .laneId
 
 def kernel : EWStmt := compileWKernel (fun _ => 0) 1 (fun _ => ix) spec ix 16
 
-def ptx : String := emitProvenKernel "main" kernel
+def ptx : String := Body.text "main" 2 0 kernel
 
 /-! ## The same spec, `E` elements per lane
 
@@ -79,17 +82,13 @@ def lbase : IdxE := .mul .ctaId (.lit (32 * E))
 
 def lkernel : EWStmt := mapLoopEW spec (fun _ => 0) 1 lbase E
 
-def ptxLoop : String := emitProvenKernel "main" lkernel
+def ptxLoop : String := Body.text "main" 2 0 lkernel
 
 /-! ### Seam guards (`A47` G2) — for both the one-per-lane and looped kernels -/
 theorem silu_guards :
     kernel.BufBelow 2 ∧ lkernel.BufBelow 2
-      ∧ kernel.StageEligibleB 1 = true ∧ lkernel.StageEligibleB 1 = true
-      ∧ FlatTargetsOkB (flatKernel (expandEW kernel)) = true
-      ∧ FlatTargetsOkB (flatKernel (expandEW lkernel)) = true
-      ∧ FlatPrintableB (flatKernel (expandEW kernel)) = true
-      ∧ FlatPrintableB (flatKernel (expandEW lkernel)) = true := by
-  refine ⟨by decide, by decide, by decide, by decide, ?_, ?_, ?_, ?_⟩ <;> native_decide
+      ∧ kernel.StageEligibleB 1 = true ∧ lkernel.StageEligibleB 1 = true := by
+  refine ⟨by decide, by decide, by decide, by decide⟩
 
 /-- Both geometries cover exactly `N`: one element per lane, and `E` per lane. -/
 theorem silu_geometry : GRID * 32 = N ∧ LGRID * (32 * E) = N := by decide
@@ -122,32 +121,12 @@ theorem silu_stores (st : WSt) (l0 : Lane) :
   compileWKernel_stores (fun _ => 0) 1 (fun _ => ix) spec ix 16 st l0
     (fun l h => by rw [elemIx_inj l l0 h])
 
-/-- **And the emitted PTX runs it**, from instruction 0, over real branches. -/
-theorem silu_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW kernel)) k (0, m)
-          = some ((flatKernel (expandEW kernel)).length, m')
-      ∧ m'.toWSt = ((expandEW kernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW kernel) (expandEW_expFree kernel)
-    (expandEW_idxFree kernel
-      (compileWKernel_idxFree (fun _ => 0) 1 (fun _ => ix) spec ix 16
-        (fun _ => (by decide : IdxE.IregFree ix)) (by decide)))
-    (expandEW_flat kernel (compileWKernel_flat _ _ _ _ _ _)) m
-
-/-- The same for the looped kernel — the one that actually ships the bandwidth. -/
-theorem silu_loop_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW lkernel)) k (0, m)
-          = some ((flatKernel (expandEW lkernel)).length, m')
-      ∧ m'.toWSt = ((expandEW lkernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW lkernel) (expandEW_expFree lkernel)
-    (expandEW_idxFree lkernel (by decide))
-    (expandEW_flat lkernel (by decide)) m
-
 /-- **The program, in the driver's standard layout**: the input and the
     output allocation, and the two kernels, both handed them in that order. -/
 def app : Drv.App :=
   { bufs := [N * 4, N * 4],
-    kernels := [⟨PTX_OFF, PTX_L_OFF - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩,
-                ⟨PTX_L_OFF, MEM_SIZE - PTX_L_OFF, [0, 1], (LGRID, 1, 1), (32, 1, 1)⟩],
+    kernels := [⟨PTX_OFF, PTX_L_OFF - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1), []⟩,
+                ⟨PTX_L_OFF, MEM_SIZE - PTX_L_OFF, [0, 1], (LGRID, 1, 1), (32, 1, 1), []⟩],
     memSize := MEM_SIZE }
 
 /-- **The whole map, not the interesting part of it.** -/

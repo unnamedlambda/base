@@ -25,6 +25,9 @@ appear in.
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 /-- **Send every contraction to one implementation.**
 
     The backend appears in exactly three constructors, and in none of their
@@ -39,7 +42,7 @@ def TOp.retarget (bk : Backend) : TOp → TOp
 /-- **Retargeting computes the same thing** — by cases, for every backend and
     every operation.  This is what makes the choice a schedule: `Backend.laws`
     records what the vendor call assumes, and the mathematics is untouched. -/
-theorem TOp.retarget_den (bk : Backend) (op : TOp) : (op.retarget bk).den = op.den := by
+theorem TOp.retarget_den [LitNat R] (bk : Backend) (op : TOp) : (op.retarget bk).den (R := R) = op.den := by
   cases op <;> rfl
 
 /-- **A rewrite a user asserts is correct.**
@@ -50,9 +53,10 @@ structure AssertedRewrite where
   name  : String
   apply : List TOp → List TOp
 
-/-- What asserting one costs: that it preserves what every buffer holds. -/
+/-- What asserting one costs: that it preserves what every buffer holds, at
+    every carrier — so at the words the hardware computes on too. -/
 def AssertedRewrite.Sound (a : AssertedRewrite) : Prop :=
-  ∀ (t : List TOp) (m : Buf → Nat → Float32) (b : Buf),
+  ∀ {R : Type} [NumOps R] [NumLit R] [LitNat R] (t : List TOp) (m : Buf → Nat → R) (b : Buf),
     ((a.apply t).foldl (fun mm o => o.den mm) m) b
       = (t.foldl (fun mm o => o.den mm) m) b
 
@@ -66,8 +70,8 @@ def applyAsserted : List AssertedRewrite → List TOp → List TOp
   | [],      t => t
   | a :: as, t => applyAsserted as (a.apply t)
 
-theorem applyAsserted_den : ∀ (as : List AssertedRewrite), AssertedSound as →
-    ∀ (t : List TOp) (m : Buf → Nat → Float32) (b : Buf),
+theorem applyAsserted_den [LitNat R] : ∀ (as : List AssertedRewrite), AssertedSound as →
+    ∀ (t : List TOp) (m : Buf → Nat → R) (b : Buf),
       ((applyAsserted as t).foldl (fun mm o => o.den mm) m) b
         = (t.foldl (fun mm o => o.den mm) m) b := by
   intro as
@@ -92,8 +96,6 @@ structure TenSchedule where
   fuse : List FuseSite := []
   /-- How a warp walks a row. -/
   warp : Sched := .vec4
-  /-- Which loads may take the read-only path. -/
-  ro : ROPolicy := .all
   /-- **Rewrites the library has not proven.**
 
       The escape hatch: a move outside the menu, applied to the tape as given.
@@ -120,7 +122,7 @@ def applyFuse (tbl : List (String × Buf)) : List FuseSite → List TOp → List
 /-- **Fusing preserves the tape's mathematics on every buffer it did not
     remove**, for any list of sites. -/
 theorem applyFuse_den (tbl : List (String × Buf)) :
-    ∀ (ss : List FuseSite) (t : List TOp) (m : Buf → Nat → Float32)
+    ∀ (ss : List FuseSite) (t : List TOp) (m : Buf → Nat → R)
     (b : Buf), b ∉ (applyFuse tbl ss t).1 →
     ((applyFuse tbl ss t).2.foldl (fun mm o => o.den mm) m) b
       = (t.foldl (fun mm o => o.den mm) m) b := by
@@ -145,7 +147,7 @@ theorem applyFuse_den (tbl : List (String × Buf)) :
           exact Eq.trans (ih t' m b hrest) (fuseAt_den tbl t t' s tmp hf m b hne)
 
 /-- **A retargeted tape folds to the same memory**, operation by operation. -/
-theorem map_retarget_den (bk : Backend) : ∀ (t : List TOp) (m : Buf → Nat → Float32),
+theorem map_retarget_den [LitNat R] (bk : Backend) : ∀ (t : List TOp) (m : Buf → Nat → R),
     (t.map (TOp.retarget bk)).foldl (fun mm o => o.den mm) m
       = t.foldl (fun mm o => o.den mm) m := by
   intro t
@@ -184,14 +186,16 @@ def TenSchedule.assertedNames (s : TenSchedule) : List String :=
     and any schedule named against it is checked to perform its mathematics —
     on every buffer except the intermediates the named fusions removed, which
     is the only thing a fusion is allowed to change. -/
-theorem TenProg.compile_den {r c : Nat} (base : Ref) (p : TenProg r c) (s : TenSchedule)
+theorem TenProg.compile_den [LitNat R] {r c : Nat} (base : Ref) (p : TenProg r c) (s : TenSchedule)
     (ha : AssertedSound s.asserted)
-    (m : Buf → Nat → Float32) (b : Buf) (hb : b ∉ (p.compile base s).1) :
+    (m : Buf → Nat → R) (b : Buf) (hb : b ∉ (p.compile base s).1) :
     ((p.compile base s).2.foldl (fun mm o => o.den mm) m) b
       = ((p.tape base).foldl (fun mm o => o.den mm) m) b := by
   unfold TenProg.compile at hb ⊢
   exact Eq.trans (applyAsserted_den s.asserted ha _ m b)
     (Eq.trans (applyFuse_den (p.labels base) s.fuse _ m b hb)
       (congrFun (map_retarget_den s.impl (p.tape base) m) b))
+
+end Carrier
 
 end AlgorithmLib.ML

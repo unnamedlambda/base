@@ -101,6 +101,13 @@ theorem callOf_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (c : Callee) (vs
   | host _ _ => exact hc
   | atomic a => exact hc
   | ext e => exact hc
+  | intr c =>
+      simp only [Sem.callOf] at hc ⊢
+      cases hl : L₁ c.slot vs w with
+      | error _ => rw [hl] at hc; simp [Except.toOption] at hc
+      | ok x =>
+          rw [hl] at hc; simp only [Except.toOption, Option.some.injEq] at hc; subst hc
+          rw [h _ _ _ _ hl]; rfl
 
 theorem runInsts_locals_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) :
     ∀ (is : List Inst) (s : Blocks.BSt) (x : Blocks.BSt × Blocks.Next) (w : World),
@@ -251,7 +258,7 @@ theorem program_sound (fns : Nat → Option Fn) (env : FnEnv) (steps : Nat)
           simp only [Except.ok.injEq] at h
           subst h
           obtain ⟨s, hs⟩ := compile_core i f.env f.params f.code f.status
-            { env, steps, locals := termLocals fns env steps k } args w Γ w' (hok i f hf) hlen' hres
+            { env, steps, locals := termLocals fns env steps k } _ args w Γ w' (hok i f hf) hlen' hres
           have hs2 := runFrom_locals_mono ih _ _ _ _ _ _ _ hs
           have hcall : Blocks.callFn (blockLocals (compiledFns fns) k)
               (compileBody i f.code f.env f.params f.status) s args w

@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Model.RegBound
-meta import AlgorithmLib.ML.Model.RegBound
+public import AlgorithmLib.ML.Model.BufsOf
+meta import AlgorithmLib.ML.Model.BufsOf
 public import Vit.Model
 meta import Vit.Model
 import all Init.Data.Repr
@@ -24,10 +24,9 @@ open AlgorithmLib.IR
 /-- **The groups an emitted kernel comes from.**
 
     A group whose operation is a contraction prints no kernel — cuBLAS performs
-    it — so it has no statement to guard and its `flenOf` (thirty instructions
-    per row of the batch) would not fit a budget it never has to meet. -/
+    it — so it has no statement to launch. -/
 def vProvenUnits : List (List Nat) :=
-  vUnits.filter (fun u => ((vUnitOps u).head? >>= vGemmOf).isNone)
+  vUnits.filter (fun u => ((vUnitOps u).head? >>= TOp.vendorGemm).isNone)
 
 open AlgorithmLib.ML in
 /-- The group kernel is the emitted one, by definition rather than by
@@ -39,34 +38,8 @@ open AlgorithmLib.ML in
 /-- Every member's buffers are in the group's table — because the table *is*
     the members' buffers, so this costs nothing per group. -/
 theorem vit_unit_covers (u : List Nat) :
-    ∀ op ∈ vUnitOps u, ∀ c ∈ (AlgorithmLib.ML.TOp.stmt SQ op).bufsOf, c ∈ vUnitBufs u := by
-  intro op hop c hc
-  exact (AlgorithmLib.ML.mem_eraseDups _ _).mpr
-    (List.mem_flatMap.mpr ⟨op, hop, AlgorithmLib.ML.TOp.stmt_bufsOf SQ op hc⟩)
-
-open AlgorithmLib.ML in
-/-- **Whether one group's register budget fits.**
-
-    One comparison, on widths the operations already carry: the group's largest
-    `regHi` and the sum of its members' instruction counts.  Checking a tape
-    this way builds no instruction, which is what makes it scale. -/
-def vBudgetOk (u : List Nat) : Bool :=
-  decide (AlgorithmLib.ML.TOp.groupBudget (vUnitOps u)
-            ≤ AlgorithmLib.ML.PTX_ADDR_SCRATCH)
-
-/-- **The groups the arithmetic budget does not cover**, and why they exist.
-
-    A bias gradient is `Σ_s d[s][i]` — an `outer` of width one against the ones
-    vector — and `outer` sums over the batch with the row index a Lean function
-    rather than an `IdxE`, so it is *unrolled*: two hundred rows become 2414
-    instructions.  The budget bounds register numbers by instruction count, so
-    these fail it by a factor of seven while every other emitted kernel comes in
-    at 1011 of 1020.
-
-    They are checked on their instructions instead.  Naming them is the point:
-    the guard is not weakened to fit them, and the list is a measurement of how
-    far the cheap check reaches. -/
-def vBigUnits : List (List Nat) := vProvenUnits.filter (fun u => !vBudgetOk u)
+    ∀ op ∈ vUnitOps u, ∀ c ∈ (AlgorithmLib.ML.TOp.stmt SQ op).bufsOf, c ∈ vUnitBufs u :=
+  unit_covers SQ (vUnitOps u)
 
 /-- **The primitive every contraction is issued through.**
 
@@ -77,7 +50,7 @@ def vDeclaredKernel : AlgorithmLib.ML.VendorKernel :=
 
 /-- Launches whose effect is assumed, and launches whose effect is a kernel this
     development emits. -/
-def vDeclaredLaunches : Nat := (vFused.filter (fun op => (vGemmOf op).isSome)).length
+def vDeclaredLaunches : Nat := (vFused.filter (fun op => (TOp.vendorGemm op).isSome)).length
 def vProvenLaunches : Nat := vProvenUnits.length
 
 /-- The bound the model's scores and row sums stay inside.  A score is a dot

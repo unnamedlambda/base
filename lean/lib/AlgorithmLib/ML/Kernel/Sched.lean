@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Ptx.Print
-meta import AlgorithmLib.ML.Ptx.Print
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
 public import AlgorithmLib.ML.Kernel.Rewrite
 meta import AlgorithmLib.ML.Kernel.Rewrite
 import all Init.Data.Repr
@@ -80,10 +80,10 @@ theorem Sched.realize_spec (s : Sched) (bA bB : Buf) (ixA ixB : IdxE) (out : Buf
   | strided => exact dotStrided_spec bA bB ixA ixB out oi (n / 32)  cta st
   | blocked => exact dotStrided_spec bA bB ixA ixB out oi (n / 32)  cta st
 
-/-- The PTX for a choice. -/
+/-- The PTX for a choice: its body kernel, printed. -/
 def Sched.ptx (s : Sched) (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
     (n nbuf : Nat) : String :=
-  emitProvenKernelN "main" nbuf 0 (s.realize bA bB ixA ixB out oi n)
+  Body.text "main" nbuf 0 (s.realize bA bB ixA ixB out oi n)
 
 /-- **Every schedule computes the flat dot product of the first `n` elements.**
 

@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Ptx.Print
-meta import AlgorithmLib.ML.Ptx.Print
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
 public import AlgorithmLib.ML.Kernel.Schema
 meta import AlgorithmLib.ML.Kernel.Schema
 public import AlgorithmLib.ML.Ptx.Compile
@@ -37,6 +37,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- ---------------------------------------------------------------------------
 -- The canonical elementwise addressing
 -- ---------------------------------------------------------------------------
@@ -68,7 +71,7 @@ structure MapKernel (Γ : Nat) where
   ew     : EWStmt
   /-- The output buffer, at lane `l`'s address, holds the spec's denotation
       under "variable `i` is what lane `l` sees in buffer `inB i`". -/
-  stores : ∀ (st : WSt) (l : Lane),
+  stores : ∀ {R : Type} [NumOps R] [NumLit R] [LitNat R] (st : WSt R) (l : Lane),
     ((ew.elabIn 0).run st).mem out (elemIx.eval 0 0 l)
       = denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l)) spec
 
@@ -93,31 +96,9 @@ def mapKernelAt {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (inIx : Fin �
 def mapKernel {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf) :
     MapKernel Γ := mapKernelAt spec inB (fun _ => elemIx) out
 
-/-- The PTX, for a kernel binding `nbuf` buffers. -/
+/-- The PTX, for a kernel binding `nbuf` buffers: its body kernel, printed. -/
 def MapKernel.ptx {Γ : Nat} (k : MapKernel Γ) (nbuf : Nat) : String :=
-  emitProvenKernelN "main" nbuf 0 k.ew
-
-/-- **…and the emitted text runs it, from raw launch.**  Also constructed, not
-    asked for: the side conditions are `decide`d, which is possible because the
-    addressing is a closed term. -/
-theorem mapKernelAt_ptx_exact {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
-    (inIx : Fin Γ → IdxE) (hix : ∀ i, (inIx i).IregFree)
-    (out : Buf) (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW (mapKernelAt spec inB inIx out).ew)) k (0, m)
-          = some ((flatKernel (expandEW (mapKernelAt spec inB inIx out).ew)).length, m')
-      ∧ m'.toWSt = ((expandEW (mapKernelAt spec inB inIx out).ew).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta _ (expandEW_expFree _)
-    (expandEW_idxFree _
-      (compileWKernel_idxFree inB out inIx spec elemIx _ hix (by decide)))
-    (expandEW_flat _ (compileWKernel_flat _ _ _ _ _ _)) m
-
-theorem mapKernel_ptx_exact {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
-    (out : Buf) (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW (mapKernel spec inB out).ew)) k (0, m)
-          = some ((flatKernel (expandEW (mapKernel spec inB out).ew)).length, m')
-      ∧ m'.toWSt = ((expandEW (mapKernel spec inB out).ew).elabIn cta).run m.toWSt :=
-  mapKernelAt_ptx_exact spec inB (fun _ => elemIx)
-    (fun _ => (by decide : IdxE.IregFree elemIx)) out cta m
+  Body.text "main" nbuf 0 k.ew
 
 -- ---------------------------------------------------------------------------
 -- The hand-tuned route: the address obligation, made a `decide`
@@ -218,16 +199,16 @@ def maxReduceEW (b : Buf) (ixC ixR : IdxE) (bu adC adR : Nat) (init : Float32) :
 
 /-- …and what it computes, with **no obligation on the caller**. -/
 theorem maxReduce_spec (b : Buf) (ixC ixR : IdxE) (bu adC adR cta i : Nat)
-    (init : Float32) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
+    (init : Float32) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
     (l : Lane) :
     (((maxReduceEW b ixC ixR bu adC adR init).elabAt cta i ir im).run st).regs 0 l
-      = chunkRemFold (st.mem b) (fun _ a x => NumOps.max a x) (fun _ => init)
+      = chunkRemFold (st.mem b) (fun _ a x => NumOps.max a x) (fun _ => NumLit.lit init)
           (fun j l' => ixC.eval cta j l' ir im) (fun j l' => ixR.eval cta j l' ir im)
           (im bu adC) (im bu adR) (bflyFoldOp (fun a c => NumOps.max a c)) l :=
   chunkRemReduce_spec b 2 0 (by decide) (.maxW (.reg 0) (.reg 2)) ixC ixR (.lit init)
     bu adC adR cta i warpReduceMaxE ir im
     (fun _ a x => NumOps.max a x) (bflyFoldOp (fun a c => NumOps.max a c))
-    [] (fun _ h => absurd h (by simp)) st (fun _ => init) (fun _ => rfl)
+    [] (fun _ h => absurd h (by simp)) st (fun _ => NumLit.lit init) (fun _ => rfl)
     (fun _ _ _ => rfl)
     (fun st' => warpReduceMaxE_spec cta i ir im st')
     (fun st' => warpReduceMaxE_mem cta i ir im st')
@@ -241,16 +222,16 @@ def sumReduceEW (b : Buf) (ixC ixR : IdxE) (bu adC adR : Nat) : EWStmt :=
       (.seq (warpRoundE 2) (warpRoundE 1)))))
 
 theorem sumReduce_spec (b : Buf) (ixC ixR : IdxE) (bu adC adR cta i : Nat)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt) (l : Lane) :
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) (l : Lane) :
     (((sumReduceEW b ixC ixR bu adC adR).elabAt cta i ir im).run st).regs 0 l
       = chunkRemFold (st.mem b) (fun _ a x => NumOps.add a x)
-          (fun _ => NumOps.ofNat 0)
+          (fun _ => NumLit.lit (NumOps.ofNat 0 : Float32))
           (fun j l' => ixC.eval cta j l' ir im) (fun j l' => ixR.eval cta j l' ir im)
           (im bu adC) (im bu adR) (bflyFoldOp (fun a c => NumOps.add a c)) l :=
   chunkRemReduce_spec b 2 0 (by decide) (.add (.reg 0) (.reg 2)) ixC ixR
     (.lit (NumOps.ofNat 0)) bu adC adR cta i _ ir im
     (fun _ a x => NumOps.add a x) (bflyFoldOp (fun a c => NumOps.add a c))
-    [] (fun _ h => absurd h (by simp)) st (fun _ => NumOps.ofNat 0) (fun _ => rfl)
+    [] (fun _ h => absurd h (by simp)) st (fun _ => NumLit.lit (NumOps.ofNat 0 : Float32)) (fun _ => rfl)
     (fun _ _ _ => rfl)
     (fun st' => warpReduceSumE_spec cta i ir im st')
     (fun st' => warpReduceSumE_mem cta i ir im st')
@@ -277,9 +258,9 @@ def storePassEW (inB out : Buf) (d r : Nat) (f : WFExp) (base : IdxE) (K : Nat) 
     here. -/
 theorem storePass_spec (inB out : Buf) (d r : Nat) (f : WFExp)
     (base : IdxE) (hbase : base.laneLoopFreeB = true) (K cta : Nat)
-    (hio : inB ≠ out) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
-    (g : Float32 → Float32)
-    (hf : ∀ (st' : WSt) (l : Lane), f.eval st' l = g (st'.regs d l))
+    (hio : inB ≠ out) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
+    (g : R → R)
+    (hf : ∀ (st' : WSt R) (l : Lane), f.eval st' l = g (st'.regs d l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
     (((storePassEW inB out d r f base K).elabAt cta 0 ir im).run st).mem out
         ((stride32 base).eval cta j0 l0 ir im)
@@ -336,10 +317,11 @@ def mapLoopEW {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
     and that the kernel does not read the buffer it writes.  Everything else —
     injectivity, the `keep` bookkeeping, the read-back, and the fact that the
     compiled body is valid at iteration `j` — is discharged here. -/
-theorem mapLoopEW_stores {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+theorem mapLoopEW_stores {Γ : Nat} {R : Type} [NumOps R] [NumLit R] [LitNat R] (spec : Expr Γ)
+    (inB : Fin Γ → Buf) (out : Buf)
     (base : IdxE) (hbase : base.laneLoopFreeB = true) (E cta : Nat)
     (hio : ∀ i, inB i ≠ out) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (st : WSt) (j0 : Nat) (l0 : Lane) (hj0 : j0 < E) :
+    (st : WSt R) (j0 : Nat) (l0 : Lane) (hj0 : j0 < E) :
     (((mapLoopEW spec inB out base E).elabAt cta 0 ir im).run st).mem out
         ((stride32 base).eval cta j0 l0 ir im)
       = denote (fun i => st.mem (inB i) ((stride32 base).eval cta j0 l0 ir im)) spec := by
@@ -408,7 +390,7 @@ structure ReduceKernel where
   K   : Nat
   ew  : EWStmt
   /-- Lane 0 of block `cta` stores the two-level fold of `bA·bB`. -/
-  reduces : ∀ (cta : Nat) (st : WSt),
+  reduces : ∀ {R : Type} [NumOps R] [NumLit R] [LitNat R] (cta : Nat) (st : WSt R),
     ((ew.elabIn cta).run st).mem out (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotStridedLane (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K)
@@ -430,7 +412,7 @@ def sumSqKernel (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE) (K : Nat) :
     ReduceKernel := dotKernel b b ix ix out oi K
 
 def ReduceKernel.ptx (k : ReduceKernel) (nbuf : Nat) : String :=
-  emitProvenKernelN "main" nbuf 0 k.ew
+  Body.text "main" nbuf 0 k.ew
 
 -- ---------------------------------------------------------------------------
 -- The two-buffer store pass
@@ -469,9 +451,9 @@ def zipPassEW (bA bB out : Buf) (dA dB r : Nat) (f : WFExp) (ixA ixB oix : IdxE)
 theorem zipPass_spec (bA bB out : Buf) (dA dB r : Nat) (hAB : dA ≠ dB) (f : WFExp)
     (base : IdxE) (hbase : base.laneLoopFreeB = true) (ixA ixB : IdxE)
     (K cta : Nat) (hAo : bA ≠ out) (hBo : bB ≠ out)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
-    (g : Float32 → Float32 → Float32)
-    (hf : ∀ (st' : WSt) (l : Lane), f.eval st' l = g (st'.regs dA l) (st'.regs dB l))
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
+    (g : R → R → R)
+    (hf : ∀ (st' : WSt R) (l : Lane), f.eval st' l = g (st'.regs dA l) (st'.regs dB l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
     (((zipPassEW bA bB out dA dB r f ixA ixB (stride32 base) K).elabAt cta 0 ir im).run st).mem
         out ((stride32 base).eval cta j0 l0 ir im)
@@ -518,9 +500,9 @@ theorem zip3Pass_spec (bA bB bC out : Buf) (dA dB dC r : Nat)
     (hAB : dA ≠ dB) (hAC : dA ≠ dC) (hBC : dB ≠ dC) (f : WFExp)
     (base : IdxE) (hbase : base.laneLoopFreeB = true) (ixA ixB ixC : IdxE)
     (K cta : Nat) (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
-    (g : Float32 → Float32 → Float32 → Float32)
-    (hf : ∀ (st' : WSt) (l : Lane),
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
+    (g : R → R → R → R)
+    (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs dA l) (st'.regs dB l) (st'.regs dC l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
     (((zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC (stride32 base) K).elabAt
@@ -577,9 +559,9 @@ theorem zip4Pass_spec (bA bB bC bD out : Buf) (dA dB dC dD r : Nat)
     (hAD : dA ≠ dD) (hBD : dB ≠ dD) (hCD : dC ≠ dD) (f : WFExp)
     (base : IdxE) (hbase : base.laneLoopFreeB = true) (ixA ixB ixC ixD : IdxE)
     (K cta : Nat) (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
-    (g : Float32 → Float32 → Float32 → Float32 → Float32)
-    (hf : ∀ (st' : WSt) (l : Lane),
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
+    (g : R → R → R → R → R)
+    (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs dA l) (st'.regs dB l) (st'.regs dC l) (st'.regs dD l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
     (((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD (stride32 base) K).elabAt
@@ -624,5 +606,7 @@ theorem zip4Pass_spec (bA bB bC bD out : Buf) (dA dB dC dD r : Nat)
     obtain ⟨hj', hl'⟩ := stride32_inj base hbase cta j j0 l l0 ir im hl
     rw [hj', hl']
   · exact Or.inl ⟨j0, List.mem_range.mpr hj0, l0, rfl⟩
+
+end Carrier
 
 end AlgorithmLib.ML

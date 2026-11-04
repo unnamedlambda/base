@@ -72,19 +72,25 @@ inductive Fact where
   /-- Memory at `a` holds a C string within `n` bytes, `s` where it is
       known: what a step that leaves those bytes alone keeps. Where the string
       is a module's PTX, `sigs` names entry points it declares with their
-      parameters' sizes, so a lookup reads them here and never the text. -/
-  | text (a : UInt64) (s : Option String) (n : Nat) (sigs : List (String × List Nat))
+      parameters' sizes and which of them the kernel writes (`WritesAs`), so a
+      lookup reads them here and never the text. -/
+  | text (a : UInt64) (s : Option String) (n : Nat) (sigs : List (String × List Nat × List Bool))
   /-- The driver has loaded `n` modules, live or unloaded: the next is
       `drvHandle kModule n`. -/
   | nmods (n : Nat)
   /-- The driver has looked up `n` functions: the next is `drvHandle kFunc n`. -/
   | nfuncs (n : Nat)
   /-- Module `i` is loaded, and declares each of `sigs`'s entry points with
-      parameters of those sizes. -/
-  | mod (i : Nat) (sigs : List (String × List Nat))
+      parameters of those sizes, the kernel writing those flagged. -/
+  | mod (i : Nat) (sigs : List (String × List Nat × List Bool))
   /-- Function `i` is an entry point of a loaded module whose declaration
-      takes parameters of these sizes. -/
-  | fn (i : Nat) (sizes : List Nat)
+      takes parameters of these sizes, the kernel writing those `writes`
+      flags. -/
+  | fn (i : Nat) (sizes : List Nat) (writes : List Bool)
+  /-- Module `i` is loaded from text `t`. -/
+  | modText (i : Nat) (t : String)
+  /-- Function `i` is entry point `e` of a loaded module whose text is `t`. -/
+  | fnText (i : Nat) (t e : String)
   /-- cuBLAS has made `n` handles: the next is `drvHandle kBlas n`. -/
   | nblas (n : Nat)
   /-- cuBLAS handle `i` is live and runs its routines on stream `s`. -/
@@ -127,6 +133,12 @@ abbrev OpLive (d : Dev) (op : DevOp) : Prop :=
 /-- Every operation of `ops` is one whose allocations are live (`OpLive`). -/
 def OpsLive (d : Dev) (ops : Array DevOp) : Prop := ∀ op ∈ ops.toList, OpLive d op
 
+/-- What the world says of which parameters a kernel writes, `o`, is what
+    `flags` says: each parameter written where its flag is `true` or missing.
+    An entry point the world says nothing of writes every parameter. -/
+def WritesAs (o : Option (List Bool)) (flags : List Bool) : Prop :=
+  ∀ i, (o.bind (·[i]?)).getD true = flags.getD i true
+
 def Fact.holds : Fact → World → Prop
   | .part p b, w => p.get w = b
   | .room r n, w => n ≤ w.mem.sizes r
@@ -153,12 +165,16 @@ def Fact.holds : Fact → World → Prop
   | .alloc id n, w => ∃ b, (w.dev.bufs[id]?).join = some b ∧ b.size = n
   | .text a s n sigs, w => (CStr w.mem a ∧ a.toNat + n < 2 ^ 64 ∧
       ∃ r off k, r ≠ .pinned ∧ off + n < 2 ^ 36 ∧ Sem.strSpan w.mem a = some (r, off, k) ∧ k ≤ n) ∧
-      ∃ t, readCStrAt w.mem a = some t ∧ (∀ x, s = some x → x = t) ∧ ∀ p ∈ sigs, ptxParamSizes t p.1 = some p.2
+      ∃ t, readCStrAt w.mem a = some t ∧ (∀ x, s = some x → x = t) ∧
+        ∀ p ∈ sigs, ptxParamSizes t p.1 = some p.2.1 ∧ WritesAs (w.dev.kernelWrites t p.1) p.2.2
   | .nmods n, w => w.dev.modules.size = n
   | .nfuncs n, w => w.dev.funcs.size = n
-  | .mod i sigs, w => ∃ s, w.dev.modules[i]? = some (some s) ∧ ∀ p ∈ sigs, ptxParamSizes s p.1 = some p.2
-  | .fn i sizes, w => ∃ mi e s, w.dev.funcs[i]? = some (mi, e) ∧ w.dev.modules[mi]? = some (some s) ∧
-      ptxParamSizes s e = some sizes
+  | .mod i sigs, w => ∃ s, w.dev.modules[i]? = some (some s) ∧
+      ∀ p ∈ sigs, ptxParamSizes s p.1 = some p.2.1 ∧ WritesAs (w.dev.kernelWrites s p.1) p.2.2
+  | .fn i sizes fl, w => ∃ mi e s, w.dev.funcs[i]? = some (mi, e) ∧ w.dev.modules[mi]? = some (some s) ∧
+      ptxParamSizes s e = some sizes ∧ WritesAs (w.dev.kernelWrites s e) fl
+  | .modText i t, w => w.dev.modules[i]? = some (some t)
+  | .fnText i t e, w => ∃ mi, w.dev.funcs[i]? = some (mi, e) ∧ w.dev.modules[mi]? = some (some t)
   | .nblas n, w => w.dev.blas.size = n
   | .blasOn i s, w => w.dev.blas[i]? = some (some s)
   | .ngraphs n, w => w.dev.graphs.size = n
@@ -209,7 +225,7 @@ theorem Fact.holds_dev {x : Fact} (hx : x.isDev = true) {w w' : World} (h : w'.d
 /-- A fact about the driver's own state: what `cudaAfter` states of a driver
     call, and what any step that leaves the device alone keeps. -/
 def Fact.isDrv : Fact → Bool
-  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => true
+  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ _ | .modText _ _ | .fnText _ _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => true
   | _ => false
 
 /-- A driver fact survives a step that leaves the device as it was. -/
@@ -261,6 +277,65 @@ theorem cellOk_spec {a : UInt64} (h : cellOk a = true) :
     simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range] at h
     exact ⟨r, off, hd, h.1, h.2⟩
   · cases h
+
+/-- `cellOk`, computed: the cell's first byte decodes into a region other
+    than the pinned one, with its eight bytes inside the region's span. -/
+def cellOkFast (a : UInt64) : Bool :=
+  match decodeAddr a with
+  | some (r, off) => decide (r ≠ .pinned) && decide (off + 8 ≤ 0x1000000000)
+  | none => false
+
+theorem decodeAddr_add {a : UInt64} {r : Region} {off i : Nat} (hd : decodeAddr a = some (r, off))
+    (hi : off + i < 0x1000000000) : decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := by
+  unfold decodeAddr at hd ⊢
+  obtain ⟨r', hr, he⟩ := Option.map_eq_some_iff.mp hd
+  obtain ⟨rfl, hoff⟩ := Prod.mk.inj he
+  have hidx := Region.idx_of_ofIdx hr
+  have hlt := Region.idx_lt r'
+  have hs : regionSpan.toNat = 0x1000000000 := rfl
+  have hq : (a / regionSpan).toNat = a.toNat / 0x1000000000 := by rw [UInt64.toNat_div, hs]
+  have hm : (a % regionSpan).toNat = a.toNat % 0x1000000000 := by rw [UInt64.toNat_mod, hs]
+  have ha : a.toNat = a.toNat / 0x1000000000 * 0x1000000000 + a.toNat % 0x1000000000 := by omega
+  have hsum : (a + UInt64.ofNat i).toNat = a.toNat + i := by
+    have hio : (UInt64.ofNat i).toNat = i := by simp; omega
+    rw [UInt64.toNat_add, hio]
+    apply Nat.mod_eq_of_lt
+    omega
+  have hq' : ((a + UInt64.ofNat i) / regionSpan).toNat = (a / regionSpan).toNat := by
+    rw [UInt64.toNat_div, hs, hsum, hq]; omega
+  have hm' : ((a + UInt64.ofNat i) % regionSpan).toNat = off + i := by
+    rw [UInt64.toNat_mod, hs, hsum]; omega
+  rw [hq', hm', hr]; rfl
+
+@[csimp] theorem cellOk_eq_fast : @cellOk = @cellOkFast := by
+  funext a
+  cases hc : cellOk a with
+  | true =>
+    obtain ⟨r, off, hd, hp, h7⟩ := cellOk_spec hc
+    have h := h7 7 (by omega)
+    have hb : off + 7 < 0x1000000000 := by
+      unfold decodeAddr at h
+      obtain ⟨_, _, he⟩ := Option.map_eq_some_iff.mp h
+      have := (Prod.mk.inj he).2
+      have hs : regionSpan.toNat = 0x1000000000 := rfl
+      rw [← this, UInt64.toNat_mod, hs]; omega
+    symm
+    simp only [cellOkFast, hd, hp, ne_eq, not_false_eq_true, decide_true, Bool.true_and, decide_eq_true_eq]
+    omega
+  | false =>
+    symm
+    unfold cellOk at hc
+    unfold cellOkFast
+    split at hc
+    · rename_i r off hd
+      try rw [hd]
+      simp only [Bool.and_eq_false_iff, decide_eq_false_iff_not, List.all_eq_false, List.mem_range] at hc ⊢
+      rcases hc with hc | ⟨i, hi, hne⟩
+      · exact Or.inl hc
+      · right
+        intro hb
+        exact hne (decide_eq_true (decodeAddr_add (i := i) hd (by omega)))
+    · simp_all
 
 theorem mapM_asBits_i64 : ∀ (bits : List UInt64), (bits.map (V.sc .i64)).mapM asBits = some bits
   | [] => rfl
@@ -319,8 +394,7 @@ def otherRegion (x a : UInt64) : Bool :=
   | _, _ => false
 
 theorem region_setRegion_other {m : Mem} {r r' : Region} (b : ByteArray) (h : r ≠ r') :
-    (m.setRegion r' b).region r = m.region r := by
-  cases r <;> cases r' <;> first | rfl | exact absurd rfl h
+    (m.setRegion r' b).region r = m.region r := Sem.region_setRegion_ne m b h
 
 theorem store_region_other {m m' : Mem} {x : UInt64} {n : Nat} {v : UInt64} {r r' : Region} {off : Nat}
     (h : m.store x n v = some m') (hd : decodeAddr x = some (r', off)) (hr : r ≠ r') :
@@ -345,7 +419,7 @@ theorem cstr_other {m m' : Mem} {x a : UInt64} {n : Nat} {v : UInt64} (ho : othe
     | some q =>
       obtain ⟨r, o⟩ := q
       rw [hx, ha] at ho
-      have hr : r ≠ r' := by intro e; subst e; revert ho; cases r <;> exact fun h => by simp at h; cases h
+      have hr : r ≠ r' := by intro e; subst e; simp at ho
       unfold CStr readCStr at hc ⊢
       rw [ha] at hc ⊢
       simp only [Option.bind_eq_bind, Option.bind_some] at hc ⊢
@@ -417,17 +491,18 @@ theorem cstrIn_kept {w w' : World} {a : UInt64} {n : Nat} (hx : (Fact.cstrIn a n
   unfold CStr; rw [hrd]; exact hc
 
 /-- A C string's bytes left alone leave what it reads. -/
-theorem text_kept {w w' : World} {a : UInt64} {s : Option String} {n : Nat} {sg : List (String × List Nat)}
+theorem text_kept {w w' : World} {a : UInt64} {s : Option String} {n : Nat} {sg : List (String × List Nat × List Bool)}
     (hx : (Fact.text a s n sg).holds w)
     (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
-    (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.text a s n sg).holds w' := by
+    (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i))
+    (hkw : w'.dev.kernelWrites = w.dev.kernelWrites) : (Fact.text a s n sg).holds w' := by
   obtain ⟨⟨hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩, t, hs, hst, hsg⟩ := hx
   have hd := strSpan_decode hsp
   have hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := fun i hi =>
     Sem.decodeAddr_add hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
   have hb := bytes_kept hp hbytes (strSpan_bound hsp) (hsz r hp) (fun i hi => hu i (by omega))
   obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb
-  refine ⟨⟨?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩, t, ?_, hst, hsg⟩
+  refine ⟨⟨?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩, t, ?_, hst, by rw [hkw]; exact hsg⟩
   · unfold CStr; rw [hrd]; exact hc
   · show readCStr w'.mem a = some t; rw [hrd]; exact hs
 
@@ -738,7 +813,7 @@ theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.hold
     | part _ _ => cases hr
     | cell _ _ => cases hr
     | held _ _ | opened _ _ | htAt _ _ _ | cstr _ | devSeq | oracles | cstrIn _ _ | roomArg _ _ | devBuf _ _
-    | pinnedUsed _ | streams _ | events _ | evLive _ | readyAll _ | evAll _ | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ | text _ _ _ _
+    | pinnedUsed _ | streams _ | events _ | evLive _ | readyAll _ | evAll _ | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ _ | modText _ _ | fnText _ _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ | text _ _ _ _
     | nwg _ | wgo _ _ | wg1 _ _ | wgText _ _ _ => cases hr
   · cases h
 
@@ -830,18 +905,79 @@ theorem readTo_of_state {S : TState} {w : World} {dst fileOff size : UInt64} {p 
 -- What a program's own store leaves
 -- ---------------------------------------------------------------------------
 
+/-- Whether a store of `n` bytes at `a` leaves every byte of the cell at `c`
+    alone. -/
+def cellKeeps (a : UInt64) (n : Nat) (c : UInt64) : Bool :=
+  (List.range 8).all fun i => !within a n (c + UInt64.ofNat i)
+
+/-- `cellKeeps`, computed in 64-bit arithmetic: the store is empty, or the
+    cell starts at least `n` bytes past `a` without wrapping. -/
+def cellKeepsFast (a : UInt64) (n : Nat) (c : UInt64) : Bool :=
+  n == 0 || (decide (n < 2 ^ 64) && UInt64.ofNat n ≤ c - a && c - a ≤ 0xFFFFFFFFFFFFFFF8)
+
+theorem cellKeeps_nat (d n : Nat) (hd : d < 2 ^ 64) :
+    ((List.range 8).all fun i => !decide ((d + i) % 2 ^ 64 < n)) =
+      (n == 0 || (decide (n < 2 ^ 64) && decide (n ≤ d) && decide (d ≤ 2 ^ 64 - 8))) := by
+  rw [show List.range 8 = [0, 1, 2, 3, 4, 5, 6, 7] from rfl]
+  simp only [List.all_cons, List.all_nil]
+  by_cases h0 : n = 0
+  · subst h0; simp
+  · rw [show (n == 0) = false from by simp [h0], Bool.false_or]
+    by_cases hb : d ≤ 2 ^ 64 - 8
+    · have e : ∀ i, i < 8 → (d + i) % 2 ^ 64 = d + i := fun i hi => Nat.mod_eq_of_lt (by omega)
+      rw [e 0 (by omega), e 1 (by omega), e 2 (by omega), e 3 (by omega), e 4 (by omega), e 5 (by omega),
+        e 6 (by omega), e 7 (by omega)]
+      by_cases hn : n ≤ d
+      · have : n < 2 ^ 64 := by omega
+        simp [hn, hb, this]; omega
+      · simp [hn]
+    · have : ∃ i, i < 8 ∧ (d + i) % 2 ^ 64 = 0 := ⟨2 ^ 64 - d, by omega, by omega⟩
+      obtain ⟨i, hi, hz⟩ := this
+      simp only [hb, decide_false, Bool.and_false]
+      rw [Bool.eq_false_iff]
+      intro h
+      simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_false_iff_not, Nat.not_lt] at h
+      omega
+
+@[csimp] theorem cellKeeps_eq_fast : @cellKeeps = @cellKeepsFast := by
+  funext a n c
+  have hd : (c - a).toNat < 2 ^ 64 := UInt64.toNat_lt _
+  have hw : ∀ i : Nat, i < 8 → within a n (c + UInt64.ofNat i) = decide (((c - a).toNat + i) % 2 ^ 64 < n) := by
+    intro i hi
+    have hio : (UInt64.ofNat i).toNat = i := by simp; omega
+    simp only [within]
+    congr 2
+    rw [show c + UInt64.ofNat i - a = (c - a) + UInt64.ofNat i by
+      rw [UInt64.sub_eq_add_neg, UInt64.sub_eq_add_neg, UInt64.add_assoc, UInt64.add_comm (UInt64.ofNat i),
+        ← UInt64.add_assoc]]
+    rw [UInt64.toNat_add, hio]
+  have hl : ((List.range 8).all fun i => !within a n (c + UInt64.ofNat i)) =
+      ((List.range 8).all fun i => !decide (((c - a).toNat + i) % 2 ^ 64 < n)) := by
+    rw [show List.range 8 = [0, 1, 2, 3, 4, 5, 6, 7] from rfl]
+    simp only [List.all_cons, List.all_nil, hw 0 (by omega), hw 1 (by omega), hw 2 (by omega), hw 3 (by omega),
+      hw 4 (by omega), hw 5 (by omega), hw 6 (by omega), hw 7 (by omega)]
+  unfold cellKeeps cellKeepsFast
+  rw [hl, cellKeeps_nat _ _ hd]
+  congr 1
+  by_cases hn : n < 2 ^ 64
+  · have e1 : (UInt64.ofNat n ≤ c - a) = (n ≤ (c - a).toNat) := by
+      rw [UInt64.le_iff_toNat_le]; simp; omega
+    have e2 : (c - a ≤ 0xFFFFFFFFFFFFFFF8) = ((c - a).toNat ≤ 2 ^ 64 - 8) := by
+      rw [UInt64.le_iff_toNat_le]; rfl
+    simp only [hn, decide_true, Bool.true_and, e1, e2]
+  · simp [hn]
+
 /-- Whether a store of `n` bytes at `a` keeps a fact. -/
 def storeKeeps (a : UInt64) (n : Nat) : Fact → Bool
   | .part _ _ | .room _ _ | .held _ _ | .opened _ _ | .devSeq | .oracles | .roomArg _ _
   | .devBuf _ _ | .pinnedUsed _ | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _
-  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => true
+  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ _ | .modText _ _ | .fnText _ _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => true
   | .nwg _ | .wgo _ _ | .wg1 _ _ => true
   | .text c _ k _ | .wgText c k _ => decide (a.toNat + n ≤ c.toNat ∨ (c.toNat + k ≤ a.toNat ∧ a.toNat + n ≤ 2 ^ 64))
-  | .cell c _ => cellOk c && (List.range 8).all fun i => !within a n (c + UInt64.ofNat i)
+  | .cell c _ => cellOk c && cellKeeps a n c
   | .cstr _ => false
   | .cstrIn c k => decide (a.toNat + n ≤ c.toNat ∨ (c.toNat + k ≤ a.toNat ∧ a.toNat + n ≤ 2 ^ 64))
-  | .htAt c _ _ => decide (a.toNat < (regionBase .pinned).toNat) && cellOk c &&
-      (List.range 8).all fun i => !within a n (c + UInt64.ofNat i)
+  | .htAt c _ _ => decide (a.toNat < (regionBase .pinned).toNat) && cellOk c && cellKeeps a n c
 
 def Fact.isCell : Fact → Bool
   | .cell _ _ | .cstr _ | .cstrIn _ _ | .htAt _ _ _ | .text _ _ _ _ | .wgText _ _ _ => true
@@ -884,7 +1020,7 @@ theorem nonCell_kept {S : TState} {w w' : World} (hS : S.holds w) (hp : ∀ p : 
   | devBuf _ _ => show Device.BufIs _ _ w'.dev; rw [hdv.1]; exact this
   | pinnedUsed n => show w'.mem.sizes .pinned ≤ n; rw [hsz]; exact this
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl hdv.1 this
-  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl hdv.1 this
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ _ | modText _ _ | fnText _ _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl hdv.1 this
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl hdv.2.2.2.1 this
   | wgText _ _ _ => cases hc
 
@@ -919,7 +1055,7 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
   | devBuf _ _ => show Device.BufIs _ _ w'.dev; rw [hdv.1]; exact hx0
   | pinnedUsed n => show w'.mem.sizes .pinned ≤ n; rw [hsz]; exact hx0
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl hdv.1 hx0
-  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl hdv.1 hx0
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ _ | modText _ _ | fnText _ _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl hdv.1 hx0
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl hdv.2.2.2.1 hx0
   | wgText c k sh =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
@@ -949,7 +1085,7 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
   | text c t k _ =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
       have hw := hx0.1.2.1
-      refine text_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      refine text_kept hx0 (fun rg _ => congrFun hsz rg) (fun i hi => Unchanged.of_eq ?_) (by rw [hdv.1])
       refine Mem.store_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -959,10 +1095,10 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
   | cell c v =>
-      simp only [storeKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true'] at hk
+      simp only [storeKeeps, cellKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true'] at hk
       exact store_cell_kept hsz h hn hk.1 hk.2 hx0
   | htAt c m m' =>
-      simp only [storeKeeps, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range,
+      simp only [storeKeeps, cellKeeps, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range,
         Bool.not_eq_true'] at hk
       obtain ⟨⟨ha, hc⟩, hmiss⟩ := hk
       obtain ⟨r, off, hd, -⟩ := Sem.store_frame h
@@ -985,7 +1121,7 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
 theorem storeKeeps_cell_of {a c v : UInt64} {n : Nat} (hc : cellOk c = true)
     (hd : a.toNat + n ≤ c.toNat ∨ c.toNat + 8 ≤ a.toNat) (hw : a.toNat + n ≤ 2 ^ 64)
     (hcw : c.toNat + 8 ≤ 2 ^ 64) : storeKeeps a n (.cell c v) = true := by
-  simp only [storeKeeps, hc, Bool.true_and, List.all_eq_true, List.mem_range, Bool.not_eq_true']
+  simp only [storeKeeps, cellKeeps, hc, Bool.true_and, List.all_eq_true, List.mem_range, Bool.not_eq_true']
   intro i hi
   simp only [within, decide_eq_false_iff_not, Nat.not_lt]
   have hci : (c + UInt64.ofNat i).toNat = c.toNat + i := by
@@ -1007,7 +1143,7 @@ theorem storeKeeps_mono {a : UInt64} {m n : Nat} {x : Fact} (h : storeKeeps a m 
     storeKeeps a n x = true := by
   cases x with
   | cell c v =>
-      simp only [storeKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true',
+      simp only [storeKeeps, cellKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true',
         within, decide_eq_false_iff_not, Nat.not_lt] at h ⊢
       exact ⟨h.1, fun i hi => Nat.le_trans hn (h.2 i hi)⟩
   | cstrIn c k =>
@@ -1018,7 +1154,7 @@ theorem storeKeeps_mono {a : UInt64} {m n : Nat} {x : Fact} (h : storeKeeps a m 
       omega
   | cstr _ => simp [storeKeeps] at h
   | htAt c k k' =>
-      simp only [storeKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true',
+      simp only [storeKeeps, cellKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true',
         within, decide_eq_false_iff_not, Nat.not_lt] at h ⊢
       exact ⟨h.1, fun i hi => Nat.le_trans hn (h.2 i hi)⟩
   | _ => rfl

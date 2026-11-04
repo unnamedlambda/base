@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Ptx.Block
-meta import AlgorithmLib.ML.Ptx.Block
+public import AlgorithmLib.ML.Ptx.BodyWarp
+meta import AlgorithmLib.ML.Ptx.BodyWarp
 public import AlgorithmLib.ML.Math.KVCache
 meta import AlgorithmLib.ML.Math.KVCache
 public import AlgorithmLib.ML.Launch.Interchange
@@ -35,9 +35,11 @@ import all Init.Data.List.Sort.Basic
   ## Scope
 
   Proven: a model written as an `Expr` compiles to an `EWStmt`, elaborates into
-  the warp machine, lowers through `PtxM`/`PtxFlat`/`PtxPrint`, and the emitted
-  PTX runs the spec — from raw launch, at exact `Float32` equality, under the
-  declared laws below.  This covers **each kernel this library emits**.
+  the warp machine, and the statement's body kernel (`Body.kernel`), launched,
+  leaves every word a lane touches as the warp machine's run does
+  (`BodyWarp.launch_lockstep`, decided per launch by `BodyCheck.launch_body`),
+  at the words the hardware computes on (`F32`), under the declared laws
+  below.  This covers **each kernel this library emits**.
 
   Composition is proven at the `Pipeline` level: `run_denote` derives an n-ary
   composite from the stage list rather than restating it, and
@@ -50,10 +52,10 @@ import all Init.Data.List.Sort.Basic
 
   | # | trusted | extent |
   |---|---|---|
-  | 1 | PTX opcode text encoding | `PtxPrint` renders ~20 opcodes; no theorem ties the emitted text to `PInstr` semantics.  Everything *structural* — registers, addresses, branches, loops — is proven, and `qwen2_emit_ok` discharges branch resolution and printability.  Same position CompCert's assembly printer occupies. |
+  | 1 | PTX text encoding | `Kernel.Ptx` prints a body's code as PTX; no theorem ties the text to the code's semantics, which is what the launch theorems are about.  The printer is tested against the hardware (every kernel corpus agrees with the GPU).  Same position CompCert's assembly printer occupies. |
   | 2 | `ptxas` and the GPU | instruction semantics, and that `ptxas` does not contract `mul`+`add` into `fma`.  The second is not assumed blindly: `.rn` variants are emitted to prevent it, after a bit-exact test caught it. |
   | 3 | cuBLAS `sgemv` | ~99.9% of the shipped model's arithmetic, carried as the **named** assumption `Law.cublasIsMatvec`, stated as a left-to-right `Float32` fold, which is the only form expressible without an ℝ semantics for `Float32` — and therefore stronger than NVIDIA guarantees, since no fold order is pinned at any version.  It appears in the type of anything depending on it. |
-  | 4 | the CLIF host program | The checker proves a shipped body misuses no call and does not fault (`check_body`). For the CIFAR bodies (with and without cuBLAS), the wide backward body and the Qwen block's replays, the device writes a run makes are read from its calls (`check_calls`, `ML.launchesOf_runCalls`, `ML.launchesOf_mixedCalls`, `ML.launchesOf_replayCalls`), so the plan proven of the kernels is the one the shipped code runs; a replay's plan is the captured pipeline's, and what the capture recorded is `MlpCifar.qwen_capture_records_the_run`. The Qwen block's other entries have no shipped theorem yet, and the ViT and gpt-oss state no plan over their device writes. |
+  | 4 | the CLIF host program | The checker proves a shipped body misuses no call and does not fault (`check_body`). Every run of a shipped training body that ends makes exactly its calls (`check_calls`), and so, on a device honest about each launch and each product, leaves device memory as the model's tape does: the CIFAR network's forward and backward with and without cuBLAS (`MlpCifarSafe2.runFwd_tape`, `runBwd_tape`, `runFwdBlas_tape`, `runBwdBlas_tape`), the Qwen block's step (`QwenRunSafe.runBlock_tape`) and its capture followed by `k` replays, `k` steps of it (`QwenReplaySafe.capture_replay_tape`), the ViT's forward and training step (`VitWords.fwd_agree`, `VitStep.step_agree`) and its capture followed by a replay (`VitReplayWords.capture_replay_agree`). The checker's acceptance of every body is decided by compiled evaluation (`check_body`, `ship_entry`), so these theorems also rest on the compiler. The ViT's ranges and captures start from what `main` is proven to leave (`VitSafe.main_reaches`, `VitState.after`), its replay from that with the forward's graph made, and they take as a hypothesis that the device says each ViT kernel writes only its members' outputs (`Dev.kernelWrites`, through the module claims `Drv.App.loadTS` makes); `Vit.vit_launch_keeps` proves it of each kernel's statement, so what rests on trust is that the device runs the printed text as that statement (row 1). The ViT's forward run makes exactly its units' calls in the schedule's order (`VitCalls.run_calls`), and a run of the forward or of a whole training step leaves every word inside each buffer as the tape leaves it, each contraction read as cuBLAS computes it (`VitWords.fwd_agree`, `VitStep.step_agree`), on a device honest about each launch (`TapeLayout.KernelHonest`: where the group's statement kernel runs, the device leaves what one run leaves) and each product (`VendorGemmHonest`); each group's statement kernel runs over buffers of the layout's sizes (`Vit.vit_runs`), every thread answered as the laws give back and ending (`BodyEnds.launch_exists`); gpt-oss states no plan over its device writes. |
   | 5 | the ℝ bridge | `instNumOpsReal` maps DSL operations to Mathlib operations by name.  `instNumLawsReal` is *proven* on top of it, and `sderiv_hasDerivAt` proves `sderiv` is Mathlib's derivative — but only on the `Regular` fragment, which excludes `letE`. |
   | 6 | `Float32` | native operations with no IEEE model.  `NumLaws` is inhabited at `ℝ` and `Int` only, so no theorem here reasons about float rounding. |
 
@@ -67,7 +69,7 @@ import all Init.Data.List.Sort.Basic
 
   | law | content |
   |---|---|
-  | `ExpIsEx2` | `e^x = 2^(x·log₂e)` — PTX has no exact `exp`.  Measured 5.06e-7 on silu. |
+  | `ExpIsEx2` | `e^x = 2^(x·log₂e)` — PTX has no exact `exp`.  At `F32` a body's `exp` is that rewrite by definition, so the launch theorems do not carry it.  Measured 5.06e-7 on silu. |
   | `SumAssoc` | butterfly reduction = sequential fold.  Measured: 100000024 vs 100000000. |
   | `LaneRegroup` | any lane-partitioned fold read as the flat one, given a proof that the walk covers each element once.  Two schedules of one reduction differ by 14%.  `StridedRegroup` is its instance at the interleaved walk. |
   | `CuBlasIsMatvec` | a vendor GEMV equals a left-to-right `Float32` fold of the matvec.  The only form expressible without an ℝ semantics for `Float32`, and therefore *stronger* than NVIDIA guarantees, whose fold order is unspecified. |
@@ -96,11 +98,9 @@ section LedgerAnchors
 example := @compileW_sound
 example := @compileWKernel_correct
 example := @compileW_frame
-example := @emitIdx_sound
-example := @emitEW_sound
-example := @emitEW_frame
-example := @flatEW_sound
-example := @flatKernel_sound
+example := @BodyWarp.wpE_body
+example := @BodyWarp.thread_ends
+example := @BodyWarp.launch_lockstep
 
 -- differentiation
 example := @grad_correct
@@ -121,7 +121,6 @@ example := @dotStrided_implements
 -- A41: the function-first surface
 example := @ofFn
 example := @kernelOfFn
-example := @mapKernel_ofFn_ptx_exact
 example := @slice
 example := @matSlice
 example := @stackLayers
@@ -169,11 +168,8 @@ example := @Law.all_covers
 example := @VendorKernel.all_covers
 example := @bfly_eq_laneSum
 example := @gradProgD_correct
-example := @blockReduce_sound
 example := @warpDotV4_implements
 example := @warpSumSqV4Store_implements
-example := @blockReduce_sound
-example := @blockStore_perm
 example := @strideCover
 
 -- the declared propositions, so a rename cannot orphan its ledger entry
@@ -204,20 +200,12 @@ example := @AlgorithmLib.ML.outerBatchedStage_readsIn
 example := @AlgorithmLib.ML.mapStage_readsIn
 
 -- results stated about shipped artifacts, reachable only from here
-example := @AlgorithmLib.ML.blockKernel_sound
-example := @AlgorithmLib.ML.runWarpN_coherent
-example := @AlgorithmLib.ML.blockStoreEW_emits
-example := @AlgorithmLib.ML.blockStoreEW_idxBelow
-example := @AlgorithmLib.ML.blockStoreEW_expFree
 example := @AlgorithmLib.ML.maxReduce_spec
 example := @AlgorithmLib.ML.sumReduce_spec
 example := @AlgorithmLib.ML.storePass_spec
-example := @AlgorithmLib.ML.emitKernelSI_sound
-example := @AlgorithmLib.ML.programText_endLabel
 example := @AlgorithmLib.ML.elemIx_val
 example := @AlgorithmLib.ML.outerStage_exclusive
 example := @AlgorithmLib.ML.warpDotV4_sumsq
-example := @AlgorithmLib.ML.warpReduceMaxE_expFree
 example := @AlgorithmLib.ML.warpReduceMaxE_idxFree
 example := @AlgorithmLib.ML.strided_eq_flatSum
 example := @AlgorithmLib.ML.grad_correct_int

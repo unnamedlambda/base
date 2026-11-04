@@ -7,9 +7,56 @@ package algorithmLib where
   -- alone does not rebuild the modules that import it.
   leanOptions := #[⟨`experimental.module, true⟩]
 
+/-! # Libraries
+
+The modules are compiled to native code (`precompileModules`), so that what a
+claim decides by evaluation runs at native speed. A module of another package
+loads a precompiled library whole, and so rebuilds whenever any module of that
+library changes. The library is therefore split where its imports split: the
+base everything stands on, and the two developments on it, LZ4 and ML, which do
+not import each other. An ML edit rebuilds what imports ML, not what imports
+only the base or LZ4. Each library's roots differ from its name, so Lake loads
+it as a plain shared library, each imported module initialized by itself,
+rather than as a plugin initialized through one module named after it. -/
+
+/-- Everything, by its root module `AlgorithmLib`, which nothing imports. -/
 @[default_target]
 lean_lib AlgorithmLib where
-  globs := #[.andSubmodules `AlgorithmLib]
+  roots := #[`AlgorithmLib]
+
+/-- What every development stands on: the host and its semantics, the
+    checker, the kernel layer and the generator toolkit. -/
+@[default_target]
+lean_lib AlgorithmBase where
+  roots := #[`AlgorithmLib.Gen]
+  globs := #[.submodules `AlgorithmLib.Core, .submodules `AlgorithmLib.Vocab,
+    .submodules `AlgorithmLib.Host, .submodules `AlgorithmLib.Surface,
+    .submodules `AlgorithmLib.Proof, .submodules `AlgorithmLib.Check,
+    .submodules `AlgorithmLib.Kernel, .one `AlgorithmLib.Gen]
+  precompileModules := true
+
+/-- What is proved of the compilers themselves: that a kernel body's PTX does
+    what the body does. Only the root `AlgorithmLib` imports it, so the tree's
+    build checks it; it decides nothing by evaluation, so it is not
+    precompiled: an edit rebuilds it alone rather than relinking the base
+    library every package loads. -/
+@[default_target]
+lean_lib AlgorithmSound where
+  globs := #[.submodules `AlgorithmLib.Sound]
+
+/-- The LZ4 development. -/
+@[default_target]
+lean_lib AlgorithmLZ4 where
+  roots := #[`AlgorithmLib.LZ4]
+  globs := #[.andSubmodules `AlgorithmLib.LZ4]
+  precompileModules := true
+
+/-- The ML development. -/
+@[default_target]
+lean_lib AlgorithmML where
+  roots := #[`AlgorithmLib.ML]
+  globs := #[.andSubmodules `AlgorithmLib.ML]
+  precompileModules := true
 
 /-! # Artifacts
 

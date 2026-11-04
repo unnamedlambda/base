@@ -1,122 +1,22 @@
 module
-public import AlgorithmLib.LZ4.SimtEmit
-meta import AlgorithmLib.LZ4.SimtEmit
-public import AlgorithmLib.LZ4.WarpEmit
-meta import AlgorithmLib.LZ4.WarpEmit
+public import AlgorithmLib.LZ4.WarpDSL
+meta import AlgorithmLib.LZ4.WarpDSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
-open AlgorithmLib AlgorithmLib.LZ4Simt
+open AlgorithmLib
 
--- ── Collective lowerings (match the machine segments in `compressorBodyInstrs`) ─
+/-- **Slack between the input and the output.** A cooperative copy loads on
+    all 32 lanes and stores only below its length, so a lane reads up to 31
+    bytes past the end of the literal run, and the final literal run reaches the
+    block's end. The slack keeps the last block's over-read inside the
+    allocation and out of the first block's output. `31` suffices; `32` is the
+    warp width. -/
+def copySlack : Nat := 32
 
-/-- `coopExtendStep` → 14-instr per-lane compare + `vote;bnot;brev;clz` reduction. -/
-def coopExtendEmit (adv : String) : List SInstr :=
-  [ .binr .add "idx" "ml" "lane",
-    .binr .add "pe" "p0" "idx",
-    .setp .lt "pIn" "pe" (.reg "ecR"),
-    .binr .min "peC" "pe" "ec1",
-    .binr .sub "dfe" "peC" "p0",
-    .binr .add "caC" "cand0" "dfe",
-    .mov "peD" (.reg "peC"),
-    .binr .add "aP" "inBase" "peD",
-    .mov "caD" (.reg "caC"),
-    .binr .add "aC" "inBase" "caD",
-    .ldgo "bP" "aP" 0,
-    .ldgo "bC" "aC" 0,
-    .setp .eq "pEqB" "bP" (.reg "bC"),
-    .andp "pOk" "pIn" "pEqB",
-    .vote "balOk" "pOk",
-    .bnot "mis" "balOk",
-    .brev "revM" "mis",
-    .clz adv "revM" ]
-
-/-- `coopWindow` → per-lane probe (hash → table lookup → 4-byte verify), select
-    first hit (`vote;brev;clz`), insert-after-select, and extract `(found,p0,cand0)`.
-    Mirrors `compressorBodyInstrs` lines 464–496 (the machine's window-find). -/
-def coopWindowEmit (found p0 cand0 sp : String) (inStride searchLim hashLog : Nat) : List SInstr :=
-  let hashShift := 32 - hashLog
-  let mask := 2 ^ hashLog - 1
-  [ .binr .add "posP" sp "lane",
-    .setp .lt "pValid" "posP" (.imm searchLim),
-    .mov "cap4" (.imm (inStride - 4)),
-    .binr .min "rp" "posP" "cap4",
-    .binr .add "rpA" "inBase" "rp",
-    -- load4 at inBase+rp → v32
-    .ldgo "b0" "rpA" 0, .ldgo "b1" "rpA" 1, .ldgo "b2" "rpA" 2, .ldgo "b3" "rpA" 3,
-    .bin .shl "b1" "b1" (.imm 8), .bin .shl "b2" "b2" (.imm 16), .bin .shl "b3" "b3" (.imm 24),
-    .bin .bor "v32" "b0" (.reg "b1"), .bin .bor "v32" "v32" (.reg "b2"),
-    .bin .bor "v32" "v32" (.reg "b3"),
-    .bin .mul "hh" "v32" (.imm wHashK),
-    .bin .shr "hh" "hh" (.imm hashShift),
-    .bin .band "hh" "hh" (.imm mask),
-    .bin .shl "hh" "hh" (.imm 1),
-    .binr .add "addr" "hh" "tbl",
-    .ldsh "candRaw" "addr",
-    .bin .sub "cand" "candRaw" (.imm 1),
-    .binr .min "rc" "cand" "cap4",
-    .binr .add "rcA" "inBase" "rc",
-    .ldgo "c0" "rcA" 0, .ldgo "c1" "rcA" 1, .ldgo "c2" "rcA" 2, .ldgo "c3" "rcA" 3,
-    .bin .shl "c1" "c1" (.imm 8), .bin .shl "c2" "c2" (.imm 16), .bin .shl "c3" "c3" (.imm 24),
-    .bin .bor "vc" "c0" (.reg "c1"), .bin .bor "vc" "vc" (.reg "c2"), .bin .bor "vc" "vc" (.reg "c3"),
-    .setp .ne "pNE" "candRaw" (.imm 0),
-    .setp .lt "pCO" "cand" (.reg "posP"),
-    .setp .eq "pEq" "vc" (.reg "v32"),
-    .andp "pH1" "pValid" "pNE", .andp "pH2" "pH1" "pCO", .andp "pHit" "pH2" "pEq",
-    .vote "bal" "pHit", .brev "rev" "bal", .clz "fl" "rev",
-    .setp .le "pLe" "lane" (.reg "fl"), .andp "pIns" "pLe" "pValid",
-    .bin .add "pp1" "posP" (.imm 1), .stshp "pIns" "addr" "pp1", .barwarp,
-    .binr .add p0 sp "fl",
-    .shfl cand0 "cand" "fl",
-    .setp .ne found "bal" (.imm 0) ]
-
--- ── The lowering function ─────────────────────────────────────────────────────
-
-abbrev EmitM := StateM Nat
-
-def freshLabel (pfx : String) : EmitM String := do
-  let n ← get; set (n + 1); pure (pfx ++ toString n)
-
-/-- Lower a `WStmt` to `SInstr`, generating fresh branch labels for `uif`/`uwhile`. -/
-def WStmt.emitM : WStmt → EmitM (List SInstr)
-  | .skip => pure []
-  | .seq a b => do let ea ← a.emitM; let eb ← b.emitM; pure (ea ++ eb)
-  | .bin o d a b => pure [.bin o.toS d a b.toS]     -- SArg form (matches simSL_bin)
-  | .setp c d a b => pure [.setp c d a b.toS]
-  | .mov d a => pure [.mov d a.toS]
-  | .ldgB d addr off => pure [.ldgo d addr off]
-  | .ldshU d addr => pure [.ldsh d addr]
-  | .stgB addr val => pure [.stg addr val]          -- all-lane (matches simSL_stgB; scalar uniform)
-  | .stshU addr val => pure [.stsh addr val]
-  | .uif cond t e => do
-      let lElse ← freshLabel "Le"; let lEnd ← freshLabel "Ln"
-      let et ← t.emitM; let ee ← e.emitM
-      pure (uifEmit cond lElse lEnd et ee)
-  | .uwhile cond body => do
-      let lHead ← freshLabel "Lh"; let lEnd ← freshLabel "Lx"
-      let eb ← body.emitM
-      pure (uwhileEmit cond lHead lEnd eb)
-  | .coopCopy dst src len => do
-      -- 32-lane strided copy loop: while i<len { out[dst+i+lane]=in[src+i+lane]; i+=32 }
-      let lH ← freshLabel "Ch"; let lX ← freshLabel "Cx"
-      pure (
-        [ .mov "cpI" (.imm 0), .setp .lt "cpCont" "cpI" (.reg len) ] ++
-        uwhileEmit "cpCont" lH lX
-          [ .binr .add "cpDo" dst "cpI", .binr .add "cpDo" "cpDo" "lane",
-            .binr .add "cpSo" src "cpI", .binr .add "cpSo" "cpSo" "lane",
-            .binr .add "cpJ" "cpI" "lane", .setp .lt "cpP" "cpJ" (.reg len),
-            .ldgo "cpB" "cpSo" 0, .stgp "cpP" "cpDo" "cpB",
-            .bin .add "cpI" "cpI" (.imm 32),
-            .setp .lt "cpCont" "cpI" (.reg len) ] )
-  | .coopWindow found p0 cand0 sp inStride searchLim hashLog _ =>
-      pure (coopWindowEmit found p0 cand0 sp inStride searchLim hashLog)
-  | .coopExtendStep adv _ _ _ _ _ => pure (coopExtendEmit adv)
-
-def WStmt.emit (s : WStmt) : List SInstr := (s.emitM.run 0).1
-
--- ── The compressor body as a `WStmt` (uniform emit sequences + collectives) ────
+-- ── The compressor's warp program ──
 
 /-- Fold a list of statements into a right-nested `seq`. -/
 def wseq : List WStmt → WStmt
@@ -210,14 +110,3 @@ def compressorBodyWStmt (inStride lenOff hashLog : Nat) : WStmt :=
     .bin .add "la1" "la0" (.imm 1), .bin .shr "ls" "op" (.imm 8), .bin .band "lb" "ls" (.imm 255), .stgB "la1" "lb",
     .bin .add "la2" "la0" (.imm 2), .bin .shr "ls" "op" (.imm 16), .bin .band "lb" "ls" (.imm 255), .stgB "la2" "lb",
     .bin .add "la3" "la0" (.imm 3), .bin .shr "ls" "op" (.imm 24), .bin .band "lb" "ls" (.imm 255), .stgB "la3" "lb" ]
-
-/-- The emitted body program (fresh labels from 0). -/
-def compressorBodyEmit (inStride lenOff hashLog : Nat) : List SInstr :=
-  (compressorBodyWStmt inStride lenOff hashLog).emit
-
-/-- The full DSL compressor kernel: reused prologue (ids, base pointers, table
-    clear, ending at `loop`) followed by the emitted `WStmt` body. -/
-def warpKernelDSL (numBlocks inStride outStride lenOff hashLog : Nat) : Array SInstr :=
-  (AlgorithmLib.LZ4Simt.prologueInstrs numBlocks inStride outStride hashLog
-    ++ compressorBodyEmit inStride lenOff hashLog
-    ++ ([SInstr.lbl "OOB", SInstr.ret])).toArray

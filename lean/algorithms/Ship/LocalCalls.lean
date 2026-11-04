@@ -7,11 +7,10 @@ import AlgorithmLib.Surface.ProgFFI
 # A program's own calls, by their callees' summaries
 
 A wrapper that calls two of the program's functions neither misuses a call nor
-faults where its hypotheses give each callee's `Summary`: the generator reads
-each call by the summary it finds for that function on those arguments
-(`wp_local_void`). A callee's summary comes from its own condition with the
-post that the world it leaves holds the summary's typestate
-(`triple_of_wp_entry`, then `summary_succ`).
+faults where its hypotheses give each callee's `Summary`: the checker reads
+each call by the summary it finds for that function on those arguments. A
+callee's summary comes from its own run, with the post that the world it
+leaves holds the summary's typestate (`summary_succ`).
 -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg AlgorithmLib.HProg.Sem

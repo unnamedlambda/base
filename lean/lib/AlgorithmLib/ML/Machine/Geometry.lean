@@ -17,9 +17,8 @@ import all Init.Data.List.Sort.Basic
   are facts about the *launch*, chosen elsewhere.  Get either wrong and every
   theorem still holds while the kernel reduces the wrong set.
 
-  **Buffer binding.**  `emitProvenKernelN` declares `nbuf` parameters loaded into
-  `%rd0 … %rd(nbuf−1)`, and address formation uses `%rd{b}` for buffer `b`.  A
-  kernel naming `b ≥ nbuf` emits a reference to an undeclared register.
+  **Buffer binding.**  A body kernel declares `nbuf` buffer parameters, and a
+  statement naming `b ≥ nbuf` reads one it was never handed.
   `EWStmt.IdxBelow` does not cover this: it bounds integer **register** indices,
   not buffers.
 
@@ -66,8 +65,8 @@ def IdxE.bufsOf : IdxE → List Buf
 
 /-- **Every buffer the kernel touches is inside the binding table.**
 
-    The check that makes the emitted PTX well-formed: buffer `b` becomes
-    `%rd{b}`, and `emitProvenKernelN` declares exactly `%rd0 … %rd(nbuf−1)`. -/
+    A body kernel declares `nbuf` buffer parameters; a statement naming no
+    buffer past them reads only the ones it is handed. -/
 def EWStmt.BufBelow (n : Nat) : EWStmt → Prop
   | .skip                 => True
   | .seq a b              => a.BufBelow n ∧ b.BufBelow n

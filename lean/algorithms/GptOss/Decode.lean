@@ -135,17 +135,17 @@ def fileRopeSin : Nat := fileRope + ROPE_FILE_ROWS * HALF * 4
 /-! ## PTX slots -/
 
 def dPtx : List String :=
-  [ ptxRmsNorm, ptxAdd, emitProvenKernelN "main" 3 0 ropeQEW
-  , emitProvenKernelN "main" 3 0 ropeKEW
-  , ptxKVStore (QO / 2) HDW, ptxKVStore (KO / 2) HDW
-  , ptxSinkSoftmax, GptOssKernels.moduleFor GptOssKernels.narrowBf16
-  , GptOssKernels.moduleFor GptOssKernels.gateUpSwigluGemv
-  , GptOssKernels.moduleFor GptOssKernels.downGemvBias
-  , GptOssKernels.moduleFor GptOssKernels.moeCombine4
-  , GptOssKernels.moduleFor GptOssKernels.routerTop4
-  , GptOssKernels.moduleFor GptOssKernels.argmaxLogits
-  , GptOssKernels.moduleFor GptOssKernels.widenBf16
-  , GptOssKernels.moduleFor GptOssKernels.sampleLogits
+  [ GptOssKernels.Body.moduleOf rmsKernel, GptOssKernels.Body.moduleOf addKernel, GptOssKernels.Body.moduleOf (ropeKernel 0)
+  , GptOssKernels.Body.moduleOf (ropeKernel QO)
+  , GptOssKernels.Body.moduleOf (kvStoreKernel (QO / 2) HDW), GptOssKernels.Body.moduleOf (kvStoreKernel (KO / 2) HDW)
+  , GptOssKernels.Body.moduleOf sinkKernel, GptOssKernels.Body.moduleOf GptOssKernels.Body.narrow
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.gateUp
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.downGemv
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.moeCombine4
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.routerTop4
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.argmax
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.widen
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.sample
   , GptOssKernels.moduleFor GptOssKernels.fusedAttnTile
   , GptOssKernels.moduleFor GptOssKernels.fusedAttnCombine ]
 
@@ -289,7 +289,7 @@ theorem gptoss_decode_alloc_covers :
 
 /-! ## Memory map -/
 
-def DSLOT : Nat := 0x20000
+def DSLOT : Nat := 0x30000
 def DPTX_OFF : Nat := 0x0100
 def dSlotOff (i : Nat) : Nat := DPTX_OFF + i * DSLOT
 def DBIND_OFF : Nat := dSlotOff dPtx.length

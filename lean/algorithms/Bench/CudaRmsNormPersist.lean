@@ -85,7 +85,7 @@ open AlgorithmLib.Prog
 /-- **The program in the driver's standard layout**: `N`, `x` and `w` in
     allocation 0, `y` in allocation 1, and one kernel handed both. -/
 def app : Drv.App :=
-  { bufs := [0, 0], kernels := [⟨PTX_OFF, PTX_LEN, [0, 1], (1, 1, 1), (256, 1, 1)⟩],
+  { bufs := [0, 0], kernels := [⟨PTX_OFF, PTX_LEN, [0, 1], (1, 1, 1), (256, 1, 1), []⟩],
     memSize := PTX_OFF + PTX_LEN, org := ORG }
 
 /-- Bring the driver up and load the kernel; then, where the data is `N` and

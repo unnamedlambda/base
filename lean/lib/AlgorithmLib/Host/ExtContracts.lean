@@ -904,6 +904,17 @@ theorem mem_launch_ids {d : Dev} {args : List UInt64} {id : Nat}
   obtain ⟨⟨i, off, b⟩, hr, rfl⟩ := Option.map_eq_some_iff.mp e
   exact ⟨a, ha, off, b, hr⟩
 
+theorem mem_writesOf {d : Dev} {f : Option (List Bool)} {args : List UInt64} {id : Nat}
+    (h : id ∈ d.writesOf f args) : ∃ a ∈ args, ∃ off b, d.range? a 0 = some (id, off, b) := by
+  have h := mem_of_mem_eraseDups h
+  obtain ⟨⟨a, i⟩, ha, e⟩ := List.mem_filterMap.mp h
+  dsimp only at e
+  by_cases hc : (f.bind fun x => x[i]?).getD true = true
+  · rw [if_pos hc] at e
+    obtain ⟨⟨j, off, b⟩, hr, rfl⟩ := Option.map_eq_some_iff.mp e
+    exact ⟨a, List.mem_of_getElem? (List.mem_zipIdx_iff_getElem?.mp ha), off, b, hr⟩
+  · rw [if_neg hc] at e; cases e
+
 theorem handleOf_stream_zero : handleOf kStream 0 = none := by decide
 
 /-- A device operation answers when it is not a race in the order it is
@@ -1039,13 +1050,16 @@ theorem cudaStepPre_safe (f : CudaFn) (bits : List UInt64) (w : World) (h : cuda
     · rfl
     · rw [devOnly_isSome]
       simp only [cuRes, Option.bind_eq_bind]
-      have hready : OpReady (w.dev.raceFor p) p []
-          (args.filterMap fun a => (w.dev.range? a 0).map (·.1)).eraseDups := by
+      have hready : OpReady (w.dev.raceFor p) p
+          (args.filterMap fun a => (w.dev.range? a 0).map (·.1)).eraseDups
+          (w.dev.writesOf (w.dev.kernelWrites ptx entry) args) := by
         refine ⟨fun b hb => ?_, fun b hb => ?_⟩
-        · simp only [List.nil_append] at hb
-          obtain ⟨a, ha, off, bb, hra⟩ := mem_launch_ids hb
-          exact (hr a ha b off bb hra).1
-        · obtain ⟨a, ha, off, bb, hra⟩ := mem_launch_ids hb
+        · rcases List.mem_append.mp hb with hb | hb
+          · obtain ⟨a, ha, off, bb, hra⟩ := mem_launch_ids hb
+            exact (hr a ha b off bb hra).1
+          · obtain ⟨a, ha, off, bb, hra⟩ := mem_writesOf hb
+            exact (hr a ha b off bb hra).1
+        · obtain ⟨a, ha, off, bb, hra⟩ := mem_writesOf hb
           exact (hr a ha b off bb hra).2 rfl
       refine bind_some_isSome (devOp_isSome_for hready fun hp => ?_)
       rw [raceFor_of_not_capturing hp] at hready

@@ -74,10 +74,6 @@ def warpCodeAt (w : WP) (org : Nat) : Prog V L Unit := do
 
 def warpCode (w : WP) : Prog V L Unit := warpCodeAt w w.bindOff
 
-/-- The emitted compression, which the host theorems are stated over. -/
-def warpFn (w : WP) : FuncData :=
-  Prog.stateOf 2 (warpCode w)
-
 def warpClif (w : WP) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "load" (Prog.compileProg 1 (loadCode w)),
     Prog.entry "main" (Prog.compileProg 2 (warpCode w))]
@@ -92,6 +88,7 @@ theorem payload_fits (w : WP) : (warpPayloadDSL w).length ≤ w.memSize :=
 open AlgorithmLib.IR AlgorithmLib.HProg in
 def warpArtifactDSL (name : String) (blkLog : Nat) : Except String ArtifactEntry := do
   let w : WP := ⟨blkLog⟩
+  let _ ← w.code.ptx
   let functions ← warpClif w
   return AlgorithmLib.artifactEntry name
     { functions, required_memory := w.memSize, initial_memory := warpPayloadDSL w }

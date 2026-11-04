@@ -7,7 +7,6 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4Plan AlgorithmLib.LZ4 AlgorithmLib.LZ4WarpFind AlgorithmLib.LZ4WarpSched
-  AlgorithmLib.LZ4Simt
 
 /-- The inner extend `uwhile` body of `compressorBodyWStmt`. -/
 def innerExtBody (inStride endCap : Nat) : WStmt := wseq

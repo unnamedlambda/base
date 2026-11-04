@@ -118,10 +118,10 @@ noncomputable def StageSpec.kernel (S : StageSpec) (R : List Nat)
 /-- **The elementwise schema is a device kernel**, reading exactly its inputs. -/
 noncomputable def mapStage_kernel {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
     (grid : Nat) (hio : ∀ i, inB i ≠ out) : KernelDef EWStmt :=
-  (mapStage spec inB out grid hio).kernel ((List.finRange Γ).map inB) (by
+  (mapStage (R := Float32) spec inB out grid hio).kernel ((List.finRange Γ).map inB) (by
     intro m m' hr _ a hown
     obtain ⟨cta, hc, hd⟩ := hown
-    have hex := mapStage_exclusive spec inB out grid hio
+    have hex := mapStage_exclusive (R := Float32) spec inB out grid hio
     rw [StageSpec.step_val _ hex m cta a hc hd, StageSpec.step_val _ hex m' cta a hc hd]
     show denote (fun i => m (inB i) a) spec = denote (fun i => m' (inB i) a) spec
     congr 1

@@ -111,10 +111,14 @@ class Cuda:
         self._check(self.lib.cuDeviceGet(ctypes.byref(dev), 0))
         self.ctx = ctypes.c_void_p()
         self._check(self.lib.cuCtxCreate_v2(ctypes.byref(self.ctx), 0, dev))
+        # one or more modules, each after a line `// module`
         with open(ptx_path, "rb") as f:
-            src = f.read() + b"\0"
-        self.mod = ctypes.c_void_p()
-        self._check(self.lib.cuModuleLoadData(ctypes.byref(self.mod), src))
+            texts = f.read().split(b"// module\n")
+        self.mods = []
+        for src in texts:
+            mod = ctypes.c_void_p()
+            self._check(self.lib.cuModuleLoadData(ctypes.byref(mod), src + b"\0"))
+            self.mods.append(mod)
 
     def _check(self, rc):
         if rc != 0:
@@ -123,9 +127,12 @@ class Cuda:
             raise RuntimeError(f"CUDA error {rc}: {name.value.decode() if name.value else '?'}")
 
     def func(self, name):
-        f = ctypes.c_void_p()
-        self._check(self.lib.cuModuleGetFunction(ctypes.byref(f), self.mod, name.encode()))
-        return f
+        """The kernel `name`, from whichever module declares it."""
+        for mod in self.mods:
+            f = ctypes.c_void_p()
+            if self.lib.cuModuleGetFunction(ctypes.byref(f), mod, name.encode()) == 0:
+                return f
+        raise RuntimeError(f"no module declares {name}")
 
     def upload(self, arr):
         d = ctypes.c_void_p()

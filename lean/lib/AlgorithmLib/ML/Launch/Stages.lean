@@ -9,6 +9,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- Composing stages without writing a proof
 -- ---------------------------------------------------------------------------
 
@@ -24,54 +27,54 @@ namespace AlgorithmLib.ML
 -/
 
 /-- A stage bundled with the proof that its blocks do not race. -/
-abbrev XStage := { S : StageSpec // S.Exclusive }
+abbrev XStage (R : Type := Float32) [NumOps R] [NumLit R] := { S : StageSpec R // S.Exclusive }
 
 /-- **A pipeline from bundled stages** — the list bookkeeping lives here. -/
-def Pipeline.ofStages (ss : List XStage) : Pipeline := ⟨ss.map Subtype.val⟩
+def Pipeline.ofStages (ss : List (XStage R)) : (Pipeline R) := ⟨ss.map Subtype.val⟩
 
 /-- …and its exclusivity is free, at any length. -/
-theorem Pipeline.ofStages_exclusive (ss : List XStage) :
+theorem Pipeline.ofStages_exclusive (ss : List (XStage R)) :
     (Pipeline.ofStages ss).Exclusive := by
   intro S hS
   obtain ⟨⟨_, hT⟩, _, rfl⟩ := List.mem_map.mp hS
   exact hT
 
 /-- …so the composition theorem needs no argument from the caller either. -/
-theorem Pipeline.ofStages_runs (ss : List XStage) (st : WSt) :
+theorem Pipeline.ofStages_runs (ss : List (XStage R)) (st : WSt R) :
     ((Pipeline.ofStages ss).run st).mem = (Pipeline.ofStages ss).denote st.mem :=
   (Pipeline.ofStages ss).run_denote (Pipeline.ofStages_exclusive ss) st
 
 /-- An elementwise pass, bundled. -/
-def mapStageX {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
-    (grid : Nat) (h : ∀ i, inB i ≠ out) : XStage :=
+def mapStageX [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+    (grid : Nat) (h : ∀ i, inB i ≠ out) : (XStage R) :=
   ⟨mapStage spec inB out grid h, mapStage_exclusive _ _ _ _ _⟩
 
 /-- An in-place elementwise pass, bundled — an optimiser step is one. -/
-def mapStageIPX {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
-    (grid : Nat) : XStage :=
+def mapStageIPX [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+    (grid : Nat) : (XStage R) :=
   ⟨mapStageIP spec inB out grid, mapStageIP_exclusive _ _ _ _⟩
 
 /-- A row maximum, bundled. -/
 def maxRowStageX (b : Buf) (ix : IdxE) (out : Buf) (K grid : Nat) (init : Float32)
-    (hb : b ≠ out) : XStage :=
+    (hb : b ≠ out) : (XStage R) :=
   ⟨maxRowStage b ix out K grid init hb, maxRowStage_exclusive _ _ _ _ _ _ hb⟩
 
 /-- A strided reduction, bundled. -/
-def reduceStageX (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
-    (h1 : bA ≠ out) (h2 : bB ≠ out) : XStage :=
+def reduceStageX [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
+    (h1 : bA ≠ out) (h2 : bB ≠ out) : (XStage R) :=
   ⟨reduceStage bA bB ixA ixB out K grid h1 h2, reduceStage_exclusive _ _ _ _ _ _ _ _ _⟩
 
 /-- The reduction with a row pass folded into it, bundled. -/
-def reduce4StageX (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+def reduce4StageX [LitNat R] (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
     (hf : f.tripleOnly = true) (out : Buf) (K grid : Nat)
-    (h1 : bA ≠ out) (h2 : bB ≠ out) (h3 : bC ≠ out) (h4 : bD ≠ out) : XStage :=
+    (h1 : bA ≠ out) (h2 : bB ≠ out) (h3 : bC ≠ out) (h4 : bD ≠ out) : (XStage R) :=
   ⟨reduce4Stage bA bB bC bD ixA ixB ixC ixD f (fun x y z => f.evalTriple x y z)
      (fun st l => WFExp.evalTriple_eq f hf st l) out K grid h1 h2 h3 h4,
    reduce4Stage_exclusive _ _ _ _ _ _ _ _ _ _ _ _ _ _ h1 h2 h3 h4⟩
 
 /-- Softmax and the cross-entropy gradient, bundled. -/
 def softmaxCEStageX (logits bias oneHot out : Buf) (biasIx : IdxE) (grid : Nat)
-    (h1 : logits ≠ out) (h2 : bias ≠ out) (h3 : oneHot ≠ out) : XStage :=
+    (h1 : logits ≠ out) (h2 : bias ≠ out) (h3 : oneHot ≠ out) : (XStage R) :=
   ⟨softmaxCEStage logits bias oneHot out biasIx grid h1 h2 h3,
    softmaxCEStage_exclusive _ _ _ _ _ _ h1 h2 h3⟩
 
@@ -80,7 +83,7 @@ def softmaxCEStageX (logits bias oneHot out : Buf) (biasIx : IdxE) (grid : Nat)
     Everything else is discharged here. -/
 def zipRowStageX (bA bB out : Buf) (f : WFExp) (hf : f.pairOnly = true)
     (mA mB : BCast) (n off K grid : Nat) (hw : off + K * 32 ≤ n)
-    (hAo : bA ≠ out) (hBo : bB ≠ out) : XStage :=
+    (hAo : bA ≠ out) (hBo : bB ≠ out) : (XStage R) :=
   ⟨zipRowStage bA bB out f (fun x y => f.evalPair x y) mA.ix mB.ix
      mA.ev mB.ev n off K grid hw
      (fun st l => WFExp.evalPair_eq f hf st l)
@@ -90,7 +93,7 @@ def zipRowStageX (bA bB out : Buf) (f : WFExp) (hf : f.pairOnly = true)
 /-- **A three-operand row pass, bundled.** -/
 def zipRow3StageX (bA bB bC out : Buf) (f : WFExp) (hf : f.tripleOnly = true)
     (mA mB mC : BCast) (n off K grid : Nat) (hw : off + K * 32 ≤ n)
-    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) : XStage :=
+    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) : (XStage R) :=
   ⟨zipRow3Stage bA bB bC out f (fun x y z => f.evalTriple x y z)
      mA.ix mB.ix mC.ix mA.ev mB.ev mC.ev n off K grid hw
      (fun st l => WFExp.evalTriple_eq f hf st l)
@@ -100,7 +103,7 @@ def zipRow3StageX (bA bB bC out : Buf) (f : WFExp) (hf : f.tripleOnly = true)
 /-- The four-operand row pass, bundled. -/
 def zipRow4StageX (bA bB bC bD out : Buf) (f : WFExp) (hf : f.quadOnly = true)
     (mA mB mC mD : BCast) (n off K grid : Nat) (hw : off + K * 32 ≤ n)
-    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) : XStage :=
+    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) : (XStage R) :=
   ⟨zipRow4Stage bA bB bC bD out f (fun x y z u => f.evalQuad x y z u)
      mA.ix mB.ix mC.ix mD.ix mA.ev mB.ev mC.ev mD.ev n off K grid hw
      (fun st l => WFExp.evalQuad_eq f hf st l)
@@ -110,17 +113,19 @@ def zipRow4StageX (bA bB bC bD out : Buf) (f : WFExp) (hf : f.quadOnly = true)
      hAo hBo hCo hDo⟩
 
 /-- A batched strided reduction, bundled. -/
-def dotBatchedStageX (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
-    (B K grid : Nat) (hg : 0 < grid) (h1 : bA ≠ out) (h2 : bB ≠ out) : XStage :=
+def dotBatchedStageX [LitNat R] (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
+    (B K grid : Nat) (hg : 0 < grid) (h1 : bA ≠ out) (h2 : bB ≠ out) : (XStage R) :=
   ⟨dotBatchedStage bA bB ixA ixB out B K grid hg h1 h2,
    dotBatchedStage_exclusive _ _ _ _ _ _ _ _ hg _ _⟩
 
 /-- A batched outer product, bundled. -/
-def outerBatchedStageX (bA bB out : Buf) (ixA ixB : Nat → IdxE) (n B K grid : Nat)
-    (hn : K * 32 = n) (h1 : bA ≠ out) (h2 : bB ≠ out) : XStage :=
+def outerBatchedStageX [LitNat R] (bA bB out : Buf) (ixA ixB : Nat → IdxE) (n B K grid : Nat)
+    (hn : K * 32 = n) (h1 : bA ≠ out) (h2 : bB ≠ out) : (XStage R) :=
   ⟨outerBatchedStage bA bB out ixA ixB n B K grid hn h1 h2,
    outerBatchedStage_exclusive _ _ _ _ _ _ _ _ _ hn _ _⟩
 
 -- ---------------------------------------------------------------------------
+
+end Carrier
 
 end AlgorithmLib.ML

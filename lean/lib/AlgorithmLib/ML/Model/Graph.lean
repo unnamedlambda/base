@@ -9,6 +9,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- A model as a graph of tensor operations
 -- ---------------------------------------------------------------------------
 
@@ -88,7 +91,7 @@ inductive Node where
     `none` — malformed (an operand aliases an output that may not be read).
     `some none` — nothing to launch.
     `some (some S)` — stage `S`. -/
-noncomputable def Node.stage? (batch : Nat) : Node → Option (Option XStage)
+noncomputable def Node.stage? [LitNat R] (batch : Nat) : Node → Option (Option (XStage R))
   | .input _ => some none
   | .matvec w x out b inW outW =>
       if h : 0 < outW ∧ w ≠ out ∧ x ≠ out then
@@ -156,13 +159,36 @@ noncomputable def Node.stage? (batch : Nat) : Node → Option (Option XStage)
           (stride32 (.mul .ctaId (.lit n))) out (n / 32) rows h.2 h.2))
       else none
 
+/-- **Whether a node lowers to a stage**, decided: the side conditions
+    `stage?` asks of each kind of node. -/
+def Node.lowersB : Node → Bool
+  | .input _ => true
+  | .matvec w x out _ _ outW => decide (0 < outW ∧ w ≠ out ∧ x ≠ out)
+  | .matvecT w dy out _ inW _ => decide (0 < inW ∧ w ≠ out ∧ dy ≠ out)
+  | .outer dy x out _ inW _ => decide ((inW / 32) * 32 = inW ∧ dy ≠ out ∧ x ≠ out)
+  | .ew _ ins out _ => decide (∀ j, ins j ≠ out)
+  | .ewIP _ _ _ _ => true
+  | .smce logits bias oneHot out _ => decide (logits ≠ out ∧ bias ≠ out ∧ oneHot ≠ out)
+  | .ziprow a b out f _ _ n off w _ =>
+      decide (f.pairOnly = true ∧ (w / 32) * 32 = w ∧ off + w ≤ n ∧ a ≠ out ∧ b ≠ out)
+  | .rowdot a b out _ _ n _ => decide ((n / 32) * 32 = n ∧ a ≠ out ∧ b ≠ out)
+  | .ziprow3 a b c out f _ _ _ n off w _ =>
+      decide (f.tripleOnly = true ∧ (w / 32) * 32 = w ∧ off + w ≤ n ∧ a ≠ out ∧ b ≠ out ∧ c ≠ out)
+  | .rowdot4 a b c d out f _ _ _ _ n _ =>
+      decide (f.tripleOnly = true ∧ (n / 32) * 32 = n ∧ a ≠ out ∧ b ≠ out ∧ c ≠ out ∧ d ≠ out)
+  | .ziprow4 a b c d out f _ _ _ _ n off w _ =>
+      decide (f.quadOnly = true ∧ (w / 32) * 32 = w ∧ off + w ≤ n ∧ a ≠ out ∧ b ≠ out ∧ c ≠ out ∧ d ≠ out)
+  | .rowmax x out n _ _ => decide ((n / 32) * 32 = n ∧ x ≠ out)
+  | .rowsq x out n _ => decide ((n / 32) * 32 = n ∧ x ≠ out)
+
+
 /-- A model: operations in the order the driver performs them. -/
 abbrev Net := List Node
 
 /-- Lower the graph.  A malformed node fails the whole lowering rather than
     being skipped — collapsing "nothing to launch" into "nothing sound to
     launch" would let a bad node vanish from the plan instead of failing it. -/
-noncomputable def lowerNet (batch : Nat) : Net → Option (List XStage)
+noncomputable def lowerNet [LitNat R] (batch : Nat) : Net → Option (List (XStage R))
   | []      => some []
   | n :: ns =>
       match n.stage? batch with
@@ -171,9 +197,35 @@ noncomputable def lowerNet (batch : Nat) : Net → Option (List XStage)
       | some (some S) => (lowerNet batch ns).map (S :: ·)
 
 /-- **The stages a model's graph lowers to**, in graph order. -/
-noncomputable def Net.stages (batch : Nat) (g : Net) : Option (List XStage) :=
+noncomputable def Net.stages [LitNat R] (batch : Nat) (g : Net) : Option (List (XStage R)) :=
   lowerNet batch g
 
+theorem Node.stage?_isSome [LitNat R] (batch : Nat) (nd : Node) (h : nd.lowersB = true) :
+    (nd.stage? (R := R) batch).isSome = true := by
+  cases nd <;> simp only [Node.lowersB, decide_eq_true_eq] at h <;> simp [Node.stage?, h]
+
+/-- **A graph whose every node lowers, lowers.** -/
+theorem lowerNet_isSome [LitNat R] (batch : Nat) : ∀ g : Net, g.all Node.lowersB = true →
+    (lowerNet (R := R) batch g).isSome = true := by
+  intro g
+  induction g with
+  | nil => intro _; rfl
+  | cons nd ns ih =>
+    intro h
+    simp only [List.all_cons, Bool.and_eq_true] at h
+    have hs := Node.stage?_isSome (R := R) batch nd h.1
+    have hr := ih h.2
+    simp only [lowerNet]
+    cases hst : nd.stage? (R := R) batch with
+    | none => rw [hst] at hs; exact absurd hs (by simp)
+    | some o =>
+      cases o with
+      | none => exact hr
+      | some S => simp only [Option.isSome_map]; exact hr
+
+
 -- ---------------------------------------------------------------------------
+
+end Carrier
 
 end AlgorithmLib.ML

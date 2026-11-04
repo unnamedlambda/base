@@ -133,7 +133,7 @@ def doStore (s : BSt) (v a : Val) (as : Option ClifTy) : Except String BSt :=
           match ls.zipIdx.foldlM
               (fun mm (x, i) => mm.store (addr + UInt64.ofNat (i * lw)) lw x) s.world.mem with
           | some m => .ok { s with
-              world := { obsStore s.world addr (tyBytes (as.getD t)) 0 with mem := m } }
+              world := { obsStore s.world addr (ls.size * lw) 0 with mem := m } }
           | none => .error "vector store to unmapped address"
   | _, _ => .error "store operand is not defined"
 
@@ -291,7 +291,7 @@ theorem empty_sound (idx : Nat) (env : FnEnv) (base data dlen out olen : V)
     pushes onto a slot environment, the compiled block writes a value the
     emitter numbered — and it goes through because for straight-line code the
     numbering is the identity: slot `i` is `Val i`. That correspondence is what
-    the straight-line induction generalises. -/
+    `compile_sound`'s straight-line case (`stmts_msim`) generalises. -/
 theorem single_iconst_sound (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
     (base data dlen out olen : V) (w : World) (fuel : Nat) :
     CompileSound idx env five [.straight [.op (.iconst t k)]]
@@ -307,8 +307,7 @@ theorem single_iconst_sound (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
 
 /-! ### The branch
 
-    `Piece` has six constructors and the straight-line induction covers one of
-    them. These are the first results about control flow, and they are about the
+    These are about control flow at a concrete body, and they are about the
     place `CompileSound`'s own statement names as where the two forms have
     disagreed twice: the join parameters. -/
 
@@ -397,8 +396,8 @@ theorem ite_exports_sound (idx : Nat) (env : FnEnv) (k1 k2 : Int) (x d dl o ol :
     `emitStmt` advances `nextVal` and `slots` together, so slot `i` is always
     `Val i`.
 
-    This is the invariant the straight-line induction needs. Stating it is what
-    makes that induction possible at all — unfolding the definitions and letting
+    This is the invariant `compile_sound`'s straight-line case (`stmts_msim`) runs
+    on. Stating it is what makes that induction possible at all — unfolding the definitions and letting
     `simp` reduce works for a single statement and times out at two, so the
     proof has to reason about the emitter rather than evaluate it. -/
 def Aligned (s : CS) (n : Nat) : Prop :=
@@ -408,8 +407,7 @@ def Aligned (s : CS) (n : Nat) : Prop :=
     the number of slots that statement defines.
 
     General in the statement and in the state — the first result here that is
-    not about a particular program, and the invariant the straight-line
-    induction runs on. -/
+    not about a particular program. -/
 theorem emitStmt_aligned (s : CS) (n : Nat) (h : Aligned s n) (st : Stmt) :
     Aligned (emitStmt s st) (n + st.binds) := by
   obtain ⟨hv, hs, he⟩ := h
@@ -452,8 +450,7 @@ theorem emitStmt_aligned (s : CS) (n : Nat) (h : Aligned s n) (st : Stmt) :
     number of slots the statements bind.
 
     This is the structural half of the straight-line case: it says *where* every
-    value ends up. What remains is the dynamic half — that running the emitted
-    instructions from `vals = Γ` leaves `vals' = Γ'`. -/
+    value ends up. The dynamic half is `stmts_msim`. -/
 theorem emitStmts_aligned : ∀ (ss : List Stmt) (s : CS) (n : Nat), Aligned s n →
     Aligned (emitStmts s ss) (n + (ss.map Stmt.binds).sum)
   | [], s, n, h => by simpa [emitStmts] using h
@@ -511,76 +508,6 @@ theorem get_of_aligned (s : CS) (n : Nat) (h : Aligned s n) (i : Nat) (hi : i < 
   obtain ⟨_, _, he⟩ := h
   simp [CS.get, he i hi]
 
-/-- The two value stores agree: the block's array holds at index `i` whatever
-    the term's slot environment holds at slot `i`. The coupling the dynamic
-    step is stated against. -/
-def ValsAgree (vals : Blocks.Vals) (Γ : Sem.Env) : Prop :=
-  ∀ i, i < Γ.size → Blocks.getV vals ⟨i⟩ = Γ[i]?
-
-/-- Agreement, as the two interpreters need to use it: an in-scope slot holds
-    *some* value, and both sides find the same one. -/
-theorem agree_at (vals : Blocks.Vals) (Γ : Sem.Env) (hv : ValsAgree vals Γ)
-    (i : Nat) (hi : i < Γ.size) :
-    ∃ x, Γ[i]? = some x ∧ Blocks.getV vals ⟨i⟩ = some x := by
-  refine ⟨Γ[i], ?_, ?_⟩
-  · simp [getElem?_pos, hi]
-  · rw [hv i hi]; simp [getElem?_pos, hi]
-
-/-- **The dynamic step, for a two-operand shape.**
-
-    `emitStmt` puts the instruction at the head of the block, naming the fresh
-    value `n` and resolving each operand through `CS.get`; `evalInst` then
-    evaluates it against the block's array. This says that computes exactly
-    what the term's `evalOp` computes against `Γ` — which is the relocation
-    property of the operation, plus `Aligned` to make `CS.get` the identity and
-    `ValsAgree` to make the two value stores interchangeable.
-
-    Stated over the emitted `Inst` rather than over `emitStmt` so one proof
-    covers every shape that compiles to a two-operand instruction; the caller
-    supplies the two facts that differ per shape. -/
-theorem dyn2 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hv : ValsAgree vals Γ) (hΓ : Γ.size = n) (f : R → R → Op)
-    (hf : Sem.Reloc2 f) (a b : R) (ha : a < n) (hb : b < n)
-    (inst : Inst)
-    (hi : Blocks.evalInst m vals inst
-            = (do let x ← Blocks.getV vals ⟨a⟩
-                  let y ← Blocks.getV vals ⟨b⟩
-                  pure (⟨n⟩, ← Sem.evalOp m #[x, y] (f 0 1)))) :
-    Blocks.evalInst m vals inst = (Sem.evalOp m Γ (f a b)).map (fun w => (⟨n⟩, w)) := by
-  obtain ⟨x, hxΓ, hxv⟩ := agree_at vals Γ hv a (hΓ ▸ ha)
-  obtain ⟨y, hyΓ, hyv⟩ := agree_at vals Γ hv b (hΓ ▸ hb)
-  rw [hi, hf m Γ a b x y hxΓ hyΓ, hxv, hyv]
-  cases hE : Sem.evalOp m #[x, y] (f 0 1) <;> simp [hE]
-
-/-- The same, for a one-operand shape. -/
-theorem dyn1 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hv : ValsAgree vals Γ) (hΓ : Γ.size = n) (f : R → Op)
-    (hf : Sem.Reloc1 f) (a : R) (ha : a < n) (inst : Inst)
-    (hi : Blocks.evalInst m vals inst
-            = (do let x ← Blocks.getV vals ⟨a⟩
-                  pure (⟨n⟩, ← Sem.evalOp m #[x] (f 0)))) :
-    Blocks.evalInst m vals inst = (Sem.evalOp m Γ (f a)).map (fun w => (⟨n⟩, w)) := by
-  obtain ⟨x, hxΓ, hxv⟩ := agree_at vals Γ hv a (hΓ ▸ ha)
-  rw [hi, hf m Γ a x hxΓ, hxv]
-  cases hE : Sem.evalOp m #[x] (f 0) <;> simp [hE]
-
-/-- The same, for the one three-operand shape. -/
-theorem dyn3 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hv : ValsAgree vals Γ) (hΓ : Γ.size = n) (f : R → R → R → Op)
-    (hf : Sem.Reloc3 f) (a b c : R) (ha : a < n) (hb : b < n) (hc : c < n)
-    (inst : Inst)
-    (hi : Blocks.evalInst m vals inst
-            = (do let x ← Blocks.getV vals ⟨a⟩
-                  let y ← Blocks.getV vals ⟨b⟩
-                  let z ← Blocks.getV vals ⟨c⟩
-                  pure (⟨n⟩, ← Sem.evalOp m #[x, y, z] (f 0 1 2)))) :
-    Blocks.evalInst m vals inst = (Sem.evalOp m Γ (f a b c)).map (fun w => (⟨n⟩, w)) := by
-  obtain ⟨x, hxΓ, hxv⟩ := agree_at vals Γ hv a (hΓ ▸ ha)
-  obtain ⟨y, hyΓ, hyv⟩ := agree_at vals Γ hv b (hΓ ▸ hb)
-  obtain ⟨z, hzΓ, hzv⟩ := agree_at vals Γ hv c (hΓ ▸ hc)
-  rw [hi, hf m Γ a b c x y z hxΓ hyΓ hzΓ, hxv, hyv, hzv]
-  cases hE : Sem.evalOp m #[x, y, z] (f 0 1 2) <;> simp [hE]
-
 /-- What `emitStmt` puts at the head of the block for `iadd`: the fresh value is
     `n`, and both operands resolve to themselves because `s` is aligned. -/
 theorem emit_iadd (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
@@ -589,27 +516,11 @@ theorem emit_iadd (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-/-- `iadd`, end to end: the instruction `emitStmt` compiles to computes what the
-    term's `evalOp` computes. The pattern every two-operand shape follows. -/
-theorem eval_iadd (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.iadd ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.iadd a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.iadd Sem.reloc2_iadd a b hab hbb _ rfl
-
 theorem emit_isub (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.isub a b))).cur = .isub ⟨n⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_isub (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.isub ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.isub a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.isub Sem.reloc2_isub a b hab hbb _ rfl
 
 theorem emit_imul (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -617,25 +528,11 @@ theorem emit_imul (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_imul (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.imul ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.imul a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.imul Sem.reloc2_imul a b hab hbb _ rfl
-
 theorem emit_udiv (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.udiv a b))).cur = .udiv ⟨n⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_udiv (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.udiv ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.udiv a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.udiv Sem.reloc2_udiv a b hab hbb _ rfl
 
 theorem emit_ishl (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -643,25 +540,11 @@ theorem emit_ishl (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_ishl (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.ishl ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.ishl a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.ishl Sem.reloc2_ishl a b hab hbb _ rfl
-
 theorem emit_ushr (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.ushr a b))).cur = .ushr ⟨n⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_ushr (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.ushr ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.ushr a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.ushr Sem.reloc2_ushr a b hab hbb _ rfl
 
 theorem emit_band (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -669,25 +552,11 @@ theorem emit_band (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_band (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.band ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.band a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.band Sem.reloc2_band a b hab hbb _ rfl
-
 theorem emit_bandNot (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.bandNot a b))).cur = .bandNot ⟨n⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_bandNot (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.bandNot ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.bandNot a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.bandNot Sem.reloc2_bandNot a b hab hbb _ rfl
 
 theorem emit_bor (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -695,25 +564,11 @@ theorem emit_bor (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_bor (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.bor ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.bor a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.bor Sem.reloc2_bor a b hab hbb _ rfl
-
 theorem emit_bxor (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.bxor a b))).cur = .bxor ⟨n⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_bxor (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.bxor ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.bxor a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.bxor Sem.reloc2_bxor a b hab hbb _ rfl
 
 theorem emit_fadd (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -721,25 +576,11 @@ theorem emit_fadd (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_fadd (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.fadd ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.fadd a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.fadd Sem.reloc2_fadd a b hab hbb _ rfl
-
 theorem emit_fsub (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.fsub a b))).cur = .fsub ⟨n⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_fsub (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.fsub ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.fsub a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.fsub Sem.reloc2_fsub a b hab hbb _ rfl
 
 theorem emit_fmul (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -747,25 +588,11 @@ theorem emit_fmul (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_fmul (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.fmul ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.fmul a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.fmul Sem.reloc2_fmul a b hab hbb _ rfl
-
 theorem emit_fmax (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.fmax a b))).cur = .fmax ⟨n⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_fmax (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.fmax ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.fmax a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.fmax Sem.reloc2_fmax a b hab hbb _ rfl
 
 theorem emit_fmin (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -773,111 +600,50 @@ theorem emit_fmin (s : CS) (n : Nat) (ha : Aligned s n) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_fmin (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.fmin ⟨n⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.fmin a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ Op.fmin Sem.reloc2_fmin a b hab hbb _ rfl
-
 theorem emit_ineg (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.ineg a))).cur = .ineg ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_ineg (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.ineg ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.ineg a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.ineg Sem.reloc1_ineg a hab _ rfl
 
 theorem emit_ctz (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.ctz a))).cur = .ctz ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_ctz (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.ctz ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.ctz a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.ctz Sem.reloc1_ctz a hab _ rfl
-
 theorem emit_popcnt (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.popcnt a))).cur = .popcnt ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_popcnt (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.popcnt ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.popcnt a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.popcnt Sem.reloc1_popcnt a hab _ rfl
 
 theorem emit_ireduce32 (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.ireduce32 a))).cur = .ireduce32 ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_ireduce32 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.ireduce32 ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.ireduce32 a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.ireduce32 Sem.reloc1_ireduce32 a hab _ rfl
-
 theorem emit_uextend64 (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.uextend64 a))).cur = .uextend64 ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_uextend64 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.uextend64 ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.uextend64 a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.uextend64 Sem.reloc1_uextend64 a hab _ rfl
 
 theorem emit_sextend64 (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.sextend64 a))).cur = .sextend64 ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_sextend64 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.sextend64 ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.sextend64 a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.sextend64 Sem.reloc1_sextend64 a hab _ rfl
-
 theorem emit_fneg (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.fneg a))).cur = .fneg ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_fneg (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.fneg ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.fneg a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.fneg Sem.reloc1_fneg a hab _ rfl
 
 theorem emit_fpromote (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.fpromote a))).cur = .fpromote ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_fpromote (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.fpromote ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.fpromote a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.fpromote Sem.reloc1_fpromote a hab _ rfl
-
 theorem emit_vhighBits (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (hab : a < n) :
     (emitStmt s (.op (.vhighBits a))).cur = .vhighBits ⟨n⟩ ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_vhighBits (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.vhighBits ⟨n⟩ ⟨a⟩)
-      = (Sem.evalOp m Γ (.vhighBits a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ Op.vhighBits Sem.reloc1_vhighBits a hab _ rfl
 
 theorem emit_fcvtFromSint (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (a : R)
     (hab : a < n) :
@@ -885,23 +651,11 @@ theorem emit_fcvtFromSint (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (a
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_fcvtFromSint (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (ty : ClifTy) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.fcvtFromSint ⟨n⟩ ty ⟨a⟩)
-      = (Sem.evalOp m Γ (.fcvtFromSint ty a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.fcvtFromSint ty) (Sem.reloc1_fcvtFromSint ty) a hab _ rfl
-
 theorem emit_fcvtToUint (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (a : R)
     (hab : a < n) :
     (emitStmt s (.op (.fcvtToUint ty a))).cur = .fcvtToUint ⟨n⟩ ty ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_fcvtToUint (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (ty : ClifTy) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.fcvtToUint ⟨n⟩ ty ⟨a⟩)
-      = (Sem.evalOp m Γ (.fcvtToUint ty a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.fcvtToUint ty) (Sem.reloc1_fcvtToUint ty) a hab _ rfl
 
 theorem emit_splat (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (a : R)
     (hab : a < n) :
@@ -909,23 +663,11 @@ theorem emit_splat (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (a : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_splat (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (ty : ClifTy) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.splat ⟨n⟩ ty ⟨a⟩)
-      = (Sem.evalOp m Γ (.splat ty a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.splat ty) (Sem.reloc1_splat ty) a hab _ rfl
-
 theorem emit_bitcast (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (a : R)
     (hab : a < n) :
     (emitStmt s (.op (.bitcast ty a))).cur = .bitcast ⟨n⟩ ty ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_bitcast (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (ty : ClifTy) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.bitcast ⟨n⟩ ty ⟨a⟩)
-      = (Sem.evalOp m Γ (.bitcast ty a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.bitcast ty) (Sem.reloc1_bitcast ty) a hab _ rfl
 
 theorem emit_icmp (s : CS) (n : Nat) (ha : Aligned s n) (c : ICmpCond) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -933,25 +675,11 @@ theorem emit_icmp (s : CS) (n : Nat) (ha : Aligned s n) (c : ICmpCond) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_icmp (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (c : ICmpCond) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.icmp ⟨n⟩ c ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.icmp c a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ (Op.icmp c) (Sem.reloc2_icmp c) a b hab hbb _ rfl
-
 theorem emit_fcmp (s : CS) (n : Nat) (ha : Aligned s n) (c : FloatCC) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.fcmp c a b))).cur = .fcmp ⟨n⟩ c ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_fcmp (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (c : FloatCC) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.fcmp ⟨n⟩ c ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.fcmp c a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ (Op.fcmp c) (Sem.reloc2_fcmp c) a b hab hbb _ rfl
 
 theorem emit_load (s : CS) (n : Nat) (ha : Aligned s n) (op : LoadOp) (a : R)
     (hab : a < n) :
@@ -959,23 +687,11 @@ theorem emit_load (s : CS) (n : Nat) (ha : Aligned s n) (op : LoadOp) (a : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_load (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (op : LoadOp) (a : R) (hab : a < n) :
-    Blocks.evalInst m vals (.load ⟨n⟩ op ⟨a⟩)
-      = (Sem.evalOp m Γ (.load op a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.load op) (Sem.reloc1_load op) a hab _ rfl
-
 theorem emit_extractlane (s : CS) (n : Nat) (ha : Aligned s n) (a : R) (l : Nat)
     (hab : a < n) :
     (emitStmt s (.op (.extractlane a l))).cur = .extractlane ⟨n⟩ ⟨a⟩ l :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_extractlane (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a : R) (l : Nat) (hab : a < n) :
-    Blocks.evalInst m vals (.extractlane ⟨n⟩ ⟨a⟩ l)
-      = (Sem.evalOp m Γ (.extractlane a l)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.extractlane · l) (Sem.reloc1_extractlane l) a hab _ rfl
 
 theorem emit_select (s : CS) (n : Nat) (ha : Aligned s n) (c a b : R)
     (hcb : c < n) (hab : a < n) (hbb : b < n) :
@@ -983,25 +699,11 @@ theorem emit_select (s : CS) (n : Nat) (ha : Aligned s n) (c a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he c hcb, he a hab, he b hbb, h1]
 
-theorem eval_select (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (c a b : R)
-    (hcb : c < n) (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.select ⟨n⟩ ⟨c⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.select c a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn3 m vals Γ n hv hΓ Op.select Sem.reloc3_select c a b hcb hab hbb _ rfl
-
 theorem emit_bitselect (s : CS) (n : Nat) (ha : Aligned s n) (c a b : R)
     (hcb : c < n) (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.bitselect c a b))).cur = .bitselect ⟨n⟩ ⟨c⟩ ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he c hcb, he a hab, he b hbb, h1]
-
-theorem eval_bitselect (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (c a b : R)
-    (hcb : c < n) (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.bitselect ⟨n⟩ ⟨c⟩ ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.bitselect c a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn3 m vals Γ n hv hΓ Op.bitselect Sem.reloc3_bitselect c a b hcb hab hbb _ rfl
 
 theorem emit_ibin (s : CS) (n : Nat) (ha : Aligned s n) (k : IBin) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -1009,25 +711,11 @@ theorem emit_ibin (s : CS) (n : Nat) (ha : Aligned s n) (k : IBin) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_ibin (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (k : IBin) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.ibin ⟨n⟩ k ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.ibin k a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ (Op.ibin k) (Sem.reloc2_ibin k) a b hab hbb _ rfl
-
 theorem emit_ishift (s : CS) (n : Nat) (ha : Aligned s n) (k : IShift) (a b : R)
     (hab : a < n) (hbb : b < n) :
     (emitStmt s (.op (.ishift k a b))).cur = .ishift ⟨n⟩ k ⟨a⟩ ⟨b⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
-
-theorem eval_ishift (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (k : IShift) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.ishift ⟨n⟩ k ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.ishift k a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ (Op.ishift k) (Sem.reloc2_ishift k) a b hab hbb _ rfl
 
 theorem emit_fbin (s : CS) (n : Nat) (ha : Aligned s n) (k : FBin) (a b : R)
     (hab : a < n) (hbb : b < n) :
@@ -1035,25 +723,11 @@ theorem emit_fbin (s : CS) (n : Nat) (ha : Aligned s n) (k : FBin) (a b : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, h1]
 
-theorem eval_fbin (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (k : FBin) (a b : R)
-    (hab : a < n) (hbb : b < n) :
-    Blocks.evalInst m vals (.fbin ⟨n⟩ k ⟨a⟩ ⟨b⟩)
-      = (Sem.evalOp m Γ (.fbin k a b)).map (fun w => (⟨n⟩, w)) :=
-  dyn2 m vals Γ n hv hΓ (Op.fbin k) (Sem.reloc2_fbin k) a b hab hbb _ rfl
-
 theorem emit_iun (s : CS) (n : Nat) (ha : Aligned s n) (k : IUn) (a : R)
     (hab : a < n) :
     (emitStmt s (.op (.iun k a))).cur = .iun ⟨n⟩ k ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_iun (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (k : IUn) (a : R)
-    (hab : a < n) :
-    Blocks.evalInst m vals (.iun ⟨n⟩ k ⟨a⟩)
-      = (Sem.evalOp m Γ (.iun k a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.iun k) (Sem.reloc1_iun k) a hab _ rfl
 
 theorem emit_fun1 (s : CS) (n : Nat) (ha : Aligned s n) (k : FUn) (a : R)
     (hab : a < n) :
@@ -1061,25 +735,11 @@ theorem emit_fun1 (s : CS) (n : Nat) (ha : Aligned s n) (k : FUn) (a : R)
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_fun1 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (k : FUn) (a : R)
-    (hab : a < n) :
-    Blocks.evalInst m vals (.fun1 ⟨n⟩ k ⟨a⟩)
-      = (Sem.evalOp m Γ (.fun1 k a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.fun1 k) (Sem.reloc1_fun1 k) a hab _ rfl
-
 theorem emit_fconv (s : CS) (n : Nat) (ha : Aligned s n) (k : FConv) (t : ClifTy) (a : R)
     (hab : a < n) :
     (emitStmt s (.op (.fconv k t a))).cur = .fconv ⟨n⟩ k t ⟨a⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
-
-theorem eval_fconv (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (k : FConv) (t : ClifTy) (a : R)
-    (hab : a < n) :
-    Blocks.evalInst m vals (.fconv ⟨n⟩ k t ⟨a⟩)
-      = (Sem.evalOp m Γ (.fconv k t a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.fconv k t) (Sem.reloc1_fconv k t) a hab _ rfl
 
 theorem emit_iext (s : CS) (n : Nat) (ha : Aligned s n) (k : IExt) (t : ClifTy) (a : R)
     (hab : a < n) :
@@ -1087,100 +747,35 @@ theorem emit_iext (s : CS) (n : Nat) (ha : Aligned s n) (k : IExt) (t : ClifTy) 
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, h1]
 
-theorem eval_iext (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (k : IExt) (t : ClifTy) (a : R)
-    (hab : a < n) :
-    Blocks.evalInst m vals (.iext ⟨n⟩ k t ⟨a⟩)
-      = (Sem.evalOp m Γ (.iext k t a)).map (fun w => (⟨n⟩, w)) :=
-  dyn1 m vals Γ n hv hΓ (Op.iext k t) (Sem.reloc1_iext k t) a hab _ rfl
-
 theorem emit_fma (s : CS) (n : Nat) (ha : Aligned s n) (a b c : R)
     (hab : a < n) (hbb : b < n) (hcb : c < n) :
     (emitStmt s (.op (.fma a b c))).cur = .fma ⟨n⟩ ⟨a⟩ ⟨b⟩ ⟨c⟩ :: s.cur := by
   obtain ⟨h1, _, he⟩ := ha
   simp [emitStmt, CS.fresh, CS.get, he a hab, he b hbb, he c hcb, h1]
 
-theorem eval_fma (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (hΓ : Γ.size = n) (hv : ValsAgree vals Γ) (a b c : R)
-    (hab : a < n) (hbb : b < n) (hcb : c < n) :
-    Blocks.evalInst m vals (.fma ⟨n⟩ ⟨a⟩ ⟨b⟩ ⟨c⟩)
-      = (Sem.evalOp m Γ (.fma a b c)).map (fun w => (⟨n⟩, w)) :=
-  dyn3 m vals Γ n hv hΓ Op.fma Sem.reloc3_fma a b c hab hbb hcb _ rfl
-
 theorem emit_iconst (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (k : Int) :
     (emitStmt s (.op (.iconst ty k))).cur = .iconst ⟨n⟩ ty k :: s.cur := by
   obtain ⟨h1, _, _⟩ := ha
   simp [emitStmt, CS.fresh, h1]
-
-theorem eval_iconst (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (ty : ClifTy) (k : Int) :
-    Blocks.evalInst m vals (.iconst ⟨n⟩ ty k)
-      = (Sem.evalOp m Γ (.iconst ty k)).map (fun w => (⟨n⟩, w)) := by
-  simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp]
 
 theorem emit_funcAddr (s : CS) (n : Nat) (ha : Aligned s n) (i : Nat) :
     (emitStmt s (.op (.funcAddr i))).cur = .funcAddr ⟨n⟩ (.local i) :: s.cur := by
   obtain ⟨h1, _, _⟩ := ha
   simp [emitStmt, CS.fresh, h1]
 
-theorem eval_funcAddr (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n i : Nat) :
-    Blocks.evalInst m vals (.funcAddr ⟨n⟩ (.local i))
-      = (Sem.evalOp m Γ (.funcAddr i)).map (fun w => (⟨n⟩, w)) := by
-  simp [Blocks.evalInst, Blocks.localIdx?, Blocks.viaOp, Sem.evalOp]
-
 theorem emit_memory (s : CS) (n : Nat) (ha : Aligned s n) :
     (emitStmt s (.op .memory)).cur = .memory ⟨n⟩ :: s.cur := by
   obtain ⟨h1, _, _⟩ := ha
   simp [emitStmt, CS.fresh, h1]
-
-theorem eval_memory (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat) :
-    Blocks.evalInst m vals (.memory ⟨n⟩)
-      = (Sem.evalOp m Γ .memory).map (fun w => (⟨n⟩, w)) := by
-  simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp]
 
 theorem emit_fconst (s : CS) (n : Nat) (ha : Aligned s n) (ty : ClifTy) (b : UInt64) :
     (emitStmt s (.op (.fconst ty b))).cur = .fconst ⟨n⟩ ty b :: s.cur := by
   obtain ⟨h1, _, _⟩ := ha
   simp [emitStmt, CS.fresh, h1]
 
-theorem eval_fconst (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (n : Nat)
-    (ty : ClifTy) (b : UInt64) :
-    Blocks.evalInst m vals (.fconst ⟨n⟩ ty b)
-      = (Sem.evalOp m Γ (.fconst ty b)).map (fun w => (⟨n⟩, w)) := by
-  simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp]
-
 -- ---------------------------------------------------------------------------
--- Agreement is preserved
+-- Reading and writing values
 -- ---------------------------------------------------------------------------
-
-/-- Agreement forces the block's array to be at least as long as the term's
-    environment: every in-scope slot has to *find* something on both sides.
-
-    Needed before `setV`, which pads with `default` rather than failing — so
-    without this an operation could appear to preserve agreement while filling
-    a hole with a junk value. -/
-theorem agree_size (vals : Blocks.Vals) (Γ : Sem.Env) (hv : ValsAgree vals Γ) :
-    Γ.size ≤ vals.size := by
-  apply Nat.le_of_not_lt
-  intro hlt
-  have hnone : Γ[vals.size]? = none := by
-    rw [← hv vals.size hlt]; simp [Blocks.getV]
-  rw [Array.getElem?_eq_none_iff] at hnone
-  omega
-
-/-- Writing the next value leaves every earlier one alone. -/
-theorem getV_setV_lt (vals : Blocks.Vals) (n i : Nat) (w : Sem.V)
-    (h : n ≤ vals.size) (hi : i < n) :
-    Blocks.getV (Blocks.setV vals ⟨n⟩ w) ⟨i⟩ = Blocks.getV vals ⟨i⟩ := by
-  have hne : i ≠ n := Nat.ne_of_lt hi
-  have hne' : n ≠ i := Ne.symm hne
-  rcases Nat.lt_or_ge n vals.size with hn | hn
-  · simp [Blocks.getV, Blocks.setV, hn, Array.getElem?_setIfInBounds, hne, hne']
-  · have heq : n = vals.size := Nat.le_antisymm h hn
-    subst heq
-    have hi' : i < (vals.push (default : Sem.V)).size := by simp; omega
-    simp [Blocks.getV, Blocks.setV, Nat.lt_irrefl, Array.getElem?_setIfInBounds, hne, hne',
-          Array.getElem?_push, hi]
 
 /-- A value is only readable where the array reaches. -/
 theorem getV_lt (vals : Blocks.Vals) (i : Nat) (x : Sem.V)
@@ -1190,9 +785,7 @@ theorem getV_lt (vals : Blocks.Vals) (i : Nat) (x : Sem.V)
     rw [h]; rfl
   simpa using hs
 
-/-- Writing one value leaves every *other* readable value alone. `getV_setV_lt`
-    is the dense case of this; here the two indices are simply distinct, which
-    is what a block whose numbering is not the identity on slots needs. -/
+/-- Writing one value leaves every *other* readable value alone. -/
 theorem getV_setV_ne (vals : Blocks.Vals) (d e : Nat) (y : Sem.V)
     (hne : d ≠ e) (he : e < vals.size) :
     Blocks.getV (Blocks.setV vals ⟨d⟩ y) ⟨e⟩ = Blocks.getV vals ⟨e⟩ := by
@@ -1204,238 +797,8 @@ theorem getV_setV_ne (vals : Blocks.Vals) (d e : Nat) (y : Sem.V)
     simp [Blocks.getV, Blocks.setV, Nat.not_lt.mpr hd, Array.getElem?_setIfInBounds,
           hne, Ne.symm hne, happ]
 
-/-- And puts the value where the term's next slot is. -/
-theorem getV_setV_eq (vals : Blocks.Vals) (n : Nat) (w : Sem.V) (h : n ≤ vals.size) :
-    Blocks.getV (Blocks.setV vals ⟨n⟩ w) ⟨n⟩ = some w := by
-  rcases Nat.lt_or_ge n vals.size with hn | hn
-  · simp [Blocks.getV, Blocks.setV, hn, Array.getElem?_setIfInBounds]
-  · have : n = vals.size := Nat.le_antisymm h hn
-    subst this
-    simp [Blocks.getV, Blocks.setV, Nat.lt_irrefl, Array.getElem?_setIfInBounds]
-
-/-- **One step preserves the coupling.** The term binds its result as the next
-    slot; the compiled form writes it to the next value number. Since those are
-    the same number under `Aligned`, the two stores stay in step.
-
-    This is what carries `ValsAgree` along a straight-line body, and it is the
-    reason the numbering has to be dense: a gap would put `setV` in the padding
-    business and the invariant would be about `default` rather than about the
-    term. -/
-theorem agree_push (vals : Blocks.Vals) (Γ : Sem.Env) (hv : ValsAgree vals Γ)
-    (n : Nat) (hΓ : Γ.size = n) (w : Sem.V) :
-    ValsAgree (Blocks.setV vals ⟨n⟩ w) (Γ.push w) := by
-  have hle : n ≤ vals.size := hΓ ▸ agree_size vals Γ hv
-  intro i hi
-  simp only [Array.size_push, hΓ] at hi
-  rcases Nat.lt_or_ge i n with hlt | hge
-  · rw [getV_setV_lt vals n i w hle hlt, hv i (hΓ ▸ hlt),
-        Array.getElem?_push, hΓ]
-    simp [Nat.ne_of_lt hlt]
-  · have hin : i = n := Nat.le_antisymm (by omega) hge
-    subst hin
-    rw [getV_setV_eq vals i w hle, Array.getElem?_push, hΓ]
-    simp
-
 -- ---------------------------------------------------------------------------
--- One statement simulates
--- ---------------------------------------------------------------------------
-
-/-- **The simulation step for a pure operation.**
-
-    The term takes `Γ` to `Γ.push v` and leaves the world alone; the compiled
-    block writes `v` to value `n` and carries on with the rest of the
-    instructions. This says those are the same transition — and `agree_push`
-    says the states it lands in still agree, so the pair is an invariant that
-    survives one statement.
-
-    `hstep` is the fact that `inst` reaches `runInsts`' evaluating arm rather
-    than one of the special-cased ones; it holds by `rfl` at every concrete
-    shape, which is how the caller discharges it. Taking it as a hypothesis is
-    what keeps this one proof rather than thirty-five. -/
-theorem step_op (lc : Sem.Locals) (w : Sem.World) (Γ : Sem.Env) (vals : Blocks.Vals)
-    (n : Nat) (o : Op) (inst : Inst) (rest : List Inst)
-    (hE : Blocks.evalInst w.mem vals inst
-            = (Sem.evalOp w.mem Γ o).map (fun x => (⟨n⟩, x)))
-    (hstep : Blocks.runInsts lc ⟨vals, w⟩ (inst :: rest)
-        = match Blocks.evalInst w.mem vals inst with
-          | none => .stuck "instruction is undefined here"
-          | some (d, r) => Blocks.runInsts lc ⟨Blocks.setV vals d r, w⟩ rest) :
-    Blocks.runInsts lc ⟨vals, w⟩ (inst :: rest)
-      = match Sem.evalOp w.mem Γ o with
-        | none => .stuck "instruction is undefined here"
-        | some v => Blocks.runInsts lc ⟨Blocks.setV vals ⟨n⟩ v, w⟩ rest := by
-  rw [hstep, hE]
-  cases Sem.evalOp w.mem Γ o <;> simp
-
-
--- ---------------------------------------------------------------------------
--- A straight-line run of pure operations
--- ---------------------------------------------------------------------------
-
-/-- The evidence one statement contributes: at slot number `n`, `inst` computes
-    what `o` computes, and it reaches `runInsts`' evaluating arm.
-
-    Both halves hold by the per-shape lemmas above — `eval_X` for the first and
-    `rfl` for the second — so a caller discharges this without ever unfolding
-    the interpreters. -/
-def OpStep (lc : Sem.Locals) (n : Nat) (o : Op) (inst : Inst) : Prop :=
-  ∀ (w : Sem.World) (Γ : Sem.Env) (vals : Blocks.Vals) (rest : List Inst),
-    Γ.size = n → ValsAgree vals Γ →
-    Blocks.evalInst w.mem vals inst = (Sem.evalOp w.mem Γ o).map (fun x => (⟨n⟩, x))
-    ∧ Blocks.runInsts lc ⟨vals, w⟩ (inst :: rest)
-      = match Blocks.evalInst w.mem vals inst with
-        | none => .stuck "instruction is undefined here"
-        | some (d, r) => Blocks.runInsts lc ⟨Blocks.setV vals d r, w⟩ rest
-
-/-- A body's worth of that evidence, with the slot number counting up exactly as
-    `emitStmts` numbers the values. -/
-inductive OpChain (lc : Sem.Locals) : Nat → List (Op × Inst) → Prop where
-  | nil (n : Nat) : OpChain lc n []
-  | cons (n : Nat) (o : Op) (inst : Inst) (ps : List (Op × Inst)) :
-      OpStep lc n o inst → OpChain lc (n + 1) ps → OpChain lc n ((o, inst) :: ps)
-
-/-- **Straight-line code compiles correctly.**
-
-    If the term's statements run to `Γ'`, then the instructions they compiled to
-    reach the very same continuation, in a state that still agrees with `Γ'` and
-    has grown by exactly one slot per statement.
-
-    Forward simulation on successful runs, which is the honest shape: the two
-    interpreters word their failures differently, so equality of outcomes is the
-    wrong statement, and nothing is lost — a term that gets stuck has no
-    behavior to preserve. -/
-theorem straight_sim (cfg : Sem.Cfg) :
-    ∀ (ps : List (Op × Inst)) (n : Nat) (w : Sem.World) (Γ Γ' : Sem.Env)
-      (vals : Blocks.Vals) (rest : List Inst),
-      OpChain cfg.locals n ps → Γ.size = n → ValsAgree vals Γ →
-      Sem.runStmts cfg Γ w (ps.map (fun p => Stmt.op p.1)) = .ok Γ' w →
-      ∃ vals', Blocks.runInsts cfg.locals ⟨vals, w⟩ (ps.map Prod.snd ++ rest)
-                 = Blocks.runInsts cfg.locals ⟨vals', w⟩ rest
-               ∧ ValsAgree vals' Γ' ∧ Γ'.size = n + ps.length := by
-  intro ps
-  induction ps with
-  | nil =>
-      intro n w Γ Γ' vals rest _ hs hv hr
-      simp [Sem.runStmts] at hr
-      subst hr
-      exact ⟨vals, by simp, hv, by simp [hs]⟩
-  | cons p ps ih =>
-      intro n w Γ Γ' vals rest hc hs hv hr
-      obtain ⟨o, inst⟩ := p
-      cases hc with
-      | cons _ _ _ _ hstep hrest =>
-        obtain ⟨hE, hR⟩ := hstep w Γ vals (ps.map Prod.snd ++ rest) hs hv
-        cases hop : Sem.evalOp w.mem Γ o with
-        | none =>
-            rw [List.map_cons, Sem.runStmts, Sem.runStmt, hop] at hr
-            simp at hr
-        | some v =>
-            rw [List.map_cons, Sem.runStmts, Sem.runStmt, hop] at hr
-            have hs' : (Γ.push v).size = n + 1 := by simp [hs]
-            have hv' : ValsAgree (Blocks.setV vals ⟨n⟩ v) (Γ.push v) :=
-              agree_push vals Γ hv n hs v
-            obtain ⟨vals', hrun, hva, hsz⟩ :=
-              ih (n + 1) w (Γ.push v) Γ' (Blocks.setV vals ⟨n⟩ v) rest hrest hs' hv' hr
-            refine ⟨vals', ?_, hva, by simp only [List.length_cons]; omega⟩
-            simp only [List.map_cons, List.cons_append]
-            rw [hR, hE, hop]
-            simpa using hrun
-
-
--- ---------------------------------------------------------------------------
--- The general frame: any statement, any instruction
--- ---------------------------------------------------------------------------
-
-/-- **One statement simulates its instruction.**
-
-    Whatever the statement does to the term's state, the instruction it compiled
-    to does to the block's — landing on the same world, in a value array that
-    still agrees, having bound exactly the slots the statement binds.
-
-    This is the interface the composition theorem is stated against, so adding a
-    statement form to the proof means supplying one of these and nothing else.
-    Pure operations get theirs from `step_op` and `agree_push`; stores and calls
-    are where the world threading lives. -/
-def StmtStep (cfg : Sem.Cfg) (n : Nat) (st : Stmt) (inst : Inst) : Prop :=
-  ∀ (w w₁ : Sem.World) (Γ Γ₁ : Sem.Env) (vals : Blocks.Vals) (rest : List Inst),
-    Γ.size = n → ValsAgree vals Γ →
-    Sem.runStmt cfg Γ w st = .ok Γ₁ w₁ →
-    ∃ vals₁, Blocks.runInsts cfg.locals ⟨vals, w⟩ (inst :: rest)
-               = Blocks.runInsts cfg.locals ⟨vals₁, w₁⟩ rest
-             ∧ ValsAgree vals₁ Γ₁ ∧ Γ₁.size = n + st.binds
-
-/-- A body's worth, with the slot number advancing by what each statement
-    binds — which is how `emitStmts` numbers values, by `emitStmts_aligned`. -/
-inductive StmtChain (cfg : Sem.Cfg) : Nat → List (Stmt × Inst) → Prop where
-  | nil (n : Nat) : StmtChain cfg n []
-  | cons (n : Nat) (st : Stmt) (inst : Inst) (ps : List (Stmt × Inst)) :
-      StmtStep cfg n st inst → StmtChain cfg (n + st.binds) ps →
-      StmtChain cfg n ((st, inst) :: ps)
-
-/-- **A straight-line body compiles correctly.**
-
-    `straight_sim` for arbitrary statements: the compiled instructions reach the
-    same continuation in an agreeing state, with the world the term ended in.
-    Stores and calls are covered as soon as their `StmtStep` is supplied — the
-    induction itself does not care what a statement does. -/
-theorem stmts_sim (cfg : Sem.Cfg) :
-    ∀ (ps : List (Stmt × Inst)) (n : Nat) (w w' : Sem.World) (Γ Γ' : Sem.Env)
-      (vals : Blocks.Vals) (rest : List Inst),
-      StmtChain cfg n ps → Γ.size = n → ValsAgree vals Γ →
-      Sem.runStmts cfg Γ w (ps.map Prod.fst) = .ok Γ' w' →
-      ∃ vals', Blocks.runInsts cfg.locals ⟨vals, w⟩ (ps.map Prod.snd ++ rest)
-                 = Blocks.runInsts cfg.locals ⟨vals', w'⟩ rest
-               ∧ ValsAgree vals' Γ'
-               ∧ Γ'.size = n + (ps.map (fun p => p.1.binds)).sum := by
-  intro ps
-  induction ps with
-  | nil =>
-      intro n w w' Γ Γ' vals rest _ hs hv hr
-      simp [Sem.runStmts] at hr
-      obtain ⟨h1, h2⟩ := hr
-      subst h1; subst h2
-      exact ⟨vals, by simp, hv, by simp [hs]⟩
-  | cons p ps ih =>
-      intro n w w' Γ Γ' vals rest hc hs hv hr
-      obtain ⟨st, inst⟩ := p
-      cases hc with
-      | cons _ _ _ _ hstep hrest =>
-        rw [List.map_cons, Sem.runStmts] at hr
-        cases hone : Sem.runStmt cfg Γ w st with
-        | stuck m => rw [hone] at hr; simp at hr
-        | misuse m => rw [hone] at hr; simp at hr
-        | fault m => rw [hone] at hr; simp at hr
-        | ok Γ₁ w₁ =>
-            rw [hone] at hr
-            obtain ⟨vals₁, hrun₁, hva₁, hsz₁⟩ :=
-              hstep w w₁ Γ Γ₁ vals (ps.map Prod.snd ++ rest) hs hv hone
-            obtain ⟨vals', hrun, hva, hsz⟩ :=
-              ih (n + st.binds) w₁ w' Γ₁ Γ' vals₁ rest hrest hsz₁ hva₁ hr
-            refine ⟨vals', ?_, hva, by simp only [List.map_cons, List.sum_cons]; omega⟩
-            simp only [List.map_cons, List.cons_append]
-            rw [hrun₁]
-            exact hrun
-
-/-- Every pure operation satisfies the frame, given the two per-shape facts the
-    `eval_X` lemmas and `rfl` already provide. -/
-theorem op_stmtStep (cfg : Sem.Cfg) (n : Nat) (o : Op) (inst : Inst)
-    (h : OpStep cfg.locals n o inst) : StmtStep cfg n (.op o) inst := by
-  intro w w₁ Γ Γ₁ vals rest hs hv hr
-  obtain ⟨hE, hR⟩ := h w Γ vals rest hs hv
-  cases hop : Sem.evalOp w.mem Γ o with
-  | none => rw [Sem.runStmt, hop] at hr; simp at hr
-  | some v =>
-      rw [Sem.runStmt, hop] at hr
-      simp only [Sem.Outcome.ok.injEq] at hr
-      obtain ⟨h1, h2⟩ := hr
-      subst h1; subst h2
-      refine ⟨Blocks.setV vals ⟨n⟩ v, ?_, agree_push vals Γ hv n hs v, by simp [hs, Stmt.binds]⟩
-      rw [hR, hE, hop]
-      simp
-
-
--- ---------------------------------------------------------------------------
--- Stores
+-- Stores and calls, as equations
 -- ---------------------------------------------------------------------------
 
 /-- `runInsts`' `istore8` arm, as an equation. Holds by definition. -/
@@ -1449,95 +812,12 @@ theorem runInsts_istore8 (lc : Sem.Locals) (s : Blocks.BSt) (v a : Val) (rest : 
             | none => .stuck "istore8 to unmapped address"
         | _, _ => .stuck "istore8 operand is not defined" := rfl
 
-/-- **`istore8` satisfies the frame.** The first statement form that moves the
-    world rather than the environment: it binds nothing, so the value arrays are
-    unchanged and agreement is inherited, and both sides perform the *same*
-    `Mem.store` at the same address with the same byte — which is what makes the
-    observation trace match. -/
-theorem istore8_stmtStep (cfg : Sem.Cfg) (n : Nat) (v a : R)
-    (hvn : v < n) (han : a < n) :
-    StmtStep cfg n (.istore8 v a) (.istore8 ⟨v⟩ ⟨a⟩) := by
-  intro w w₁ Γ Γ₁ vals rest hs hva hr
-  obtain ⟨xv, hxΓ, hxv⟩ := agree_at vals Γ hva v (hs ▸ hvn)
-  obtain ⟨xa, haΓ, hav⟩ := agree_at vals Γ hva a (hs ▸ han)
-  rw [Sem.runStmt_istore8, hxΓ, haΓ] at hr
-  cases xv with
-  | vec _ _ => simp at hr
-  | sc t b =>
-    cases xa with
-    | vec _ _ => simp at hr
-    | sc t2 addr =>
-      dsimp only at hr
-      cases hm : w.mem.store addr 1 (b &&& 0xff) with
-      | none => rw [hm] at hr; simp at hr
-      | some m =>
-          rw [hm] at hr
-          simp only [Sem.Outcome.ok.injEq] at hr
-          obtain ⟨h1, h2⟩ := hr
-          subst h1; subst h2
-          refine ⟨vals, ?_, hva, by simp [Stmt.binds, hs]⟩
-          rw [runInsts_istore8, hxv, hav]
-          dsimp only
-          rw [hm]
-
-
 /-- `runInsts`' untyped-`store` arm, as an equation. -/
 theorem runInsts_store (lc : Sem.Locals) (s : Blocks.BSt) (v a : Val) (rest : List Inst) :
     Blocks.runInsts lc s (.store v a :: rest)
       = match Blocks.doStore s v a none with
         | .error m => .stuck m
         | .ok s' => Blocks.runInsts lc s' rest := rfl
-
-/-- **`storeUnaligned` satisfies the frame.** The width comes from the stored
-    value's own type on both sides — `tyBytes t` in the term, `tyBytes
-    (none.getD t)` in `doStore` — which is the only place the two could have
-    drifted, and they do not. -/
-theorem storeUnaligned_stmtStep (cfg : Sem.Cfg) (n : Nat) (v a : R)
-    (hvn : v < n) (han : a < n) :
-    StmtStep cfg n (.storeUnaligned v a) (.store ⟨v⟩ ⟨a⟩) := by
-  intro w w₁ Γ Γ₁ vals rest hs hva hr
-  obtain ⟨xv, hxΓ, hxv⟩ := agree_at vals Γ hva v (hs ▸ hvn)
-  obtain ⟨xa, haΓ, hav⟩ := agree_at vals Γ hva a (hs ▸ han)
-  rw [Sem.runStmt_storeUnaligned, hxΓ, haΓ] at hr
-  cases xv with
-  | vec t ls =>
-    cases xa with
-    | vec _ _ => simp at hr
-    | sc t2 addr =>
-      dsimp only at hr
-      split at hr
-      · next m hm =>
-        simp only [Sem.Outcome.ok.injEq] at hr
-        obtain ⟨h1, h2⟩ := hr
-        subst h1; subst h2
-        refine ⟨vals, ?_, hva, by simp [Stmt.binds, hs]⟩
-        rw [runInsts_store]
-        have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ none
-            = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes t) 0 with mem := m }⟩ := by
-          simp only [Blocks.doStore, hxv, hav]
-          rw [hm]
-          simp
-        rw [hd]
-      · simp at hr
-  | sc t b =>
-    cases xa with
-    | vec _ _ => simp at hr
-    | sc t2 addr =>
-      dsimp only at hr
-      cases hm : w.mem.store addr (Sem.tyBytes t) b with
-      | none => rw [hm] at hr; simp at hr
-      | some m =>
-          rw [hm] at hr
-          simp only [Sem.Outcome.ok.injEq] at hr
-          obtain ⟨h1, h2⟩ := hr
-          subst h1; subst h2
-          refine ⟨vals, ?_, hva, by simp [Stmt.binds, hs]⟩
-          rw [runInsts_store]
-          have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ none
-              = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes t) b with mem := m }⟩ := by
-            simp [Blocks.doStore, hxv, hav, hm]
-          rw [hd]
-
 
 /-- `runInsts`' typed-`store` arm, as an equation. -/
 theorem runInsts_storeTyped (lc : Sem.Locals) (s : Blocks.BSt) (ty : ClifTy) (v a : Val)
@@ -1546,77 +826,6 @@ theorem runInsts_storeTyped (lc : Sem.Locals) (s : Blocks.BSt) (ty : ClifTy) (v 
       = match Blocks.doStore s v a (some ty) with
         | .error m => .stuck m
         | .ok s' => Blocks.runInsts lc s' rest := rfl
-
-/-- **The typed store satisfies the frame**, for scalar and vector values alike.
-    The annotation fixes the width on the term side and `(some ty).getD` fixes
-    it on the block side, and the lane fold is the same expression in both. -/
-theorem store_stmtStep (cfg : Sem.Cfg) (n : Nat) (ty : ClifTy) (v a : R)
-    (hvn : v < n) (han : a < n) :
-    StmtStep cfg n (.store ty v a) (.storeTyped ty ⟨v⟩ ⟨a⟩) := by
-  intro w w₁ Γ Γ₁ vals rest hs hva hr
-  obtain ⟨xv, hxΓ, hxv⟩ := agree_at vals Γ hva v (hs ▸ hvn)
-  obtain ⟨xa, haΓ, hav⟩ := agree_at vals Γ hva a (hs ▸ han)
-  rw [Sem.runStmt_store, hxΓ, haΓ] at hr
-  cases xa with
-  | vec _ _ => simp at hr
-  | sc t2 addr =>
-    dsimp only at hr
-    cases xv with
-    | sc t b =>
-      dsimp only at hr
-      split at hr
-      · next m hm =>
-        simp only [Sem.Outcome.ok.injEq] at hr
-        obtain ⟨h1, h2⟩ := hr
-        subst h1; subst h2
-        refine ⟨vals, ?_, hva, by simp [Stmt.binds, hs]⟩
-        rw [runInsts_storeTyped]
-        have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ (some ty)
-            = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes ty) b with mem := m }⟩ := by
-          simp [Blocks.doStore, hxv, hav, hm]
-        rw [hd]
-      · simp at hr
-    | vec t ls =>
-      dsimp only at hr
-      split at hr
-      · next m hm =>
-        simp only [Sem.Outcome.ok.injEq] at hr
-        obtain ⟨h1, h2⟩ := hr
-        subst h1; subst h2
-        refine ⟨vals, ?_, hva, by simp [Stmt.binds, hs]⟩
-        rw [runInsts_storeTyped]
-        have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ (some ty)
-            = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes ty) 0 with mem := m }⟩ := by
-          simp only [Blocks.doStore, hxv, hav]
-          rw [hm]
-          simp
-        rw [hd]
-      · simp at hr
-
-
--- ---------------------------------------------------------------------------
--- Calls
--- ---------------------------------------------------------------------------
-
-/-- The argument lists line up: resolving the emitted values through the block's
-    array gives what resolving the slots through `Γ` gives. `emitStmt` numbers a
-    call's arguments with `CS.get`, which `Aligned` makes the identity, so this
-    is where that bookkeeping turns into an actual equality of argument
-    vectors — the thing a wrong call would get wrong. -/
-theorem mapM_args (vals : Blocks.Vals) (Γ : Sem.Env) (hv : ValsAgree vals Γ)
-    (n : Nat) (hs : Γ.size = n) :
-    ∀ (args : List R), (∀ r ∈ args, r < n) →
-      (args.map (fun r => (⟨r⟩ : Val))).mapM (Blocks.getV vals)
-        = args.mapM (fun r => Γ[r]?) := by
-  intro args
-  induction args with
-  | nil => intro _; simp
-  | cons r rs ih =>
-      intro hall
-      have hr : r < n := hall r (by simp)
-      have hrs : ∀ x ∈ rs, x < n := fun x hx => hall x (by simp [hx])
-      simp only [List.map_cons, List.mapM_cons, hv r (hs ▸ hr), ih hrs]
-
 
 /-- `runInsts`' `call` arm, as an equation. -/
 theorem runInsts_call (lc : Sem.Locals) (s : Blocks.BSt) (d : Option Val) (c : IR.Callee)
@@ -1634,91 +843,9 @@ theorem runInsts_call (lc : Sem.Locals) (s : Blocks.BSt) (d : Option Val) (c : I
                 | none, _ => Blocks.runInsts lc { s with world := w' } rest
                 | some _, none => .stuck "the call returned nothing to bind" := rfl
 
-/-- **A result-binding call satisfies the frame.**
-
-    The two sides resolve their arguments differently — slots through `Γ`,
-    values through the array — and `mapM_args` is what makes those the same
-    vector. Everything after that is the *same* `callOf` on the *same*
-    observation — an import's contract, or the meaning `cfg.locals` gives one of
-    the program's own functions — so it is consulted once and both interpreters
-    see its answer; the result binds the next slot on one side and the next
-    value on the other, which `agree_push` keeps in step. -/
-theorem call_stmtStep (cfg : Sem.Cfg) (n : Nat)
-    (c : IR.Callee) (args : List R) (hall : ∀ r ∈ args, r < n) :
-    StmtStep cfg n (.call c args) (.call (some ⟨n⟩) c (args.map (fun r => ⟨r⟩))) := by
-  intro w w₁ Γ Γ₁ vals rest hs hva hr
-  have hargs := mapM_args vals Γ hva n hs args hall
-  rw [Sem.runStmt_call] at hr
-  rw [runInsts_call]
-  simp only [hargs]
-  cases hm : args.mapM (fun r => Γ[r]?) with
-  | none => rw [hm] at hr; simp at hr
-  | some vs =>
-    rw [hm] at hr
-    dsimp only at hr
-    cases hcf : Sem.callOf cfg.locals c vs (Sem.obsCall w c vs) with
-    | none => rw [hcf] at hr; exact absurd hr Sem.failOf_ne_ok
-    | some p =>
-      obtain ⟨res, w'⟩ := p
-      rw [hcf] at hr
-      dsimp only at hr
-      cases hres : res with
-      | none => rw [hres] at hr; simp at hr
-      | some v =>
-        rw [hres] at hr
-        dsimp only at hr
-        simp only [Sem.Outcome.ok.injEq] at hr
-        obtain ⟨h1, h2⟩ := hr
-        subst h1; subst h2
-        refine ⟨Blocks.setV vals ⟨n⟩ v, ?_, agree_push vals Γ hva n hs v,
-                by simp [hs, Stmt.binds]⟩
-        simp only [hcf, hres]
-
-
-/-- **A void call satisfies the frame.** Same contract, same observation; the
-    only difference is that nothing is bound, so both states keep the value
-    stores they had and agreement is inherited unchanged. -/
-theorem callVoid_stmtStep (cfg : Sem.Cfg) (n : Nat)
-    (c : IR.Callee) (args : List R) (hall : ∀ r ∈ args, r < n) :
-    StmtStep cfg n (.callVoid c args) (.call none c (args.map (fun r => ⟨r⟩))) := by
-  intro w w₁ Γ Γ₁ vals rest hs hva hr
-  have hargs := mapM_args vals Γ hva n hs args hall
-  rw [Sem.runStmt_callVoid] at hr
-  rw [runInsts_call]
-  simp only [hargs]
-  cases hm : args.mapM (fun r => Γ[r]?) with
-  | none => rw [hm] at hr; simp at hr
-  | some vs =>
-    rw [hm] at hr
-    dsimp only at hr
-    cases hcf : Sem.callOf cfg.locals c vs (Sem.obsCall w c vs) with
-    | none => rw [hcf] at hr; exact absurd hr Sem.failOf_ne_ok
-    | some p =>
-      obtain ⟨res, w'⟩ := p
-      rw [hcf] at hr
-      dsimp only at hr
-      simp only [Sem.Outcome.ok.injEq] at hr
-      obtain ⟨h1, h2⟩ := hr
-      subst h1; subst h2
-      refine ⟨vals, ?_, hva, by simp [hs, Stmt.binds]⟩
-      simp only [hcf]
-
-
 -- ---------------------------------------------------------------------------
--- Dispatch: what the emitter writes satisfies the frame
+-- The instructions a statement list emits
 -- ---------------------------------------------------------------------------
-
-/-!
-The frame above is stated against an *arbitrary* instruction, which is what
-makes each statement form one small proof. What it does not say is that the
-instruction in question is the one `emitStmt` actually writes — every result so
-far supplies that by hand, at a concrete shape.
-
-This section closes that: `instOf` reads the emitted instruction back off the
-emitter, and `stmtStep_emit` says every statement satisfies the frame against
-it. With `stmts_sim`, which was already general, a straight-line body of any
-length is covered, whatever its statements do.
--/
 
 /-- The instruction `emitStmt` writes for a statement.
 
@@ -1754,240 +881,6 @@ theorem emitStmts_cur : ∀ (ss : List Stmt) (s : CS),
       rw [ih (emitStmt s st), emitStmt_cur]
       simp [emittedList]
 
-/-- The two per-shape facts an operation needs, assembled into the frame's
-    interface. `hcur` is the `emit_X` lemma, `hev` the `eval_X` one, and `hrun`
-    holds by `rfl` wherever `runInsts` reaches its evaluating arm. -/
-private theorem opStep_of_emit (lc : Sem.Locals) (s : CS) (n : Nat) (o : Op) (inst : Inst)
-    (hcur : (emitStmt s (.op o)).cur = inst :: s.cur)
-    (hev : ∀ (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env), Γ.size = n → ValsAgree vals Γ →
-             Blocks.evalInst m vals inst = (Sem.evalOp m Γ o).map (fun x => (⟨n⟩, x)))
-    (hrun : ∀ (w : Sem.World) (vals : Blocks.Vals) (rest : List Inst),
-             Blocks.runInsts lc ⟨vals, w⟩ (inst :: rest)
-               = match Blocks.evalInst w.mem vals inst with
-                 | none => .stuck "instruction is undefined here"
-                 | some (d, r) => Blocks.runInsts lc ⟨Blocks.setV vals d r, w⟩ rest) :
-    OpStep lc n o (instOf s (.op o)) := by
-  have hi : instOf s (.op o) = inst := by rw [instOf, hcur]; rfl
-  rw [hi]
-  intro w Γ vals rest hsz hv
-  exact ⟨hev w.mem vals Γ hsz hv, hrun w vals rest⟩
-
-/-- **Every operation satisfies the frame against the instruction it compiles
-    to**, given only that its operands are in scope.
-
-    One case per operation, and each names its `emit_X` and `eval_X`: the content
-    is that the pair exists for every constructor, so no operation is left to be
-    supplied later. -/
-theorem op_opStep_emit (lc : Sem.Locals) (s : CS) (n : Nat) (ha : Aligned s n) (o : Op)
-    (hr : ∀ r ∈ o.regs, r < n) : OpStep lc n o (instOf s (.op o)) := by
-  cases o with
-  | iconst ty k =>
-        exact opStep_of_emit lc s n _ _ (emit_iconst s n ha ty k)
-          (fun m vals Γ _ _ => eval_iconst m vals Γ n ty k) (fun _ _ _ => rfl)
-  | memory =>
-        exact opStep_of_emit lc s n _ _ (emit_memory s n ha)
-          (fun m vals Γ _ _ => eval_memory m vals Γ n) (fun _ _ _ => rfl)
-  | funcAddr i =>
-        exact opStep_of_emit lc s n _ _ (emit_funcAddr s n ha i)
-          (fun m vals Γ _ _ => eval_funcAddr m vals Γ n i) (fun _ _ _ => rfl)
-  | iadd a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_iadd s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_iadd m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | isub a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_isub s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_isub m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | imul a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_imul s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_imul m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | udiv a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_udiv s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_udiv m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | ineg a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_ineg s n ha a h1)
-          (fun m vals Γ hz hv => eval_ineg m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | ishl a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_ishl s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_ishl m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | ushr a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_ushr s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_ushr m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | band a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_band s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_band m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | bandNot a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_bandNot s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_bandNot m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | bor a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_bor s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_bor m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | bxor a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_bxor s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_bxor m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | ireduce32 a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_ireduce32 s n ha a h1)
-          (fun m vals Γ hz hv => eval_ireduce32 m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | uextend64 a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_uextend64 s n ha a h1)
-          (fun m vals Γ hz hv => eval_uextend64 m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | sextend64 a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_sextend64 s n ha a h1)
-          (fun m vals Γ hz hv => eval_sextend64 m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | icmp c a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_icmp s n ha c a b h1 h2)
-          (fun m vals Γ hz hv => eval_icmp m vals Γ n hz hv c a b h1 h2) (fun _ _ _ => rfl)
-  | select c a b =>
-        have h1 : c < n := hr c (by simp [Op.regs])
-        have h2 : a < n := hr a (by simp [Op.regs])
-        have h3 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_select s n ha c a b h1 h2 h3)
-          (fun m vals Γ hz hv => eval_select m vals Γ n hz hv c a b h1 h2 h3) (fun _ _ _ => rfl)
-  | bitselect c a b =>
-        have h1 : c < n := hr c (by simp [Op.regs])
-        have h2 : a < n := hr a (by simp [Op.regs])
-        have h3 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_bitselect s n ha c a b h1 h2 h3)
-          (fun m vals Γ hz hv => eval_bitselect m vals Γ n hz hv c a b h1 h2 h3) (fun _ _ _ => rfl)
-  | ctz a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_ctz s n ha a h1)
-          (fun m vals Γ hz hv => eval_ctz m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | popcnt a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_popcnt s n ha a h1)
-          (fun m vals Γ hz hv => eval_popcnt m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | ibin k a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_ibin s n ha k a b h1 h2)
-          (fun m vals Γ hz hv => eval_ibin m vals Γ n hz hv k a b h1 h2) (fun _ _ _ => rfl)
-  | ishift k a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_ishift s n ha k a b h1 h2)
-          (fun m vals Γ hz hv => eval_ishift m vals Γ n hz hv k a b h1 h2) (fun _ _ _ => rfl)
-  | fbin k a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fbin s n ha k a b h1 h2)
-          (fun m vals Γ hz hv => eval_fbin m vals Γ n hz hv k a b h1 h2) (fun _ _ _ => rfl)
-  | iun k a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_iun s n ha k a h1)
-          (fun m vals Γ hz hv => eval_iun m vals Γ n hz hv k a h1) (fun _ _ _ => rfl)
-  | fun1 k a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fun1 s n ha k a h1)
-          (fun m vals Γ hz hv => eval_fun1 m vals Γ n hz hv k a h1) (fun _ _ _ => rfl)
-  | fconv k t a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fconv s n ha k t a h1)
-          (fun m vals Γ hz hv => eval_fconv m vals Γ n hz hv k t a h1) (fun _ _ _ => rfl)
-  | iext k t a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_iext s n ha k t a h1)
-          (fun m vals Γ hz hv => eval_iext m vals Γ n hz hv k t a h1) (fun _ _ _ => rfl)
-  | fma a b c =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        have h3 : c < n := hr c (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fma s n ha a b c h1 h2 h3)
-          (fun m vals Γ hz hv => eval_fma m vals Γ n hz hv a b c h1 h2 h3) (fun _ _ _ => rfl)
-  | fconst ty b =>
-        exact opStep_of_emit lc s n _ _ (emit_fconst s n ha ty b)
-          (fun m vals Γ _ _ => eval_fconst m vals Γ n ty b) (fun _ _ _ => rfl)
-  | fadd a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fadd s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_fadd m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | fsub a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fsub s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_fsub m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | fmul a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fmul s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_fmul m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | fmax a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fmax s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_fmax m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | fmin a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fmin s n ha a b h1 h2)
-          (fun m vals Γ hz hv => eval_fmin m vals Γ n hz hv a b h1 h2) (fun _ _ _ => rfl)
-  | fneg a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fneg s n ha a h1)
-          (fun m vals Γ hz hv => eval_fneg m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | fpromote a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fpromote s n ha a h1)
-          (fun m vals Γ hz hv => eval_fpromote m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | fcmp c a b =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        have h2 : b < n := hr b (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fcmp s n ha c a b h1 h2)
-          (fun m vals Γ hz hv => eval_fcmp m vals Γ n hz hv c a b h1 h2) (fun _ _ _ => rfl)
-  | fcvtFromSint ty a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fcvtFromSint s n ha ty a h1)
-          (fun m vals Γ hz hv => eval_fcvtFromSint m vals Γ n hz hv ty a h1) (fun _ _ _ => rfl)
-  | fcvtToUint ty a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_fcvtToUint s n ha ty a h1)
-          (fun m vals Γ hz hv => eval_fcvtToUint m vals Γ n hz hv ty a h1) (fun _ _ _ => rfl)
-  | splat ty a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_splat s n ha ty a h1)
-          (fun m vals Γ hz hv => eval_splat m vals Γ n hz hv ty a h1) (fun _ _ _ => rfl)
-  | extractlane a l =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_extractlane s n ha a l h1)
-          (fun m vals Γ hz hv => eval_extractlane m vals Γ n hz hv a l h1) (fun _ _ _ => rfl)
-  | vhighBits a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_vhighBits s n ha a h1)
-          (fun m vals Γ hz hv => eval_vhighBits m vals Γ n hz hv a h1) (fun _ _ _ => rfl)
-  | bitcast ty a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_bitcast s n ha ty a h1)
-          (fun m vals Γ hz hv => eval_bitcast m vals Γ n hz hv ty a h1) (fun _ _ _ => rfl)
-  | load op a =>
-        have h1 : a < n := hr a (by simp [Op.regs])
-        exact opStep_of_emit lc s n _ _ (emit_load s n ha op a h1)
-          (fun m vals Γ hz hv => eval_load m vals Γ n hz hv op a h1) (fun _ _ _ => rfl)
-
 /-- What `emitStmt` writes for a call: the fresh value is `n` and every argument
     resolves to itself, because `s` is aligned and they are in scope. -/
 theorem emit_call (s : CS) (n : Nat) (ha : Aligned s n) (c : IR.Callee) (args : List R)
@@ -2010,96 +903,6 @@ theorem emit_callVoid (s : CS) (n : Nat) (ha : Aligned s n) (c : IR.Callee) (arg
     intro r hrm
     simp [CS.get, he r (hall r hrm)]
   simp [emitStmt, hm]
-
-/-- **Every statement satisfies the frame against the instruction it compiles
-    to.** The dispatch the composition theorem was missing: `stmts_sim` takes a
-    `StmtChain`, and this is what builds one out of the emitter. -/
-theorem stmtStep_emit (cfg : Sem.Cfg) (s : CS) (n : Nat) (ha : Aligned s n)
-    (st : Stmt) (hr : ∀ r ∈ st.regs, r < n) : StmtStep cfg n st (instOf s st) := by
-  cases st with
-  | op o => exact op_stmtStep cfg n o _ (op_opStep_emit cfg.locals s n ha o hr)
-  | store ty v a =>
-      have h1 : v < n := hr v (by simp [Stmt.regs])
-      have h2 : a < n := hr a (by simp [Stmt.regs])
-      have hi : instOf s (.store ty v a) = .storeTyped ty ⟨v⟩ ⟨a⟩ := by
-        obtain ⟨_, _, he⟩ := ha
-        simp [instOf, emitStmt, CS.get, he v h1, he a h2]
-      rw [hi]; exact store_stmtStep cfg n ty v a h1 h2
-  | storeUnaligned v a =>
-      have h1 : v < n := hr v (by simp [Stmt.regs])
-      have h2 : a < n := hr a (by simp [Stmt.regs])
-      have hi : instOf s (.storeUnaligned v a) = .store ⟨v⟩ ⟨a⟩ := by
-        obtain ⟨_, _, he⟩ := ha
-        simp [instOf, emitStmt, CS.get, he v h1, he a h2]
-      rw [hi]; exact storeUnaligned_stmtStep cfg n v a h1 h2
-  | istore8 v a =>
-      have h1 : v < n := hr v (by simp [Stmt.regs])
-      have h2 : a < n := hr a (by simp [Stmt.regs])
-      have hi : instOf s (.istore8 v a) = .istore8 ⟨v⟩ ⟨a⟩ := by
-        obtain ⟨_, _, he⟩ := ha
-        simp [instOf, emitStmt, CS.get, he v h1, he a h2]
-      rw [hi]; exact istore8_stmtStep cfg n v a h1 h2
-  | call c args =>
-      have hall : ∀ r ∈ args, r < n := fun r h => hr r (by simpa [Stmt.regs] using h)
-      have hi : instOf s (.call c args) = .call (some ⟨n⟩) c (args.map (fun r => ⟨r⟩)) := by
-        rw [instOf, emit_call s n ha c args hall]; rfl
-      rw [hi]; exact call_stmtStep cfg n c args hall
-  | callVoid c args =>
-      have hall : ∀ r ∈ args, r < n := fun r h => hr r (by simpa [Stmt.regs] using h)
-      have hi : instOf s (.callVoid c args) = .call none c (args.map (fun r => ⟨r⟩)) := by
-        rw [instOf, emit_callVoid s n ha c args hall]; rfl
-      rw [hi]; exact callVoid_stmtStep cfg n c args hall
-
-/-- Every statement of a body reads only slots that exist when it runs.
-
-    Weaker than `wf`, which also types them: this is exactly what makes
-    `CS.get` the identity, and nothing more. -/
-def InScope : Nat → List Stmt → Prop
-  | _, [] => True
-  | n, st :: ss => (∀ r ∈ st.regs, r < n) ∧ InScope (n + st.binds) ss
-
-/-- A body's worth of the frame, straight from the emitter. -/
-theorem emitStmts_chain (cfg : Sem.Cfg) :
-    ∀ (ss : List Stmt) (s : CS) (n : Nat), Aligned s n → InScope n ss →
-      StmtChain cfg n (ss.zip (emittedList s ss)) := by
-  intro ss
-  induction ss with
-  | nil => intro s n _ _; exact .nil n
-  | cons st ss ih =>
-      intro s n ha hsc
-      obtain ⟨h1, h2⟩ := hsc
-      simp only [emittedList, List.zip_cons_cons]
-      exact .cons n st (instOf s st) _ (stmtStep_emit cfg s n ha st h1)
-        (ih (emitStmt s st) (n + st.binds) (emitStmt_aligned s n ha st) h2)
-
-/-- **A straight-line body compiles correctly, for any statements.**
-
-    `stmts_sim` composed with the dispatch: the instructions `emitStmts` writes
-    reach the same continuation, in a state agreeing with the environment the
-    term ended in, having threaded the same world. Stores and calls included —
-    the six `StmtStep`s above are what makes that true rather than an aspiration.
-
-    Forward on successful runs, which is the honest shape here: the two
-    interpreters word their failures differently, and a term that gets stuck has
-    no behavior to preserve. -/
-theorem emitStmts_sim (cfg : Sem.Cfg) (ss : List Stmt) (s : CS) (n : Nat)
-    (ha : Aligned s n) (hsc : InScope n ss)
-    (w w' : Sem.World) (Γ Γ' : Sem.Env) (vals : Blocks.Vals) (rest : List Inst)
-    (hsz : Γ.size = n) (hv : ValsAgree vals Γ)
-    (hrun : Sem.runStmts cfg Γ w ss = .ok Γ' w') :
-    ∃ vals', Blocks.runInsts cfg.locals ⟨vals, w⟩ (emittedList s ss ++ rest)
-               = Blocks.runInsts cfg.locals ⟨vals', w'⟩ rest
-             ∧ ValsAgree vals' Γ' := by
-  have hlen : (emittedList s ss).length = ss.length := emittedList_length ss s
-  have hfst : (ss.zip (emittedList s ss)).map Prod.fst = ss := by
-    rw [List.map_fst_zip]; omega
-  have hsnd : (ss.zip (emittedList s ss)).map Prod.snd = emittedList s ss := by
-    rw [List.map_snd_zip]; omega
-  obtain ⟨vals', hr, hva, _⟩ :=
-    stmts_sim cfg (ss.zip (emittedList s ss)) n w w' Γ Γ' vals rest
-      (emitStmts_chain cfg ss s n ha hsc) hsz hv (by rwa [hfst])
-  exact ⟨vals', by rwa [hsnd] at hr, hva⟩
-
 
 -- ---------------------------------------------------------------------------
 -- Block identity
@@ -2522,17 +1325,13 @@ theorem single_iconst_soundE (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
     (single_iconst_sound idx env t k base data dlen out olen w fuel)
 
 
-
 -- ---------------------------------------------------------------------------
 -- A straight-line body, as a whole function
 -- ---------------------------------------------------------------------------
 
 /-!
-Everything above relates the term's statements to the instructions they compile
-to. What is left is the frame around them: the entry block that binds the
-parameters, and the `ret` that ends it. With those, a straight-line body has a
-`CompileSound`-shaped theorem for *any* statements — the first case here that is
-not about a particular program.
+The frame around a straight-line body's instructions: the entry block that binds
+the parameters, and the `ret` that ends it.
 -/
 
 /-- One `Piece`, reduced. The term's fuel is spent on the piece and then on the
@@ -2589,37 +1388,6 @@ theorem emitStmts_curPars : ∀ (ss : List Stmt) (s : CS),
       intro s
       show (emitStmts (emitStmt s st) ss).curPars = _
       rw [ih (emitStmt s st), emitStmt_curPars]
-
-/-- **Binding a block's parameters is binding the term's slots.**
-
-    `runFrom` writes each incoming argument to the value its block parameter
-    names; `parsOf` says those values are `0, 1, …`; so the array it starts the
-    block with agrees with the environment the term starts from. This is the
-    entry correspondence, general in the parameter list. -/
-theorem parsOf_fold_agree : ∀ (tys : List ClifTy) (args : List V) (vals : Blocks.Vals)
-    (Γ : Sem.Env) (n0 : Nat), tys.length = args.length → Γ.size = n0 → ValsAgree vals Γ →
-    ValsAgree (((parsOf n0 tys).zip args).foldl
-                 (fun vs pa => Blocks.setV vs pa.1.1 pa.2) vals)
-              (Γ ++ args.toArray) := by
-  intro tys
-  induction tys with
-  | nil =>
-      intro args vals Γ n0 hlen _ hv
-      have hnil : args = [] := by
-        cases args with
-        | nil => rfl
-        | cons a as => simp at hlen
-      subst hnil
-      simpa [parsOf] using hv
-  | cons t ts ih =>
-      intro args vals Γ n0 hlen hsz hv
-      cases args with
-      | nil => simp at hlen
-      | cons a as =>
-          have hlen' : ts.length = as.length := by simpa using hlen
-          have := ih as (Blocks.setV vals ⟨n0⟩ a) (Γ.push a) (n0 + 1) hlen'
-            (by simp [hsz]) (agree_push vals Γ hv n0 hsz a)
-          simpa [parsOf, List.foldl] using this
 
 /-- Opening a block leaves the instructions already emitted alone. -/
 theorem open'_go_cur : ∀ (tys : List ClifTy) (st : CS) (n0 i : Nat),
@@ -2684,53 +1452,5 @@ theorem compileBody_straight (idx : Nat) (env : FnEnv) (params : List ClifTy)
   rw [h, CS.close]
   simp [hdone, hcur, entryCS_done, entryCS_curRef, entryCS_cur, entryCS_curPars,
         emitStmts_curPars, emitStmts_cur]
-
-/-- **A straight-line body compiles correctly, as a function.**
-
-    `compileBody` on one `.straight` piece emits a single block: the entry
-    parameters, the statements' instructions, and a `ret`. Running it makes the
-    same observations and ends in the same world as running the term.
-
-    Forward on successful runs — the two interpreters word their failures
-    differently — and general in the parameter list and in the statements, which
-    is what makes it a statement about compilation rather than about a program.
-    Only the *shape* is restricted: one straight-line piece, no control flow. -/
-theorem straight_sound (idx : Nat) (cfg : Sem.Cfg) (env : FnEnv) (params : List ClifTy)
-    (ss : List Stmt) (args : List V) (w : World) (fuel steps : Nat)
-    (Γ' : Sem.Env) (w' : World)
-    (hsteps : cfg.steps = fuel + 2)
-    (hlen : params.length = args.length)
-    (hsc : InScope params.length ss)
-    (hterm : Sem.runStmts cfg args.toArray w ss = .ok Γ' w') :
-    Sem.run cfg args w [.straight ss]
-      = Blocks.run cfg.locals (compileBody idx [.straight ss] env params) args w (steps + 1) := by
-  have hplen : (parsOf 0 params).length = args.length := by
-    rw [parsOf_length]; exact hlen
-  have hva0 : ValsAgree (((parsOf 0 params).zip args).foldl
-                 (fun vs pa => Blocks.setV vs pa.1.1 pa.2) #[]) args.toArray := by
-    have := parsOf_fold_agree params args #[] #[] 0 hlen rfl (by intro i hi; simp at hi)
-    simpa using this
-  obtain ⟨vals', hrun, _⟩ :=
-    emitStmts_sim cfg ss (entryCS params) params.length (entryCS_aligned params) hsc
-      w w' args.toArray Γ'
-      (((parsOf 0 params).zip args).foldl (fun vs pa => Blocks.setV vs pa.1.1 pa.2) #[])
-      [.ret none] (by simp [hlen]) hva0 hterm
-  rw [Blocks.run, compileBody_straight, Blocks.runFrom]
-  simp only [List.find?, beq_self_eq_true, if_true, hplen, bne_self_eq_false,
-             Bool.false_eq_true, if_false]
-  rw [hrun]
-  simp only [Blocks.runInsts]
-  rw [Sem.run, hsteps, runCode_straight, hterm]
-
-/-- The same at the budget-separated statement, where it sits beside the other
-    `CompileSound` results. -/
-theorem straight_soundE (idx : Nat) (env : FnEnv) (params : List ClifTy)
-    (ss : List Stmt) (args : List V) (w : World) (fuel : Nat) (Γ' : Sem.Env) (w' : World)
-    (hlen : params.length = args.length)
-    (hsc : InScope params.length ss)
-    (hterm : Sem.runStmts { env, steps := fuel + 2 } args.toArray w ss = .ok Γ' w') :
-    CompileSoundE idx env params [.straight ss] args w (fuel + 2) :=
-  ⟨1, straight_sound idx { env, steps := fuel + 2 } env params ss args w fuel 0 Γ' w'
-        rfl hlen hsc hterm⟩
 
 end AlgorithmLib.HProg

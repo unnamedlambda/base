@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.Host.Blocks
-meta import AlgorithmLib.Host.Blocks
+public import AlgorithmLib.Host.Sound
+meta import AlgorithmLib.Host.Sound
 public import Demo.ByteScrub
 meta import Demo.ByteScrub
 import all Init.Data.Repr
@@ -115,8 +115,8 @@ theorem blend_leaves_no_nul
 /-!
 `blend_scrubs` is about the term. What an artifact carries is blocks, and the
 two are related by `compileBody`. For a straight-line body that relation is
-proved in general — `AlgorithmLib.HProg.emitStmts_sim` and `straight_sound` —
-and `blend` is straight-line, so the fact transports.
+`AlgorithmLib.HProg.stmts_msim`, the straight-line case of `compile_sound`, and
+`blend` is straight-line, so the fact transports.
 
 What transports is the *value* fact, not the trace: `blend` stores nothing, so
 at the level of `Blocks.run` there is nothing to observe. `blend_clif` below is
@@ -159,12 +159,13 @@ theorem blend_scrubs_stmts (fuel : Nat) (cfg : Cfg) (w : World)
 /-- **What the emitted CLIF computes.**
 
     The instructions `emitStmt` writes for `blend` — no instruction is written
-    out by hand here either — run by the block interpreter from any agreeing
-    state: the value the comparison binds is all ones exactly on the NUL lanes,
-    and the value the blend binds is the bytes with every NUL made a space.
+    out by hand here either — run by the block interpreter from any state that
+    agrees with the term's on a scope holding the operands: the value the
+    comparison binds is all ones exactly on the NUL lanes, and the value the
+    blend binds is the bytes with every NUL made a space.
 
     This is `blend_scrubs` transported across compilation. The transport is
-    `emitStmts_sim`, which holds for any straight-line body; `blend` is
+    `stmts_msim`, which holds for any straight-line body; `blend` is
     straight-line, so none of the loop-exit or branch-join numbering the two
     forms have disagreed over is involved. -/
 theorem blend_clif (fuel : Nat) (cfg : Cfg) (w : World)
@@ -174,7 +175,8 @@ theorem blend_clif (fuel : Nat) (cfg : Cfg) (w : World)
     (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
     (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32)))
     (s : CS) (hs : Aligned s Γ.size)
-    (vals : Blocks.Vals) (hv : ValsAgree vals Γ) (rest : List Inst) :
+    (S : Scope) (hS : S.mem a = true ∧ S.mem b = true ∧ S.mem c = true)
+    (vals : Blocks.Vals) (hrel : Rel S vals Γ) (rest : List Inst) :
     ∃ vals',
       Blocks.runInsts cfg.locals ⟨vals, w⟩ (emittedList s (blendStmts a b c Γ.size) ++ rest)
           = Blocks.runInsts cfg.locals ⟨vals', w⟩ rest
@@ -183,27 +185,45 @@ theorem blend_clif (fuel : Nat) (cfg : Cfg) (w : World)
   have haa : a < Γ.size := (Array.getElem?_eq_some_iff.mp ha).1
   have hbb : b < Γ.size := (Array.getElem?_eq_some_iff.mp hb).1
   have hcc : c < Γ.size := (Array.getElem?_eq_some_iff.mp hc).1
-  have hsc : InScope Γ.size (blendStmts a b c Γ.size) := by
-    refine ⟨?_, ?_, trivial⟩
-    · intro r hr
-      simp [Op.regs, Stmt.regs] at hr
-      rcases hr with rfl | rfl
-      · exact haa
-      · exact hbb
-    · intro r hr
-      simp [Op.regs, Stmt.regs] at hr
-      rcases hr with rfl | rfl | rfl
-      · exact Nat.lt_succ_self _
-      · exact Nat.lt_succ_of_lt hcc
-      · exact Nat.lt_succ_of_lt haa
-  obtain ⟨vals', hrun, hva⟩ :=
-    emitStmts_sim cfg (blendStmts a b c Γ.size) s Γ.size hs hsc w w Γ _ vals rest
-      rfl hv (blend_scrubs_stmts fuel cfg w Γ tys hΓ a b c xs h16 ha hb hc)
+  have h1 : allIn S Γ.size (Stmt.op (.icmp .eq a b)).regs = true := by
+    rw [allIn_iff]
+    intro r hr
+    simp only [Stmt.regs, Op.regs, List.mem_cons, List.not_mem_nil, or_false] at hr
+    rcases hr with rfl | rfl
+    · exact ⟨haa, hS.1⟩
+    · exact ⟨hbb, hS.2.1⟩
+  have h2 : allIn (S.add Γ.size (Γ.size + 1)) (Γ.size + 1)
+      (Stmt.op (.bitselect Γ.size c a)).regs = true := by
+    rw [allIn_iff]
+    intro r hr
+    simp only [Stmt.regs, Op.regs, List.mem_cons, List.not_mem_nil, or_false] at hr
+    rcases hr with rfl | rfl | rfl
+    · refine ⟨Nat.lt_succ_self _, (Scope.mem_add _ _ _ _).2 (Or.inr ⟨Nat.le_refl _, ?_⟩)⟩
+      exact Nat.lt_succ_self _
+    · exact ⟨Nat.lt_succ_of_lt hcc, (Scope.mem_add _ _ _ _).2 (Or.inl hS.2.2)⟩
+    · exact ⟨Nat.lt_succ_of_lt haa, (Scope.mem_add _ _ _ _).2 (Or.inl hS.1)⟩
+  have hsc : scStmts S Γ.size (blendStmts a b c Γ.size)
+      = some ((S.add Γ.size (Γ.size + 1)).add (Γ.size + 1) (Γ.size + 1 + 1),
+              Γ.size + 1 + 1) := by
+    simp only [blendStmts, scStmts, Stmt.binds]
+    rw [if_pos h1, if_pos h2]
+  obtain ⟨vals', hrun, hrel', _, _⟩ :=
+    stmts_msim cfg (blendStmts a b c Γ.size) s S Γ.size _ _ w w Γ _ vals rest hsc hs rfl hrel
+      (blend_scrubs_stmts fuel cfg w Γ tys hΓ a b c xs h16 ha hb hc)
+  have hm : ∀ i, Γ.size ≤ i → i < Γ.size + 2 →
+      ((S.add Γ.size (Γ.size + 1)).add (Γ.size + 1) (Γ.size + 1 + 1)).mem i = true := by
+    intro i h1 h2
+    rw [Scope.mem_add, Scope.mem_add]
+    omega
   refine ⟨vals', hrun, ?_, ?_⟩
-  · rw [hva Γ.size (by simp only [Array.size_push]; omega)]
-    simp [Array.getElem?_push]
-  · rw [hva (Γ.size + 1) (by simp only [Array.size_push]; omega)]
-    simp [Array.getElem_push]
+  · obtain ⟨x, hx, hv⟩ := hrel' Γ.size (hm _ (Nat.le_refl _) (by omega))
+    rw [hv]
+    simp [Array.getElem?_push, Array.getElem_push] at hx
+    exact congrArg some hx.symm
+  · obtain ⟨x, hx, hv⟩ := hrel' (Γ.size + 1) (hm _ (by omega) (by omega))
+    rw [hv]
+    simp [Array.getElem_push] at hx
+    exact congrArg some hx.symm
 
 -- ---------------------------------------------------------------------------
 -- One fact about the CLIF the artifact ships

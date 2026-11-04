@@ -117,36 +117,6 @@ noncomputable def DeclaredStep.ofStage (k : VendorKernel) (S : StageSpec) : Decl
     frame := fun m b hb => funext (fun a =>
       S.step_otherBuf m b a (by simpa using hb)) }
 
-/-- **A recorded sequence, replayed by one call.**
-
-    The step a `cl_cuda_graph_launch` is: its value is the captured pipeline's
-    denotation, and its frame is that pipeline's outputs — derived from the
-    stages, so a plan cannot claim a replay touches fewer buffers than the
-    sequence it recorded.
-
-    What is assumed is only that the driver replays what was captured.  Which
-    stages were captured is proven separately, of the capturing program. -/
-noncomputable def graphStep (ss : List XStage) : DeclaredStep :=
-  { kernel := .cudaGraphLaunch
-    outs   := ss.map (fun S => S.val.out)
-    step   := fun m => (Pipeline.ofStages ss).denote m
-    frame  := by
-      intro m b hb
-      show ((ss.map Subtype.val).foldl (fun mm S => S.step mm) m) b = m b
-      have : ∀ (L : List XStage) (mm : Buf → Nat → Float32),
-          (∀ S ∈ L, b ≠ S.val.out) →
-          ((L.map Subtype.val).foldl (fun m' S => S.step m') mm) b = mm b := by
-        intro L
-        induction L with
-        | nil => intro _ _; rfl
-        | cons S L ih =>
-            intro mm h
-            show ((L.map Subtype.val).foldl (fun m' T => T.step m') (S.val.step mm)) b = mm b
-            rw [ih (S.val.step mm) (fun T hT => h T (List.mem_cons_of_mem S hT))]
-            funext a
-            exact StageSpec.step_otherBuf S.val mm b a (h S (List.mem_cons_self ..))
-      exact this ss m (fun S hS h => hb (List.mem_map.mpr ⟨S, hS, h.symm⟩)) }
-
 /-- A plan from bundled stages and declared steps — exclusivity comes free, the
     same way `Pipeline.ofStages` gives it for an all-proven sequence. -/
 noncomputable def Plan.ofSteps (ss : List (Sum XStage DeclaredStep)) : Plan :=

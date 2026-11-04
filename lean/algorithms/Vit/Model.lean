@@ -7,14 +7,18 @@ public import Scan.Layout
 meta import Scan.Layout
 public import AlgorithmLib.Surface.Layout
 meta import AlgorithmLib.Surface.Layout
-public import AlgorithmLib.ML.Model.LocalBind
-meta import AlgorithmLib.ML.Model.LocalBind
+public import AlgorithmLib.ML.Model.BufsOf
+meta import AlgorithmLib.ML.Model.BufsOf
 public import AlgorithmLib.ML.Model.Schedule
 meta import AlgorithmLib.ML.Model.Schedule
 public import AlgorithmLib.Core.IR
 meta import AlgorithmLib.Core.IR
 public import AlgorithmLib.Core.Artifact
 meta import AlgorithmLib.Core.Artifact
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
+public import AlgorithmLib.Kernel.Ptx
+meta import AlgorithmLib.Kernel.Ptx
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -407,17 +411,6 @@ def vMaskWords : List Nat :=
 
 def vMaskBytes : List UInt8 := vMaskWords.flatMap u32le
 
-/-- A contraction as a cuBLAS call.  cuBLAS is column-major and a row-major
-    `(r x c)` is a column-major `(c x r)` of the same bytes, so each of the
-    three contractions becomes one transpose choice.  The FFI derives
-    `lda`/`ldb`/`ldc` from `m`/`n`/`k` and the transposes. -/
-def vGemmOf : AlgorithmLib.ML.TOp →
-    Option (Nat × Nat × Nat × Nat × Nat × Ref × Ref × Ref)
-  | .mv    (.vendor _) w x o b i ow _ => some (1, 0, ow, b,  i,  w, x, o)
-  | .mvT   (.vendor _) w d o b i ow => some (0, 0, i,  b,  ow, w, d, o)
-  | .outer (.vendor _) d x o b i ow => some (0, 1, i,  ow, b,  x, d, o)
-  | _ => none
-
 /-- **Warps per block, per operation.**
 
     A block of one warp is 32 threads, which caps occupancy near a third of the
@@ -449,15 +442,6 @@ theorem vWarpsOf_divides (g : Nat) : g % vWarpsOf g = 0 := by
   split
   · assumption
   · omega
-
-/-- **Which loads take the read-only path.**  `.nc` is sound for any buffer a
-    kernel does not store to, but the library is explicit that it is not always
-    faster: a buffer read once and never revisited gains nothing from a cache.
-    Nearly every buffer here is written by one kernel and read by the next, which
-    is exactly that case — so it was measured rather than assumed: `.none` costs
-    **13.51 ms a step against `.all`'s 12.76**, so the read-only path wins here
-    and the intuition above is wrong for this tape. -/
-def vRO : AlgorithmLib.ML.ROPolicy := .all
 
 /-- How many times fusing would duplicate the producer.
 
@@ -1085,40 +1069,34 @@ def vGridHist : List (Nat × Nat) :=
     remaining launches are a handful of large calls or a crowd of tiny ones. -/
 def vGemmCensus : List ((Nat × Nat × Nat × Nat × Nat) × Nat) := Id.run do
   let ks := vAll.filterMap (fun op =>
-    (vGemmOf op).map (fun g => (g.1, g.2.1, g.2.2.1, g.2.2.2.1, g.2.2.2.2.1)))
+    (TOp.vendorGemm op).map (fun g => (g.1, g.2.1, g.2.2.1, g.2.2.2.1, g.2.2.2.2.1)))
   let ds := ks.eraseDups
   pure (((ds.map (fun k => (k, (ks.filter (· == k)).length))).toArray.qsort
     (fun x y => x.2 > y.2)).toList.take 10)
 
-/-- The buffers a group's kernel binds: every member's, in first-use order. -/
-def vUnitBufs (u : List Nat) : List AlgorithmLib.ML.Buf :=
-  ((vUnitOps u).flatMap (AlgorithmLib.ML.TOp.bufs SQ)).eraseDups
+/-- The buffers a group's kernel binds (`unitBufs`). -/
+abbrev vUnitBufs (u : List Nat) : List AlgorithmLib.ML.Buf := unitBufs SQ (vUnitOps u)
 
-/-- The group's statement: each member's, renamed onto the group's own table.
-    `.seq` is the whole of the fusion — no barrier, because each warp keeps to
-    its own row throughout, which `vRowLocal` is what decides. -/
-def vUnitStmt (u : List Nat) : AlgorithmLib.ML.EWStmt :=
-  let bs := vUnitBufs u
-  (vUnitOps u).foldl
-    (fun acc op => .seq acc ((AlgorithmLib.ML.TOp.stmt SQ op).renameBuf
-                              (AlgorithmLib.ML.compactMap bs)))
-    .skip
+/-- The group's statement (`unitStmt`): no barrier, because each warp keeps
+    to its own row throughout, which `vRowLocal` is what decides. -/
+abbrev vUnitStmt (u : List Nat) : AlgorithmLib.ML.EWStmt := unitStmt SQ (vUnitOps u)
 
-def vUnitGrid (u : List Nat) : Nat :=
-  match (vUnitOps u).head? with
-  | some op => AlgorithmLib.ML.TOp.gridOf op
-  | none => 1
+/-- The blocks a group launches over (`unitGrid`). -/
+abbrev vUnitGrid (u : List Nat) : Nat := unitGrid (vUnitOps u)
 
-/-- One group's kernel text.  Renaming onto the group's own table is what makes
-    the text depend on the shape and not on where in the model the group sits —
-    which is what makes twelve identical blocks twelve references to one
-    kernel. -/
+/-- One group's kernel text: its statement's body kernel (`Body.kernel`), in
+    blocks of `vWarpsOf` warps, printed.  Renaming onto the group's own table is
+    what makes the text depend on the shape and not on where in the model the
+    group sits — which is what makes twelve identical blocks twelve references
+    to one kernel. -/
 def vTextOf (u : List Nat) : String :=
   match (vUnitOps u).head? with
   | some op =>
-    if (vGemmOf op).isSome then "" else
-      AlgorithmLib.ML.emitProvenKernelN "main"
-        (vUnitBufs u).length 0 (vUnitStmt u) vRO (vWarpsOf (vUnitGrid u))
+    if (TOp.vendorGemm op).isSome then "" else
+      match AlgorithmLib.Kernel.Kernel.ptx (AlgorithmLib.ML.Body.kernel "main" (vUnitBufs u).length 0
+          (vUnitStmt u) (vWarpsOf (vUnitGrid u))) with
+      | .ok t => t
+      | .error e => s!"// {e}"
   | none => ""
 
 /-- **Distinct kernels, and which one each group launches.**
@@ -1131,12 +1109,12 @@ def vSlotMapRaw : Array Nat × Array String := Id.run do
   let mut ix : Array Nat := #[]
   let mut uniq : Array String := #[]
   for u in vUnitsRaw do
-    -- Key on the statement, not on the text.  Emitting is what `expandEW`
-    -- unrolls, so keying on the text emits every group and keeps a
-    -- thirtieth of them; the statement decides the text and costs nothing.
+    -- Key on the statement, not on the text: keying on the text prints every
+    -- group and keeps a thirtieth of them; the statement decides the text and
+    -- costs nothing.
     -- A contraction group renders no kernel, so it needs no statement built:
     -- `TOp.stmt` for a contraction is the widest schema there is.
-    if ((vUnitOps u).head? >>= vGemmOf).isSome then
+    if ((vUnitOps u).head? >>= TOp.vendorGemm).isSome then
       match seenText[""]? with
       | some j => ix := ix.push j
       | none =>
@@ -1189,7 +1167,7 @@ def vTraffic : List (String × Nat) := Id.run do
   for i in [0:vUnitsRaw.length] do
     let u := vUnitArrRaw.getD i []
     let b := (vUnitBufs u).foldl (fun a r => a + vBufBytes.getD r 0) 0
-    if ((vUnitOps u).head? >>= vGemmOf).isSome then
+    if ((vUnitOps u).head? >>= TOp.vendorGemm).isSome then
       vn := vn + b; nv := nv + 1
     else
       pv := pv + b; np := np + 1
@@ -1228,8 +1206,8 @@ def vFuseCeiling : List (String × Nat) := Id.run do
     if VBASE ≤ r && nread.getD r 0 == 1 && writer.getD r (-1) ≥ 0 then
       let w := (writer.getD r 0).toNat
       let c := (reader.getD r 0).toNat
-      let wv := (arr[w]?.bind vGemmOf).isSome
-      let cv := (arr[c]?.bind vGemmOf).isSome
+      let wv := (arr[w]?.bind TOp.vendorGemm).isSome
+      let cv := (arr[c]?.bind TOp.vendorGemm).isSome
       if wv || cv then vend := vend + vBufBytes.getD r 0
       else
         single := single + 1
@@ -1245,8 +1223,8 @@ def vFuseCeiling : List (String × Nat) := Id.run do
     if VBASE ≤ r && nread.getD r 0 == 1 && writer.getD r (-1) ≥ 0 then
       let w := (writer.getD r 0).toNat
       let c := (reader.getD r 0).toNat
-      let wv := (arr[w]?.bind vGemmOf).isSome
-      let cv := (arr[c]?.bind vGemmOf).isSome
+      let wv := (arr[w]?.bind TOp.vendorGemm).isSome
+      let cv := (arr[c]?.bind TOp.vendorGemm).isSome
       if !wv && !cv && unitOf.getD w (-1) == unitOf.getD c (-2) then
         inUnit := inUnit + vBufBytes.getD r 0
   let tot := (List.range VNBUF).foldl (fun a r => a + vBufBytes.getD r 0) 0
@@ -1293,7 +1271,7 @@ def vRegForward : List (String × Nat) := Id.run do
       let c := (reader.getD r 0).toNat
       match arr[w]?, arr[c]? with
       | some a, some b =>
-        if (vGemmOf a).isNone && (vGemmOf b).isNone
+        if (TOp.vendorGemm a).isNone && (TOp.vendorGemm b).isNone
             && unitOf.getD w (-1) == unitOf.getD c (-2) then
           let slot := ((AlgorithmLib.ML.TOp.reads b).idxOf? r).getD 9
           let key := s!"{vKindOf a}->{vKindOf b}@{slot}"
@@ -1370,7 +1348,7 @@ def vBufAddr : Array Nat := Id.run do
     slot would call two differently-shaped gemms one group. -/
 def vHKey (i : Nat) : Nat × Nat × Nat × Nat × Nat :=
   let lv := vLevelRaw.getD i 0
-  match (vUnitOps (vUnitArrRaw.getD i [])).head? >>= vGemmOf with
+  match (vUnitOps (vUnitArrRaw.getD i [])).head? >>= TOp.vendorGemm with
   | some (ta, tb, m, n, k, _, _, _) => (lv, 1, ta * 2 + tb, m, n * 100000 + k)
   | none => (lv, 0, vSlotIxRaw i, 0, 0)
 
@@ -1458,7 +1436,7 @@ def vGemmConcat : List (String × Nat) := Id.run do
   for k in ds do
     let mem := (List.range vUnitsRaw.length).filter (fun i => keys.getD i (0,0,0,0,0) == k)
     let ins := mem.filterMap (fun i =>
-      ((vUnitOps (vUnitArrRaw.getD i [])).head? >>= vGemmOf).map (fun g => g.2.2.2.2.2.2.1))
+      ((vUnitOps (vUnitArrRaw.getD i [])).head? >>= TOp.vendorGemm).map (fun g => g.2.2.2.2.2.2.1))
     tot := tot + 1
     if ins.eraseDups.length == 1 then
       share := share + 1
@@ -1532,7 +1510,7 @@ def vSlotMap : Array Nat × Array String := Id.run do
   let mut ix : Array Nat := #[]
   let mut uniq : Array String := #[]
   for u in vUnits do
-    if ((vUnitOps u).head? >>= vGemmOf).isSome then
+    if ((vUnitOps u).head? >>= TOp.vendorGemm).isSome then
       match seenText[""]? with
       | some j => ix := ix.push j
       | none =>
@@ -1568,19 +1546,6 @@ def VNSLOT : Nat := vPtx.length
 def vSlotSizes : List Nat :=
   vPtx.map (fun t => ((t.toUTF8.toList.length + 1) + 255) / 256 * 256)
 def VPTX_BYTES : Nat := vSlotSizes.foldl (· + ·) 0
-
--- ---------------------------------------------------------------------------
--- Seam guards on the kernels that are actually emitted
--- ---------------------------------------------------------------------------
-
-/-! A launch here is a *group* of operations sharing one buffer table, not a
-    single operation, so `TOp.localStmt`'s guards do not describe what is
-    printed.  `TOp.groupStmt` is what is printed, and `TOp.groupRegsOk` is the
-    same argument at group scale: registers take the group's maximum, because
-    each member numbers its own from zero, and instructions its sum.
-
-    Only the two arithmetic facts are decided over the tape.  Everything that
-    would have to build an instruction list is generic. -/
 
 /-- The dependences of the launches, by the definition `vPredsRaw` uses. -/
 def vPreds : Array (List Nat) := Id.run do
@@ -1699,11 +1664,11 @@ def vHorizClosed : List Nat × List (String × Nat) := Id.run do
   -- group that does not share an input is not a merge this development may make.
   let concatable := fun (gi : Nat) =>
     let mem := gs.getD gi []
-    match mem.head? >>= (fun i => (vUnitOps (vUnitArrRaw.getD i [])).head?) >>= vGemmOf with
+    match mem.head? >>= (fun i => (vUnitOps (vUnitArrRaw.getD i [])).head?) >>= TOp.vendorGemm with
     | none => true
     | some _ =>
       let ins := mem.filterMap (fun i =>
-        ((vUnitOps (vUnitArrRaw.getD i [])).head? >>= vGemmOf).map (fun g => g.2.2.2.2.2.2.1))
+        ((vUnitOps (vUnitArrRaw.getD i [])).head? >>= TOp.vendorGemm).map (fun g => g.2.2.2.2.2.2.1))
       ins.eraseDups.length == 1
   let mut keep : Array Bool :=
     ((List.range gs.length).map concatable).toArray

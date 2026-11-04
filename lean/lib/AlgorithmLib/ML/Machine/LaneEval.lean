@@ -17,6 +17,9 @@ compositions they claim.
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 /-- The lane expression reads nothing but the two operand registers. -/
 def WFExp.pairOnly : WFExp → Bool
   | .reg r     => r == 1 || r == 2
@@ -33,9 +36,9 @@ def WFExp.pairOnly : WFExp → Bool
 
 /-- …and then it *is* a function of the two operands, which is the form the
     stage's value field has to be stated in. -/
-def WFExp.evalPair (x y : Float32) : WFExp → Float32
+def WFExp.evalPair (x y : R) : WFExp → R
   | .reg r     => if r == 1 then x else if r == 2 then y else NumOps.ofNat 0
-  | .lit v     => v
+  | .lit v     => NumLit.lit v
   | .add a b   => NumOps.add (a.evalPair x y) (b.evalPair x y)
   | .mul a b   => NumOps.mul (a.evalPair x y) (b.evalPair x y)
   | .neg a     => NumOps.neg (a.evalPair x y)
@@ -44,11 +47,11 @@ def WFExp.evalPair (x y : Float32) : WFExp → Float32
   | .ex2 a     => NumOps.ex2 (a.evalPair x y)
   | .rsqrt a   => NumOps.rsqrt (a.evalPair x y)
   | .maxW a b  => NumOps.max (a.evalPair x y) (b.evalPair x y)
-  | .geF a b   => NumOps.ifGe (a.evalPair x y) (b.evalPair x y) 1.0 0.0
+  | .geF a b   => NumOps.ifGe (a.evalPair x y) (b.evalPair x y) (NumLit.lit 1.0) (NumLit.lit 0.0)
 
 /-- **The two readings agree** — one induction, so a caller supplies a boolean
     rather than a proof. -/
-theorem WFExp.evalPair_eq : ∀ (f : WFExp), f.pairOnly = true → ∀ (st : WSt) (l : Lane),
+theorem WFExp.evalPair_eq : ∀ (f : WFExp), f.pairOnly = true → ∀ (st : WSt R) (l : Lane),
     f.eval st l = f.evalPair (st.regs 1 l) (st.regs 2 l) := by
   intro f
   induction f with
@@ -104,10 +107,10 @@ def WFExp.tripleOnly : WFExp → Bool
   | .geF a b   => a.tripleOnly && b.tripleOnly
 
 /-- …and is therefore a function of those three. -/
-def WFExp.evalTriple (x y z : Float32) : WFExp → Float32
+def WFExp.evalTriple (x y z : R) : WFExp → R
   | .reg r     => if r == 1 then x else if r == 2 then y else
                     if r == 3 then z else NumOps.ofNat 0
-  | .lit v     => v
+  | .lit v     => NumLit.lit v
   | .add a b   => NumOps.add (a.evalTriple x y z) (b.evalTriple x y z)
   | .mul a b   => NumOps.mul (a.evalTriple x y z) (b.evalTriple x y z)
   | .neg a     => NumOps.neg (a.evalTriple x y z)
@@ -116,10 +119,10 @@ def WFExp.evalTriple (x y z : Float32) : WFExp → Float32
   | .ex2 a     => NumOps.ex2 (a.evalTriple x y z)
   | .rsqrt a   => NumOps.rsqrt (a.evalTriple x y z)
   | .maxW a b  => NumOps.max (a.evalTriple x y z) (b.evalTriple x y z)
-  | .geF a b   => NumOps.ifGe (a.evalTriple x y z) (b.evalTriple x y z) 1.0 0.0
+  | .geF a b   => NumOps.ifGe (a.evalTriple x y z) (b.evalTriple x y z) (NumLit.lit 1.0) (NumLit.lit 0.0)
 
 theorem WFExp.evalTriple_eq : ∀ (f : WFExp), f.tripleOnly = true →
-    ∀ (st : WSt) (l : Lane),
+    ∀ (st : WSt R) (l : Lane),
       f.eval st l = f.evalTriple (st.regs 1 l) (st.regs 2 l) (st.regs 3 l) := by
   intro f
   induction f with
@@ -159,7 +162,7 @@ theorem WFExp.evalTriple_eq : ∀ (f : WFExp), f.tripleOnly = true →
 
 /-- A two-operand expression read as a three-operand one ignores the third. -/
 theorem WFExp.evalTriple_of_pairOnly : ∀ (f : WFExp), f.pairOnly = true →
-    ∀ (x y z : Float32), f.evalTriple x y z = f.evalPair x y := by
+    ∀ (x y z : R), f.evalTriple x y z = f.evalPair x y := by
   intro f
   induction f with
   | reg r =>
@@ -208,10 +211,10 @@ def WFExp.quadOnly : WFExp → Bool
   | .geF a b   => a.quadOnly && b.quadOnly
 
 /-- …and is therefore a function of those four. -/
-def WFExp.evalQuad (x y z u : Float32) : WFExp → Float32
+def WFExp.evalQuad (x y z u : R) : WFExp → R
   | .reg r     => if r == 1 then x else if r == 2 then y else
                     if r == 3 then z else if r == 4 then u else NumOps.ofNat 0
-  | .lit v     => v
+  | .lit v     => NumLit.lit v
   | .add a b   => NumOps.add (a.evalQuad x y z u) (b.evalQuad x y z u)
   | .mul a b   => NumOps.mul (a.evalQuad x y z u) (b.evalQuad x y z u)
   | .neg a     => NumOps.neg (a.evalQuad x y z u)
@@ -220,10 +223,10 @@ def WFExp.evalQuad (x y z u : Float32) : WFExp → Float32
   | .ex2 a     => NumOps.ex2 (a.evalQuad x y z u)
   | .rsqrt a   => NumOps.rsqrt (a.evalQuad x y z u)
   | .maxW a b  => NumOps.max (a.evalQuad x y z u) (b.evalQuad x y z u)
-  | .geF a b   => NumOps.ifGe (a.evalQuad x y z u) (b.evalQuad x y z u) 1.0 0.0
+  | .geF a b   => NumOps.ifGe (a.evalQuad x y z u) (b.evalQuad x y z u) (NumLit.lit 1.0) (NumLit.lit 0.0)
 
 theorem WFExp.evalQuad_eq : ∀ (f : WFExp), f.quadOnly = true →
-    ∀ (st : WSt) (l : Lane),
+    ∀ (st : WSt R) (l : Lane),
       f.eval st l
         = f.evalQuad (st.regs 1 l) (st.regs 2 l) (st.regs 3 l) (st.regs 4 l) := by
   intro f
@@ -313,7 +316,7 @@ theorem WFExp.swap12_pairOnly : ∀ (e : WFExp), e.pairOnly = true → e.swap12.
     reassociated: every operation survives in place, so the commuted pass is
     bit-identical to the original read the other way round. -/
 theorem WFExp.swap12_evalPair : ∀ (e : WFExp), e.pairOnly = true →
-    ∀ (x y : Float32), e.swap12.evalPair x y = e.evalPair y x := by
+    ∀ (x y : R), e.swap12.evalPair x y = e.evalPair y x := by
   intro e
   induction e with
   | reg r =>
@@ -370,7 +373,7 @@ def WFExp.fuseA (outer inner : WFExp) : WFExp :=
 
 /-- **…and the fused expression computes the composition.** -/
 theorem WFExp.fuseA_eval : ∀ (outer : WFExp), outer.pairOnly = true →
-    ∀ (inner : WFExp) (x y z : Float32),
+    ∀ (inner : WFExp) (x y z : R),
       (outer.fuseA inner).evalTriple x y z
         = outer.evalPair (inner.evalTriple x y z) z := by
   intro outer
@@ -408,7 +411,7 @@ theorem WFExp.fuseA_eval : ∀ (outer : WFExp), outer.pairOnly = true →
 
 /-- A three-operand expression read as a four-operand one ignores the fourth. -/
 theorem WFExp.evalQuad_of_tripleOnly : ∀ (f : WFExp), f.tripleOnly = true →
-    ∀ (x y z u : Float32), f.evalQuad x y z u = f.evalTriple x y z := by
+    ∀ (x y z u : R), f.evalQuad x y z u = f.evalTriple x y z := by
   intro f
   induction f with
   | reg r =>
@@ -465,7 +468,7 @@ def WFExp.fuseA4 (outer inner : WFExp) : WFExp :=
 
 /-- **…and it too computes the composition**, with no arithmetic reassociated. -/
 theorem WFExp.fuseA4_eval : ∀ (outer : WFExp), outer.pairOnly = true →
-    ∀ (inner : WFExp) (x y z u : Float32),
+    ∀ (inner : WFExp) (x y z u : R),
       (outer.fuseA4 inner).evalQuad x y z u
         = outer.evalPair (inner.evalQuad x y z u) u := by
   intro outer
@@ -506,5 +509,7 @@ theorem WFExp.fuseA4_eval : ∀ (outer : WFExp), outer.pairOnly = true →
       have h' := Bool.and_eq_true .. |>.mp h
       show NumOps.ifGe _ _ _ _ = NumOps.ifGe _ _ _ _
       rw [iha h'.1 inner x y z u, ihb h'.2 inner x y z u]
+
+end Carrier
 
 end AlgorithmLib.ML

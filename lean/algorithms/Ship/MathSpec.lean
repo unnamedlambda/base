@@ -7,7 +7,7 @@ import AlgorithmLib.Surface.LibMath
 `Surface.LibMath` implements the three math entry points as CLIF, and
 `Host.Libm` states each as a function of the argument's bits. Each is proven
 once, as `LibSpec.Ans`: run on any argument, the function neither misuses a
-call nor faults, answers `Libm.sinf b`, `Libm.cosf b` or `Libm.powf x y`
+call nor faults, answers `Libm.sinf w.mem.nan b`, `Libm.cosf w.mem.nan b` or `Libm.powf w.mem.nan x y`
 widened to 64 bits, and leaves the world as it was (`sin_spec`, `cos_spec`,
 `powf_spec`).
 
@@ -53,14 +53,14 @@ theorem wp_f32c {b : UInt32} {Q : Slot .f32 → Env → World → Prop}
 
 theorem wp_horner {cs : List Float} {z : Slot .f64} {zz : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (hz : Γ[z]? = some (.sc .f64 zz))
-    (h : ∀ Γ' r, Extends Γ Γ' → Γ'[r]? = some (.sc .f64 (Libm.horner cs zz)) → Q r Γ' w) :
+    (h : ∀ Γ' r, Extends Γ Γ' → Γ'[r]? = some (.sc .f64 (Libm.horner w.mem.nan cs zz)) → Q r Γ' w) :
     wp cfg d J (LibMath.horner cs z) Q Γ w := by
   unfold LibMath.horner
   rw [wp_bind]
   refine wp_f64c ?_
   simp only [wp_bind]
-  have hfold : Libm.horner cs zz =
-      cs.reverse.foldl (fun a c => Libm.dadd (Libm.k c) (Libm.dmul zz a)) (Libm.k 0.0) := by
+  have hfold : Libm.horner w.mem.nan cs zz =
+      cs.reverse.foldl (fun a c => Libm.dadd w.mem.nan (Libm.k c) (Libm.dmul w.mem.nan zz a)) (Libm.k 0.0) := by
     simp [Libm.horner, List.foldl_reverse]
   rw [hfold] at h
   have hz' := get_push (v := .sc .f64 (Libm.k 0.0)) hz
@@ -94,7 +94,7 @@ macro_rules
 
 theorem wp_sinPoly {r : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (hr : Γ[r]? = some (.sc .f64 x))
-    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.sinPoly x)) → Q s Γ' w) :
+    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.sinPoly w.mem.nan x)) → Q s Γ' w) :
     wp cfg d J (LibMath.sinPoly r) Q Γ w := by
   unfold LibMath.sinPoly
   repeat step
@@ -102,7 +102,7 @@ theorem wp_sinPoly {r : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World
 
 theorem wp_cosPoly {r : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (hr : Γ[r]? = some (.sc .f64 x))
-    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.cosPoly x)) → Q s Γ' w) :
+    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.cosPoly w.mem.nan x)) → Q s Γ' w) :
     wp cfg d J (LibMath.cosPoly r) Q Γ w := by
   unfold LibMath.cosPoly
   repeat step
@@ -147,8 +147,8 @@ set_option maxRecDepth 20000 in
 set_option maxHeartbeats 1000000 in
 theorem wp_reduce {ax : Slot .i32} {x : UInt32} {Q : Slot .i64 × Slot .f64 → Env → World → Prop}
     (hx : Γ[ax]? = some (.sc .i32 (s32 x)))
-    (h : ∀ Γ' kk rr, Extends Γ Γ' → Γ'[kk]? = some (.sc .i64 (Libm.reduce x).1) →
-      Γ'[rr]? = some (.sc .f64 (Libm.reduce x).2) → Q (kk, rr) Γ' w) :
+    (h : ∀ Γ' kk rr, Extends Γ Γ' → Γ'[kk]? = some (.sc .i64 (Libm.reduce w.mem.nan x).1) →
+      Γ'[rr]? = some (.sc .f64 (Libm.reduce w.mem.nan x).2) → Q (kk, rr) Γ' w) :
     wp cfg d J (LibMath.reduce ax) Q Γ w := by
   unfold LibMath.reduce LibMath.shl LibMath.shr
   repeat step
@@ -171,7 +171,7 @@ macro_rules
 set_option maxRecDepth 20000 in
 theorem wp_log2Abs {a : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x))
-    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.log2Abs x)) → Q s Γ' w) :
+    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.log2Abs w.mem.nan x)) → Q s Γ' w) :
     wp cfg d J (LibMath.log2Abs a) Q Γ w := by
   unfold LibMath.log2Abs
   repeat step
@@ -182,7 +182,7 @@ theorem wp_log2Abs {a : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World
 set_option maxRecDepth 20000 in
 theorem wp_exp2 {a : Slot .f64} {x : UInt64} {Q : Slot .f64 → Env → World → Prop}
     (ha : Γ[a]? = some (.sc .f64 x))
-    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.exp2 x)) → Q s Γ' w) :
+    (h : ∀ Γ' s, Extends Γ Γ' → Γ'[s]? = some (.sc .f64 (Libm.exp2 w.mem.nan x)) → Q s Γ' w) :
     wp cfg d J (LibMath.exp2 a) Q Γ w := by
   unfold LibMath.exp2
   repeat step
@@ -204,18 +204,18 @@ set_option maxRecDepth 20000 in
 set_option maxHeartbeats 2000000 in
 theorem sin_spec (cfg : Cfg) (w : World) (b : UInt32) :
     Ans cfg [.sc .f32 (s32 b)] w (LibMath.trig false) [.f32]
-      (fun x w' => x = s32 (Libm.sinf b) ∧ w' = w) := by
+      (fun x w' => x = s32 (Libm.sinf w.mem.nan b) ∧ w' = w) := by
   refine ans_of_wp ?_ (trig_fine false) rfl
   rw [fnBody_of (by decide +kernel)]
   simp only [LibMath.trig, entryParams, wp_bind, wp_params, carriesFrom, wp_ret, Bool.false_eq_true, ↓reduceIte]
   have h0 : (#[V.sc .f32 (s32 b)])[0]? = some (.sc .f32 (s32 b)) := rfl
   repeat step
-  refine wp_ifte32J (s32 (Libm.sinf b)) (by look) (by look) ?_ ?_ ?_
+  refine wp_ifte32J (s32 (Libm.sinf w.mem.nan b)) (by look) (by look) ?_ ?_ ?_
   · intro hc1; arm
     leaf
   · intro hc1 ne1 hne1
     repeat step
-    refine wp_ifte32J (s32 (Libm.sinf b)) (by look) (by look) ?_ ?_ ?_
+    refine wp_ifte32J (s32 (Libm.sinf w.mem.nan b)) (by look) (by look) ?_ ?_ ?_
     · intro hc2; arm
       leaf
     · intro hc2 ne2 hne2; arm
@@ -230,18 +230,18 @@ set_option maxRecDepth 20000 in
 set_option maxHeartbeats 2000000 in
 theorem cos_spec (cfg : Cfg) (w : World) (b : UInt32) :
     Ans cfg [.sc .f32 (s32 b)] w (LibMath.trig true) [.f32]
-      (fun x w' => x = s32 (Libm.cosf b) ∧ w' = w) := by
+      (fun x w' => x = s32 (Libm.cosf w.mem.nan b) ∧ w' = w) := by
   refine ans_of_wp ?_ (trig_fine true) rfl
   rw [fnBody_of (by decide +kernel)]
   simp only [LibMath.trig, entryParams, wp_bind, wp_params, carriesFrom, wp_ret, ↓reduceIte]
   have h0 : (#[V.sc .f32 (s32 b)])[0]? = some (.sc .f32 (s32 b)) := rfl
   repeat step
-  refine wp_ifte32J (s32 (Libm.cosf b)) (by look) (by look) ?_ ?_ ?_
+  refine wp_ifte32J (s32 (Libm.cosf w.mem.nan b)) (by look) (by look) ?_ ?_ ?_
   · intro hc1; arm
     leaf
   · intro hc1 ne1 hne1
     repeat step
-    refine wp_ifte32J (s32 (Libm.cosf b)) (by look) (by look) ?_ ?_ ?_
+    refine wp_ifte32J (s32 (Libm.cosf w.mem.nan b)) (by look) (by look) ?_ ?_ ?_
     · intro hc2; arm
       leaf
     · intro hc2 ne2 hne2; arm
@@ -259,32 +259,32 @@ set_option maxRecDepth 20000 in
 set_option maxHeartbeats 4000000 in
 theorem powf_spec (cfg : Cfg) (w : World) (xb yb : UInt32) :
     Ans cfg [.sc .f32 (s32 xb), .sc .f32 (s32 yb)] w LibMath.powf [.f32, .f32]
-      (fun r w' => r = s32 (Libm.powf xb yb) ∧ w' = w) := by
+      (fun r w' => r = s32 (Libm.powf w.mem.nan xb yb) ∧ w' = w) := by
   refine ans_of_wp ?_ powf_fine rfl
   rw [fnBody_of (by decide +kernel)]
   simp only [LibMath.powf, entryParams, wp_bind, wp_params, carriesFrom, wp_ret]
   have h0 : (#[V.sc .f32 (s32 xb), V.sc .f32 (s32 yb)])[0]? = some (.sc .f32 (s32 xb)) := rfl
   have h1 : (#[V.sc .f32 (s32 xb), V.sc .f32 (s32 yb)])[1]? = some (.sc .f32 (s32 yb)) := rfl
   repeat step
-  refine wp_ifte32J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+  refine wp_ifte32J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
   · intro hc1; arm
     leaf
   · intro hc1 ne1 hne1
     repeat step
-    refine wp_ifte32J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+    refine wp_ifte32J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
     · intro hc2; arm
       leaf
     · intro hc2 ne2 hne2
       repeat step
-      refine wp_ifte32J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+      refine wp_ifte32J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
       · intro hc3; arm
         leaf
       · intro hc3 ne3 hne3
         repeat step
-        refine wp_ifte32J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+        refine wp_ifte32J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
         · intro hc4
           repeat step
-          refine wp_ifte32J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+          refine wp_ifte32J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
           · intro hc5; arm
             leaf
           · intro hc5 ne5 hne5; arm
@@ -292,25 +292,25 @@ theorem powf_spec (cfg : Cfg) (w : World) (xb yb : UInt32) :
           · pass
         · intro hc4 ne4 hne4
           repeat step
-          refine wp_ifte32J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+          refine wp_ifte32J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
           · intro hc5; arm
             leaf
           · intro hc5 ne5 hne5
             repeat step
-            refine wp_ifte32J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+            refine wp_ifte32J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
             · intro hc6; arm
               leaf
             · intro hc6 ne6 hne6
               repeat step
-              refine wp_ifte8J (s32 (Libm.powf xb yb)) (by look) (by look) ?_ ?_ ?_
+              refine wp_ifte8J (s32 (Libm.powf w.mem.nan xb yb)) (by look) (by look) ?_ ?_ ?_
               · intro hc7; arm
                 leaf
               · intro hc7 ne7 hne7
                 repeat step
-                refine wp_ifte8J (if Libm.dcmp .ge (Libm.dmul (Libm.promote yb) (Libm.log2Abs (Libm.promote xb))) (Libm.k 129.0) then 0x7ff0000000000000 else (if Libm.dcmp .le (Libm.dmul (Libm.promote yb) (Libm.log2Abs (Libm.promote xb))) (Libm.k (-152.0)) then Libm.k 0.0 else Libm.exp2 (Libm.dmul (Libm.promote yb) (Libm.log2Abs (Libm.promote xb))))) (by look) (by look) ?_ ?_ ?_
+                refine wp_ifte8J (if Libm.dcmp .ge (Libm.dmul w.mem.nan (Libm.promote w.mem.nan yb) (Libm.log2Abs w.mem.nan (Libm.promote w.mem.nan xb))) (Libm.k 129.0) then 0x7ff0000000000000 else (if Libm.dcmp .le (Libm.dmul w.mem.nan (Libm.promote w.mem.nan yb) (Libm.log2Abs w.mem.nan (Libm.promote w.mem.nan xb))) (Libm.k (-152.0)) then Libm.k 0.0 else Libm.exp2 w.mem.nan (Libm.dmul w.mem.nan (Libm.promote w.mem.nan yb) (Libm.log2Abs w.mem.nan (Libm.promote w.mem.nan xb))))) (by look) (by look) ?_ ?_ ?_
                 · intro hc8
                   repeat step
-                  refine wp_ifte8J (if Libm.dcmp .le (Libm.dmul (Libm.promote yb) (Libm.log2Abs (Libm.promote xb))) (Libm.k (-152.0)) then Libm.k 0.0 else Libm.exp2 (Libm.dmul (Libm.promote yb) (Libm.log2Abs (Libm.promote xb)))) (by look) (by look) ?_ ?_ ?_
+                  refine wp_ifte8J (if Libm.dcmp .le (Libm.dmul w.mem.nan (Libm.promote w.mem.nan yb) (Libm.log2Abs w.mem.nan (Libm.promote w.mem.nan xb))) (Libm.k (-152.0)) then Libm.k 0.0 else Libm.exp2 w.mem.nan (Libm.dmul w.mem.nan (Libm.promote w.mem.nan yb) (Libm.log2Abs w.mem.nan (Libm.promote w.mem.nan xb)))) (by look) (by look) ?_ ?_ ?_
                   · intro hc9; arm
                     leaf
                   · intro hc9 ne9 hne9; arm

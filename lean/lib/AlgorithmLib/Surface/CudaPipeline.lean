@@ -65,7 +65,7 @@ def PTX_LEN : Nat := 0x1000
     the inputs in allocation 1, of `4 * n * N` bytes, known only at run
     time, and one kernel handed both. -/
 def app (blockSize : Nat := 256) : Drv.App :=
-  { bufs := [8, 0], kernels := [⟨PTX_OFF, PTX_LEN, [0, 1], (GRID, 1, 1), (blockSize, 1, 1)⟩],
+  { bufs := [8, 0], kernels := [⟨PTX_OFF, PTX_LEN, [0, 1], (GRID, 1, 1), (blockSize, 1, 1), []⟩],
     memSize := PTX_OFF + PTX_LEN, org := ORG }
 
 -- ---------------------------------------------------------------------------

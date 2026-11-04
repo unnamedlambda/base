@@ -55,6 +55,15 @@ class NumOps (R : Type) where
       not cost a million additions at evaluation time. -/
   ofNat : Nat → R
 
+/-- A literal's value at a carrier: a `Float32` constant as the carrier holds
+    it. -/
+class NumLit (R : Type) where
+  lit : Float32 → R
+
+instance : NumLit Float32 := ⟨id⟩
+
+@[simp] theorem NumLit.lit_float32 (v : Float32) : (NumLit.lit v : Float32) = v := rfl
+
 namespace NumOps
 
 variable {R : Type} [NumOps R]
@@ -148,6 +157,14 @@ instance : NumOps Float32 where
   rsqrt := fun x => 1.0 / Float32.sqrt x
   ofNat := Float32.ofNat
   le    := fun a b => a ≤ b
+
+/-- **A carrier's literals are its numbers**: the `Float32` literal of `n`, and
+    of zero, enter the carrier as its own `n` and zero. -/
+class LitNat (R : Type) [NumOps R] [NumLit R] : Prop where
+  ofNat : ∀ n, NumLit.lit (NumOps.ofNat n : Float32) = (NumOps.ofNat n : R)
+  zero : NumLit.lit (NumOps.zero : Float32) = (NumOps.zero : R)
+
+instance : LitNat Float32 := ⟨fun _ => rfl, rfl⟩
 
 /-- `Float` computes, so it is a `NumOps`.  It is deliberately **not** a
     `NumLaws`: floating-point addition does not associate, so the autodiff

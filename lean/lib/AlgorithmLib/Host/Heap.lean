@@ -44,19 +44,8 @@ theorem inSpan_iff (a b : UInt64) :
     rw [UInt64.lt_iff_toNat_lt, UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr h1)]
     exact h2
 theorem decodeAddr_pinned {off : Nat} (h : off < 2 ^ 36) :
-    decodeAddr (addrOf .pinned off) = some (.pinned, off) := by
-  have hx : (addrOf .pinned off).toNat = 0x4000000000 + off := by
-    simp only [addrOf, regionBase, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.reduceToNat]; omega
-  unfold decodeAddr
-  simp only [List.findSome?]
-  rw [if_neg (by rw [inSpan_iff, hx]; simp [regionBase]; omega),
-      if_neg (by rw [inSpan_iff, hx]; simp [regionBase]; omega),
-      if_neg (by rw [inSpan_iff, hx]; simp [regionBase]; omega),
-      if_pos (by rw [inSpan_iff, hx]; simp [regionBase]; omega)]
-  have : (addrOf .pinned off - regionBase .pinned).toNat = off := by
-    rw [UInt64.toNat_sub_of_le _ _ (by rw [UInt64.le_iff_toNat_le, hx]; simp [regionBase])]
-    simp [hx, regionBase]
-  simpa using this
+    decodeAddr (addrOf .pinned off) = some (.pinned, off) :=
+  decodeAddr_base .pinned off (by rw [regionSpan_toNat]; exact h)
 
 /-- Where a heap allocation's start decodes to. -/
 theorem heapAt_decode {w : World} {x : UInt64} {off m : Nat} (h : w.heapAt? x = some (off, m)) :
@@ -222,7 +211,8 @@ theorem load_of {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
 
 theorem readable_off_pinned {m : Mem} {r : Region} (hr : r ≠ .pinned) (off n : Nat) :
     m.readable r off n = true := by
-  cases r <;> simp_all (config := { decide := true }) [Mem.readable]
+  unfold Mem.readable
+  cases r <;> first | rfl | exact absurd rfl hr
 
 theorem foldr_bytes_congr {bs bs' : ByteArray} {off : Nat} : ∀ (l : List Nat) (init : UInt64),
     (∀ i ∈ l, bs'.get! (off + i) = bs.get! (off + i)) →
@@ -424,6 +414,14 @@ theorem reassemble8 (v : UInt64) :
     byte_toNat v 3 (by decide), byte_toNat v 4 (by decide), byte_toNat v 5 (by decide),
     byte_toNat v 6 (by decide), byte_toNat v 7 (by decide)]
   simp only [UInt64.size] at hv
+  omega
+
+theorem reassemble4 (v : UInt64) (hv : v.toNat < 2 ^ 32) :
+    (List.range 4).foldr (fun i (acc : UInt64) => (acc <<< 8) ||| (byteOfV v i).toUInt64) 0 = v := by
+  apply UInt64.toNat_inj.mp
+  simp only [List.range, List.range.loop, List.foldr, shl8_or, UInt64.toNat_zero]
+  simp only [byte_toNat v 0 (by decide), byte_toNat v 1 (by decide), byte_toNat v 2 (by decide),
+    byte_toNat v 3 (by decide)]
   omega
 
 /-- **An eight-byte store reads back**, outside pinned memory. -/

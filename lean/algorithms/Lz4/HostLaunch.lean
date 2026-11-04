@@ -1,6 +1,6 @@
 module
-public import Lz4.Kernel
-meta import Lz4.Kernel
+public import Lz4.CodeShip
+meta import Lz4.CodeShip
 public import AlgorithmLib.Host.LaunchSpec
 meta import AlgorithmLib.Host.LaunchSpec
 public import AlgorithmLib.Host.DrvLaunch
@@ -12,35 +12,69 @@ import all Init.Data.List.Sort.Basic
 /-!
 # The shipped LZ4 kernel, launched by a host program
 
-`launch_correct` is about the SIMT machine: every block decodes out of any
-final memory that agrees with each warp's own final memory on that warp's
-output (`LaunchAgreesPerWarp`). `lz4Machine` is that agreement as the relation
-the device must be honest about, on the one allocation the kernel is bound to,
-and `lz4_drv_launch` is the host triple: a `cuLaunchKernel` of the kernel, its
-two parameters pointing into that allocation, from a world where the call
-answers, on a device honest about this launch, leaves an allocation out of
-which every block decodes to the input it was given.
+A launch of the kernel leaves, in the one allocation it is bound to, what the
+warp's runs of the blocks' bodies denote (`Lz4Code.Denotes`), on the Code and
+on the PTX it compiles to (`launch_denotes`). `lz4Machine` is that denotation
+as the relation the device must be honest about, and the PTX model's own
+launch realizes it (`lz4Machine_realized`). `lz4_drv_launch` is the host
+triple: a `cuLaunchKernel` of the kernel, its two parameters pointing at that
+allocation, on a device honest about the launch, leaves an allocation out of
+which every block decodes to the input it held.
 -/
 
-namespace Lz4Ship
+namespace Lz4Code
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
-  AlgorithmLib.HProg.Contracts AlgorithmLib.Device AlgorithmLib.LZ4WarpDSL
+  AlgorithmLib.HProg.Contracts AlgorithmLib.Device AlgorithmLib.Kernel AlgorithmLib.LZ4WarpDSL Lz4Ship
 
-/-- **What the kernel's machine leaves**, as a relation between the one buffer
-    it is bound to before and after the launch. -/
-def lz4Machine (b inPtr outPtr : Nat) (smemB : List UInt8) : List ByteArray → List ByteArray → Prop
-  | [i], [o] => LaunchAgreesPerWarp b inPtr outPtr i.data smemB o.data
+/-- **What the kernel leaves**, as a relation between the one allocation it is
+    bound to before and after the launch: what the warp's runs denote. -/
+def lz4Machine (b : Nat) : List ByteArray → List ByteArray → Prop
+  | [i], [o] => Denotes (WP.mk b).numBlk (WP.mk b).inStride (WP.mk b).outStride (WP.mk b).lenOff wHashLog i o
   | _, _ => True
 
+/-- The geometry facts a shipped launch rests on. -/
+theorem shipped_geometry (b : Nat) (hb : b = 15 ∨ b = 16) :
+    16 ≤ (WP.mk b).inStride ∧ (WP.mk b).inStride ≤ 65536 ∧ wHashLog ≤ 32 ∧ 2 * 2 ^ wHashLog + 64 < 2 ^ 36 ∧
+      (WP.mk b).inStride + (WP.mk b).inStride / 16 + 256 ≤ (WP.mk b).lenOff ∧
+      (WP.mk b).lenOff + 4 ≤ (WP.mk b).outStride ∧ (WP.mk b).bytes ≤ 2 ^ 36 := by
+  rcases hb with rfl | rfl <;> decide
+
+/-- **The PTX model's launch realizes the machine**: a launch of the shipped
+    kernel's entry, on device memory whose buffer 0 holds the layout, leaves
+    buffer 0 as `lz4Machine` says. -/
+theorem lz4Machine_realized (b : Nat) (hb : b = 15 ∨ b = 16) (hw : Hw) (hhw : PtxSound.HwOk hw) (outA : UInt64)
+    (bufs : Nat → ByteArray) (hsize : (WP.mk b).bytes ≤ (bufs 0).size) :
+    ∃ e, (WP.mk b).code.entry = .ok e ∧ ∃ bufs', RunsLaunch (PtxRun.runner e hw) (WP.mk b).code.smem
+      (WP.mk b).numBlk 32 [.sc .i64 base0, .sc .i64 outA] bufs bufs' hw.nan ∧
+      lz4Machine b [bufs 0] [bufs' 0] := by
+  have hc : ∀ k : Kernel, k.entry.isOk = true → ∃ e, k.entry = .ok e := fun k h => by
+    cases he : k.entry with
+    | error _ => rw [he] at h; cases h
+    | ok e => exact ⟨e, rfl⟩
+  obtain ⟨g1, g2, g3, g4, g5, g6, g7⟩ := shipped_geometry b hb
+  rcases hb with rfl | rfl
+  · obtain ⟨e, he⟩ := hc _ compiles15
+    have he' := he
+    rw [code15] at he'
+    obtain ⟨u, -, hP, hd⟩ := launch_denotes hw hhw "main" outA he' bufs (by decide) (by decide) (by decide)
+      fine15 flags15 (by decide) (by decide) (by decide) (by decide) hsize (by decide)
+    exact ⟨e, he, u.mem.bufs, by rw [code15]; exact hP, hd⟩
+  · obtain ⟨e, he⟩ := hc _ compiles16
+    have he' := he
+    rw [code16] at he'
+    obtain ⟨u, -, hP, hd⟩ := launch_denotes hw hhw "main" outA he' bufs (by decide) (by decide) (by decide)
+      fine16 flags16 (by decide) (by decide) (by decide) (by decide) hsize (by decide)
+    exact ⟨e, he, u.mem.bufs, by rw [code16]; exact hP, hd⟩
+
 /-- **The LZ4 launch triple, through the driver.** From a world where
-    `cuLaunchKernel` answers with both its parameters pointing into
-    allocation `buf`, laid out as the kernel expects, on a device honest about this
-    launch, the call answers, and every block decodes out of the allocation it
-    leaves to the input the allocation held before. -/
+    `cuLaunchKernel` answers with both its parameters pointing into allocation
+    `buf`, which holds the layout, on a device honest about this launch, the
+    call answers, and every block decodes out of the allocation it leaves to
+    the input the allocation held before. -/
 theorem lz4_drv_launch {w : World} {hf gx gy gz bx by_ bz shmem hstream params a : UInt64}
     {fi mi p buf off : Nat} {entry ptx : String} {sizes : List Nat} {B : ByteArray}
-    {b inPtr outPtr : Nat} {smemB : List UInt8}
+    (b : Nat) (hb : b = 15 ∨ b = 16)
     (hl : w.dev.live = true) (hcap : w.dev.capture = none) (hk : KeepsSize w.kernel)
     (h1 : handleOf kFunc hf = some fi) (h2 : w.dev.funcs[fi]? = some (mi, entry))
     (h3 : w.dev.modules[mi]? = some (some ptx)) (h4 : w.dev.streamParty? hstream = some p)
@@ -48,29 +82,28 @@ theorem lz4_drv_launch {w : World} {hf gx gy gz bx by_ bz shmem hstream params a
     (ha : w.dev.range? a 0 = some (buf, off, B))
     (hdims : (DrvLaunch.dimsOf gx gy gz bx by_ bz).any (· == 0) = false)
     (hready : Ready w.dev.race p buf true)
-    (hcorrect : ShippedCorrect b) (hlayout : LayoutOK b inPtr outPtr (devMem w.dev buf).data)
-    (hM : Honest w.kernel ⟨ptx, entry, [buf], DrvLaunch.dimsOf gx gy gz bx by_ bz, [a, a]⟩
-      (lz4Machine b inPtr outPtr smemB)) :
+    (hsize : (WP.mk b).bytes ≤ (devMem w.dev buf).size)
+    (hM : Honest w.kernel ⟨ptx, entry, [buf], DrvLaunch.dimsOf gx gy gz bx by_ bz, [a, a],
+      w.dev.writesOf (w.dev.kernelWrites ptx entry) [a, a]⟩ (lz4Machine b)) :
     ∃ r w', cudaDrv .launchKernel [hf, gx, gy, gz, bx, by_, bz, shmem, hstream, params, 0] w
         = some (r, w') ∧
-      ∀ blk, blk < (WP.mk b).numBlk →
-        ∃ k, 0 < k ∧ k ≤ (WP.mk b).lenOff ∧
-          AlgorithmLib.readU32LE (devMem w'.dev buf).data
-            (outPtr + blk * (WP.mk b).outStride + (WP.mk b).lenOff) = k ∧
-          AlgorithmLib.LZ4Imp.decompress
-            ((List.range k).map (fun i => (devMem w'.dev buf).data.getD
-              (outPtr + blk * (WP.mk b).outStride + i) 0))
+      ∀ c, c < (WP.mk b).numBlk → ∃ n, n ≤ (WP.mk b).lenOff ∧
+        u32At (devMem w'.dev buf) ((WP.mk b).numBlk * (WP.mk b).inStride + copySlack + c * (WP.mk b).outStride +
+          (WP.mk b).lenOff) = n ∧
+        AlgorithmLib.LZ4Imp.decompress ((List.range n).map fun i =>
+            (devMem w'.dev buf).get! ((WP.mk b).numBlk * (WP.mk b).inStride + copySlack + c * (WP.mk b).outStride + i))
             (WP.mk b).inStride
-            = some (gmemInpAt (devMem w.dev buf).data (inPtr + blk * (WP.mk b).inStride) (WP.mk b).inStride) := by
-  have hb : DrvLaunch.bindsOf w.dev [a, a] = [buf] := by simp [DrvLaunch.bindsOf, ha, List.eraseDups_cons]
-  obtain ⟨r, w', h, hMr⟩ := DrvLaunch.drvLaunch_triple (lz4Machine b inPtr outPtr smemB)
+          = some ((List.range (WP.mk b).inStride).map fun j => (devMem w.dev buf).get! (c * (WP.mk b).inStride + j)) := by
+  have hbs : DrvLaunch.bindsOf w.dev [a, a] = [buf] := by simp [DrvLaunch.bindsOf, ha, List.eraseDups_cons]
+  obtain ⟨r, w', h, hMr, -⟩ := DrvLaunch.drvLaunch_triple (lz4Machine b)
     hl hcap hk h1 h2 h3 h4 h5 h6 hdims
     (fun x hx id off' B' hr => by
       simp only [List.mem_cons, List.not_mem_nil, or_false, or_self] at hx; subst hx
       rw [ha] at hr; cases hr; exact hready)
-    (by rw [hb]; exact hM)
+    (by rw [hbs]; exact hM)
   refine ⟨r, w', h, ?_⟩
-  rw [hb] at hMr
-  exact launch_correct b inPtr outPtr _ smemB _ hcorrect hlayout hMr
+  rw [hbs] at hMr
+  obtain ⟨g1, g2, g3, g4, g5, g6, g7⟩ := shipped_geometry b hb
+  exact decode_of_denotes g1 g2 g3 g4 g5 g6 g7 hsize hMr
 
-end Lz4Ship
+end Lz4Code

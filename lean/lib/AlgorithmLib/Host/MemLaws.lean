@@ -151,11 +151,11 @@ theorem size_setRun (bs : ByteArray) (off : Nat) (f : Nat → UInt8) :
       set!_size, size_setRun bs off f n]
 
 theorem region_setRegion_self (m : Mem) (r : Region) (b : ByteArray) : (m.setRegion r b).region r = b := by
-  cases r <;> rfl
+  cases r <;> simp [Mem.setRegion, Mem.region]
 
 theorem region_setRegion_ne (m : Mem) {r r' : Region} (b : ByteArray) (h : r' ≠ r) :
     (m.setRegion r b).region r' = m.region r' := by
-  cases r <;> cases r' <;> first | rfl | exact absurd rfl h
+  cases r <;> cases r' <;> simp_all [Mem.setRegion, Mem.region, Fin.val_inj]
 
 /-- What a store does to memory, region by region. -/
 theorem store_some {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m') :
@@ -223,79 +223,66 @@ theorem store_frame {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.stor
       (b₂ := (List.range n).foldl (fun (b : ByteArray) i =>
         b.set! (off + i) (((v >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8)) (m.region r))
       (by rw [size_setRun])
-    have e : m.setRegion r (m.region r) = m := by cases r <;> rfl
+    have e : m.setRegion r (m.region r) = m := by
+      cases r <;> first | rfl | (simp only [Mem.setRegion, Mem.region]; congr; funext j; split <;> simp_all)
     rwa [e] at this
   · rw [region_setRegion_self, get!_setRun _ _ _ _ _ hn, if_neg (by omega)]
 
 theorem regionSpan_toNat : regionSpan.toNat = 2 ^ 36 := by decide
 
-theorem regionBase_toNat (r : Region) : (regionBase r).toNat + regionSpan.toNat ≤ 2 ^ 39 := by
-  cases r <;> decide
+/-- A region's base, as a number, for a region numbered below `2^26` (every
+    host region, and the first `2^26 - 6` device buffers). -/
+theorem regionBase_toNat_eq (r : Region) :
+    (regionBase r).toNat = r.idx * 2 ^ 36 := by
+  have hr := Region.idx_lt r
+  unfold regionBase
+  rw [UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
 
-theorem addrCond (b a : UInt64) :
-    (decide (a ≥ b) && decide (a - b < regionSpan))
-      = decide (b.toNat ≤ a.toNat ∧ a.toNat < b.toNat + 2 ^ 36) := by
-  rw [Bool.eq_iff_iff, Bool.and_eq_true, decide_eq_true_eq, decide_eq_true_eq, decide_eq_true_eq]
-  simp only [ge_iff_le, UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt, regionSpan_toNat]
-  constructor
-  · rintro ⟨h1, h2⟩
-    rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr h1)] at h2; omega
-  · rintro ⟨h1, h2⟩
-    refine ⟨h1, ?_⟩
-    rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr h1)]; omega
+theorem regionBase_toNat (r : Region) :
+    (regionBase r).toNat + 2 * regionSpan.toNat ≤ 2 ^ 64 := by
+  have hr := Region.idx_lt r
+  rw [regionBase_toNat_eq r, regionSpan_toNat]
+  have : r.idx * 2 ^ 36 ≤ (2 ^ 28 - 2) * 2 ^ 36 := Nat.mul_le_mul_right _ (by omega)
+  omega
 
-theorem decodeAddr_base (r : Region) (k : Nat) (hk : k < regionSpan.toNat) :
+theorem decodeAddr_base (r : Region) (k : Nat) (hk : k < regionSpan.toNat)
+    :
     decodeAddr (regionBase r + UInt64.ofNat k) = some (r, k) := by
   rw [regionSpan_toNat] at hk
-  have hb := regionBase_toNat r
-  rw [regionSpan_toNat] at hb
-  have hx : (regionBase r + UInt64.ofNat k).toNat = (regionBase r).toNat + k := by
-    rw [UInt64.toNat_add, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (a := k) (by omega),
+  have hr := Region.idx_lt r
+  have hb := regionBase_toNat_eq r
+  have hx : (regionBase r + UInt64.ofNat k).toNat = r.idx * 2 ^ 36 + k := by
+    rw [UInt64.toNat_add, UInt64.toNat_ofNat', hb, Nat.mod_eq_of_lt (a := k) (by omega),
       Nat.mod_eq_of_lt (by omega)]
-  have hsub : ((regionBase r + UInt64.ofNat k) - regionBase r).toNat = k := by
-    rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr (by omega)), hx]; omega
   unfold decodeAddr
-  generalize regionBase r + UInt64.ofNat k = a at hx hsub
-  simp only [List.findSome?, addrCond]
-  have e1 : (regionBase .arena).toNat = 2 ^ 36 := by decide
-  have e2 : (regionBase .data).toNat = 2 * 2 ^ 36 := by decide
-  have e3 : (regionBase .out).toNat = 3 * 2 ^ 36 := by decide
-  have e4 : (regionBase .pinned).toNat = 4 * 2 ^ 36 := by decide
-  cases r <;> rw [e1, e2, e3, e4] <;> simp only [e1, e2, e3, e4] at hx <;>
-    simp (disch := omega) only [decide_eq_true, decide_eq_false, if_true, if_false,
-      Bool.false_eq_true, hsub]
+  have hd : ((regionBase r + UInt64.ofNat k) / regionSpan).toNat = r.idx := by
+    rw [UInt64.toNat_div, hx, regionSpan_toNat, Nat.add_comm, Nat.add_mul_div_right _ _ (by decide),
+      Nat.div_eq_of_lt hk, Nat.zero_add]
+  have hm : ((regionBase r + UInt64.ofNat k) % regionSpan).toNat = k := by
+    rw [UInt64.toNat_mod, hx, regionSpan_toNat, Nat.add_comm, Nat.add_mul_mod_self_right,
+      Nat.mod_eq_of_lt hk]
+  rw [hd, hm, Region.ofIdx_idx]; rfl
 
 theorem decodeAddr_some {a : UInt64} {r : Region} {off : Nat} (h : decodeAddr a = some (r, off)) :
     a = regionBase r + UInt64.ofNat off ∧ off < regionSpan.toNat := by
   unfold decodeAddr at h
-  simp only [List.findSome?, addrCond] at h
-  have key : ∀ b : UInt64, decide (b.toNat ≤ a.toNat ∧ a.toNat < b.toNat + 2 ^ 36) = true →
-      (a - b).toNat = off → a = b + UInt64.ofNat off ∧ off < regionSpan.toNat := by
-    intro b hc ho
-    simp only [decide_eq_true_eq] at hc
-    rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr hc.1)] at ho
-    refine ⟨?_, by rw [regionSpan_toNat]; omega⟩
+  cases ho : Region.ofIdx (a / regionSpan).toNat with
+  | none => rw [ho] at h; cases h
+  | some r' =>
+    rw [ho] at h
+    simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    have hi := Region.idx_of_ofIdx ho
+    have hdiv : (a / regionSpan).toNat = a.toNat / 2 ^ 36 := by rw [UInt64.toNat_div, regionSpan_toNat]
+    have hmod : (a % regionSpan).toNat = a.toNat % 2 ^ 36 := by rw [UInt64.toNat_mod, regionSpan_toNat]
+    refine ⟨?_, by rw [hmod, regionSpan_toNat]; exact Nat.mod_lt _ (by decide)⟩
     apply UInt64.toNat_inj.mp
-    rw [UInt64.toNat_add, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (a := off) (by omega)]
-    have := a.toNat_lt
-    rw [Nat.mod_eq_of_lt (by omega)]; omega
-  by_cases c1 : decide ((regionBase .arena).toNat ≤ a.toNat ∧ a.toNat < (regionBase .arena).toNat + 2 ^ 36) = true
-  · rw [if_pos c1] at h; simp only [Option.some.injEq, Prod.mk.injEq] at h
-    obtain ⟨rfl, h2⟩ := h; exact key _ c1 h2
-  rw [if_neg c1] at h
-  by_cases c2 : decide ((regionBase .data).toNat ≤ a.toNat ∧ a.toNat < (regionBase .data).toNat + 2 ^ 36) = true
-  · rw [if_pos c2] at h; simp only [Option.some.injEq, Prod.mk.injEq] at h
-    obtain ⟨rfl, h2⟩ := h; exact key _ c2 h2
-  rw [if_neg c2] at h
-  by_cases c3 : decide ((regionBase .out).toNat ≤ a.toNat ∧ a.toNat < (regionBase .out).toNat + 2 ^ 36) = true
-  · rw [if_pos c3] at h; simp only [Option.some.injEq, Prod.mk.injEq] at h
-    obtain ⟨rfl, h2⟩ := h; exact key _ c3 h2
-  rw [if_neg c3] at h
-  by_cases c4 : decide ((regionBase .pinned).toNat ≤ a.toNat ∧ a.toNat < (regionBase .pinned).toNat + 2 ^ 36) = true
-  · rw [if_pos c4] at h; simp only [Option.some.injEq, Prod.mk.injEq] at h
-    obtain ⟨rfl, h2⟩ := h; exact key _ c4 h2
-  rw [if_neg c4] at h
-  cases h
+    unfold regionBase
+    rw [hi, hdiv, hmod, ← UInt64.ofNat_add, UInt64.toNat_ofNat']
+    have hdm := Nat.div_add_mod a.toNat (2 ^ 36)
+    have e : a.toNat / 2 ^ 36 * 0x1000000000 + a.toNat % 2 ^ 36 = a.toNat := by
+      rw [show (0x1000000000 : Nat) = 2 ^ 36 from rfl, Nat.mul_comm]; exact hdm
+    rw [e, Nat.mod_eq_of_lt a.toNat_lt]
 
 theorem decodeAddr_add {a : UInt64} {r : Region} {off i : Nat} (h : decodeAddr a = some (r, off))
     (hi : off + i < regionSpan.toNat) : decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := by
@@ -423,6 +410,108 @@ theorem foldr_congr_mem {α β : Type} (l : List α) (f g : α → β → β) (b
 /-- Every region's size. -/
 def Mem.sizes (m : Mem) (r : Region) : Nat := (m.region r).size
 
+/-- The little-endian value of `n` bytes of `bs` from `off`, as a number. -/
+def leNat (bs : ByteArray) (off : Nat) : Nat → Nat
+  | 0 => 0
+  | n + 1 => (bs.get! off).toNat + 256 * leNat bs (off + 1) n
+
+theorem leNat_lt (bs : ByteArray) : ∀ off n, leNat bs off n < 256 ^ n
+  | _, 0 => by simp [leNat]
+  | off, n + 1 => by
+      have h1 := (bs.get! off).toNat_lt
+      have h2 := leNat_lt bs (off + 1) n
+      simp only [leNat, Nat.pow_succ]
+      omega
+
+theorem or_byte (x : UInt64) (b : UInt8) (hx : x.toNat < 2 ^ 56) :
+    ((x <<< 8) ||| b.toUInt64).toNat = b.toNat + 256 * x.toNat := by
+  have hb := b.toNat_lt
+  have hs : (x <<< 8).toNat = x.toNat * 256 := by
+    rw [UInt64.toNat_shiftLeft]; simp; omega
+  rw [UInt64.toNat_or, hs, UInt8.toNat_toUInt64]
+  rw [show x.toNat * 256 = 2 ^ 8 * x.toNat by omega, ← Nat.two_pow_add_eq_or_of_lt hb]
+  omega
+
+/-- The fold `Mem.load` computes, as a number. -/
+theorem foldr_load (bs : ByteArray) : ∀ (n off : Nat), n ≤ 8 →
+    ((List.range n).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| (bs.get! (off + i)).toUInt64) (0 : UInt64)).toNat
+      = leNat bs off n
+  | 0, _, _ => rfl
+  | n + 1, off, h => by
+      rw [List.range_succ_eq_map, List.foldr_cons, List.foldr_map]
+      have ih := foldr_load bs n (off + 1) (by omega)
+      have e : (List.range n).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| (bs.get! (off + (i + 1))).toUInt64) (0 : UInt64)
+          = (List.range n).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| (bs.get! (off + 1 + i)).toUInt64) (0 : UInt64) := by
+        congr; funext i acc; rw [Nat.add_assoc, Nat.add_comm i 1]
+      have hlt : ((List.range n).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| (bs.get! (off + 1 + i)).toUInt64)
+          (0 : UInt64)).toNat < 2 ^ 56 := by
+        rw [ih]
+        have h1 := leNat_lt bs (off + 1) n
+        have h2 : 256 ^ n ≤ 256 ^ 7 := Nat.pow_le_pow_right (by decide) (by omega)
+        have h3 : (256 : Nat) ^ 7 = 2 ^ 56 := rfl
+        omega
+      rw [e, Nat.add_zero, or_byte _ _ hlt, ih]
+      rfl
+
+theorem leNat_split (bs : ByteArray) : ∀ (a off b : Nat),
+    leNat bs off (a + b) = leNat bs off a + 256 ^ a * leNat bs (off + a) b
+  | 0, off, b => by simp [leNat]
+  | a + 1, off, b => by
+      rw [show a + 1 + b = (a + b) + 1 by omega]
+      simp only [leNat]
+      rw [leNat_split bs a (off + 1) b, Nat.pow_succ, show off + 1 + a = off + (a + 1) by omega]
+      rw [Nat.mul_add, ← Nat.mul_assoc, Nat.mul_comm 256 (256 ^ a)]
+      omega
+
+/-- The low half of eight little-endian bytes is the first four's value,
+    the high half the last four's. -/
+theorem halves (bs : ByteArray) (off : Nat) :
+    leNat bs off 8 % 2 ^ 32 = leNat bs off 4 ∧ leNat bs off 8 / 2 ^ 32 = leNat bs (off + 4) 4 := by
+  have e := leNat_split bs 4 off 4
+  have h1 := leNat_lt bs off 4
+  have h2 : (256 : Nat) ^ 4 = 2 ^ 32 := rfl
+  simp only [show 4 + 4 = 8 from rfl] at e
+  rw [e, h2]
+  rw [h2] at h1
+  constructor
+  · rw [Nat.add_mul_mod_self_left, Nat.mod_eq_of_lt h1]
+  · rw [Nat.add_mul_div_left _ _ (by decide), Nat.div_eq_of_lt h1, Nat.zero_add]
+
+/-- What a load at an address that decodes is. -/
+theorem Mem.load_eq {m : Mem} {a : UInt64} {r : Region} {off : Nat} (hd : decodeAddr a = some (r, off)) (n : Nat) :
+    m.load a n = if off + n > (m.region r).size || !m.readable r off n then none
+      else some ((List.range n).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| ((m.region r).get! (off + i)).toUInt64) 0) := by
+  simp only [Mem.load, hd, Option.bind_eq_bind, Option.bind_some]
+
+/-- **A cell's halves are the two words in it**: where eight bytes at `a`
+    load as `v`, the four at `a` load as its low half and the four after them
+    as its high half. -/
+theorem Mem.load_halves {m : Mem} {a v : UInt64} {r : Region} {off : Nat} (hd : decodeAddr a = some (r, off))
+    (hd4 : decodeAddr (a + UInt64.ofNat 4) = some (r, off + 4)) (h : m.load a 8 = some v) :
+    m.load a 4 = some (v &&& 0xffffffff) ∧ m.load (a + UInt64.ofNat 4) 4 = some (v >>> 32) := by
+  rw [Mem.load_eq hd] at h
+  split at h
+  · cases h
+  rename_i hc
+  simp only [gt_iff_lt, Bool.or_eq_true, decide_eq_true_eq, Bool.not_eq_true', not_or, Bool.not_eq_false] at hc
+  obtain ⟨hsz, hrd⟩ := hc
+  have hv := foldr_load (m.region r) 8 off (by decide)
+  rw [Option.some.inj h] at hv
+  obtain ⟨hlo, hhi⟩ := halves (m.region r) off
+  have c1 : ¬ ((off + 4 > (m.region r).size || !m.readable r off 4) = true) := by
+    rw [Mem.readable_sub hrd (by omega) (by omega)]; simp; omega
+  have c2 : ¬ ((off + 4 + 4 > (m.region r).size || !m.readable r (off + 4) 4) = true) := by
+    rw [Mem.readable_sub hrd (by omega) (by omega)]; simp; omega
+  constructor
+  · rw [Mem.load_eq hd, if_neg c1]
+    refine congrArg some (UInt64.toNat_inj.mp ?_)
+    rw [foldr_load (m.region r) 4 off (by decide), UInt64.toNat_and, ← hlo, ← hv]
+    rw [show (0xffffffff : UInt64).toNat = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
+  · rw [Mem.load_eq hd4, if_neg c2]
+    refine congrArg some (UInt64.toNat_inj.mp ?_)
+    rw [foldr_load (m.region r) 4 (off + 4) (by decide), UInt64.toNat_shiftRight, ← hhi, ← hv]
+    rw [show (32 : UInt64).toNat % 64 = 32 from rfl, Nat.shiftRight_eq_div_pow]
+
 end AlgorithmLib.HProg.Sem
 
 namespace AlgorithmLib.HProg
@@ -434,33 +523,10 @@ open AlgorithmLib.HProg.Sem
 
 /-- An address a region decodes is that region's base plus the offset. -/
 theorem decodeAddr_eq {a : UInt64} {r : Region} {off : Nat} (h : decodeAddr a = some (r, off)) :
-    a = regionBase r + UInt64.ofNat off := by
-  unfold decodeAddr at h
-  simp only [List.findSome?] at h
-  by_cases h1 : (decide (a ≥ regionBase Region.arena) &&
-      decide (a - regionBase Region.arena < regionSpan)) = true
-  · rw [if_pos h1] at h; injection h with h; injection h with e1 e2; subst e1; subst e2
-    simp only [UInt64.ofNat_toNat]; rw [UInt64.add_comm, UInt64.sub_add_cancel]
-  · rw [if_neg h1] at h
-    by_cases h2 : (decide (a ≥ regionBase Region.data) &&
-        decide (a - regionBase Region.data < regionSpan)) = true
-    · rw [if_pos h2] at h; injection h with h; injection h with e1 e2; subst e1; subst e2
-      simp only [UInt64.ofNat_toNat]; rw [UInt64.add_comm, UInt64.sub_add_cancel]
-    · rw [if_neg h2] at h
-      by_cases h3 : (decide (a ≥ regionBase Region.out) &&
-          decide (a - regionBase Region.out < regionSpan)) = true
-      · rw [if_pos h3] at h; injection h with h; injection h with e1 e2; subst e1; subst e2
-        simp only [UInt64.ofNat_toNat]; rw [UInt64.add_comm, UInt64.sub_add_cancel]
-      · rw [if_neg h3] at h
-        by_cases h4 : (decide (a ≥ regionBase Region.pinned) &&
-            decide (a - regionBase Region.pinned < regionSpan)) = true
-        · rw [if_pos h4] at h; injection h with h; injection h with e1 e2; subst e1; subst e2
-          simp only [UInt64.ofNat_toNat]; rw [UInt64.add_comm, UInt64.sub_add_cancel]
-        · rw [if_neg h4] at h; cases h
+    a = regionBase r + UInt64.ofNat off := (Sem.decodeAddr_some h).1
 
 theorem Mem.region_setRegion_ne (m : Mem) (r r' : Region) (b : ByteArray) (h : r ≠ r') :
-    (m.setRegion r b).region r' = m.region r' := by
-  cases r <;> cases r' <;> first | rfl | exact absurd rfl h
+    (m.setRegion r b).region r' = m.region r' := Sem.region_setRegion_ne m b (Ne.symm h)
 
 /-- Replacing a region's bytes leaves which bytes are reachable alone. -/
 theorem _root_.AlgorithmLib.HProg.Sem.Mem.reachable_setRegion (m : Mem) (r : Region) (b : ByteArray) :

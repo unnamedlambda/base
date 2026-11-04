@@ -39,6 +39,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- ---------------------------------------------------------------------------
 -- Loop framing
 -- ---------------------------------------------------------------------------
@@ -47,8 +50,8 @@ namespace AlgorithmLib.ML
     version.  Stated over the elaborated `WStmt` because that is what `run`
     consumes; the `EWStmt` cases below feed it. -/
 theorem wforN_otherBuf (f : Nat → WStmt) (b : Buf)
-    (h : ∀ j (st : WSt), ((f j).run st).mem b = st.mem b) :
-    ∀ (n : Nat) (st : WSt), ((WStmt.forN n f).run st).mem b = st.mem b := by
+    (h : ∀ j (st : WSt R), ((f j).run st).mem b = st.mem b) :
+    ∀ (n : Nat) (st : WSt R), ((WStmt.forN n f).run st).mem b = st.mem b := by
   intro n
   induction n with
   | zero => intro _; rfl
@@ -62,8 +65,8 @@ theorem wforN_otherBuf (f : Nat → WStmt) (b : Buf)
 /-- …and the address version, where the hypothesis need only hold for the
     iterations the loop actually runs. -/
 theorem wforN_otherAddr (f : Nat → WStmt) (b : Buf) (a : Nat) :
-    ∀ (n : Nat), (∀ j, j < n → ∀ (st : WSt), ((f j).run st).mem b a = st.mem b a) →
-      ∀ (st : WSt), ((WStmt.forN n f).run st).mem b a = st.mem b a := by
+    ∀ (n : Nat), (∀ j, j < n → ∀ (st : WSt R), ((f j).run st).mem b a = st.mem b a) →
+      ∀ (st : WSt R), ((WStmt.forN n f).run st).mem b a = st.mem b a := by
   intro n
   induction n with
   | zero => intro _ _; rfl
@@ -120,7 +123,7 @@ theorem EWStmt.mem_wbufs_of_writes (b : Buf) :
 theorem EWStmt.run_otherBuf (b : Buf) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (s : EWStmt), (∀ c ∈ s.wbufs, c ≠ b) →
-      ∀ (i : Nat) (st : WSt), ((s.elabAt cta i ir im).run st).mem b = st.mem b := by
+      ∀ (i : Nat) (st : WSt R), ((s.elabAt cta i ir im).run st).mem b = st.mem b := by
   intro s
   induction s with
   | skip => intro _ _ _; rfl
@@ -179,8 +182,8 @@ def EWStmt.wregs : EWStmt → List Nat
   | _                     => []
 
 theorem wforN_otherReg (f : Nat → WStmt) (r : Nat)
-    (h : ∀ j (st : WSt), ((f j).run st).regs r = st.regs r) :
-    ∀ (n : Nat) (st : WSt), ((WStmt.forN n f).run st).regs r = st.regs r := by
+    (h : ∀ j (st : WSt R), ((f j).run st).regs r = st.regs r) :
+    ∀ (n : Nat) (st : WSt R), ((WStmt.forN n f).run st).regs r = st.regs r := by
   intro n
   induction n with
   | zero => intro _; rfl
@@ -194,7 +197,7 @@ theorem wforN_otherReg (f : Nat → WStmt) (r : Nat)
 theorem EWStmt.run_otherReg (r : Nat) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (s : EWStmt), (∀ d ∈ s.wregs, d ≠ r) →
-      ∀ (i : Nat) (st : WSt), ((s.elabAt cta i ir im).run st).regs r = st.regs r := by
+      ∀ (i : Nat) (st : WSt R), ((s.elabAt cta i ir im).run st).regs r = st.regs r := by
   intro s
   induction s with
   | skip => intro _ _ _; rfl
@@ -286,7 +289,7 @@ theorem EWStmt.storesWithin_of_notWrites (b : Buf) (P : Nat → Prop) (cta : Nat
     second disjunct. -/
 theorem EWStmt.run_otherAddr (b : Buf) (P : Nat → Prop) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (a : Nat) (ha : ¬ P a) :
-    ∀ (s : EWStmt) (i : Nat) (st : WSt), s.StoresWithin b P cta ir im i →
+    ∀ (s : EWStmt) (i : Nat) (st : WSt R), s.StoresWithin b P cta ir im i →
       ((s.elabAt cta i ir im).run st).mem b a = st.mem b a := by
   intro s
   induction s with
@@ -342,7 +345,7 @@ theorem EWStmt.frame_of (s : EWStmt) (out : Buf) (dom : Nat → Nat → Prop)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (hb : ∀ c ∈ s.wbufs, c = out)
     (hd : ∀ cta, s.StoresWithin out (dom cta) cta ir im 0) :
-    ∀ (cta : Nat) (st : WSt) (b : Buf) (a : Nat), (b ≠ out ∨ ¬ dom cta a) →
+    ∀ (cta : Nat) (st : WSt R) (b : Buf) (a : Nat), (b ≠ out ∨ ¬ dom cta a) →
       ((s.elabAt cta 0 ir im).run st).mem b a = st.mem b a := by
   intro cta st b a h
   rcases h with h | h
@@ -376,15 +379,15 @@ theorem EWStmt.frame_of (s : EWStmt) (out : Buf) (dom : Nat → Nat → Prop)
 
     Two of the four fields stop being work. -/
 def stageOfEW (s : EWStmt) (out : Buf) (g : Nat) (dm : Nat → Nat → Prop)
-    (vl : (Buf → Nat → Float32) → Nat → Nat → Float32)
+    (vl : (Buf → Nat → R) → Nat → Nat → R)
     (ir : Nat → Lane → Nat := fun _ _ => 0) (im : Buf → Nat → Nat := fun _ _ => 0)
     (hb : ∀ c ∈ s.wbufs, c = out)
     (hd : ∀ cta, s.StoresWithin out (dm cta) cta ir im 0)
-    (hv : ∀ (cta : Nat) (st : WSt) (a : Nat), dm cta a →
+    (hv : ∀ (cta : Nat) (st : WSt R) (a : Nat), dm cta a →
         ((s.elabAt cta 0 ir im).run st).mem out a = vl st.mem cta a)
-    (hvo : ∀ (m m' : Buf → Nat → Float32) (cta a : Nat), dm cta a →
+    (hvo : ∀ (m m' : Buf → Nat → R) (cta a : Nat), dm cta a →
         (∀ b, b ≠ out → m b = m' b) → (∀ a', dm cta a' → m out a' = m' out a') →
-        vl m cta a = vl m' cta a) : StageSpec where
+        vl m cta a = vl m' cta a) : (StageSpec R) where
   ew      := s
   iregs   := ir
   imem    := im
@@ -397,15 +400,15 @@ def stageOfEW (s : EWStmt) (out : Buf) (g : Nat) (dm : Nat → Nat → Prop)
   valOnly := hvo
 
 @[simp] theorem stageOfEW_ew (s out g dm vl ir im hb hd hv hvo) :
-    (stageOfEW s out g dm vl ir im hb hd hv hvo).ew = s := rfl
+    (stageOfEW (R := R) s out g dm vl ir im hb hd hv hvo).ew = s := rfl
 @[simp] theorem stageOfEW_grid (s out g dm vl ir im hb hd hv hvo) :
-    (stageOfEW s out g dm vl ir im hb hd hv hvo).grid = g := rfl
+    (stageOfEW (R := R) s out g dm vl ir im hb hd hv hvo).grid = g := rfl
 @[simp] theorem stageOfEW_out (s out g dm vl ir im hb hd hv hvo) :
-    (stageOfEW s out g dm vl ir im hb hd hv hvo).out = out := rfl
+    (stageOfEW (R := R) s out g dm vl ir im hb hd hv hvo).out = out := rfl
 @[simp] theorem stageOfEW_dom (s out g dm vl ir im hb hd hv hvo) :
-    (stageOfEW s out g dm vl ir im hb hd hv hvo).dom = dm := rfl
+    (stageOfEW (R := R) s out g dm vl ir im hb hd hv hvo).dom = dm := rfl
 @[simp] theorem stageOfEW_val (s out g dm vl ir im hb hd hv hvo) :
-    (stageOfEW s out g dm vl ir im hb hd hv hvo).val = vl := rfl
+    (stageOfEW (R := R) s out g dm vl ir im hb hd hv hvo).val = vl := rfl
 
 /-- **A value that reads only buffers other than `out` satisfies `valOnly`.**
 
@@ -413,13 +416,15 @@ def stageOfEW (s : EWStmt) (out : Buf) (g : Nat) (dm : Nat → Nat → Prop)
     stage writes `readsOnly …` instead of repeating the same three-line
     argument. -/
 theorem valOnly_of_indep {out : Buf}
-    (vl : (Buf → Nat → Float32) → Nat → Nat → Float32)
-    (h : ∀ (m m' : Buf → Nat → Float32) (cta a : Nat),
+    (vl : (Buf → Nat → R) → Nat → Nat → R)
+    (h : ∀ (m m' : Buf → Nat → R) (cta a : Nat),
       (∀ b, b ≠ out → m b = m' b) → vl m cta a = vl m' cta a)
     (dm : Nat → Nat → Prop) :
-    ∀ (m m' : Buf → Nat → Float32) (cta a : Nat), dm cta a →
+    ∀ (m m' : Buf → Nat → R) (cta a : Nat), dm cta a →
       (∀ b, b ≠ out → m b = m' b) → (∀ a', dm cta a' → m out a' = m' out a') →
       vl m cta a = vl m' cta a :=
   fun m m' cta a _ hb _ => h m m' cta a hb
+
+end Carrier
 
 end AlgorithmLib.ML

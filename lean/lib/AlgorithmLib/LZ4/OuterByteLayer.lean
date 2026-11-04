@@ -13,23 +13,19 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4Plan AlgorithmLib.LZ4WarpFind AlgorithmLib.LZ4
-open AlgorithmLib.LZ4Simt (SCmp)
 
 -- Sanity: the model-side plan generator and encoder are in scope.
 example (inp : List UInt8) (p : Plan) : LZ4.Block := planToBlock inp p
 
--- ── `smem` is untouched by any `WStmt` containing no `.stshU`/`.coopWindow`. ──
--- (The only two `WStmt.eval` cases that write `smem`.)  Structural, fuel-generic.
+-- ── `smem` is untouched by any `WStmt` containing no `.coopWindow`. ──
+-- (The only `WStmt.eval` case that writes `smem`.)  Structural, fuel-generic.
 def NoSmem : WStmt → Prop
   | .skip => True
   | .seq a b => NoSmem a ∧ NoSmem b
   | .bin _ _ _ _ => True
   | .setp _ _ _ _ => True
   | .mov _ _ => True
-  | .ldgB _ _ _ => True
-  | .ldshU _ _ => True
   | .stgB _ _ => True
-  | .stshU _ _ => False
   | .uif _ t e => NoSmem t ∧ NoSmem e
   | .uwhile _ body => NoSmem body
   | .coopCopy _ _ _ => True
@@ -45,8 +41,6 @@ theorem noSmem_eval_smem : ∀ (s : WStmt), NoSmem s → ∀ (fuel : Nat) (st : 
   | .bin _ _ _ _, _, _, _ => by simp [WStmt.eval, WState.setReg]
   | .setp _ _ _ _, _, _, _ => by simp [WStmt.eval, WState.setReg]
   | .mov _ _, _, _, _ => by simp [WStmt.eval, WState.setReg]
-  | .ldgB _ _ _, _, _, _ => by simp [WStmt.eval, WState.setReg]
-  | .ldshU _ _, _, _, _ => by simp [WStmt.eval, WState.setReg]
   | .stgB _ _, _, _, _ => by simp [WStmt.eval, WState.stgByte]
   | .uif cond t e, ⟨hnt, hne⟩, fuel, st => by
       simp only [WStmt.eval]
@@ -65,8 +59,8 @@ theorem noSmem_eval_smem : ∀ (s : WStmt), NoSmem s → ∀ (fuel : Nat) (st : 
   | .coopExtendStep .., _, _, _ => by simp [WStmt.eval, evalCoopExtendStep, WState.setReg]
 
 -- ── Generic register-frame: `s` preserves register `r` if `r` is never a ────
--- write-target anywhere in `s` (`.bin/.setp/.mov/.ldgB` write `d`; `.stgB`/
--- `.stshU` write memory, not a register; `.coopCopy` writes only `gmem`;
+-- write-target anywhere in `s` (`.bin/.setp/.mov` write `d`; `.stgB`
+-- writes memory, not a register; `.coopCopy` writes only `gmem`;
 -- `.coopWindow`/`.coopExtendStep` write their own fixed named outputs).
 def NoWrite (r : String) : WStmt → Prop
   | .skip => True
@@ -74,10 +68,7 @@ def NoWrite (r : String) : WStmt → Prop
   | .bin _ d _ _ => r ≠ d
   | .setp _ d _ _ => r ≠ d
   | .mov d _ => r ≠ d
-  | .ldgB d _ _ => r ≠ d
-  | .ldshU d _ => r ≠ d
   | .stgB _ _ => True
-  | .stshU _ _ => True
   | .uif _ t e => NoWrite r t ∧ NoWrite r e
   | .uwhile _ body => NoWrite r body
   | .coopCopy _ _ _ => True
@@ -102,14 +93,7 @@ theorem noWrite_eval_reg : ∀ (s : WStmt) (r : String), NoWrite r s →
   | mov d a =>
       intro r hr _ _
       simp only [WStmt.eval, WState.setReg]; exact if_neg hr
-  | ldgB d addr off =>
-      intro r hr _ _
-      simp only [WStmt.eval, WState.setReg]; exact if_neg hr
-  | ldshU d addr =>
-      intro r hr _ _
-      simp only [WStmt.eval, WState.setReg]; exact if_neg hr
   | stgB addr val => intro _ _ _ _; simp [WStmt.eval, WState.stgByte]
-  | stshU addr val => intro _ _ _ _; simp [WStmt.eval, WState.stshU16]
   | uif cond t e iht ihe =>
       intro r ⟨hnt, hne⟩ fuel st
       simp only [WStmt.eval]
@@ -138,10 +122,10 @@ theorem noWrite_eval_reg : ∀ (s : WStmt) (r : String), NoWrite r s →
       · simp only [WState.setReg]
         rw [if_neg hc, if_neg hp, if_neg hf]
       · simp only [WState.setReg]
-        exact if_neg hf
+        rw [if_neg hc, if_neg hp, if_neg hf]
 
 -- ── `wEmitMatchSeq`/`wEmitFinalSeq` preserve any register outside their fixed ──
--- scratch set, via the generic `noWrite_eval_reg` (no `.stshU`/`.coopWindow`
+-- scratch set, via the generic `noWrite_eval_reg` (no `.coopWindow`
 -- inside either body, and `r` disjoint from every scratch name they write).
 theorem wEmitMatchSeq_frame (litStart litLen off ml r : String) (ws : WState) (fuel : Nat)
     (hr1 : r ≠ "mlm") (hr2 : r ≠ "tokLo") (hr3 : r ≠ "tokHi") (hr4 : r ≠ "tok")
@@ -214,6 +198,8 @@ theorem emitStepFound_eq (inStride searchLim hashLog s p c : Nat) (F fuelF : Nat
   -- `simp`-unfolding `evalCoopWindow`/`window` directly — kernel-size lesson).
   obtain ⟨st1, hst1def⟩ :
       ∃ st1, evalCoopWindowGo "found" "p0" "cand0" "searchPos" hashLog 0 searchLim (ws.regs "inBase").toNat
+        ((tableOracle ws.gmem ws.smem hashLog 0 (ws.regs "inBase").toNat
+          (min s (inStride - 4))).elim 0xffffffff UInt64.ofNat)
         (some (p, c)) ws = st1 := ⟨_, rfl⟩
   have hst1_found : st1.regs "found" = 1 := by
     rw [← hst1def]; simp [evalCoopWindowGo, WState.setReg]
@@ -234,7 +220,7 @@ theorem emitStepFound_eq (inStride searchLim hashLog s p c : Nat) (F fuelF : Nat
     rw [← hst1def, ← hsval]; simp [evalCoopWindowGo]
   have step1 : (WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride searchLim
       hashLog 0).eval F ws = st1 := by
-    rw [WStmt.eval.eq_14, evalCoopWindow_eq_go, hsval, hwin, hst1def]
+    rw [WStmt.eval.eq_11, evalCoopWindow_eq_go, hsval, hwin, hst1def]
   rw [show wseq [.coopWindow "found" "p0" "cand0" "searchPos" inStride searchLim hashLog 0,
       .uif "found" (wseq
         [ .mov "ecR" (.imm endCap), .mov "ec1" (.imm (endCap - 1)), .mov "ml" (.imm 4),
@@ -265,7 +251,7 @@ theorem emitStepFound_eq (inStride searchLim hashLog s p c : Nat) (F fuelF : Nat
             (wseq [ .bin .add "searchPos" "searchPos" (.imm 32) ])) from rfl]
   rw [WStmt.eval.eq_2, step1]
   have hif : (st1.regs "found" == 1) = true := by rw [hst1_found]; rfl
-  rw [WStmt.eval.eq_10, if_pos hif]
+  rw [WStmt.eval.eq_7, if_pos hif]
   simp only [wseq]
   rw [WStmt.eval.eq_2, WStmt.eval.eq_2, WStmt.eval.eq_2, WStmt.eval.eq_2, WStmt.eval.eq_2,
       WStmt.eval.eq_2, WStmt.eval.eq_2, WStmt.eval.eq_2]
@@ -610,6 +596,8 @@ theorem emitStepNotFound_eq (inStride searchLim hashLog s : Nat) (F : Nat) (ws :
   subst st'
   obtain ⟨st1, hst1def⟩ :
       ∃ st1, evalCoopWindowGo "found" "p0" "cand0" "searchPos" hashLog 0 searchLim (ws.regs "inBase").toNat
+        ((tableOracle ws.gmem ws.smem hashLog 0 (ws.regs "inBase").toNat
+          (min s (inStride - 4))).elim 0xffffffff UInt64.ofNat)
         none ws = st1 := ⟨_, rfl⟩
   have hst1_found : st1.regs "found" = 0 := by
     rw [← hst1def]; simp [evalCoopWindowGo, WState.setReg]
@@ -628,11 +616,11 @@ theorem emitStepNotFound_eq (inStride searchLim hashLog s : Nat) (F : Nat) (ws :
     rw [← hst1def, ← hsval]; simp [evalCoopWindowGo]
   have step1 : (WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride searchLim
       hashLog 0).eval F ws = st1 := by
-    rw [WStmt.eval.eq_14, evalCoopWindow_eq_go, hsval, hwin, hst1def]
+    rw [WStmt.eval.eq_11, evalCoopWindow_eq_go, hsval, hwin, hst1def]
   simp only [wseq]
   rw [WStmt.eval.eq_2, step1]
   have hif : (st1.regs "found" == 1) = false := by rw [hst1_found]; rfl
-  rw [WStmt.eval.eq_10, if_neg (by rw [hif]; decide)]
+  rw [WStmt.eval.eq_7, if_neg (by rw [hif]; decide)]
   obtain ⟨st2, hst2def⟩ :
       ∃ st2, (WStmt.bin WOp.add "searchPos" "searchPos" (WArg.imm 32)).eval F st1 = st2 := ⟨_, rfl⟩
   rw [hst2def]
@@ -1193,7 +1181,7 @@ theorem emitLoop_eq (inStride hashLog : Nat) (hstride : inStride ≤ 65536)
       intro anchor s ws has hsval hlaval hloopC hFsuff hnwFull hsize hdisj hinBound
       intro st' plan
       have hi0 : inStride = 0 := by omega
-      have hst'0 : st' = ws := WStmt.eval.eq_11 ws "loopC" _
+      have hst'0 : st' = ws := WStmt.eval.eq_8 ws "loopC" _
       have hplan0 : plan.steps = [] := by
         show (genLoop (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) (fun sm => tableOracle ws.gmem sm hashLog 0 (ws.regs "inBase").toNat)
           (fun sm sp upto => tableInsert sm ws.gmem hashLog 0 (inStride - 12) (ws.regs "inBase").toNat sp upto)
@@ -1209,7 +1197,7 @@ theorem emitLoop_eq (inStride hashLog : Nat) (hstride : inStride ≤ 65536)
   | succ n ih =>
       intro anchor s ws has hsval hlaval hloopC hFsuff hnwFull hsize hdisj hinBound
       intro st' plan
-      rw [show st' = WStmt.eval (n+1) (WStmt.uwhile "loopC" _) ws from rfl, WStmt.eval.eq_12]
+      rw [show st' = WStmt.eval (n+1) (WStmt.uwhile "loopC" _) ws from rfl, WStmt.eval.eq_9]
       by_cases hs : s < inStride - 12
       · have hguard : (ws.regs "loopC" == 1) = true := by
           rw [hloopC]

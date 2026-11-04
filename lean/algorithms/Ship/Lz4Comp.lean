@@ -29,31 +29,31 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace Lz4CompSafe
 
-theorem bindOff_15 : (Lz4Ship.WP.mk 15).bindOff = 10720 := by native_decide
-theorem bindOff_16 : (Lz4Ship.WP.mk 16).bindOff = 10720 := by native_decide
+theorem bindOff_15 : (Lz4Ship.WP.mk 15).bindOff = 27264 := by native_decide
+theorem bindOff_16 : (Lz4Ship.WP.mk 16).bindOff = 27264 := by native_decide
 
 theorem load15_eq : (Lz4Ship.loadCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit) =
-    Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 15) 10720 := by rw [Lz4Ship.loadCode, bindOff_15]
+    Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 15) 27264 := by rw [Lz4Ship.loadCode, bindOff_15]
 theorem load16_eq : (Lz4Ship.loadCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit) =
-    Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 16) 10720 := by rw [Lz4Ship.loadCode, bindOff_16]
+    Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 16) 27264 := by rw [Lz4Ship.loadCode, bindOff_16]
 theorem warp15_eq : (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit) =
-    Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 := by rw [Lz4Ship.warpCode, bindOff_15]
+    Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 27264 := by rw [Lz4Ship.warpCode, bindOff_15]
 theorem warp16_eq : (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit) =
-    Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 := by rw [Lz4Ship.warpCode, bindOff_16]
+    Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 27264 := by rw [Lz4Ship.warpCode, bindOff_16]
 
 /-- What `load` starts from: the driver loaded, nothing made, the kernel's
     text and its entry point's name in the arena. -/
-abbrev Load (b : Nat) : World → Prop := Contracts.TState.holds (Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 10720).loadTS
+abbrev Load (b : Nat) : World → Prop := Contracts.TState.holds (Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 27264).loadTS
 
 /-- What `main` starts from: what `load` leaves, and the caller's data and
     output of any lengths. -/
 abbrev Run (b : Nat) (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  ((Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 10720).runTS ++ [.roomArg .data dl, .roomArg .out ol])
+  ((Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 27264).runTS ++ [.roomArg .data dl, .roomArg .out ol])
 
-ship_entry load15 : Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 15) 10720 under (Load 15)
-ship_entry load16 : Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 16) 10720 under (Load 16)
+ship_entry load15 : Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 15) 27264 under (Load 15)
+ship_entry load16 : Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 16) 27264 under (Load 16)
 
-theorem warp15_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
+theorem warp15_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 27264 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -86,20 +86,29 @@ def warpCalls (g : Lz4Ship.WP) (org : Nat) : Tr :=
           [.is (regionBase .out), .is (devPtr 0 + UInt64.ofNat g.outOff), .is (UInt64.ofNat g.totOut)]⟩])
         (.lit [])))
 
+/-- **The caller's bytes no host store of a compression touches**: its data,
+    and its output's blocks, `[0, totOut)`. -/
+def keptRanges (g : Lz4Ship.WP) : List (Nat × Nat) :=
+  [((regionBase .data).toNat, (regionBase .data).toNat + 2 ^ 36),
+   ((regionBase .out).toNat, (regionBase .out).toNat + g.totOut)]
+
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 /-- **Every run of the 32 KiB compression that ends makes the calls
-    `warpCalls` admits**, after whatever was observed before it. A statement
-    about runs of the emitted body, not a reading of its text. -/
+    `warpCalls` admits**, after whatever was observed before it, changes
+    the device only by those calls (`DevPath`), and stores nothing into the
+    caller's data or its output's blocks (`StoresOut`). A statement about runs
+    of the emitted body, not a reading of its text. -/
 theorem warp15_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 15 dataLen outLen w)
     {obs : List Obs} {w' : World}
     (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit))
       = .ok obs w') :
-    (warpCalls (Lz4Ship.WP.mk 15) 10720).Covers w obs := by
+    (warpCalls (Lz4Ship.WP.mk 15) 27264).Covers w obs ∧ Check.DevPath w w' ∧
+      Check.StoresOut (keptRanges (Lz4Ship.WP.mk 15)) w w' := by
   rw [warp15_eq] at hr
   check_calls
 
-theorem warp16_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
+theorem warp16_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 27264 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
@@ -118,7 +127,8 @@ theorem warp16_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 
     {obs : List Obs} {w' : World}
     (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit))
       = .ok obs w') :
-    (warpCalls (Lz4Ship.WP.mk 16) 10720).Covers w obs := by
+    (warpCalls (Lz4Ship.WP.mk 16) 27264).Covers w obs ∧ Check.DevPath w w' ∧
+      Check.StoresOut (keptRanges (Lz4Ship.WP.mk 16)) w w' := by
   rw [warp16_eq] at hr
   check_calls
 

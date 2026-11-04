@@ -2,6 +2,8 @@ import AlgorithmLib.Check.Entry
 import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
 import Warp.MlpCifar
+import Warp.MlpCifarBodies
+import AlgorithmLib.ML.Model.TapeRun
 
 /-!
 # The mixture-of-experts dispatch neither misuses a call nor faults
@@ -21,6 +23,9 @@ caller's output.
 Not faulting means every load and store finds the bytes it reaches,
 and every operation answers.
 
+`main` is checked by compiled evaluation (`ship_entry`), so its theorems
+also rest on the compiler.
+
 A plain file, not a module: under the module system the generator's
 arithmetic on 64-bit constants unfolds one step at a time.
 -/
@@ -38,14 +43,18 @@ abbrev Load : World → Prop := Contracts.TState.holds
 def moved : List Nat :=
   ((List.range (3 * MlpCifar.MUSED)).map fun t => MlpCifar.mApp.bufSlot (MlpCifar.MSLOT0 + t)) ++
   ((List.range MlpCifar.mApp.blocks.length).zip MlpCifar.mApp.blocks).flatMap fun (b, args) =>
-    if args.any (fun x => MlpCifar.MSLOT0 ≤ x && x < MlpCifar.MSTORE) then
+    if args.any (fun x => MlpCifar.MSLOT0 ≤ x && x < MlpCifar.MBASE) then
       (List.range args.length).map fun p => MlpCifar.mApp.blockOff b + 8 * p
     else []
 
-abbrev Run (d o : Nat) : World → Prop := Contracts.TState.holds
-  ((MlpCifar.mApp.runTS.filter fun
+/-- What the entries after `bindExperts` start from: what `main` leaves but
+    the cells it moves. -/
+def runState (d o : Nat) : Contracts.TState :=
+  (MlpCifar.mApp.runTS.filter fun
       | .cell a _ => !(moved.any fun off => a == Drv.App.at_ off)
-      | _ => true) ++ [.room .data d, .room .out o])
+      | _ => true) ++ [.room .data d, .room .out o]
+
+abbrev Run (d o : Nat) : World → Prop := Contracts.TState.holds (runState d o)
 
 /-- The arena's size, which the kernel computes from the layout. -/
 theorem mem_size : MlpCifar.MMEM_SIZE = 565248 := by decide +kernel
@@ -61,10 +70,49 @@ ship_entry main : MlpCifar.mLoadFn under Load
 
 ship_entry runRouter : (MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length) under ((Run 0 0))
 
+/-- The kernels `runRouter` launches, in order. -/
+def routerSteps : List Nat := List.range MlpCifar.mRouterTape.length
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+/-- Every run of `runRouter` that ends launches the router's kernels in
+    order on the default stream, then waits, the device changed only by
+    those calls. -/
+theorem runRouter_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w
+      (emit (MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length : Prog Slot Lvl Unit)) = .ok obs w') :
+    (MlpCifar.mApp.runCalls routerSteps).Covers w obs ∧ Check.DevPath w w' := by
+  check_calls
+
+theorem bytes_le : MlpCifar.moeLayout.bytes.all (· ≤ 2 ^ 34) = true := by native_decide
+theorem router_ok : ML.kernelsOk MlpCifar.moeLayout MlpCifar.mApp MlpCifar.moeUnit routerSteps = true := by
+  native_decide
+theorem run_ready : (ML.readyFacts MlpCifar.mApp).all (runState 0 0).contains = true := by native_decide
+theorem router_units : routerSteps.flatMap MlpCifar.moeUnit = MlpCifar.mRouterTape := by
+  exact ML.flatMap_range_take MlpCifar.mRouterTape MlpCifar.mExpertTape
+
+/-- **The words every run of `runRouter` leaves are the router's tape's**:
+    from what `main` leaves, whichever experts were bound, on a device honest
+    about each launch (`TapeLayout.KernelHonest`), every word inside each
+    allocation, at its size, is as the router's operations leave it from the
+    memory the run started with. -/
+theorem runRouter_tape (hw : Kernel.Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32)
+    (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w
+      (emit (MlpCifar.mRunRange 0 MlpCifar.mRouterTape.length : Prog Slot Lvl Unit)) = .ok obs w')
+    (hHon : ∀ j ∈ routerSteps, MlpCifar.moeLayout.KernelHonest MlpCifar.mApp w j (MlpCifar.moeUnit j) hw) :
+    MlpCifar.moeLayout.Agree (Device.devMem w'.dev)
+      (MlpCifar.mRouterTape.foldl (fun M op => ML.TOp.denV hw op M) (ML.wordView (Device.devMem w.dev))) := by
+  rw [← router_units]
+  exact ML.kernels_tape _ _ bytes_le hw hw32 _ _ router_ok (ML.ready_of h run_ready) hr
+    (runRouter_calls cfg dataLen outLen w h hr) hHon
+
 ship_entry fetchGate : (MlpCifar.mFetchFn MlpCifar.MGATE (MlpCifar.NE * 4)) under ((Run 0 (MlpCifar.NE * 4)))
 
 theorem bindExperts_fine : Fine (emitGo (fnBody ptrParams (MlpCifar.mBindExperts : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+  ⟨by native_decide, by native_decide⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
@@ -77,7 +125,7 @@ theorem bindExperts_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
   check_body
 
 theorem uploadGates_fine : Fine (emitGo (fnBody ptrParams ((MlpCifar.mUploadFn 3 128) : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+  ⟨by native_decide, by native_decide⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
@@ -94,6 +142,7 @@ end MoeSafe
 
 #print axioms MoeSafe.main_no_misuse
 #print axioms MoeSafe.runRouter_no_misuse
+#print axioms MoeSafe.runRouter_tape
 #print axioms MoeSafe.fetchGate_no_misuse
 #print axioms MoeSafe.bindExperts_no_misuse
 #print axioms MoeSafe.uploadGates_no_misuse

@@ -1121,20 +1121,23 @@ theorem argBits_agree {Γ : Env} {w : World} : ∀ {as : List AV} {bits : List U
   | a :: as, b :: bs, ⟨hd, hr⟩ => ⟨fun x (hx : a.bits = some x) => (known_bits hd hx).symm, argBits_agree hr⟩
 
 theorem devPtrOf_spec {p : UInt64} {i o : Nat} (h : devPtrOf p = some (i, o)) :
-    2 ^ 52 ≤ p.toNat ∧ p.toNat < 2 ^ 53 ∧ i = (p.toNat - 2 ^ 52) / 2 ^ 36 ∧ o = (p.toNat - 2 ^ 52) % 2 ^ 36 := by
+    p.toNat = (6 + i) * 2 ^ 36 + o ∧ o < 2 ^ 36 ∧ i < 268435449 := by
   unfold devPtrOf at h
   dsimp only at h
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
     simp only [Option.some.injEq, Prod.mk.injEq] at h
-    exact ⟨hc.1, hc.2, h.1.symm, h.2.symm⟩
+    obtain ⟨rfl, rfl⟩ := h
+    omega
   · cases h
 
-theorem devPtrOf_of {p : UInt64} (h1 : 2 ^ 52 ≤ p.toNat) (h2 : p.toNat < 2 ^ 53) :
-    devPtrOf p = some ((p.toNat - 2 ^ 52) / 2 ^ 36, (p.toNat - 2 ^ 52) % 2 ^ 36) := by
+theorem devPtrOf_of {p : UInt64} {i o : Nat} (hp : p.toNat = (6 + i) * 2 ^ 36 + o) (ho : o < 2 ^ 36)
+    (hi : i < 268435449) : devPtrOf p = some (i, o) := by
   unfold devPtrOf
-  simp [h1, h2]
+  simp only [Bool.and_eq_true, decide_eq_true_eq]
+  rw [if_pos (by omega)]
+  congr 2 <;> omega
 
 theorem allocFor_spec {T : TState} {p : UInt64} {n : Nat} (h : allocFor T p n = true) :
     ∃ i o sz, devPtrOf p = some (i, o) ∧ Fact.alloc i sz ∈ T ∧ o + n ≤ sz := by
@@ -1167,15 +1170,12 @@ theorem allocForR_sound {T : TState} {lo hi n : Nat} {x : UInt64} {m : Nat} (h :
     obtain ⟨rfl, ha⟩ := h
     have hlo : (UInt64.ofNat lo).toNat = lo := by simp; omega
     have hhi' : (UInt64.ofNat hi).toNat = hi := by simp; omega
-    obtain ⟨a1, a2, a3, -⟩ := devPtrOf_spec e1
+    obtain ⟨a1, a2, a3⟩ := devPtrOf_spec e1
     obtain ⟨i', o', sz, hp, hal, hle'⟩ := allocFor_spec ha
     rw [e2] at hp; cases hp
-    obtain ⟨b1, b2, b3, b4⟩ := devPtrOf_spec e2
-    rw [hlo] at a1 a2 a3; rw [hhi'] at b1 b2 b3 b4
-    have hx1 : 2 ^ 52 ≤ x.toNat := by omega
-    have hx2 : x.toNat < 2 ^ 53 := by omega
-    have hq : (x.toNat - 2 ^ 52) / 2 ^ 36 = i := by omega
-    refine allocFor_of (sz := sz) (devPtrOf_of hx1 hx2) (by rw [hq]; exact hal) ?_
+    obtain ⟨b1, b2, b3⟩ := devPtrOf_spec e2
+    rw [hlo] at a1; rw [hhi'] at b1
+    refine allocFor_of (sz := sz) (devPtrOf_of (o := x.toNat - (6 + i) * 2 ^ 36) (by omega) (by omega) a3) hal ?_
     omega
   · cases h
 
@@ -1296,13 +1296,10 @@ theorem allocForR_id {T : TState} {lo hi n : Nat} {x : UInt64} {i o : Nat} (h : 
     cases hlo
     have hlo' : (UInt64.ofNat lo).toNat = lo := by simp; omega
     have hhi' : (UInt64.ofNat hi).toNat = hi := by simp; omega
-    obtain ⟨a1, a2, a3, -⟩ := devPtrOf_spec e1
-    obtain ⟨b1, b2, b3, -⟩ := devPtrOf_spec e2
-    rw [hlo'] at a1 a2 a3; rw [hhi'] at b1 b2 b3
-    have hx1 : 2 ^ 52 ≤ x.toNat := by omega
-    have hx2 : x.toNat < 2 ^ 53 := by omega
-    have hq : (x.toNat - 2 ^ 52) / 2 ^ 36 = i := by omega
-    exact ⟨_, by rw [devPtrOf_of hx1 hx2, hq]⟩
+    obtain ⟨a1, a2, a3⟩ := devPtrOf_spec e1
+    obtain ⟨b1, b2, b3⟩ := devPtrOf_spec e2
+    rw [hlo'] at a1; rw [hhi'] at b1
+    exact ⟨_, devPtrOf_of (o := x.toNat - (6 + i) * 2 ^ 36) (by omega) (by omega) a3⟩
   · cases h
 
 /-- **An operand a range check places is one at every value it allows.** -/
@@ -1324,14 +1321,13 @@ theorem operandOfR_sound {T : TState} {r : Rng} {e span id : Nat} {x : UInt64}
           cases h
           obtain ⟨off, hoff⟩ := allocForR_id ha ⟨h1, h2⟩ hd
           have hal' := allocForR_sound ha ⟨h1, h2⟩ (Nat.le_refl _)
-          obtain ⟨c1, c2, c3, c4⟩ := devPtrOf_spec hoff
+          obtain ⟨c1, c2, c3⟩ := devPtrOf_spec hoff
           -- `e` divides the pointer and the allocation's start, so its offset
           have hex : e ∣ x.toNat := Nat.dvd_trans (Nat.dvd_of_mod_eq_zero hal) h3
           have he36 : e ∣ 2 ^ 36 := Nat.dvd_of_mod_eq_zero h36
-          have he52 : e ∣ 2 ^ 52 := Nat.dvd_trans he36 (by decide)
-          have hbase : e ∣ 2 ^ 52 + i * 2 ^ 36 := Nat.dvd_add he52 (Nat.dvd_mul_left_of_dvd he36 i)
+          have hbase : e ∣ (6 + i) * 2 ^ 36 := Nat.dvd_mul_left_of_dvd he36 _
           have hoff' : e ∣ off := by
-            have : off = x.toNat - (2 ^ 52 + i * 2 ^ 36) := by omega
+            have : off = x.toNat - (6 + i) * 2 ^ 36 := by omega
             rw [this]; exact Nat.dvd_sub hex hbase
           unfold operandOf
           rw [hoff]

@@ -148,3 +148,66 @@ theorem planBlock_encode_le_lenOff (inp : List UInt8) (p : Plan) (hv : ValidPlan
   omega
 
 end AlgorithmLib.LZ4WarpDSL
+
+namespace AlgorithmLib.LZ4WarpDSL
+open AlgorithmLib AlgorithmLib.LZ4 AlgorithmLib.LZ4Plan AlgorithmLib.LZ4Imp
+
+/-- `encNib n` is never longer than `n`. -/
+theorem encNib_len_le (n : Nat) : (LZ4.encNib n).length ≤ n := by
+  rw [AlgorithmLib.LZ4Imp.encNib_length]
+  split
+  · omega
+  · have := Nat.div_le_self (n - 15) 255; omega
+
+theorem encSeqLen_le9 (s : PlanStep) (h : 4 ≤ s.mlen) : encSeqLen s ≤ 8 * (s.litLen + s.mlen) := by
+  have h1 := encNib_len_le s.litLen
+  have h2 := encNib_len_le (s.mlen - 4)
+  simp only [encSeqLen]; omega
+
+theorem encFinalLen_le9 (fl : Nat) : encFinalLen fl ≤ 8 * fl + 1 := by
+  have := encNib_len_le fl; simp only [encFinalLen]; omega
+
+theorem encodeSum_le9 (inp : List UInt8) : ∀ (anchor : Nat) (steps : List PlanStep) (fl : Nat),
+    ValidStepsFrom inp anchor steps fl → (steps.map encSeqLen).sum ≤ 8 * stepsLen steps
+  | _, [], _, _ => by simp [stepsLen]
+  | anchor, st :: rest, fl, hv => by
+    obtain ⟨hag, hrest⟩ := hv
+    have ih := encodeSum_le9 inp (anchor + st.litLen + st.mlen) rest fl hrest
+    have hs := encSeqLen_le9 st hag.2.2.1
+    simp only [List.map_cons, List.sum_cons, stepsLen]; omega
+
+/-- **The generous 9x output budget, from an ARBITRARY literal anchor.**
+
+    `planBlock_encode_le9` below is this at `anchor = 0`.  The suffix form is what
+    the emit loop needs: its invariant is indexed by the literal anchor, and the
+    quantity it must bound is what is still to be emitted from there.
+
+    Every ingredient was already anchor-parametric (`encode_planBlockFrom_length`,
+    `encodeSum_le9`, `ValidStepsFrom_sum`); this states it at any anchor,
+    not only at `0`.  This is the no-overflow side condition for showing the output cursor
+    never runs backwards. -/
+theorem planBlockFrom_encode_le9 (inp : List UInt8) (anchor : Nat) (steps : List PlanStep)
+    (fl : Nat) (hv : ValidStepsFrom inp anchor steps fl) (hpos : anchor < inp.length) :
+    (planBlockFrom inp anchor steps fl).encode.length ≤ 9 * (inp.length - anchor) := by
+  have hlen := encode_planBlockFrom_length inp anchor steps fl hv
+  have hsum := encodeSum_le9 inp anchor steps fl hv
+  have hf := encFinalLen_le9 fl
+  have htot := ValidStepsFrom_sum inp anchor steps fl hv
+  rw [hlen]; omega
+
+theorem planBlock_encode_le9 (inp : List UInt8) (p : Plan) (hv : ValidPlan inp p)
+    (hpos : 1 ≤ inp.length) : (planToBlock inp p).encode.length ≤ 9 * inp.length := by
+  have hlen := encode_planBlockFrom_length inp 0 p.steps p.finalLen hv
+  have hsum := encodeSum_le9 inp 0 p.steps p.finalLen hv
+  have hf := encFinalLen_le9 p.finalLen
+  have htot := ValidStepsFrom_sum inp 0 p.steps p.finalLen hv
+  simp only [planToBlock]; rw [hlen]; omega
+
+/-- Every encoded block is non-empty: the final literal run emits its token byte. -/
+theorem planBlock_encode_pos (inp : List UInt8) (p : Plan) (hv : ValidPlan inp p) :
+    0 < (planToBlock inp p).encode.length := by
+  have hlen := encode_planBlockFrom_length inp 0 p.steps p.finalLen hv
+  have hf : 1 ≤ encFinalLen p.finalLen := by simp only [encFinalLen]; omega
+  simp only [planToBlock]; rw [hlen]; omega
+
+end AlgorithmLib.LZ4WarpDSL

@@ -53,7 +53,7 @@ def slots : {Γ : Nat} → Expr Γ → Nat
 
 
 
-variable {Γ : Nat}
+variable {Γ : Nat} {R : Type} [NumOps R] [NumLit R]
 
 -- ---------------------------------------------------------------------------
 -- Register footprints for the warp machine
@@ -91,7 +91,7 @@ theorem WFExp.regsIn_weaken (lo hi lo' hi' : Nat) (hl : lo' ≤ lo) (hh : hi ≤
 /-- Two states agreeing on the registers an expression reads give it the same
     value, in every lane. -/
 theorem WFExp.eval_frame (lo hi : Nat) :
-    ∀ (e : WFExp) (st st' : WSt) (l : Lane), e.regsIn lo hi →
+    ∀ (e : WFExp) (st st' : WSt R) (l : Lane), e.regsIn lo hi →
       (∀ r, lo ≤ r → r < hi → st'.regs r = st.regs r) → e.eval st' l = e.eval st l := by
   intro e
   induction e with
@@ -153,7 +153,7 @@ def compileW : {Γ : Nat} → (Fin Γ → WFExp) → Nat → Expr Γ → EWStmt 
 
 /-- Run a compiled fragment.  The fragment contains no loops or memory ops, so
     elaboration is structural and independent of the block index. -/
-def runW (s : EWStmt) (st : WSt) : WSt := (EWStmt.expand s).run st
+def runW (s : EWStmt) (st : WSt R) : WSt R := (EWStmt.expand s).run st
 
 /-! ### Fragments that do not depend on where they run
 
@@ -244,7 +244,7 @@ theorem compileW_addrFree : ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp)
       exact ⟨⟨iha ve c, trivial⟩, ihb (extend ve (.reg (c + slots a))) (c + slots a + 1)⟩
 
 /-- An address-free fragment leaves memory alone — it has no store to make. -/
-theorem addrFree_mem : ∀ (s : EWStmt), s.AddrFree → ∀ (st : WSt), (runW s st).mem = st.mem := by
+theorem addrFree_mem : ∀ (s : EWStmt), s.AddrFree → ∀ (st : WSt R), (runW s st).mem = st.mem := by
   intro s
   induction s with
   | skip => intro _ st; rfl
@@ -266,18 +266,18 @@ theorem addrFree_mem : ∀ (s : EWStmt), s.AddrFree → ∀ (st : WSt), (runW s 
   | cvtIF _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
 
 /-- The compiled body leaves memory alone. -/
-theorem compileW_mem {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat) (st : WSt) :
+theorem compileW_mem {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat) (st : WSt R) :
     (runW (compileW ve c e).1 st).mem = st.mem :=
   addrFree_mem _ (compileW_addrFree e ve c) st
 
 /-- The compiled body runs the same at any block and iteration. -/
 theorem compileW_elabAt {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat)
-    (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt) :
+    (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
     (((compileW ve c e).1.elabAt cta i ir im).run st) = runW (compileW ve c e).1 st := by
   rw [elabAt_addrFree _ (compileW_addrFree e ve c) cta i ir im]
   rfl
 
-@[simp] theorem runW_skip (st : WSt) : runW .skip st = st := rfl
+@[simp] theorem runW_skip (st : WSt R) : runW .skip st = st := rfl
 /-- The generated body only reads registers below the end of its range. -/
 theorem compileW_regsIn :
     ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat),
@@ -328,7 +328,7 @@ theorem compileW_regsIn :
 
 /-- Running a left-folded sequence is folding the runs. -/
 theorem runW_foldl {α : Type} (g : α → EWStmt) :
-    ∀ (L : List α) (init : EWStmt) (st : WSt),
+    ∀ (L : List α) (init : EWStmt) (st : WSt R),
       runW (L.foldl (fun s a => .seq s (g a)) init) st
         = L.foldl (fun s' a => runW (g a) s') (runW init st) := by
   intro L
@@ -338,7 +338,7 @@ theorem runW_foldl {α : Type} (g : α → EWStmt) :
 
 /-- Prologues never write a register below their base. -/
 theorem compileW_frame :
-    ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat) (st : WSt) (r : Nat), r < c →
+    ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat) (st : WSt R) (r : Nat), r < c →
       (runW (compileW ve c e).1 st).regs r = st.regs r := by
   intro Γ e
   induction e with
@@ -366,7 +366,7 @@ theorem compileW_frame :
                 (.setR c (.lit NumOps.zero)) from by
             simp only [sumSeq, List.foldl_map]]
       rw [runW_foldl]
-      have key : ∀ (L : List (Fin n)) (s : WSt), s.regs r = st.regs r →
+      have key : ∀ (L : List (Fin n)) (s : WSt R), s.regs r = st.regs r →
           (L.foldl (fun s' j => runW (.seq (compileW ve (c+1) (f j)).1
              (.setR c (.add (.reg c) (compileW ve (c+1) (f j)).2))) s') s).regs r
             = st.regs r := by
@@ -394,18 +394,18 @@ theorem compileW_frame :
 /-- **A model spec compiles onto the machine that runs — correctly, per lane.**
 
     All 32 lanes execute the same instructions; each lane's result is the
-    denotation of the spec under *that lane's* environment.  Exact `Float32`
-    equality.  With `WarpEmit` this is the missing link: a user's `Expr` now
+    denotation of the spec under *that lane's* environment, exactly, at any
+    carrier whose literals are its numbers (`LitNat`).  With `WarpEmit` this is the missing link: a user's `Expr` now
     reaches PTX, not just the paper machine. -/
-theorem compileW_sound :
+theorem compileW_sound [LitNat R] :
     ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat),
-      (∀ i, (ve i).regsIn 0 c) → ∀ (st : WSt) (l : Lane),
+      (∀ i, (ve i).regsIn 0 c) → ∀ (st : WSt R) (l : Lane),
       ((compileW ve c e).2).eval (runW (compileW ve c e).1 st) l
         = denote (fun i => (ve i).eval st l) e := by
   intro Γ e
   induction e with
   | var i => intro ve c _ st l; rfl
-  | lit n => intro ve c _ st l; rfl
+  | lit n => intro ve c _ st l; exact LitNat.ofNat n
   | add a b iha ihb =>
       intro ve c hve st l
       have hveB : ∀ i, (ve i).regsIn 0 (c + slots a) := fun i =>
@@ -473,7 +473,7 @@ theorem compileW_sound :
                 (.setR c (.lit NumOps.zero)) from by
             simp only [sumSeq, List.foldl_map],
           runW_foldl]
-      have key : ∀ (L : List (Fin n)) (s : WSt),
+      have key : ∀ (L : List (Fin n)) (s : WSt R),
           (∀ r, r < c → s.regs r = st.regs r) →
           (L.foldl (fun s' j => runW (.seq (compileW ve (c+1) (f j)).1
              (.setR c (.add (.reg c) (compileW ve (c+1) (f j)).2))) s') s).regs c l
@@ -509,7 +509,7 @@ theorem compileW_sound :
             exact WSt.regs_setReg_other st c r _ (by omega))]
       show (List.finRange n).foldl _ ((WSt.setReg st c _).regs c l) = _
       rw [WSt.regs_setReg_same]
-      rfl
+      exact congrArg (fun v => (List.finRange n).foldl _ v) (LitNat.zero (R := R))
   | letE a b iha ihb =>
       intro ve c hve st l
       have hve' : ∀ i,
@@ -556,7 +556,7 @@ def loadSeqN (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) : Nat → EWStmt
 def loadSeq (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) : EWStmt := loadSeqN inB inIx Γ
 
 theorem loadSeqN_mem (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) :
-    ∀ (k : Nat) (st : WSt), (runW (loadSeqN inB inIx k) st).mem = st.mem := by
+    ∀ (k : Nat) (st : WSt R), (runW (loadSeqN inB inIx k) st).mem = st.mem := by
   intro k
   induction k with
   | zero => intro st; rfl
@@ -569,7 +569,7 @@ theorem loadSeqN_mem (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) :
 
 /-- After the prologue, variable `i` sits in register `i` holding the memory it
     was loaded from. -/
-theorem loadSeqN_regs (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt) (l : Lane) :
+theorem loadSeqN_regs (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt R) (l : Lane) :
     ∀ (k : Nat) (i : Fin Γ), i.val < k →
       (runW (loadSeqN inB inIx k) st).regs i.val l
         = st.mem (inB i) ((inIx i).eval 0 0 l) := by
@@ -597,7 +597,7 @@ theorem loadSeqN_regs (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt)
 
 theorem loadSeqN_memAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
     (cta j : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
-    ∀ (k : Nat) (st : WSt),
+    ∀ (k : Nat) (st : WSt R),
       (((loadSeqN inB inIx k).elabAt cta j ir im).run st).mem = st.mem := by
   intro k
   induction k with
@@ -613,7 +613,7 @@ theorem loadSeqN_memAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
         rw [ih st]
 
 /-- `loadSeqN_regs` at an arbitrary block and iteration. -/
-theorem loadSeqN_regsAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt)
+theorem loadSeqN_regsAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt R)
     (l : Lane) (cta j : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (k : Nat) (i : Fin Γ), i.val < k →
       (((loadSeqN inB inIx k).elabAt cta j ir im).run st).regs i.val l
@@ -641,7 +641,7 @@ theorem loadSeqN_regsAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WS
           show (runW EWStmt.skip _).regs i.val l = _
           rw [runW_skip, ih i hlt]
 
-theorem loadSeq_regs (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt) (i : Fin Γ)
+theorem loadSeq_regs (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt R) (i : Fin Γ)
     (l : Lane) :
     (runW (loadSeq inB inIx) st).regs i.val l = st.mem (inB i) ((inIx i).eval 0 0 l) :=
   loadSeqN_regs inB inIx st l Γ i i.isLt
@@ -660,9 +660,9 @@ def compileWKernel (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE) (
     Lane `l` ends with `resReg` holding the denotation of `e` under the
     environment "variable `i` is whatever `inIx i` addresses in `inB`, as seen
     by lane `l`".  Loads, register allocation, evaluation order and per-lane
-    divergence are all discharged.  Exact `Float32` equality. -/
-theorem compileWKernel_correct (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (e : Expr Γ)
-    (st : WSt) (l : Lane) :
+    divergence are all discharged.  Exact equality, at any `LitNat` carrier. -/
+theorem compileWKernel_correct [LitNat R] (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (e : Expr Γ)
+    (st : WSt R) (l : Lane) :
     ((compileW (fun i => .reg i.val) Γ e).2).eval
         (runW (compileW (fun i => .reg i.val) Γ e).1 (runW (loadSeq inB inIx) st)) l
       = denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l)) e := by
@@ -676,8 +676,8 @@ theorem compileWKernel_correct (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (
     `compileWKernel_correct` is this at `(0, 0)`.  Generalising it is what lets
     a compiled expression sit inside a loop — i.e. what lets one lane handle
     more than one element. -/
-theorem compileWKernel_correctAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
-    (e : Expr Γ) (st : WSt) (l : Lane) (cta j : Nat) (ir : Nat → Lane → Nat)
+theorem compileWKernel_correctAt [LitNat R] (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
+    (e : Expr Γ) (st : WSt R) (l : Lane) (cta j : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) :
     ((compileW (fun i => .reg i.val) Γ e).2).eval
         ((((compileW (fun i => .reg i.val) Γ e).1).elabAt cta j ir im).run
@@ -700,8 +700,8 @@ theorem compileWKernel_correctAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
     than injectivity so that kernels which deliberately have several lanes write
     the same value to the same slot are covered.  An injective address map gives
     it immediately. -/
-theorem compileWKernel_stores (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
-    (e : Expr Γ) (oix : IdxE) (resReg : Nat) (st : WSt) (l0 : Lane)
+theorem compileWKernel_stores [LitNat R] (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
+    (e : Expr Γ) (oix : IdxE) (resReg : Nat) (st : WSt R) (l0 : Lane)
     (hagree : ∀ l, oix.eval 0 0 l = oix.eval 0 0 l0 →
       denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l)) e
         = denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l0)) e) :
@@ -726,9 +726,9 @@ theorem compileWKernel_stores (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ 
 
     `compileWKernel_stores` is this at `(0, 0)`.  A *stage* runs a whole grid,
     so its contract has to hold for every block — which is what this supplies. -/
-theorem compileWKernel_storesAt (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
+theorem compileWKernel_storesAt [LitNat R] (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
     (e : Expr Γ) (oix : IdxE) (resReg : Nat) (cta j : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (st : WSt) (l0 : Lane)
+    (im : Buf → Nat → Nat) (st : WSt R) (l0 : Lane)
     (hagree : ∀ l, oix.eval cta j l ir im = oix.eval cta j l0 ir im →
       denote (fun i => st.mem (inB i) ((inIx i).eval cta j l ir im)) e
         = denote (fun i => st.mem (inB i) ((inIx i).eval cta j l0 ir im)) e) :
@@ -753,7 +753,7 @@ theorem compileWKernel_storesAt (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin �
 /-- **A compiled kernel writes only its output buffer.** -/
 theorem compileWKernel_otherBuf (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
     (e : Expr Γ) (oix : IdxE) (resReg : Nat) (cta j : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (st : WSt) (c : Buf) (hc : c ≠ out) :
+    (im : Buf → Nat → Nat) (st : WSt R) (c : Buf) (hc : c ≠ out) :
     (((compileWKernel inB out inIx e oix resReg).elabAt cta j ir im).run st).mem c
       = st.mem c := by
   show ((WStmt.storeLane out (fun l => oix.eval cta j l ir im) resReg).run
@@ -767,7 +767,7 @@ theorem compileWKernel_otherBuf (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin �
 /-- **…and only at the addresses some lane owns.** -/
 theorem compileWKernel_otherAddr (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
     (e : Expr Γ) (oix : IdxE) (resReg : Nat) (cta j : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (st : WSt) (a : Nat)
+    (im : Buf → Nat → Nat) (st : WSt R) (a : Nat)
     (ha : ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
     (((compileWKernel inB out inIx e oix resReg).elabAt cta j ir im).run st).mem out a
       = st.mem out a := by
@@ -826,55 +826,6 @@ theorem compileW_idxFree : ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) 
   | letE a b iha ihb =>
       intro ve c
       exact ⟨⟨iha ve c, trivial⟩, ihb _ (c + slots a + 1)⟩
-
-theorem compileW_flat : ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat),
-    (compileW ve c e).1.Flat := by
-  intro Γ e
-  induction e with
-  | var i => intro _ _; trivial
-  | lit n => intro _ _; trivial
-  | add a b iha ihb => intro ve c; exact ⟨iha ve c, ihb ve (c + slots a)⟩
-  | mul a b iha ihb => intro ve c; exact ⟨iha ve c, ihb ve (c + slots a)⟩
-  | neg a ih   => intro ve c; exact ih ve c
-  | inv a ih   => intro ve c; exact ih ve c
-  | exp a ih   => intro ve c; exact ih ve c
-  | rsqrt a ih => intro ve c; exact ih ve c
-  | sum n f ih =>
-      intro ve c
-      have key : ∀ (L : List (EWStmt × WFExp)) (init : EWStmt), init.Flat →
-          (∀ p ∈ L, (p.1).Flat) →
-          (L.foldl (fun s (p : EWStmt × WFExp) =>
-            EWStmt.seq s (.seq p.1 (.setR c (.add (.reg c) p.2)))) init).Flat := by
-        intro L
-        induction L with
-        | nil => intro init hi _; exact hi
-        | cons p L ihl =>
-            intro init hi hp
-            exact ihl _ ⟨hi, hp p (List.Mem.head _), trivial⟩
-              (fun q hq => hp q (List.Mem.tail _ hq))
-      refine key _ _ trivial ?_
-      intro p hp
-      rcases List.mem_map.mp hp with ⟨j, _, hj⟩
-      rw [← hj]
-      exact ih j ve (c + 1)
-  | letE a b iha ihb =>
-      intro ve c
-      exact ⟨⟨iha ve c, trivial⟩, ihb _ (c + slots a + 1)⟩
-
-theorem loadSeqN_flat (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) :
-    ∀ k : Nat, (loadSeqN inB inIx k).Flat := by
-  intro k
-  induction k with
-  | zero => trivial
-  | succ k ih =>
-      refine ⟨ih, ?_⟩
-      show EWStmt.Flat (if _ : _ then _ else _)
-      split <;> trivial
-
-theorem compileWKernel_flat (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
-    (e : Expr Γ) (oix : IdxE) (resReg : Nat) :
-    (compileWKernel inB out inIx e oix resReg).Flat :=
-  ⟨⟨loadSeqN_flat inB inIx Γ, compileW_flat e (fun i => .reg i.val) Γ, trivial⟩, trivial⟩
 
 theorem loadSeqN_idxFree (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
     (h : ∀ i, (inIx i).IregFree) : ∀ k : Nat, (loadSeqN inB inIx k).IdxFree := by
@@ -951,7 +902,7 @@ def compileTele : {n : Nat} → (Fin Γ → WFExp) → Nat → Tele Γ n → EWS
 theorem compileTele_split : ∀ {n : Nat} (t : Tele Γ n) (b : Expr (Γ + n))
     (ve : Fin Γ → WFExp) (c : Nat),
     (compileW ve c (t.bind b)).2 = (compileW (teleEnv ve c t) (c + teleSlots t) b).2
-    ∧ ∀ st : WSt, runW (compileW ve c (t.bind b)).1 st
+    ∧ ∀ st : WSt R, runW (compileW ve c (t.bind b)).1 st
         = runW (compileW (teleEnv ve c t) (c + teleSlots t) b).1
             (runW (compileTele ve c t) st) := by
   intro n t
@@ -979,13 +930,13 @@ theorem compileTele_split : ∀ {n : Nat} (t : Tele Γ n) (b : Expr (Γ + n))
     bindings run once, and output `i` still denotes `p.get i`.  Applied to
     `gradProg`, it is the statement that the quadratic-not-exponential gradient
     representation survives compilation. -/
-theorem compileVW_sound {m : Nat} (p : VProg Γ m) (i : Fin m) (ve : Fin Γ → WFExp)
-    (c : Nat) (hve : ∀ k, (ve k).regsIn 0 c) (st : WSt) (l : Lane) :
+theorem compileVW_sound [LitNat R] {m : Nat} (p : VProg Γ m) (i : Fin m) (ve : Fin Γ → WFExp)
+    (c : Nat) (hve : ∀ k, (ve k).regsIn 0 c) (st : WSt R) (l : Lane) :
     ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
         (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1
           (runW (compileTele ve c p.binds) st)) l
       = denote (fun k => (ve k).eval st l) (p.get i) := by
-  have hsplit := compileTele_split p.binds (p.outs i) ve c
+  have hsplit := compileTele_split (R := R) p.binds (p.outs i) ve c
   rw [← hsplit.1, ← hsplit.2 st]
   exact compileW_sound (p.binds.bind (p.outs i)) ve c hve st l
 
@@ -1023,29 +974,6 @@ theorem compileTele_idxFree : ∀ {n : Nat} (t : Tele Γ n) (ve : Fin Γ → WFE
       intro ve c
       exact ⟨ih ve c, compileW_idxFree e _ _, trivial⟩
 
-/-- **The whole multi-output kernel is address-free** given address-free index
-    expressions — the discharge `flatKernel_sound_idxFree` needs, making the
-    gradient's PTX-floor theorem stateable. -/
-theorem compileTele_flat : ∀ {n : Nat} (t : Tele Γ n) (ve : Fin Γ → WFExp) (c : Nat),
-    (compileTele ve c t).Flat := by
-  intro n t
-  induction t with
-  | nil => intro ve c; trivial
-  | cons t e ih => intro ve c; exact ⟨ih ve c, compileW_flat e _ _, trivial⟩
-
-theorem compileVWKernel_flat {m : Nat} (inB : Fin Γ → Buf) (out : Buf)
-    (inIx : Fin Γ → IdxE) (p : VProg Γ m) (oix : Fin m → IdxE) (resReg : Nat) :
-    (compileVWKernel inB out inIx p oix resReg).Flat := by
-  refine ⟨⟨loadSeqN_flat inB inIx Γ, compileTele_flat p.binds (fun k => .reg k.val) Γ⟩, ?_⟩
-  have key : ∀ (L : List (Fin m)) (init : EWStmt), init.Flat →
-      (L.foldl (fun s i => EWStmt.seq s
-        (storeOut out p (fun k => .reg k.val) Γ oix resReg i)) init).Flat := by
-    intro L
-    induction L with
-    | nil => intro init h; exact h
-    | cons i L ih => intro init h; exact ih _ ⟨h, ⟨compileW_flat _ _ _, trivial⟩, trivial⟩
-  exact key (List.finRange m) .skip trivial
-
 theorem compileVWKernel_idxFree {m : Nat} (inB : Fin Γ → Buf) (out : Buf)
     (inIx : Fin Γ → IdxE)
     (p : VProg Γ m) (oix : Fin m → IdxE) (resReg : Nat)
@@ -1067,7 +995,7 @@ theorem compileVWKernel_idxFree {m : Nat} (inB : Fin Γ → Buf) (out : Buf)
 /-- `storeOut` writes only `out`, and only where some lane of *its* output
     address lands. -/
 theorem storeOut_frame {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFExp)
-    (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (i : Fin m) (st : WSt)
+    (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (i : Fin m) (st : WSt R)
     (b : Buf) (A : Nat) (h : b ≠ out ∨ ∀ l : Lane, (oix i).eval 0 0 l ≠ A) :
     (((storeOut out p ve c oix resReg i).elabIn 0).run st).mem b A = st.mem b A := by
   show ((WStmt.storeLane out (fun l => (oix i).eval 0 0 l) resReg).run
@@ -1089,7 +1017,7 @@ theorem storeOut_frame {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → W
 
 /-- What output `i` leaves at its own address, from the state the fold hands it. -/
 theorem storeOut_at {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFExp)
-    (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (i : Fin m) (st : WSt) (l0 : Lane)
+    (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (i : Fin m) (st : WSt R) (l0 : Lane)
     (hagree : ∀ l, (oix i).eval 0 0 l = (oix i).eval 0 0 l0 →
       ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
         (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st) l
@@ -1113,7 +1041,7 @@ theorem storeOut_at {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFEx
 /-- **The fold over outputs preserves an address no later output touches.** -/
 theorem storeOutFold_keeps {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFExp)
     (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (A : Nat) :
-    ∀ (L : List (Fin m)) (s : WSt),
+    ∀ (L : List (Fin m)) (s : WSt R),
       (∀ j ∈ L, ∀ l : Lane, (oix j).eval 0 0 l ≠ A) →
       ((L.foldl (fun s' j => ((storeOut out p ve c oix resReg j).elabIn 0).run s') s).mem
         out A) = s.mem out A := by
@@ -1137,9 +1065,9 @@ theorem storeOutFold_keeps {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ �
     overwrites it, and only `post` can do damage. -/
 theorem storeOutFold_at {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFExp)
     (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (i : Fin m) (l0 : Lane)
-    (pre post : List (Fin m)) (s : WSt)
+    (pre post : List (Fin m)) (s : WSt R)
     (hpost : ∀ j ∈ post, ∀ l : Lane, (oix j).eval 0 0 l ≠ (oix i).eval 0 0 l0)
-    (hag : ∀ (s' : WSt) (l : Lane), (oix i).eval 0 0 l = (oix i).eval 0 0 l0 →
+    (hag : ∀ (s' : WSt R) (l : Lane), (oix i).eval 0 0 l = (oix i).eval 0 0 l0 →
       ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
         (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 s') l
       = ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
@@ -1158,16 +1086,16 @@ theorem storeOutFold_at {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → 
 /-- **A multi-output spec computes the right value — in a register.**
 
     Output `i`, evaluated against the once-emitted telescope, denotes `p.get i`
-    under lane `l`'s environment.  Exact `Float32` equality.
+    under lane `l`'s environment.  Exact equality, at any `LitNat` carrier.
 
     This is about the *value a lane computes*, not about memory: no store appears
     in it.  The memory-level statement is `compileVWKernel_stores` below, which
     needs a hypothesis this one does not — distinct outputs must write distinct
     addresses.  The single-output path (`compileWKernel_stores`) never needs
     that, because there is only one store. -/
-theorem compileVWKernel_value {m : Nat} (inB : Fin Γ → Buf)
+theorem compileVWKernel_value [LitNat R] {m : Nat} (inB : Fin Γ → Buf)
     (inIx : Fin Γ → IdxE)
-    (p : VProg Γ m) (i : Fin m) (st : WSt) (l : Lane) :
+    (p : VProg Γ m) (i : Fin m) (st : WSt R) (l : Lane) :
     ((compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)
         (p.outs i)).2).eval
         (runW (compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)
@@ -1186,7 +1114,7 @@ theorem compileVWKernel_value {m : Nat} (inB : Fin Γ → Buf)
     reasoning about it needs the fold of *executions*.  The two agree, but not
     definitionally. -/
 theorem seqFold_run {α : Type} : ∀ (L : List α) (f : α → EWStmt) (init : EWStmt)
-    (st : WSt),
+    (st : WSt R),
     (((L.foldl (fun s a => EWStmt.seq s (f a)) init).elabIn 0).run st)
       = L.foldl (fun s' a => ((f a).elabIn 0).run s') ((init.elabIn 0).run st) := by
   intro L
@@ -1208,10 +1136,10 @@ theorem seqFold_run {α : Type} : ∀ (L : List α) (f : α → EWStmt) (init : 
     caller discharges once. -/
 theorem compileVWKernel_stores {m : Nat} (inB : Fin Γ → Buf) (out : Buf)
     (inIx : Fin Γ → IdxE) (p : VProg Γ m) (oix : Fin m → IdxE) (resReg : Nat)
-    (i : Fin m) (st : WSt) (l0 : Lane) (pre post : List (Fin m))
+    (i : Fin m) (st : WSt R) (l0 : Lane) (pre post : List (Fin m))
     (hsplit : List.finRange m = pre ++ i :: post)
     (hpost : ∀ j ∈ post, ∀ l : Lane, (oix j).eval 0 0 l ≠ (oix i).eval 0 0 l0)
-    (hag : ∀ (s' : WSt) (l : Lane), (oix i).eval 0 0 l = (oix i).eval 0 0 l0 →
+    (hag : ∀ (s' : WSt R) (l : Lane), (oix i).eval 0 0 l = (oix i).eval 0 0 l0 →
       ((compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)
           (p.outs i)).2).eval
         (runW (compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)
@@ -1220,7 +1148,7 @@ theorem compileVWKernel_stores {m : Nat} (inB : Fin Γ → Buf) (out : Buf)
           (p.outs i)).2).eval
         (runW (compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)
           (p.outs i)).1 s') l0) :
-    ∃ s0 : WSt,
+    ∃ s0 : WSt R,
       (((compileVWKernel inB out inIx p oix resReg).elabIn 0).run st).mem out
           ((oix i).eval 0 0 l0)
         = ((compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)

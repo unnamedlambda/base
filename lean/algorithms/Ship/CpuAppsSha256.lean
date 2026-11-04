@@ -25,7 +25,7 @@ abbrev Sha256Main (dl ol : UInt64) : World → Prop := Contracts.TState.holds
   [.room .arena 4202624, .roomArg .data dl, .roomArg .out ol]
 
 theorem Sha256_fine : Fine (emitGo (fnBody ptrParams (Sha256.mainCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+  ⟨by native_decide, by native_decide⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1500000 in

@@ -83,11 +83,11 @@ theorem runLaunch_bufs {i : Int} {n : Nat} {d d' : Dev} {k : Launch → List Byt
   simp only [Option.some.injEq] at h
   subst h
   have hsz := map_size_of_check (Bool.eq_false_iff.mpr hc)
-  suffices ∀ (ids : List Nat) (outs ins : List ByteArray) (d : Dev),
+  suffices ∀ (P : Nat × ByteArray → Bool) (ids : List Nat) (outs ins : List ByteArray) (d : Dev),
       ids.mapM (fun i => d.get? (Int.ofNat i)) = some ins → outs.map ByteArray.size = ins.map ByteArray.size →
-      BufIs i n d → BufIs i n ((ids.zip outs).foldl (fun d (id, o) => d.put id (some o)) d) from
-    this ids _ ins d hins hsz hb
-  intro ids
+      BufIs i n d → BufIs i n (((ids.zip outs).filter P).foldl (fun d (id, o) => d.put id (some o)) d) from
+    this _ ids _ ins d hins hsz hb
+  intro P ids
   induction ids with
   | nil => intro _ _ _ _ _ hb; exact hb
   | cons id ids ih =>
@@ -101,7 +101,11 @@ theorem runLaunch_bufs {i : Int} {n : Nat} {d d' : Dev} {k : Launch → List Byt
           simp only [Option.pure_def, Option.some.injEq] at hm
           subst hm
           simp only [List.map_cons, List.cons.injEq] at hs
-          simp only [List.zip_cons_cons, List.foldl_cons]
+          simp only [List.zip_cons_cons]
+          by_cases hn : P (id, o) = false
+          · rw [List.filter_cons_of_neg (by simp [hn])]
+            exact ih os xs d hxs hs.2 hb
+          rw [List.filter_cons_of_pos (by simpa using hn), List.foldl_cons]
           have hget : d.get? id = d.get? (Int.ofNat id) := rfl
           have hput : ∀ j, ((d.put id (some o)).get? j).map ByteArray.size = (d.get? j).map ByteArray.size :=
             fun j => get?_put_size d id o j (fun y hy => by rw [hget, hx] at hy; cases hy; exact hs.1.symm)

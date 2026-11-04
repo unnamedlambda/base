@@ -101,7 +101,7 @@ def decodeOpenObligations : List String :=
   , "HeadNarrowsThenProjects — the hidden state is rounded to bf16 before \
      lm_head, and the logits are compared against a reference that models that \
      rounding (applications/gpt-oss/check.py). The rounding is GptOssKernels.\
-     rneBf16; that it is nearest-even, and that the projection over the narrowed \
+     Body.rneBf16; that it is nearest-even, and that the projection over the narrowed \
      vector is the model's, are both tested and neither is stated."
   , "FileSliceArithmetic — every tensor this program uploads is located in \
      dense.bin by hardcoded arithmetic (LAYER_STRIDE, dKindOff, fileLmHead, \
@@ -154,7 +154,7 @@ def decodeOpenObligations : List String :=
      not this one at T=0, because the reciprocal would not exist."
   , "WidenIsLossless — nothing numeric reaches this program from its caller: \
      the embedding row is read from the file at token * HH * 2, uploaded as the \
-     bf16 it is, and widened by GptOssKernels.widenBf16. bf16 is f32 with the \
+     bf16 it is, and widened by GptOssKernels.Body.widenBf16. bf16 is f32 with the \
      low sixteen mantissa bits cleared, so the widening is exact and no \
      rounding decision arises. Evidence: bit-identical logits and layer trace \
      against the host-side gather it replaced. Not stated." ]

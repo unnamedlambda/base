@@ -38,6 +38,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- ---------------------------------------------------------------------------
 -- Sequencing a statically-known number of copies
 -- ---------------------------------------------------------------------------
@@ -66,8 +69,8 @@ theorem seqN_elab (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat �
 
 /-- **A register no copy writes survives the whole sequence.** -/
 theorem seqNW_regs_frame (f : Nat → WStmt) (r : Nat) : ∀ n : Nat,
-    (∀ s, s < n → ∀ st : WSt, ((f s).run st).regs r = st.regs r) →
-    ∀ st : WSt, ((seqNW n f).run st).regs r = st.regs r := by
+    (∀ s, s < n → ∀ st : WSt R, ((f s).run st).regs r = st.regs r) →
+    ∀ st : WSt R, ((seqNW n f).run st).regs r = st.regs r := by
   intro n
   induction n with
   | zero => intro _ _; rfl
@@ -78,8 +81,8 @@ theorem seqNW_regs_frame (f : Nat → WStmt) (r : Nat) : ∀ n : Nat,
 
 /-- **…and so does memory, if no copy touches it.** -/
 theorem seqNW_mem_frame (f : Nat → WStmt) : ∀ n : Nat,
-    (∀ s, s < n → ∀ st : WSt, ((f s).run st).mem = st.mem) →
-    ∀ st : WSt, ((seqNW n f).run st).mem = st.mem := by
+    (∀ s, s < n → ∀ st : WSt R, ((f s).run st).mem = st.mem) →
+    ∀ st : WSt R, ((seqNW n f).run st).mem = st.mem := by
   intro n
   induction n with
   | zero => intro _ _; rfl
@@ -164,19 +167,19 @@ theorem batchStepE_elab (bB : Buf) (ixB : Nat → IdxE) (s cta i : Nat)
     (batchStepE bB ixB s).elabAt cta i ir im
       = bstepW bB (fun s' l => (ixB s').eval cta i l ir im) s := rfl
 
-theorem bstepW_mem (bB : Buf) (fB : Nat → Lane → Nat) (s : Nat) (st : WSt) :
+theorem bstepW_mem (bB : Buf) (fB : Nat → Lane → Nat) (s : Nat) (st : WSt R) :
     ((bstepW bB fB s).run st).mem = st.mem := rfl
 
 /-- A step writes `%fw2` and its own accumulator, and nothing else. -/
 theorem bstepW_frame (bB : Buf) (fB : Nat → Lane → Nat) (s r : Nat)
-    (h1 : r ≠ BRB) (h2 : r ≠ BACC + s) (st : WSt) :
+    (h1 : r ≠ BRB) (h2 : r ≠ BACC + s) (st : WSt R) :
     ((bstepW bB fB s).run st).regs r = st.regs r := by
   show ((WStmt.setR (BACC + s) _).run ((WStmt.loadIdx BRB bB (fB s)).run st)).regs r = _
   rw [wrun_setR, WSt.regs_setReg_other _ (BACC + s) r _ h2, wrun_loadIdx,
       WSt.regs_setReg_other _ BRB r _ h1]
 
 /-- …and what it puts there. -/
-theorem bstepW_acc (bB : Buf) (fB : Nat → Lane → Nat) (s : Nat) (st : WSt) :
+theorem bstepW_acc (bB : Buf) (fB : Nat → Lane → Nat) (s : Nat) (st : WSt R) :
     ((bstepW bB fB s).run st).regs (BACC + s)
       = fun l => NumOps.add (st.regs (BACC + s) l)
                    (NumOps.mul (st.regs BRA l) (st.mem bB (fB s l))) := by
@@ -191,20 +194,20 @@ theorem bstepW_acc (bB : Buf) (fB : Nat → Lane → Nat) (s : Nat) (st : WSt) :
 -- …and what the B copies of it do together
 -- ---------------------------------------------------------------------------
 
-theorem batchInner_mem (bB : Buf) (fB : Nat → Lane → Nat) (B : Nat) (st : WSt) :
+theorem batchInner_mem (bB : Buf) (fB : Nat → Lane → Nat) (B : Nat) (st : WSt R) :
     ((seqNW B (bstepW bB fB)).run st).mem = st.mem :=
   seqNW_mem_frame _ B (fun s _ st' => bstepW_mem bB fB s st') st
 
 /-- The shared operand survives the whole batch — which is the point: it is
     loaded once and used `B` times. -/
-theorem batchInner_ra (bB : Buf) (fB : Nat → Lane → Nat) (B : Nat) (st : WSt) :
+theorem batchInner_ra (bB : Buf) (fB : Nat → Lane → Nat) (B : Nat) (st : WSt R) :
     ((seqNW B (bstepW bB fB)).run st).regs BRA = st.regs BRA :=
   seqNW_regs_frame _ BRA B
     (fun s _ st' => bstepW_frame bB fB s BRA (by decide) (Ne.symm (bacc_ne_ra s)) st') st
 
 /-- An accumulator no copy in the first `n` owns is untouched by them. -/
 theorem batchInner_other (bB : Buf) (fB : Nat → Lane → Nat) (s : Nat) : ∀ n : Nat, n ≤ s →
-    ∀ st : WSt, ((seqNW n (bstepW bB fB)).run st).regs (BACC + s) = st.regs (BACC + s) := by
+    ∀ st : WSt R, ((seqNW n (bstepW bB fB)).run st).regs (BACC + s) = st.regs (BACC + s) := by
   intro n hn st
   exact seqNW_regs_frame _ (BACC + s) n
     (fun s' hs' st' => bstepW_frame bB fB s' (BACC + s) (bacc_ne_rb s)
@@ -212,7 +215,7 @@ theorem batchInner_other (bB : Buf) (fB : Nat → Lane → Nat) (s : Nat) : ∀ 
 
 /-- **Each of the `B` accumulators takes its own product.** -/
 theorem batchInner_acc (bB : Buf) (fB : Nat → Lane → Nat) : ∀ B s : Nat, s < B →
-    ∀ st : WSt, ((seqNW B (bstepW bB fB)).run st).regs (BACC + s)
+    ∀ st : WSt R, ((seqNW B (bstepW bB fB)).run st).regs (BACC + s)
       = fun l => NumOps.add (st.regs (BACC + s) l)
                    (NumOps.mul (st.regs BRA l) (st.mem bB (fB s l))) := by
   intro B
@@ -247,14 +250,14 @@ theorem batchTripE_elab (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (B cta i
   rfl
 
 theorem btripW_mem (bA bB : Buf) (fA : Lane → Nat) (fB : Nat → Lane → Nat)
-    (B : Nat) (st : WSt) : ((btripW bA bB fA fB B).run st).mem = st.mem := by
+    (B : Nat) (st : WSt R) : ((btripW bA bB fA fB B).run st).mem = st.mem := by
   show ((seqNW B (bstepW bB fB)).run ((WStmt.loadIdx BRA bA fA).run st)).mem = _
   rw [batchInner_mem]
   rfl
 
 /-- **A trip adds one product to every accumulator, from the entry memory.** -/
 theorem btripW_acc (bA bB : Buf) (fA : Lane → Nat) (fB : Nat → Lane → Nat)
-    (B s : Nat) (hs : s < B) (st : WSt) :
+    (B s : Nat) (hs : s < B) (st : WSt R) :
     ((btripW bA bB fA fB B).run st).regs (BACC + s)
       = fun l => NumOps.add (st.regs (BACC + s) l)
                    (NumOps.mul (st.mem bA (fA l)) (st.mem bB (fB s l))) := by
@@ -270,7 +273,7 @@ theorem btripW_acc (bA bB : Buf) (fA : Lane → Nat) (fB : Nat → Lane → Nat)
     unbatched one, which is why the two agree bit-for-bit. -/
 theorem batchSweep_fold (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
     (B s cta : Nat) (hs : s < B) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
-    ∀ (L : List Nat) (st : WSt) (l : Lane),
+    ∀ (L : List Nat) (st : WSt R) (l : Lane),
       ((L.foldl (fun s' j => ((batchTripE bA bB ixA ixB B).elabAt cta j ir im).run s')
           st).regs (BACC + s) l)
         = L.foldl (fun acc j => NumOps.add acc
@@ -286,12 +289,12 @@ theorem batchSweep_fold (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
       rw [batchTripE_elab bA bB ixA ixB B cta j ir im]
       rw [btripW_mem, btripW_acc bA bB _ _ B s hs st]
 
-theorem batchInit_mem (B : Nat) (st : WSt) :
+theorem batchInit_mem (B : Nat) (st : WSt R) :
     ((seqNW B (fun s => WStmt.setR (BACC + s) (.lit (NumOps.ofNat 0)))).run st).mem
       = st.mem :=
   seqNW_mem_frame _ B (fun _ _ _ => rfl) st
 
-theorem batchInit_acc : ∀ B s : Nat, s < B → ∀ st : WSt,
+theorem batchInit_acc [LitNat R] : ∀ B s : Nat, s < B → ∀ st : WSt R,
     ((seqNW B (fun s => WStmt.setR (BACC + s) (.lit (NumOps.ofNat 0)))).run st).regs (BACC + s)
       = fun _ => NumOps.ofNat 0 := by
   intro B
@@ -306,12 +309,13 @@ theorem batchInit_acc : ∀ B s : Nat, s < B → ∀ st : WSt,
       · have : s = k := by omega
         subst this
         rw [wrun_setR, WSt.regs_setReg_same]
-        rfl
+        funext l
+        exact LitNat.ofNat 0
 
 /-- **Each accumulator holds its own sample's committed fold.** -/
-theorem batchBody_spec (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
+theorem batchBody_spec [LitNat R] (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
     (B K s cta : Nat) (hs : s < B) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (st : WSt) :
+    (st : WSt R) :
     (((batchBodyE bA bB ixA ixB B K).elabAt cta 0 ir im).run st).regs (BACC + s)
       = dotStridedLane (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l ir im)
@@ -334,7 +338,7 @@ theorem batchBody_spec (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE)
 -- The epilogue: B butterflies, B stores
 -- ---------------------------------------------------------------------------
 
-theorem mem_store1_at (st : WSt) (b : Buf) (i : Nat) (v : Float32) (j : Nat)
+theorem mem_store1_at (st : WSt R) (b : Buf) (i : Nat) (v : R) (j : Nat)
     (h : j ≠ i) : (st.store1 b i v).mem b j = st.mem b j := by
   simp [WSt.store1, h]
 
@@ -349,15 +353,15 @@ def wredW (acc tmp : Nat) : WStmt :=
 theorem warpReduceE_elab (acc tmp cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) : (warpReduceE acc tmp).elabAt cta i ir im = wredW acc tmp := rfl
 
-theorem wredW_mem (acc tmp : Nat) (st : WSt) : ((wredW acc tmp).run st).mem = st.mem := rfl
+theorem wredW_mem (acc tmp : Nat) (st : WSt R) : ((wredW acc tmp).run st).mem = st.mem := rfl
 
 /-- The reduction realises the same butterfly tree the unbatched schema commits
     to — `warpReduceOp_spec` at `add`, on this accumulator. -/
-theorem wredW_spec (acc tmp : Nat) (h : tmp ≠ acc) (st : WSt) :
+theorem wredW_spec (acc tmp : Nat) (h : tmp ≠ acc) (st : WSt R) :
     ((wredW acc tmp).run st).regs acc = bflyFold (st.regs acc) :=
   warpReduceOp_spec acc tmp h _ NumOps.add (fun _ _ => rfl) st
 
-theorem wredW_frame (acc tmp r : Nat) (hr : r ≠ acc) (hr' : r ≠ tmp) (st : WSt) :
+theorem wredW_frame (acc tmp r : Nat) (hr : r ≠ acc) (hr' : r ≠ tmp) (st : WSt R) :
     ((wredW acc tmp).run st).regs r = st.regs r :=
   warpReduceOp_frame acc tmp _ r hr hr' st
 
@@ -375,20 +379,20 @@ theorem batchEpilogueE_elab (out : Buf) (oi : Nat → IdxE) (B cta : Nat)
 
 /-- A copy writes one address of `out`, `%fw0`, and its own accumulator. -/
 theorem epCopyW_mem_other (out : Buf) (addr : Nat → Nat) (s j : Nat)
-    (h : j ≠ addr s) (st : WSt) :
+    (h : j ≠ addr s) (st : WSt R) :
     ((epCopyW out addr s).run st).mem out j = st.mem out j := by
   show ((WStmt.storeLane0 out (addr s) (BACC + s)).run ((wredW (BACC + s) BTMP).run st)).mem out j = _
   rw [wrun_storeLane0, mem_store1_at _ _ _ _ _ h, wredW_mem]
 
 theorem epCopyW_regs_frame (out : Buf) (addr : Nat → Nat) (s r : Nat)
-    (hr : r ≠ BACC + s) (hr' : r ≠ BTMP) (st : WSt) :
+    (hr : r ≠ BACC + s) (hr' : r ≠ BTMP) (st : WSt R) :
     ((epCopyW out addr s).run st).regs r = st.regs r := by
   show ((WStmt.storeLane0 out (addr s) (BACC + s)).run ((wredW (BACC + s) BTMP).run st)).regs r = _
   rw [wrun_storeLane0]
   show ((wredW (BACC + s) BTMP).run st).regs r = _
   exact wredW_frame (BACC + s) BTMP r hr hr' st
 
-theorem epCopyW_at (out : Buf) (addr : Nat → Nat) (s : Nat) (st : WSt) :
+theorem epCopyW_at (out : Buf) (addr : Nat → Nat) (s : Nat) (st : WSt R) :
     ((epCopyW out addr s).run st).mem out (addr s)
       = bflyFold (st.regs (BACC + s)) ⟨0, by decide⟩ := by
   show ((WStmt.storeLane0 out (addr s) (BACC + s)).run ((wredW (BACC + s) BTMP).run st)).mem
@@ -398,7 +402,7 @@ theorem epCopyW_at (out : Buf) (addr : Nat → Nat) (s : Nat) (st : WSt) :
 
 /-- An accumulator no earlier copy owns survives them all. -/
 theorem epSeq_regs_frame (out : Buf) (addr : Nat → Nat) (s : Nat) : ∀ n : Nat, n ≤ s →
-    ∀ st : WSt, ((seqNW n (epCopyW out addr)).run st).regs (BACC + s) = st.regs (BACC + s) := by
+    ∀ st : WSt R, ((seqNW n (epCopyW out addr)).run st).regs (BACC + s) = st.regs (BACC + s) := by
   intro n hn st
   exact seqNW_regs_frame _ (BACC + s) n
     (fun s' hs' st' => epCopyW_regs_frame out addr s' (BACC + s)
@@ -410,7 +414,7 @@ theorem epSeq_regs_frame (out : Buf) (addr : Nat → Nat) (s : Nat) : ∀ n : Na
     collide"; without it a later sample would overwrite an earlier one and the
     kernel would be silently wrong for all but the last. -/
 theorem epSeq_at (out : Buf) (addr : Nat → Nat) : ∀ B s : Nat, s < B →
-    (∀ s', s' < B → s' ≠ s → addr s' ≠ addr s) → ∀ st : WSt,
+    (∀ s', s' < B → s' ≠ s → addr s' ≠ addr s) → ∀ st : WSt R,
       ((seqNW B (epCopyW out addr)).run st).mem out (addr s)
         = bflyFold (st.regs (BACC + s)) ⟨0, by decide⟩ := by
   intro B
@@ -427,13 +431,13 @@ theorem epSeq_at (out : Buf) (addr : Nat → Nat) : ∀ B s : Nat, s < B →
         subst this
         rw [epCopyW_at, epSeq_regs_frame out addr s s (Nat.le_refl s) st]
 
-theorem mem_store1_ne (st : WSt) (b : Buf) (i : Nat) (v : Float32) (c : Buf) (j : Nat)
+theorem mem_store1_ne (st : WSt R) (b : Buf) (i : Nat) (v : R) (c : Buf) (j : Nat)
     (h : ¬ (c = b ∧ j = i)) : (st.store1 b i v).mem c j = st.mem c j := by
   simp [WSt.store1, h]
 
 /-- A copy touches nothing but its own address in `out`. -/
 theorem epCopyW_frame (out : Buf) (addr : Nat → Nat) (s : Nat) (c : Buf) (j : Nat)
-    (h : ¬ (c = out ∧ j = addr s)) (st : WSt) :
+    (h : ¬ (c = out ∧ j = addr s)) (st : WSt R) :
     ((epCopyW out addr s).run st).mem c j = st.mem c j := by
   show ((WStmt.storeLane0 out (addr s) (BACC + s)).run
       ((wredW (BACC + s) BTMP).run st)).mem c j = _
@@ -445,7 +449,7 @@ theorem epCopyW_frame (out : Buf) (addr : Nat → Nat) (s : Nat) (c : Buf) (j : 
     not to disturb what it does not own, and what a batched reduction owns is
     exactly its `B` destinations. -/
 theorem epSeq_frame (out : Buf) (addr : Nat → Nat) (c : Buf) (j : Nat) : ∀ n : Nat,
-    (c ≠ out ∨ ∀ s, s < n → j ≠ addr s) → ∀ st : WSt,
+    (c ≠ out ∨ ∀ s, s < n → j ≠ addr s) → ∀ st : WSt R,
       ((seqNW n (epCopyW out addr)).run st).mem c j = st.mem c j := by
   intro n
   induction n with
@@ -470,7 +474,7 @@ theorem epSeq_frame (out : Buf) (addr : Nat → Nat) (c : Buf) (j : Nat) : ∀ n
 
 theorem batchTrips_mem (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (B cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
-    ∀ (L : List Nat) (st : WSt),
+    ∀ (L : List Nat) (st : WSt R),
       (L.foldl (fun s' j => ((batchTripE bA bB ixA ixB B).elabAt cta j ir im).run s')
         st).mem = st.mem := by
   intro L
@@ -483,7 +487,7 @@ theorem batchTrips_mem (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (B cta : 
 /-- The sweep touches no memory: a batched reduction's only memory effect is
     its `B` stores, which is what a pipeline stage has to promise. -/
 theorem batchBody_mem (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (B K cta : Nat)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt) :
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
     (((batchBodyE bA bB ixA ixB B K).elabAt cta 0 ir im).run st).mem = st.mem := by
   show ((List.range K).foldl
       (fun s' j => ((batchTripE bA bB ixA ixB B).elabAt cta j ir im).run s')
@@ -505,9 +509,9 @@ theorem batchBody_mem (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (B K cta :
     The one hypothesis is that the `B` destinations differ. It is not
     decorative: without it a later sample overwrites an earlier one and the
     kernel is silently wrong for every sample but the last. -/
-theorem dotBatched_spec (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
+theorem dotBatched_spec [LitNat R] (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
     (oi : Nat → IdxE) (B K s cta : Nat) (hs : s < B)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
     (hinj : ∀ s', s' < B → s' ≠ s →
       (oi s').eval cta 0 ⟨0, by decide⟩ ir im ≠ (oi s).eval cta 0 ⟨0, by decide⟩ ir im) :
     (((dotBatched bA bB ixA ixB out oi B K).elabAt cta 0 ir im).run st).mem out
@@ -523,7 +527,7 @@ theorem dotBatched_spec (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : B
 /-- **A batched reduction's only memory effect is its `B` stores.** -/
 theorem dotBatched_frame (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
     (oi : Nat → IdxE) (B K cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (st : WSt) (c : Buf) (j : Nat)
+    (st : WSt R) (c : Buf) (j : Nat)
     (h : c ≠ out ∨ ∀ s, s < B → j ≠ (oi s).eval cta 0 ⟨0, by decide⟩ ir im) :
     (((dotBatched bA bB ixA ixB out oi B K).elabAt cta 0 ir im).run st).mem c j
       = st.mem c j := by
@@ -539,8 +543,8 @@ theorem dotBatched_frame (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : 
     against the same committed fold; this is `.trans`, and that it is only a
     `.trans` is the point.  A tuning knob that changed the answer would show up
     as a missing hypothesis here. -/
-theorem dotBatched_agrees (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out out' : Buf)
-    (oi : Nat → IdxE) (oi' : IdxE) (B K s cta : Nat) (hs : s < B) (st : WSt)
+theorem dotBatched_agrees [LitNat R] (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out out' : Buf)
+    (oi : Nat → IdxE) (oi' : IdxE) (B K s cta : Nat) (hs : s < B) (st : WSt R)
     (hinj : ∀ s', s' < B → s' ≠ s →
       (oi s').eval cta 0 ⟨0, by decide⟩ ≠ (oi s).eval cta 0 ⟨0, by decide⟩) :
     (((dotBatched bA bB ixA ixB out oi B K).elabIn cta).run st).mem out
@@ -589,7 +593,7 @@ def outerBatched (bA bB out : Buf) (ixA ixB : Nat → IdxE) (base : IdxE) (B K :
 
 /-- Running `n` copies is folding over `0 … n-1` — the bridge that lets the
     existing sweep lemmas apply to a statically unrolled batch. -/
-theorem seqNW_run : ∀ (n : Nat) (f : Nat → WStmt) (st : WSt),
+theorem seqNW_run : ∀ (n : Nat) (f : Nat → WStmt) (st : WSt R),
     (seqNW n f).run st = (List.range n).foldl (fun s' i => (f i).run s') st := by
   intro n
   induction n with
@@ -606,7 +610,7 @@ theorem outerStepE_elab (bA bB : Buf) (ixA ixB : Nat → IdxE) (s cta j : Nat)
                      (fun s' l => (ixB s').eval cta j l ir im) s := rfl
 
 theorem outerBody_mem (bA bB : Buf) (ixA ixB : Nat → IdxE) (B cta j : Nat)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt) :
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
     (((outerBodyE bA bB ixA ixB B).elabAt cta j ir im).run st).mem = st.mem := by
   show (((seqN B (outerStepE bA bB ixA ixB)).elabAt cta j ir im).run
       ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).mem = _
@@ -614,8 +618,8 @@ theorem outerBody_mem (bA bB : Buf) (ixA ixB : Nat → IdxE) (B cta j : Nat)
   rfl
 
 /-- **The body sums the sample contributions in the committed order.** -/
-theorem outerBody_val (bA bB : Buf) (ixA ixB : Nat → IdxE) (B cta j : Nat)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt) (l : Lane) :
+theorem outerBody_val [LitNat R] (bA bB : Buf) (ixA ixB : Nat → IdxE) (B cta j : Nat)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) (l : Lane) :
     (((outerBodyE bA bB ixA ixB B).elabAt cta j ir im).run st).regs 0 l
       = dotStridedLane (st.mem bA) (st.mem bB)
           (fun s l' => (ixA s).eval cta j l' ir im)
@@ -629,7 +633,7 @@ theorem outerBody_val (bA bB : Buf) (ixA ixB : Nat → IdxE) (B cta j : Nat)
   rw [hstep, seqNW_run,
       dotStrided_fold bA bB (fun s' l' => (ixA s').eval cta j l' ir im)
         (fun s' l' => (ixB s').eval cta j l' ir im) (List.range B) _ l]
-  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, WSt.mem_setReg, dotStridedLane]
+  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, WSt.mem_setReg, dotStridedLane, LitNat.ofNat]
 
 /-- **The batched outer product stores the batch sum at every element it
     visits.**
@@ -642,10 +646,10 @@ theorem outerBody_val (bA bB : Buf) (ixA ixB : Nat → IdxE) (B cta j : Nat)
     At `B = 1` the right-hand side is one product — which is exactly what
     `zipPass_spec` gives, so the unbatched kernel is the `B = 1` case of this
     one rather than a different kernel. -/
-theorem outerBatched_spec (bA bB out : Buf) (ixA ixB : Nat → IdxE)
+theorem outerBatched_spec [LitNat R] (bA bB out : Buf) (ixA ixB : Nat → IdxE)
     (base : IdxE) (hbase : base.laneLoopFreeB = true) (B K cta : Nat)
     (hAo : bA ≠ out) (hBo : bB ≠ out)
-    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
     (((outerBatched bA bB out ixA ixB base B K).elabAt cta 0 ir im).run st).mem out
         ((stride32 base).eval cta j0 l0 ir im)
@@ -674,12 +678,12 @@ theorem outerBatched_spec (bA bB out : Buf) (ixA ixB : Nat → IdxE)
 
 /-- **The batched outer product writes only the elements its loop visits.** -/
 theorem outerBatched_frame (bA bB out : Buf) (ixA ixB : Nat → IdxE) (base : IdxE)
-    (B K cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
+    (B K cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
     (c : Buf) (a : Nat)
     (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, (stride32 base).eval cta j l ir im ≠ a) :
     (((outerBatched bA bB out ixA ixB base B K).elabAt cta 0 ir im).run st).mem c a
       = st.mem c a := by
-  have hmem : ∀ (j : Nat) (s : WSt),
+  have hmem : ∀ (j : Nat) (s : WSt R),
       (((outerBodyE bA bB ixA ixB B).elabAt cta j ir im).run s).mem = s.mem :=
     fun j s => outerBody_mem bA bB ixA ixB B cta j ir im s
   rcases h with hc | hno
@@ -721,5 +725,7 @@ theorem batch_addr_inj (m : Nat) (hm : 0 < m) (cta : Nat) :
     ∀ s s' : Nat, s' ≠ s → s' * m + cta ≠ s * m + cta := by
   intro s s' hne he
   exact hne (Nat.eq_of_mul_eq_mul_right hm (by omega))
+
+end Carrier
 
 end AlgorithmLib.ML

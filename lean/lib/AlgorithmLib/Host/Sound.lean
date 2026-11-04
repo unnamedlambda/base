@@ -14,9 +14,8 @@ import all Init.Data.List.Sort.Basic
 trace, runs to the same trace and the same world as the function `compileBody`
 makes of it, under some block budget.
 
-`Host.Blocks` proves this for straight-line bodies, against an invariant that
-does not survive control flow: that the block's value array agrees with the
-term's environment on *every* slot below the count. Two places break it. The
+The coupling cannot be that the block's value array agrees with the term's
+environment on *every* slot below the count. Two places break it. The
 else arm is numbered past the then arm's slots, so the term pads its
 environment over slots the blocks never wrote; and the code after a loop is
 numbered past the body's slots, which the blocks hold from whichever trip last
@@ -158,7 +157,8 @@ theorem Rel.mapM {S : Scope} {vals : Blocks.Vals} {Γ : Sem.Env} (h : Rel S vals
 -- One statement, masked
 -- ---------------------------------------------------------------------------
 
-/-- `dyn2` with agreement at the two operands only. -/
+/-- A two-operand operation evaluates the same on both sides when the two
+    stores agree at its operands. -/
 theorem mdyn2 (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env) (f : R → R → Op)
     (hf : Sem.Reloc2 f) (a b : R) (x y : V)
     (hxΓ : Γ[a]? = some x) (hyΓ : Γ[b]? = some y)
@@ -569,10 +569,9 @@ theorem storeUnaligned_MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat) (v a : R)
                 by simp [Stmt.binds, hs], KeepsBelow.refl n vals⟩
         rw [runInsts_store]
         have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ none
-            = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes t) 0 with mem := m }⟩ := by
+            = .ok ⟨vals, { Sem.obsStore w addr (ls.size * (((t.lanes.map (·.1.width)).getD 8) / 8)) 0 with mem := m }⟩ := by
           simp only [Blocks.doStore, hxv, hav]
           rw [hm]
-          simp
         rw [hd]
       · simp at hr
   | sc t b =>
@@ -633,10 +632,9 @@ theorem store_MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat) (ty : ClifTy)
                 by simp [Stmt.binds, hs], KeepsBelow.refl n vals⟩
         rw [runInsts_storeTyped]
         have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ (some ty)
-            = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes ty) 0 with mem := m }⟩ := by
+            = .ok ⟨vals, { Sem.obsStore w addr (ls.size * (((t.lanes.map (·.1.width)).getD 8) / 8)) 0 with mem := m }⟩ := by
           simp only [Blocks.doStore, hxv, hav]
           rw [hm]
-          simp
         rw [hd]
       · simp at hr
 
@@ -3921,9 +3919,9 @@ theorem runK_ret (lc : Sem.Locals) (F : FuncData) (steps : Nat) (st : Blocks.BSt
     the function `compileBody` makes of it to the same world, answering the
     value of the slot it returns, under some block budget. -/
 theorem compile_core (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
-    (status : Option R) (cfg : Sem.Cfg) (args : List V) (w : World) (Γf : Sem.Env) (wf : World)
+    (status : Option R) (cfg : Sem.Cfg) (n : Nat) (args : List V) (w : World) (Γf : Sem.Env) (wf : World)
     (hret : retOk params c status = true) (hlen : params.length = args.length)
-    (hres : Sem.runCode cfg.steps cfg args.toArray w c = .ok Γf wf) :
+    (hres : Sem.runCode n cfg args.toArray w c = .ok Γf wf) :
     ∃ steps, Blocks.runFrom cfg.locals (compileBody idx c env params status) steps ⟨#[], w⟩ 0 args
       = .ok (status.bind (Γf[·]?)) wf := by
   obtain ⟨⟨S', n'⟩, hsc⟩ : ∃ p, scGo HProg.fuel [] [(0, params.length)] params.length c = some p := by
@@ -3968,7 +3966,7 @@ theorem compile_core (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     have e : Sem.bindAt #[] 0 args = args.toArray := by simp [Sem.bindAt]
     rw [e, ← hlen] at h
     simpa [Scope.add] using h
-  have hsim := sim_code (cfg := cfg) hFd HProg.fuel cfg.steps [] [(0, params.length)]
+  have hsim := sim_code (cfg := cfg) hFd HProg.fuel n [] [(0, params.length)]
     params.length c S' n' (entryCS params) args.toArray w (bindVals #[] (parsOf 0 params) args) R0
     (Nat.le_refl _) hsc (entryCS_aligned params) (entryCS_inv params) hP0 (ht ▸ hDt)
     (fun _ => ⟨_, ht ▸ hPt⟩) (by simp [hlen]) hrel0
@@ -4020,7 +4018,7 @@ theorem compile_sound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code
   | ok Γf wf =>
   simp only [Sem.Outcome.ok.injEq] at hrun
   obtain ⟨rfl, rfl⟩ := hrun
-  obtain ⟨steps, h⟩ := compile_core idx env params c status cfg args w Γf wf hret hlen hres
+  obtain ⟨steps, h⟩ := compile_core idx env params c status cfg cfg.steps args w Γf wf hret hlen hres
   exact ⟨steps, by simp only [Blocks.run, h]⟩
 
 /-- `compile_sound` in `CompileSoundE`'s form: for a body that passes the scope

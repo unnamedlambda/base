@@ -5,6 +5,7 @@ import Scan.Layout
 import Scan.Ship
 import AlgorithmLib.ML.Machine.Geometry
 import AlgorithmLib.ML.Kernel.Sched
+import AlgorithmLib.ML.Ptx.Body
 import AlgorithmLib.Surface.ProgFFI
 import AlgorithmLib.Surface.Drv
 import AlgorithmLib.Host.Driver
@@ -176,38 +177,30 @@ theorem shapes_admit_every_schedule :
     qwen.n % 128 = 0 ∧ mid.n % 128 = 0 ∧ mid2.n % 128 = 0 ∧ wide.n % 128 = 0 := by decide
 
 def ptxOf (sh : Shape) (s : Sched) : String :=
-  emitProvenKernelN "main" 3 0 (kernelOf sh s)
+  Body.text "main" 3 0 (kernelOf sh s)
 
 def ptxSqOf (sh : Shape) (s : Sched) : String :=
-  emitProvenKernelN "main" 3 0 (sumsqOf sh s)
+  Body.text "main" 3 0 (sumsqOf sh s)
 
 /-! ### Seam guards (`A47` G2)
 
-    The same checks the rest of the stack carries: buffers inside the binding
-    table, every branch resolving, nothing unrenderable reaching the printer,
-    and the kernel writing — and not reading — its output.  Stated per shape and
-    over every schedule, so each of the six shipped kernels is held to the
-    shipped standard. -/
+    Buffers inside the binding table, and the kernel writing — and not
+    reading — its output.  Stated per shape and over every schedule, so each
+    of the six shipped kernels is held to the shipped standard. -/
 def GuardsOk (k : EWStmt) : Prop :=
   k.BufBelow 3 ∧ k.StageEligibleB yB = true
-    ∧ FlatTargetsOkB (flatKernel (expandEW k)) = true
-    ∧ FlatPrintableB (flatKernel (expandEW k)) = true
 
 theorem guards_qwen (s : Sched) : GuardsOk (kernelOf qwen s) ∧ GuardsOk (sumsqOf qwen s) := by
-  cases s <;> exact ⟨⟨by decide, by decide, by native_decide, by native_decide⟩,
-                     ⟨by decide, by decide, by native_decide, by native_decide⟩⟩
+  cases s <;> exact ⟨⟨by decide, by decide⟩, ⟨by decide, by decide⟩⟩
 
 theorem guards_mid (s : Sched) : GuardsOk (kernelOf mid s) ∧ GuardsOk (sumsqOf mid s) := by
-  cases s <;> exact ⟨⟨by decide, by decide, by native_decide, by native_decide⟩,
-                     ⟨by decide, by decide, by native_decide, by native_decide⟩⟩
+  cases s <;> exact ⟨⟨by decide, by decide⟩, ⟨by decide, by decide⟩⟩
 
 theorem guards_mid2 (s : Sched) : GuardsOk (kernelOf mid2 s) ∧ GuardsOk (sumsqOf mid2 s) := by
-  cases s <;> exact ⟨⟨by decide, by decide, by native_decide, by native_decide⟩,
-                     ⟨by decide, by decide, by native_decide, by native_decide⟩⟩
+  cases s <;> exact ⟨⟨by decide, by decide⟩, ⟨by decide, by decide⟩⟩
 
 theorem guards_wide (s : Sched) : GuardsOk (kernelOf wide s) ∧ GuardsOk (sumsqOf wide s) := by
-  cases s <;> exact ⟨⟨by decide, by decide, by native_decide, by native_decide⟩,
-                     ⟨by decide, by decide, by native_decide, by native_decide⟩⟩
+  cases s <;> exact ⟨⟨by decide, by decide⟩, ⟨by decide, by decide⟩⟩
 
 /-- **Launch geometry**: each schedule's trips times its per-step footprint
     cover exactly `n`, and the grid has one block per output row. -/
@@ -245,7 +238,7 @@ def MEM_SIZE : Nat := PTX_OFF + 6*SLOT
 def app (sh : Shape) : Drv.App :=
   { bufs := [sh.m * sh.n * 4, sh.n * 4, sh.m * 4],
     kernels := ([false, true].flatMap fun sq => Sched.all.map fun s =>
-      (⟨slotOf sq s, SLOT, [0, 1, 2], (sh.m, 1, 1), (32, 1, 1)⟩ : Drv.KSpec)),
+      (⟨slotOf sq s, SLOT, [0, 1, 2], (sh.m, 1, 1), (32, 1, 1), []⟩ : Drv.KSpec)),
     memSize := MEM_SIZE, blas := true }
 
 open AlgorithmLib.Prog
@@ -352,30 +345,6 @@ theorem gemv_computes_spec (sh : Shape) (cta : Nat) (st : WSt) {Γ : Nat}
           (sh.n / 128)) :=
   warpDotV4_implements aB xB (aIx sh) xIx yB .ctaId (sh.n / 128) cta st env ae be ha hb
 
-/-- **And the emitted PTX runs it**, from instruction 0, over real branches,
-    with no hypothesis. -/
-theorem gemv_ptx_computes_spec (sh : Shape) (cta : Nat) (m : MState) {Γ : Nat}
-    (env : Fin Γ → Float32) (ae be : Nat → Expr Γ)
-    (ha : ∀ i, denote env (ae i) = m.mem aB i)
-    (hb : ∀ i, denote env (be i) = m.mem xB i) :
-    ∃ k m', steps cta (flatKernel (expandEW (kernel sh))) k (0, m)
-          = some ((flatKernel (expandEW (kernel sh))).length, m')
-      ∧ m'.mem yB cta
-          = denote env (warpDotV4E ae be
-              (fun i l => (aIx sh).eval cta i l) (fun i l => xIx.eval cta i l)
-              (sh.n / 128)) := by
-  obtain ⟨k, m', hs, hw⟩ :=
-    flatKernel_sound_idxFree cta (expandEW (kernel sh)) (expandEW_expFree (kernel sh))
-      (expandEW_idxFree (kernel sh) (of_decide_eq_true (by rfl)))
-      (expandEW_flat (kernel sh) (of_decide_eq_true (by rfl))) m
-  refine ⟨k, m', hs, ?_⟩
-  have hm : m'.mem yB cta
-      = (((expandEW (kernel sh)).elabIn cta).run m.toWSt).mem yB cta :=
-    congrArg (fun st => st.mem yB cta) hw
-  have hid : (expandEW (kernel sh)).elabIn cta = (kernel sh).elabIn cta := rfl
-  rw [hm, hid]
-  exact gemv_computes_spec sh cta m.toWSt env ae be ha hb
-
 /-- **The tuning claims, scanned.**  Separate from `TrustScan`'s inference list
     because they rest on a different thing: not that a schedule is correct —
     each is proven exactly against its own fold — but that two *different*
@@ -400,7 +369,6 @@ def schedRoots : List Name :=
   , `GemvWarp.sumsq_schedules_agree
   , `GemvWarp.shapes_admit_every_schedule
   , `GemvWarp.gemv_computes_spec
-  , `GemvWarp.gemv_ptx_computes_spec
   ]
 
 end GemvWarp

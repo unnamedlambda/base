@@ -110,19 +110,13 @@ end Vit
   IO.println s!"[vit] ops, 1 block  : {(Vit.model 1).graph 1000 |>.length}"
   IO.println s!"[vit] ops, 12 blocks: {(Vit.model 12).graph 1000 |>.length}"
 
-theorem vit1_lowers  : ((Vit.model 1).stages Vit.SQ 1000).isSome = true := by rfl
+theorem vit1_lowers  : ((Vit.model 1).stages (R := Float32) Vit.SQ 1000).isSome = true := by rfl
 
-theorem vit12_lowers : ((Vit.model 12).stages Vit.SQ 1000).isSome = true := by rfl
+theorem vit12_lowers : ((Vit.model 12).stages (R := Float32) Vit.SQ 1000).isSome = true := by rfl
 
 #eval do
   for n in [1, 2] do
-    let ops : List AlgorithmLib.ML.TOp := (Vit.model n).tape 1000
-    let ptx := ops.map (fun (op : AlgorithmLib.ML.TOp) =>
-      AlgorithmLib.ML.emitProvenKernelN "main" (op.bufs Vit.SQ).length 0
-        (op.localStmt Vit.SQ))
-    let mut seen : Std.HashSet String := {}
-    for t in ptx do seen := seen.insert t
-    IO.println s!"[vit] {n} block(s): {ops.length} ops, {seen.size} distinct kernels"
+    IO.println s!"[vit] {n} block(s): {((Vit.model n).tape 1000).length} ops"
 
 /-! Where the operations go, piece by piece. -/
 def lnOnly : TenProg Vit.SQ Vit.DM := fun _ =>

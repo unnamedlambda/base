@@ -22,6 +22,9 @@ lowering it performs.
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- Tensor terms: shapes in the type, sharing in the term
 -- ---------------------------------------------------------------------------
 
@@ -311,14 +314,14 @@ theorem Expr.toWF_deriv : ∀ {Γ : Nat} (e : Expr Γ), e.laneable = true →
     value, which is what lets one operation be restated as another carrying the
     same scalar function.  The offset is `toWF`'s own convention: variable `i` is
     register `i+1`. -/
-theorem Expr.toWF_eval : ∀ {Γ : Nat} (e : Expr Γ), e.laneable = true →
-    ∀ (st : WSt) (l : Lane) (env : Fin Γ → Float32),
+theorem Expr.toWF_eval [LitNat R] : ∀ {Γ : Nat} (e : Expr Γ), e.laneable = true →
+    ∀ (st : WSt R) (l : Lane) (env : Fin Γ → R),
       (∀ i : Fin Γ, st.regs (i.val + 1) l = env i) →
       (e.toWF).eval st l = denote env e := by
   intro Γ e
   induction e with
   | var i => intro _ _ _ _ he; exact he i
-  | lit n => intro _ _ _ _ _; rfl
+  | lit n => intro _ _ _ _ _; exact LitNat.ofNat n
   | add a b iha ihb =>
       intro h st l env he
       simp only [Expr.laneable, Bool.and_eq_true] at h
@@ -390,13 +393,13 @@ theorem Expr.toWF_tripleOnly : ∀ {Γ : Nat} (e : Expr Γ), Γ ≤ 3 → e.lane
 
 /-- A register file holding `x` at 1, `y` at 2, `z` at 3 and nothing elsewhere —
     the state the pair and triple readings are stated against. -/
-def wstOf (x y z : Float32) : WSt :=
+def wstOf (x y z : R) : WSt R :=
   { regs := fun r _ => if r = 1 then x else if r = 2 then y else
                        if r = 3 then z else NumOps.ofNat 0,
     mem := fun _ _ => NumOps.ofNat 0, smem := fun _ => NumOps.ofNat 0 }
 
 /-- **Two operands: the lane code's pair reading is the term's denotation.** -/
-theorem Expr.toWF_evalPair (e : Expr 2) (h : e.laneable = true) (x y : Float32) :
+theorem Expr.toWF_evalPair [LitNat R] (e : Expr 2) (h : e.laneable = true) (x y : R) :
     (e.toWF).evalPair x y
       = denote (fun v : Fin 2 => if v.val = 0 then x else y) e := by
   have hp := Expr.toWF_pairOnly e (by decide) h
@@ -412,7 +415,7 @@ theorem Expr.toWF_evalPair (e : Expr 2) (h : e.laneable = true) (x y : Float32) 
   rcases this with hv | hv <;> simp [wstOf, hv]
 
 /-- **Three operands: the same, one register wider.** -/
-theorem Expr.toWF_evalTriple (e : Expr 3) (h : e.laneable = true) (x y z : Float32) :
+theorem Expr.toWF_evalTriple [LitNat R] (e : Expr 3) (h : e.laneable = true) (x y z : R) :
     (e.toWF).evalTriple x y z
       = denote (fun v : Fin 3 => if v.val = 0 then x else if v.val = 1 then y else z) e := by
   have hp := Expr.toWF_tripleOnly e (by decide) h
@@ -431,7 +434,7 @@ theorem Expr.toWF_evalTriple (e : Expr 3) (h : e.laneable = true) (x y z : Float
 /-- **One operand, read through the pair reading.**  A row pass takes two
     operands; a one-operand elementwise pass supplies the same buffer twice and
     its lane code never mentions the second register. -/
-theorem Expr.toWF_evalPair1 (e : Expr 1) (h : e.laneable = true) (x y : Float32) :
+theorem Expr.toWF_evalPair1 [LitNat R] (e : Expr 1) (h : e.laneable = true) (x y : R) :
     (e.toWF).evalPair x y = denote (fun _ : Fin 1 => x) e := by
   have hp := Expr.toWF_pairOnly e (by decide) h
   have hs := WFExp.evalPair_eq (e.toWF) hp (wstOf x y (NumOps.ofNat 0)) ⟨0, by decide⟩
@@ -578,6 +581,18 @@ def TOp.gridOf : TOp → Nat
   | .ziprow3 _ _ _ _ _ _ _ _ _ _ _ r => r
   | .ziprow4 _ _ _ _ _ _ _ _ _ _ _ _ _ r => r
   | .rowdot4 _ _ _ _ _ _ _ _ _ _ _ r => r
+
+/-- **A contraction the vendor performs, as a cuBLAS call**: transposes, `m`,
+    `n`, `k` and the buffers `A`, `B`, `C`. cuBLAS is column-major and a
+    row-major `(r x c)` is a column-major `(c x r)` of the same bytes, so each
+    of the three contractions is one transpose choice; the FFI derives
+    `lda`/`ldb`/`ldc` from `m`/`n`/`k` and the transposes. `none` for every
+    operation a kernel of this development performs. -/
+def TOp.vendorGemm : TOp → Option (Nat × Nat × Nat × Nat × Nat × Ref × Ref × Ref)
+  | .mv    (.vendor _) w x o b i ow _ => some (1, 0, ow, b,  i,  w, x, o)
+  | .mvT   (.vendor _) w d o b i ow => some (0, 0, i,  b,  ow, w, d, o)
+  | .outer (.vendor _) d x o b i ow => some (0, 1, i,  ow, b,  x, d, o)
+  | _ => none
 
 /-- **The buffer an operation writes, and how many bytes it needs.**
 
@@ -771,5 +786,7 @@ def Ten.labels : {r c : Nat} → Ten RefV r c → Ref → List (String × Ref)
         ++ rest.labels ((b.flat (a.flat n).2.1).2.1)
   | _, _, .letT a k, n =>
       a.labels n ++ (k (a.flat n).1).labels (a.flat n).2.1
+
+end Carrier
 
 end AlgorithmLib.ML

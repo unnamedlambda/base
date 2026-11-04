@@ -28,7 +28,7 @@ lean_lib Bench where
 lean_lib Host where
   globs := #[.submodules `Host]
 
--- Models on proven warp kernels: the demos, CIFAR, the wide backward pass.
+-- Models on proven warp kernels: the demos and CIFAR.
 @[default_target]
 lean_lib Warp where
   globs := #[.submodules `Warp]
@@ -59,8 +59,8 @@ lean_lib Lz4 where
 -- rather than pressing the machine toward the cap that kills the session.
 @[default_target]
 lean_lib Ship where
-  roots := #[`Ship.NoMisuse, `Ship.CudaSafe, `Ship.CudaBackwardSafe, `Ship.CudaBenchSafe,
-    `Ship.WgpuDraw, `Ship.WgpuFallingSand, `Ship.WgpuWindowDemo, `Ship.WgpuWindowDemoMain, `Ship.WgpuRaymarch, `Ship.WgpuRaymarchMain, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CudaApps, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.CudaPipeline, `Ship.Lz4Comp, `Ship.MlpCifar1, `Ship.MlpCifar2, `Ship.QwenReplay, `Ship.VitSafe,
+  roots := #[`Ship.NoMisuse, `Ship.CudaSafe, `Ship.CudaBenchSafe,
+    `Ship.WgpuDraw, `Ship.WgpuFallingSand, `Ship.WgpuWindowDemo, `Ship.WgpuWindowDemoMain, `Ship.WgpuRaymarch, `Ship.WgpuRaymarchMain, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CudaApps, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.CudaPipeline, `Ship.Lz4Comp, `Ship.Lz4Run, `Ship.MlpCifar1, `Ship.MlpCifar2, `Ship.QwenReplay, `Ship.QwenRun, `Ship.QwenLoad, `Ship.VitState, `Ship.VitDag, `Ship.VitSafe, `Ship.VitIo, `Ship.VitReach, `Ship.VitRuns, `Ship.VitRunsBwd, `Ship.VitCapture, `Ship.VitCaptureStep, `Ship.VitCaptureCalls, `Ship.VitCaptureReach, `Ship.VitReplayWords, `Ship.VitCalls, `Ship.VitWords, `Ship.VitStep,
     `Ship.GemvWarpQwen, `Ship.GemvWarpMid, `Ship.GemvWarpMid2, `Ship.GemvWarpWide,
     `Ship.FallingSandMain,
     `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Libs, `Ship.HtSpec, `Ship.LibCheck, `Ship.MathSpec, `Ship.MathCheck, `Ship.HtRuns, `Ship.HtLinked, `Ship.HtCheck]
@@ -85,8 +85,6 @@ lean_exe gengradwarpalgorithm where
   root := `Main.Warp.Grad
 lean_exe gengemvwarpalgorithm where
   root := `Main.Warp.Gemv
-lean_exe genbackwardwidealgorithm where
-  root := `Main.Warp.BackwardWide
 lean_exe genfftalgorithm where
   root := `Main.Demo.Fft
 lean_exe genfallingsandalgorithm where

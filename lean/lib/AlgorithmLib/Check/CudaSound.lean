@@ -377,7 +377,8 @@ theorem holds_devKeep {x : Fact} {w : World} {d : Dev} (h : x.holds w) (hx : rac
     (hlive : x.isGraph = true → LiveKept w.dev d)
     (hbl : d.blas = w.dev.blas := by first | rfl | assumption)
     (hgr : d.graphs = w.dev.graphs := by first | rfl | assumption)
-    (hex : d.execs = w.dev.execs := by first | rfl | assumption) :
+    (hex : d.execs = w.dev.execs := by first | rfl | assumption)
+    (hkw : d.kernelWrites = w.dev.kernelWrites := by first | rfl | assumption) :
     x.holds { w with dev := d } := by
   cases x with
   | part p b =>
@@ -403,8 +404,11 @@ theorem holds_devKeep {x : Fact} {w : World} {d : Dev} (h : x.holds w) (hx : rac
   | alloc j n => exact hal j n rfl h
   | nmods n => show d.modules.size = n; rw [hmo]; exact h
   | nfuncs n => show d.funcs.size = n; rw [hfu]; exact h
-  | mod i t => show ∃ s, d.modules[i]? = _ ∧ _; rw [hmo]; exact h
-  | fn i sz => show ∃ mi e t, d.funcs[i]? = some (mi, e) ∧ d.modules[mi]? = some (some t) ∧ _; rw [hmo, hfu]; exact h
+  | mod i t => simp only [Fact.holds] at h ⊢; rw [hmo, hkw]; exact h
+  | fn i sz fl => simp only [Fact.holds] at h ⊢; rw [hmo, hfu, hkw]; exact h
+  | modText i t => show d.modules[i]? = _; rw [hmo]; exact h
+  | fnText i t e => simp only [Fact.holds] at h ⊢; rw [hmo, hfu]; exact h
+  | text a s n sg => simp only [Fact.holds] at h ⊢; rw [hkw]; exact h
   | nblas n => show d.blas.size = n; rw [hbl]; exact h
   | blasOn i t => show d.blas[i]? = _; rw [hbl]; exact h
   | ngraphs n => show d.graphs.size = n; rw [hgr]; exact h
@@ -515,11 +519,14 @@ theorem row_memcpyHtoD {S S' T : TState} {w : World} {Γ : Env} {dst src n : AV}
           simp only [cudaStep, hl, Bool.not_true, Bool.false_eq_true, if_false, hr, hbytes, hsw,
             Option.bind_eq_bind, Option.bind_some, devOnly, cuRes, Option.map_some, DevSpec.retire_nil hbusy]
         · intro f hf
-          obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
-          have hk2 := sizes_keep (d := w.dev) (d' := d') (Dev.put_bufs_size _ _ _) hsizes
-          exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (Dev.put_bufs_size _ _ _) rfl rfl hk2.1
-            (fun j n _ => hk2.2 j n) (hlive := fun _ => LiveKept.of_sizes hk2.2)
-            (fun e => by subst e; exact ⟨Device.syncWrite_track hsw (hS _ hf).1, Device.syncWrite_seq hsw (hS _ hf).2⟩)
+          rcases List.mem_append.mp hf with hf | hf
+          · obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
+            have hk2 := sizes_keep (d := w.dev) (d' := d') (Dev.put_bufs_size _ _ _) hsizes
+            exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (Dev.put_bufs_size _ _ _) rfl rfl hk2.1
+              (fun j n _ => hk2.2 j n) (hlive := fun _ => LiveKept.of_sizes hk2.2)
+              (fun e => by subst e; exact ⟨Device.syncWrite_track hsw (hS _ hf).1, Device.syncWrite_seq hsw (hS _ hf).2⟩)
+          · rw [List.mem_singleton] at hf; subst hf
+            exact ((Contracts.readyIn_sound hS hseq).op_self hop).sync
         · cases hv; exact cuOk_desc Γ _
   · cases h
 
@@ -601,11 +608,10 @@ theorem row_ctxSynchronize {S S' : TState} {w : World} {Γ : Env} {bits : List U
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true] at hc
-    obtain ⟨⟨hbase, hlive⟩, hseq⟩ := hc
+    obtain ⟨hbase, hlive⟩ := hc
     cases h
     obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
     have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-    have hsq : (Fact.devSeq).holds w := hS _ (List.contains_iff_mem.mp hseq)
     match bits, hb with
     | [], _ =>
       let d' : Dev := { w.dev with race := w.dev.race.syncAll }
@@ -621,6 +627,7 @@ theorem row_ctxSynchronize {S S' : TState} {w : World} {Γ : Env} {bits : List U
           (hlive := fun _ _ h => h)
           (fun e => by
             subst e
+            have hsq : (Fact.devSeq).holds w := hS _ hf
             exact ⟨Device.track_race hsq.1 (fun evs h => creached_foldSync _ _ evs h) d' rfl rfl rfl,
               defaultOnly_foldSync _ _ hsq.2⟩)
       · cases hv; exact cuOk_desc Γ _
@@ -668,7 +675,7 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
   | text c t k _ =>
       simp only [Contracts.storeKeeps, decide_eq_true_eq] at hk
       have hw := hx0.1.2.1
-      refine Contracts.text_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      refine Contracts.text_kept hx0 (fun rg _ => congrFun hsz rg) (fun i hi => Unchanged.of_eq ?_) rfl
       refine copyIn_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -678,7 +685,7 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
   | cell c v =>
-      simp only [Contracts.storeKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range,
+      simp only [Contracts.storeKeeps, Contracts.cellKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range,
         Bool.not_eq_true'] at hk
       obtain ⟨hc, hmiss⟩ := hk
       obtain ⟨rg, off, hd, hpin, hb⟩ := Contracts.cellOk_spec hc
@@ -824,14 +831,17 @@ theorem row_memcpyDtoH {S S' T : TState} {w : World} {Γ : Env} {dst src n : AV}
           simp only [cudaStep, hnl, Bool.false_eq_true, if_false, hr, hsr, hm',
             Option.bind_eq_bind, Option.bind_some]
         · intro f hf
-          obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
-          exact holds_devKeep (w := { w with mem := m }) (hcp f hf) hk' rfl rfl rfl rfl rfl rfl rfl rfl rfl
-            (fun _ _ h => h) (fun _ _ _ h => h)
-            (hlive := fun _ _ h => h)
-            (fun e => by
-              subst e
-              have h0 := hcp _ hf
-              exact ⟨Device.syncRead_track hsr h0.1, Device.syncRead_seq hsr h0.2⟩)
+          rcases List.mem_append.mp hf with hf | hf
+          · obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
+            exact holds_devKeep (w := { w with mem := m }) (hcp f hf) hk' rfl rfl rfl rfl rfl rfl rfl rfl rfl
+              (fun _ _ h => h) (fun _ _ _ h => h)
+              (hlive := fun _ _ h => h)
+              (fun e => by
+                subst e
+                have h0 := hcp _ hf
+                exact ⟨Device.syncRead_track hsr h0.1, Device.syncRead_seq hsr h0.2⟩)
+          · rw [List.mem_singleton] at hf; subst hf
+            exact ((Contracts.readyIn_sound hS hseq).op_self hop).sync
         · cases hv; exact cuOk_desc Γ _
   · cases h
 
@@ -857,13 +867,20 @@ theorem textOf_mem {S : TState} {a : UInt64} {t : String} (h : textOf S a = some
   obtain ⟨rfl, rfl⟩ := hk
   exact ⟨_, _, hx⟩
 
-theorem sigsOf_mem {S : TState} {a : UInt64} {sg : List (String × List Nat)} (h : sigsOf S a = some sg) :
-    ∃ t n, Fact.text a t n sg ∈ S := by
-  unfold sigsOf at h
+theorem modTextOf_mem {S : TState} {i : Nat} {t : String} (h : modTextOf S i = some t) : Fact.modText i t ∈ S := by
+  unfold modTextOf at h
   obtain ⟨x, hx, hk⟩ := List.exists_of_findSome?_eq_some h
   cases x <;> simp at hk
   obtain ⟨rfl, rfl⟩ := hk
-  exact ⟨_, _, hx⟩
+  exact hx
+
+theorem sigsOf_mem {S : TState} {a : UInt64} {t : Option String} {sg : List (String × List Nat × List Bool)}
+    (h : sigsOf S a = some (t, sg)) : ∃ n, Fact.text a t n sg ∈ S := by
+  unfold sigsOf at h
+  obtain ⟨x, hx, hk⟩ := List.exists_of_findSome?_eq_some h
+  cases x <;> simp at hk
+  obtain ⟨rfl, rfl, rfl⟩ := hk
+  exact ⟨_, hx⟩
 
 theorem mem_of_lookup {α β : Type} [BEq α] [LawfulBEq α] {l : List (α × β)} {a : α} {b : β} (h : l.lookup a = some b) :
     (a, b) ∈ l := by
@@ -879,7 +896,7 @@ theorem mem_of_lookup {α β : Type} [BEq α] [LawfulBEq α] {l : List (α × β
         subst this; exact List.mem_cons_self ..
       · exact List.mem_cons_of_mem _ (ih h)
 
-theorem modOf_mem {S : TState} {i : Nat} {t : List (String × List Nat)} (h : modOf S i = some t) :
+theorem modOf_mem {S : TState} {i : Nat} {t : List (String × List Nat × List Bool)} (h : modOf S i = some t) :
     Fact.mod i t ∈ S := by
   unfold modOf at h
   obtain ⟨x, hx, hk⟩ := List.exists_of_findSome?_eq_some h
@@ -887,12 +904,20 @@ theorem modOf_mem {S : TState} {i : Nat} {t : List (String × List Nat)} (h : mo
   obtain ⟨rfl, rfl⟩ := hk
   exact hx
 
-theorem fnOf_mem {S : TState} {i : Nat} {sz : List Nat} (h : fnOf S i = some sz) : Fact.fn i sz ∈ S := by
+theorem fnOf_mem {S : TState} {i : Nat} {sz : List Nat} (h : fnOf S i = some sz) : ∃ fl, Fact.fn i sz fl ∈ S := by
   unfold fnOf at h
   obtain ⟨x, hx, hk⟩ := List.exists_of_findSome?_eq_some h
   cases x <;> simp at hk
   obtain ⟨rfl, rfl⟩ := hk
-  exact hx
+  exact ⟨_, hx⟩
+
+theorem fnWritesOf_mem {S : TState} {i : Nat} {fl : List Bool} (h : fnWritesOf S i = some fl) :
+    ∃ sz, Fact.fn i sz fl ∈ S := by
+  unfold fnWritesOf at h
+  obtain ⟨x, hx, hk⟩ := List.exists_of_findSome?_eq_some h
+  cases x <;> simp at hk
+  obtain ⟨rfl, rfl⟩ := hk
+  exact ⟨_, hx⟩
 
 theorem cellOf_mem {S : TState} {a v : UInt64} (h : cellOf S a = some v) : Fact.cell a v ∈ S := by
   unfold cellOf at h
@@ -941,6 +966,10 @@ theorem holds_pushMod {x : Fact} {w : World} (t : String) (hx : ∀ n, x ≠ .nm
   | fn i sz =>
       obtain ⟨mi, e, u, hf, hm, hs⟩ := h
       exact ⟨mi, e, u, hf, getElem?_push_some _ hm, hs⟩
+  | modText i t => exact getElem?_push_some _ h
+  | fnText i t e =>
+      obtain ⟨mi, hf, hm⟩ := h
+      exact ⟨mi, hf, getElem?_push_some _ hm⟩
   | wg1 _ s => cases s <;> exact h
   | _ => exact h
 
@@ -957,6 +986,9 @@ theorem holds_pushFn {x : Fact} {w : World} (f : Nat × String) (hx : ∀ n, x �
   | fn i sz =>
       obtain ⟨mi, e, u, hf, hm, hs⟩ := h
       exact ⟨mi, e, u, getElem?_push_pair _ hf, hm, hs⟩
+  | fnText i t e =>
+      obtain ⟨mi, hf, hm⟩ := h
+      exact ⟨mi, getElem?_push_pair _ hf, hm⟩
   | wg1 _ s => cases s <;> exact h
   | _ => exact h
 
@@ -1021,7 +1053,7 @@ theorem row_moduleLoadData {S S' : TState} {w : World} {Γ : Env} {p img : AV} {
     RowOk .moduleLoadData bits w S' av := by
   simp only [cudaRow] at h
   split at h
-  · rename_i k sg hk ht
+  · rename_i k t0 sg hk ht
     split at h
     · rename_i hc
       simp only [Bool.and_eq_true] at hc
@@ -1032,8 +1064,8 @@ theorem row_moduleLoadData {S S' : TState} {w : World} {Γ : Env} {p img : AV} {
       subst hcnt
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
       obtain ⟨a, ha, hta⟩ := Option.bind_eq_some_iff.mp ht
-      obtain ⟨t0, n, htn⟩ := sigsOf_mem hta
-      obtain ⟨-, t, hrd, -, hsg⟩ := (hS _ htn : (Fact.text a t0 n sg).holds w)
+      obtain ⟨n, htn⟩ := sigsOf_mem hta
+      obtain ⟨-, t, hrd, ht0, hsg⟩ := (hS _ htn : (Fact.text a t0 n sg).holds w)
       match bits, hb with
       | [pa, x], ⟨hpa, hx, _⟩ =>
         obtain rfl := known_bits hx ha
@@ -1046,11 +1078,18 @@ theorem row_moduleLoadData {S S' : TState} {w : World} {Γ : Env} {p img : AV} {
           have hnl : (!w.dev.live) = false := by simp [hl]
           simp only [cudaStep, hnl, Bool.false_eq_true, if_false, hrd, hm, Option.bind_eq_bind, Option.bind_some]
         · intro y hy
-          simp only [List.mem_cons, List.mem_filter] at hy
-          rcases hy with rfl | rfl | ⟨hy, hnb⟩
+          simp only [List.mem_cons, List.mem_append, List.mem_filter] at hy
+          rcases hy with ((rfl | rfl | hy) | ⟨hy, hnb⟩)
           · show (w.dev.modules.push _).size = w.dev.modules.size + 1; rw [Array.size_push]
           · exact ⟨t, by show (w.dev.modules.push _)[w.dev.modules.size]? = _; rw [Array.getElem?_push_size],
               hsg⟩
+          · cases t0 with
+            | none => cases hy
+            | some x =>
+                simp only [Option.map_some, Option.toList_some, List.mem_singleton] at hy
+                subst hy
+                show (w.dev.modules.push _)[w.dev.modules.size]? = _
+                rw [Array.getElem?_push_size, ht0 x rfl]
           · exact holds_pushMod (w := { w with mem := m }) _ (not_nmods hnb) (hst y hy)
         · cases hv; exact cuOk_desc Γ _
     · cases h
@@ -1064,7 +1103,7 @@ theorem row_moduleGetFunction {S S' : TState} {w : World} {Γ : Env} {p hm pn : 
   split at h
   · rename_i k mi name hk hmi hname
     split at h
-    · rename_i sizes hsz
+    · rename_i sizes fl hsz
       split at h
       · rename_i hc
         simp only [Bool.and_eq_true] at hc
@@ -1081,7 +1120,8 @@ theorem row_moduleGetFunction {S S' : TState} {w : World} {Γ : Env} {p hm pn : 
         obtain rfl := hnm name rfl
         obtain ⟨sg, hsg, hlk⟩ := Option.bind_eq_some_iff.mp hsz
         obtain ⟨t, hmod, hall⟩ := (hS _ (modOf_mem hsg) : (Fact.mod mi sg).holds w)
-        have hps : ptxParamSizes t name = some sizes := hall (name, sizes) (mem_of_lookup hlk)
+        have hps' := hall (name, sizes, fl) (mem_of_lookup hlk)
+        have hps : ptxParamSizes t name = some sizes := hps'.1
         have hent := paramSizes_hasEntry hps
         match bits, hb with
         | [pa, x, y], ⟨hpa, hx, hy, _⟩ =>
@@ -1097,11 +1137,19 @@ theorem row_moduleGetFunction {S S' : TState} {w : World} {Γ : Env} {p hm pn : 
             simp only [cudaStep, hnl, Bool.false_eq_true, if_false, hmi', hmod, Option.join_some, hrd, hent,
               Bool.not_true, hm, Option.bind_eq_bind, Option.bind_some]
           · intro y hy
-            simp only [List.mem_cons, List.mem_filter] at hy
-            rcases hy with rfl | rfl | ⟨hy, hnb⟩
+            simp only [List.mem_cons, List.mem_append, List.mem_filter] at hy
+            rcases hy with ((rfl | rfl | hy) | ⟨hy, hnb⟩)
             · show (w.dev.funcs.push _).size = w.dev.funcs.size + 1; rw [Array.size_push]
             · exact ⟨mi, name, t, by show (w.dev.funcs.push _)[w.dev.funcs.size]? = _; rw [Array.getElem?_push_size],
-                hmod, hps⟩
+                hmod, hps, hps'.2⟩
+            · cases hmt : modTextOf S mi with
+              | none => rw [hmt] at hy; cases hy
+              | some t2 =>
+                  rw [hmt] at hy
+                  simp only [Option.map_some, Option.toList_some, List.mem_singleton] at hy
+                  subst hy
+                  exact ⟨mi, by show (w.dev.funcs.push _)[w.dev.funcs.size]? = _; rw [Array.getElem?_push_size],
+                    (hS _ (modTextOf_mem hmt) : (Fact.modText mi t2).holds w)⟩
             · exact holds_pushFn (w := { w with mem := m }) _ (not_nfuncs hnb) (hst y hy)
           · cases hv; exact cuOk_desc Γ _
       · cases h
@@ -1113,7 +1161,7 @@ theorem row_moduleGetFunction {S S' : TState} {w : World} {Γ : Env} {p hm pn : 
 theorem runLaunch_rest {d d' : Dev} {k : Launch → List ByteArray → List ByteArray} {l : Launch}
     {ids : List Nat} (h : d.runLaunch k l ids = some d') :
     d'.modules = d.modules ∧ d'.funcs = d.funcs ∧ d'.drvInit = d.drvInit ∧ d'.retained = d.retained ∧
-      d'.bufs.size = d.bufs.size ∧ d'.blas = d.blas := by
+      d'.bufs.size = d.bufs.size ∧ d'.blas = d.blas ∧ d'.kernelWrites = d.kernelWrites := by
   unfold Dev.runLaunch at h
   obtain ⟨ins, -, h⟩ := Option.bind_eq_some_iff.mp h
   dsimp only at h
@@ -1124,20 +1172,20 @@ theorem runLaunch_rest {d d' : Dev} {k : Launch → List ByteArray → List Byte
     suffices ∀ (ps : List (Nat × ByteArray)) (d : Dev),
         let d' := ps.foldl (fun d (id, o) => d.put id (some o)) d
         d'.modules = d.modules ∧ d'.funcs = d.funcs ∧ d'.drvInit = d.drvInit ∧ d'.retained = d.retained ∧
-          d'.bufs.size = d.bufs.size ∧ d'.blas = d.blas from this _ d
+          d'.bufs.size = d.bufs.size ∧ d'.blas = d.blas ∧ d'.kernelWrites = d.kernelWrites from this _ d
     intro ps
     induction ps with
-    | nil => intro d; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+    | nil => intro d; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
     | cons x ps ih =>
         intro d
-        obtain ⟨a, b, c, e, f, g⟩ := ih (d.put x.1 (some x.2))
-        exact ⟨a, b, c, e, f.trans (Dev.put_bufs_size _ _ _), g⟩
+        obtain ⟨a, b, c, e, f, g, kw⟩ := ih (d.put x.1 (some x.2))
+        exact ⟨a, b, c, e, f.trans (Dev.put_bufs_size _ _ _), g, kw⟩
 
 /-- An operation on the device with no capture in progress: the tracker's
     step, then the operation. -/
 theorem devOp_launch {d d' : Dev} {w : World} {p : Nat} {l : Launch} {ids : List Nat} (hc : d.capture = none)
-    (h : d.devOp w p (.launch l ids) [] ids = some d') :
-    ∃ r, d.race.op p [] ids = some r ∧ ({ d with race := r }).runLaunch w.kernel l ids = some d' := by
+    (h : d.devOp w p (.launch l ids) ids l.writes = some d') :
+    ∃ r, d.race.op p ids l.writes = some r ∧ ({ d with race := r }).runLaunch w.kernel l ids = some d' := by
   unfold Dev.devOp at h
   rw [hc] at h
   unfold Dev.devOp.run at h
@@ -1266,14 +1314,12 @@ theorem allocAt?_spec {S : TState} {w : World} (hS : S.holds w) {x : UInt64} {o 
         · cases h
 
 /-- **The allocations `launchIds` names are the ones the launch binds.** -/
-theorem launchIds_spec {S : TState} {w : World} (hS : S.holds w) {P : UInt64} {sizes : List Nat}
-    {ids : List Nat} {args : List UInt64} (h : launchIds S P sizes = some ids)
+theorem launchOs_spec {S : TState} {w : World} (hS : S.holds w) {P : UInt64} {sizes : List Nat}
+    {os : List (Option Nat)} {args : List UInt64} (h : launchOs S P sizes = some os)
     (ha : kernelArgs w.mem P sizes = some args) :
-    (args.filterMap fun a => (w.dev.range? a 0).map (·.1)).eraseDups = ids := by
-  unfold launchIds at h
+    os = args.map fun a => (w.dev.range? a 0).map (·.1) := by
+  unfold launchOs at h
   unfold kernelArgs at ha
-  obtain ⟨os, hos, hid⟩ := Option.bind_eq_some_iff.mp h
-  cases hid
   suffices hgen : ∀ (l : List (Nat × Nat)) (os : List (Option Nat)) (as : List UInt64),
       l.mapM (fun (sz, i) => do
         let a ← cellOf S (P + UInt64.ofNat (8 * i))
@@ -1281,8 +1327,7 @@ theorem launchIds_spec {S : TState} {w : World} (hS : S.holds w) {P : UInt64} {s
       l.mapM (fun (sz, i) => do
         let at_ ← w.mem.load (P + UInt64.ofNat (8 * i)) 8
         w.mem.load at_ sz) = some as →
-      as.filterMap (fun a => (w.dev.range? a 0).map (·.1)) = os.filterMap id by
-    rw [hgen _ os args hos ha]
+      os = as.map fun a => (w.dev.range? a 0).map (·.1) from hgen _ os args h ha
   intro l
   induction l with
   | nil =>
@@ -1313,9 +1358,44 @@ theorem launchIds_spec {S : TState} {w : World} (hS : S.holds w) {P : UInt64} {s
         rw [hl2, Option.some.injEq] at hv
         subst hv
         have hsp := allocAt?_spec hS ho
-        rw [List.filterMap_cons, List.filterMap_cons, ih os' as' hos' has', hsp]
-        cases o <;> rfl
+        rw [List.map_cons, ih os' as' hos' has', hsp]
       · cases ho
+
+theorem launchIds_spec {S : TState} {w : World} (hS : S.holds w) {P : UInt64} {sizes : List Nat}
+    {ids : List Nat} {args : List UInt64} (h : launchIds S P sizes = some ids)
+    (ha : kernelArgs w.mem P sizes = some args) :
+    (args.filterMap fun a => (w.dev.range? a 0).map (·.1)).eraseDups = ids := by
+  unfold launchIds at h
+  obtain ⟨os, hos, hid⟩ := Option.bind_eq_some_iff.mp h
+  cases hid
+  rw [launchOs_spec hS hos ha, List.filterMap_map]
+  rfl
+
+/-- **The allocations a launch writes, as the typestate reads them**: those
+    the device's own flags (`Dev.writesOf`) say, where the function's fact
+    gives the flags the device has. -/
+theorem launchWrites_spec {S : TState} {w : World} (hS : S.holds w) {P : UInt64} {sizes : List Nat}
+    {fl : List Bool} {ws : List Nat} {args : List UInt64} {o : Option (List Bool)}
+    (h : launchWrites S P sizes fl = some ws) (ha : kernelArgs w.mem P sizes = some args)
+    (hw : Contracts.WritesAs o fl) : w.dev.writesOf o args = ws := by
+  unfold launchWrites at h
+  obtain ⟨os, hos, hid⟩ := Option.bind_eq_some_iff.mp h
+  cases hid
+  rw [launchOs_spec hS hos ha]
+  unfold Dev.writesOf
+  congr 1
+  suffices e : ∀ (xs : List UInt64) (k : Nat),
+      (xs.zipIdx k).filterMap (fun (p : UInt64 × Nat) =>
+        if (o.bind (·[p.2]?)).getD true = true then (w.dev.range? p.1 0).map (·.1) else none) =
+      ((xs.map fun a => (w.dev.range? a 0).map (·.1)).zipIdx k).filterMap
+        (fun (p : Option Nat × Nat) => if fl.getD p.2 true = true then p.1 else none) from e args 0
+  intro xs
+  induction xs with
+  | nil => intro _; rfl
+  | cons x xs ih =>
+      intro k
+      simp only [List.zipIdx_cons, List.map_cons, List.filterMap_cons, hw k]
+      rw [ih (k + 1)]
 
 /-- A party a capture's fact says it records is one the device says is
     capturing. -/
@@ -1343,7 +1423,8 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
         obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
         have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
         have hks : KeepsSize w.kernel := (hS _ (List.contains_iff_mem.mp horc) : (Fact.oracles).holds w).1
-        obtain ⟨mi, e, ptx, hfun, hmod, hps⟩ := (hS _ (fnOf_mem hsz) : (Fact.fn fi sizes).holds w)
+        obtain ⟨fl, hfm⟩ := fnOf_mem hsz
+        obtain ⟨mi, e, ptx, hfun, hmod, hps, hwa⟩ := (hS _ hfm : (Fact.fn fi sizes fl).holds w)
         obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
         obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
         obtain ⟨x2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
@@ -1409,7 +1490,7 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
         obtain ⟨rfl, rfl⟩ := he
         obtain ⟨rr, hop, hrl⟩ := devOp_launch hcap hdo
         obtain ⟨hlv, hst, hcp, hev, hrace, hsz'⟩ := DevSpec.runLaunch_sizes hks hrl
-        obtain ⟨hmo, hfu, hdi, hre, hn, hbl⟩ := runLaunch_rest hrl
+        obtain ⟨hmo, hfu, hdi, hre, hn, hbl, hkwl⟩ := runLaunch_rest hrl
         refine ⟨hhas, some (ofInt .i32 cuSuccess),
           { w with dev := d'', mem := w.mem.retire (d''.race.clock hostParty) }, ?_, ?_, fun Γ v hv => ?_, ?_⟩
         · rw [cudaDrv_step hcap]; exact hstep0
@@ -1423,7 +1504,7 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
           rw [DevSpec.retire_nil hbusy]
           have hkg := Device.devOp_keepsGraphs hdo
           refine holds_devKeep (hS f hf) hk' hst hev hlv hcp hdi hre hn hmo hfu
-            (fun i n hb => Device.devOp_bufs hdo hb) (fun j n _ ⟨c, hc, hcs⟩ => ?_)
+            (fun i n hb => Device.devOp_bufs hdo hb) (fun j n _ ⟨c, hc, hcs⟩ => ?_) (hkw := hkwl)
             (hlive := fun _ => LiveKept.of_sizes fun j n ⟨c, hc, hcs⟩ => by
               have := hsz' (Int.ofNat j)
               rw [get?_nat, get?_nat, hc] at this
@@ -1448,7 +1529,7 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
           simp only [Bool.and_eq_true, beq_iff_eq] at hc
           obtain ⟨⟨⟨⟨hbase, hlive⟩, horc⟩, hex0⟩, hargs⟩ := hc
           split at h
-          · rename_i cq jn r evs ids hco hids
+          · rename_i cq jn r evs ids ws hco hids hws
             split at h
             · rename_i hin
               split at h
@@ -1456,7 +1537,8 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
                 cases h
                 have hhas := capBase_world hS hbase
                 have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-                obtain ⟨mi, e, ptx, hfun, hmod, hps⟩ := (hS _ (fnOf_mem hsz) : (Fact.fn fi sizes).holds w)
+                obtain ⟨fl, hfm⟩ := fnOf_mem hsz
+                obtain ⟨mi, e, ptx, hfun, hmod, hps, hwa⟩ := (hS _ hfm : (Fact.fn fi sizes fl).holds w)
                 obtain ⟨c, hcap, hcq, hcj, hcr, hol, hev⟩ := (hS _ (capOf_mem hco) : (Fact.cap cq jn r evs).holds w)
                 obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
                 obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
@@ -1494,13 +1576,22 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
                   · cases hq'
                 obtain ⟨args, hargs'⟩ := Option.isSome_iff_exists.mp hka
                 have hids' := launchIds_spec hS hids hargs'
+                obtain ⟨fl', hfl', hlw⟩ := Option.bind_eq_some_iff.mp hws
+                obtain ⟨sz', hfm'⟩ := fnWritesOf_mem hfl'
+                obtain ⟨mi', e', ptx', hfun', hmod', -, hwa'⟩ := (hS _ hfm' : (Fact.fn fi sz' fl').holds w)
+                obtain ⟨rfl, rfl⟩ := Prod.mk.inj (Option.some.inj (hfun'.symm.trans hfun))
+                obtain rfl := Option.some.inj (Option.some.inj (hmod'.symm.trans hmod))
+                have hws' := launchWrites_spec hS hlw hargs' hwa'
                 have hcp : w.dev.capturing q = true := capturing_of hcap hcq hcj hin
-                let l : Launch := ⟨ptx, e, ids, [x1 &&& 0xffffffff, x2 &&& 0xffffffff, x3 &&& 0xffffffff,
-                  x4 &&& 0xffffffff, x5 &&& 0xffffffff, x6 &&& 0xffffffff], args⟩
+                let l : Launch := ⟨ptx', e', ids, [x1 &&& 0xffffffff, x2 &&& 0xffffffff, x3 &&& 0xffffffff,
+                  x4 &&& 0xffffffff, x5 &&& 0xffffffff, x6 &&& 0xffffffff], args,
+                  w.dev.writesOf (w.dev.kernelWrites ptx' e') args⟩
+                have hop' : r.op q ids l.writes = some r' := by
+                  show r.op q ids (w.dev.writesOf _ args) = _; rw [hws']; exact hop
                 let d'' : Dev := { w.dev with capture := some { c with race := r', ops := c.ops.push (.launch l ids) } }
-                have hdo : w.dev.devOp w q (.launch l ids) [] ids = some d'' := by
+                have hdo : w.dev.devOp w q (.launch l ids) ids l.writes = some d'' := by
                   unfold Dev.devOp
-                  simp only [hcap, hcp, if_true, hcr, hop, Option.bind_eq_bind, Option.bind_some]
+                  simp only [hcap, hcp, if_true, hcr, hop', Option.bind_eq_bind, Option.bind_some]
                   rfl
                 have hnl : (!w.dev.live) = false := by simp [hl]
                 simp only [List.all_cons, List.all_nil, Bool.and_true, Bool.and_eq_true, bne_iff_ne, ne_eq] at hdz
@@ -1518,7 +1609,7 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
                     z6, Bool.or_false, Bool.or_self, hps, hargs', Option.bind_eq_bind, Option.bind_some,
                     Option.some_bind]
                   rw [hids']
-                  show devOnly w ((w.dev.devOp w q (.launch l ids) [] ids).bind fun x => cuRes x cuSuccess) = _
+                  show devOnly w ((w.dev.devOp w q (.launch l ids) ids l.writes).bind fun x => cuRes x cuSuccess) = _
                   rw [hdo]; rfl
                 have hdrv := hstep
                 rw [← cudaDrv_under (f := .launchKernel) rfl] at hdrv
@@ -1560,6 +1651,7 @@ theorem holds_devStep {x : Fact} {w : World} {d : Dev} (h : x.holds w)
     (hbl : d.blas = w.dev.blas := by first | rfl | assumption)
     (hgr : d.graphs = w.dev.graphs := by first | rfl | assumption)
     (hex : d.execs = w.dev.execs := by first | rfl | assumption)
+    (hkw : d.kernelWrites = w.dev.kernelWrites := by first | rfl | assumption)
     (hevs : d.events = w.dev.events ∨ w.dev.capture = none := by
       first | exact .inl rfl | exact .inr (by assumption)) :
     x.holds { w with dev := d } := by
@@ -1583,8 +1675,11 @@ theorem holds_devStep {x : Fact} {w : World} {d : Dev} (h : x.holds w)
   | alloc j n => show ∃ c, (d.bufs[j]?).join = some c ∧ _; rw [hb]; exact h
   | nmods n => show d.modules.size = n; rw [hmo]; exact h
   | nfuncs n => show d.funcs.size = n; rw [hfu]; exact h
-  | mod i t => show ∃ s, d.modules[i]? = _ ∧ _; rw [hmo]; exact h
-  | fn i sz => show ∃ mi e t, d.funcs[i]? = some (mi, e) ∧ d.modules[mi]? = some (some t) ∧ _; rw [hmo, hfu]; exact h
+  | mod i t => simp only [Fact.holds] at h ⊢; rw [hmo, hkw]; exact h
+  | fn i sz fl => simp only [Fact.holds] at h ⊢; rw [hmo, hfu, hkw]; exact h
+  | modText i t => show d.modules[i]? = _; rw [hmo]; exact h
+  | fnText i t e => simp only [Fact.holds] at h ⊢; rw [hmo, hfu]; exact h
+  | text a s n sg => simp only [Fact.holds] at h ⊢; rw [hkw]; exact h
   | nblas n => show d.blas.size = n; rw [hbl]; exact h
   | blasOn i t => show d.blas[i]? = _; rw [hbl]; exact h
   | ngraphs n => show d.graphs.size = n; rw [hgr]; exact h
@@ -2623,22 +2718,24 @@ structure BufsOnly (d d' : Dev) : Prop where
   graphs : d'.graphs = d.graphs
   execs : d'.execs = d.execs
   sizes : ∀ i, (d'.get? i).map ByteArray.size = (d.get? i).map ByteArray.size
+  kernelWrites : d'.kernelWrites = d.kernelWrites
 
 theorem BufsOnly.refl (d : Dev) : BufsOnly d d :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, fun _ => rfl⟩
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, fun _ => rfl, rfl⟩
 
 theorem BufsOnly.trans {a b c : Dev} (h1 : BufsOnly a b) (h2 : BufsOnly b c) : BufsOnly a c :=
   ⟨h2.live.trans h1.live, h2.streams.trans h1.streams, h2.capture.trans h1.capture,
    h2.events.trans h1.events, h2.race.trans h1.race, h2.modules.trans h1.modules, h2.funcs.trans h1.funcs,
    h2.drvInit.trans h1.drvInit, h2.retained.trans h1.retained, h2.size.trans h1.size, h2.blas.trans h1.blas,
-   h2.graphs.trans h1.graphs, h2.execs.trans h1.execs, fun i => (h2.sizes i).trans (h1.sizes i)⟩
+   h2.graphs.trans h1.graphs, h2.execs.trans h1.execs, fun i => (h2.sizes i).trans (h1.sizes i),
+   h2.kernelWrites.trans h1.kernelWrites⟩
 
 theorem runLaunch_bufsOnly {d d' : Dev} {k : Launch → List ByteArray → List ByteArray} {l : Launch}
     {ids : List Nat} (hk : KeepsSize k) (h : d.runLaunch k l ids = some d') : BufsOnly d d' := by
   obtain ⟨hlv, hst, hcp, hev, hrace, hsz⟩ := DevSpec.runLaunch_sizes hk h
-  obtain ⟨hmo, hfu, hdi, hre, hn, hbl⟩ := runLaunch_rest h
+  obtain ⟨hmo, hfu, hdi, hre, hn, hbl, hkw⟩ := runLaunch_rest h
   obtain ⟨hg, hx⟩ := Device.runLaunch_keepsGraphs h
-  exact ⟨hlv, hst, hcp, hev, hrace, hmo, hfu, hdi, hre, hn, hbl, hg, hx, hsz⟩
+  exact ⟨hlv, hst, hcp, hev, hrace, hmo, hfu, hdi, hre, hn, hbl, hg, hx, hsz, hkw⟩
 
 /-- A vendor routine leaves the device as it was but its output's contents,
     at the size it was. -/
@@ -2658,7 +2755,7 @@ theorem runVendor_bufsOnly {d d' : Dev} {v : VendorCall → List ByteArray → B
     rcases Nat.lt_or_ge out d.bufs.size with hl | hl
     · exact hl
     · simp [Dev.get?, Array.getElem?_eq_none hl] at hold
-  refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Array.size_setIfInBounds, rfl, rfl, rfl, fun i => ?_⟩
+  refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Array.size_setIfInBounds, rfl, rfl, rfl, fun i => ?_, rfl⟩
   unfold Dev.get? Dev.put
   split
   · rfl
@@ -2783,7 +2880,7 @@ theorem row_graphLaunch {S S' : TState} {w : World} {Γ : Env} {he hh : AV} {bit
           obtain ⟨c', hc', hcs'⟩ := Option.map_eq_some_iff.mp this
           exact ⟨c', hc', hcs'.trans hcs⟩
         exact holds_devKeep (hS f hf) hk' hbo.streams hbo.events hbo.live hbo.capture hbo.drvInit hbo.retained
-          hbo.size hbo.modules hbo.funcs
+          hbo.size hbo.modules hbo.funcs (hkw := hbo.kernelWrites)
           (fun i n hb => Device.BufIs.of_sizes hb (Nat.le_of_eq hbo.size.symm) (fun j => hbo.sizes j))
           (fun j n _ => hal j n)
           (fun e => by

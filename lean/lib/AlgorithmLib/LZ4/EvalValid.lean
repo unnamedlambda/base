@@ -1,15 +1,14 @@
 module
 public import AlgorithmLib.LZ4.OuterByteLayer
 meta import AlgorithmLib.LZ4.OuterByteLayer
-public import AlgorithmLib.LZ4.StepDescent
-meta import AlgorithmLib.LZ4.StepDescent
+public import AlgorithmLib.LZ4.WarpLoops
+meta import AlgorithmLib.LZ4.WarpLoops
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4Plan AlgorithmLib.LZ4WarpFind
-open AlgorithmLib.LZ4Simt (SCmp)
 
 /-- `genLoop` produces a valid plan-suffix for ANY oracle-maker `mkOracle` and
     state update `upd` — mirror of `loop_valid`, with the threaded state `smem`
@@ -515,13 +514,14 @@ theorem warpKernelDSL_body_roundtrips (inStride hashLog : Nat) (ws : WState)
 /-- **The loopC body preserves `LoopCQ` and strictly advances `searchPos`.**  The
     pure-eval core of the loop induction: mirrors `emitLoop_eq`'s inductive step at the
     single-body level (case on the window result, apply `bodyFound_eq`/`bodyNotFound_eq`,
-    discharge the layout budget via `encNib_length_le`/`extendFrom_cap`).  `simSL'_measureLoop`
-    consumes this (the guard gives `searchPos < searchLim`; `μ = searchPos` advances). -/
-theorem loopCBody_Qadvance (inStride hashLog fuel : Nat) (ws : WState)
+    discharge the layout budget via `encNib_length_le`/`extendFrom_cap`): the guard gives
+    `searchPos < searchLim`, and `searchPos` advances. -/
+theorem loopCBody_Qadvance {B : Nat} (inStride hashLog fuel : Nat) (ws : WState)
     (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64)
+    (hB : B ≤ 2 ^ 64)
     (hfuel : inStride ≤ fuel)
-    (hQ : LoopCQ inStride ws) (hguard : (ws.regs "loopC" == 1) = true) :
-    LoopCQ inStride ((loopCBodyStmt inStride hashLog).eval fuel ws)
+    (hQ : LoopCQ B inStride ws) (hguard : (ws.regs "loopC" == 1) = true) :
+    LoopCQ B inStride ((loopCBodyStmt inStride hashLog).eval fuel ws)
     ∧ (ws.regs "searchPos").toNat + 1
         ≤ (((loopCBodyStmt inStride hashLog).eval fuel ws).regs "searchPos").toNat
     -- **the output cursor does not run backwards over an iteration.**  A
@@ -629,10 +629,11 @@ theorem loopCBody_Qadvance (inStride hashLog fuel : Nat) (ws : WState)
 
 /-- One active `loopC` iteration keeps `litAnchor ≤ inStride − 5` (a not-found step
     leaves `litAnchor`; a found step sets it to the match end `p + ml ≤ endCap`). -/
-theorem loopCBody_litAnchor_le (inStride hashLog fuel : Nat) (ws : WState)
+theorem loopCBody_litAnchor_le {B : Nat} (inStride hashLog fuel : Nat) (ws : WState)
     (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64)
+    (hB : B ≤ 2 ^ 64)
     (hfuel : inStride ≤ fuel) (hla5 : (ws.regs "litAnchor").toNat ≤ inStride - 5)
-    (hQ : LoopCQ inStride ws) (hguard : (ws.regs "loopC" == 1) = true) :
+    (hQ : LoopCQ B inStride ws) (hguard : (ws.regs "loopC" == 1) = true) :
     (((loopCBodyStmt inStride hashLog).eval fuel ws).regs "litAnchor").toNat ≤ inStride - 5 := by
   obtain ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ := hQ
   have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
@@ -684,150 +685,11 @@ theorem loopCBody_litAnchor_le (inStride hashLog fuel : Nat) (ws : WState)
       rw [e_la]; exact hmlcap
 
 section LoopAsm
-open AlgorithmLib.LZ4Simt
-
-/-- The live coupling-register set for the `loopC` loop (excludes `p0`/`cand0`, which
-    `coopWindow` writes each iteration). -/
-def loopR : List String :=
-  ["searchPos", "found", "loopC", "inBase", "outBase", "op", "litAnchor", "ecR", "ec1",
-   "ml", "extC", "adv", "off0", "litLen", "mlm", "tokLo", "tokHi", "tok", "sbAddr",
-   "pLitBig", "pMatBig", "litExtra", "matExtra", "c255", "lsicC", "offLo", "offHi",
-   "cpDst", "cpSrc", "fLen", "zero", "pLitBigF", "litExtraF", "cpDstF", "cpSrcF",
-   -- length-store tail registers (untouched by the body, so uniformly `0` there)
-   "la0", "la1", "la2", "la3", "lb", "ls"]
-
-/-- **The `loopC` body simulates in the window-MISS case.**  `coopWindow` reports
-    `found = 0` (via `simSL_coopWindow` + `coopWindow_found_val`), the `uif` takes the
-    else branch (`searchPos += 32`, `simSL'_notFoundBranch`), then the `loopC` guard
-    recomputes.  Mirrors `simSL'_uifBodyInv`'s else branch. -/
-theorem loopCBody_none_reaches (inStride hashLog : Nat)
-    (lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
-    (lsicL lsicM : List SInstr)
-    (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hlen : inStride < 2 ^ 40)
-    (ws : WState) (hQ : LoopCQ inStride ws) (hguard : (ws.regs "loopC" == 1) = true)
-    (hhl : hashLog ≤ 32)
-    (hw : window (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) (tableOracle ws.gmem ws.smem hashLog 0 (ws.regs "inBase").toNat)
-        (inStride - 12) (ws.regs "searchPos").toNat = none)
-    (prog : Array SInstr) (base : Nat) (ss : SState) (fuel : Nat)
-    (hpc : ss.pc = base)
-    (hseg : SegAt prog base (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL lXL
-      cpH cpX lElseM lEndM lHM lXM lsicL lsicM))
-    (hlr : LabelsResolve prog base (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL
-      lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM))
-    (hc : Couple loopR ss ws) (hmi : MachInv ib ss) (hib40 : ib < 2 ^ 40) :
-    ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
-      ss'.pc = base + (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL lXL
-        cpH cpX lElseM lEndM lHM lXM lsicL lsicM).length ∧
-      Couple loopR ss' ((loopCBodyStmt inStride hashLog).eval fuel ws) ∧ MachInv ib ss' := by
-  obtain ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ := hQ
-  have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
-    loopCQ_guard inStride ws hstride hipos ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ hguard
-  rw [loopCBodyEmit] at hseg hlr
-  -- Step 1: coopWindow (window miss ⇒ found = 0).
-  obtain ⟨n1, ss1, hr1, hpc1, hc1, hmi1⟩ :=
-    simSL_coopWindow loopR inStride (inStride - 12) hashLog (ws.regs "searchPos").toNat
-      (by decide) (by decide) (by decide) hib40 (by omega) (by omega) hhl hlen (by omega) (by decide) (by decide)
-      (by decide) ws rfl (fun l ss'' hc'' => by rw [hc''.reg (by decide) l, UInt64.ofNat_toNat])
-      prog base ss fuel hpc hseg.append_left hlr.append_left hc hmi
-  have hfound0 : ((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-      hashLog 0).eval fuel ws).regs "found" = 0 := by
-    have : (WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-        hashLog 0).eval fuel ws = evalCoopWindow "found" "p0" "cand0" "searchPos" inStride
-          (inStride - 12) hashLog 0 ws := by simp only [WStmt.eval]
-    rw [this, coopWindow_found_val, hw]
-  -- Machine `found` at ss1 is `0` (coupled, uniform).
-  have hfound0m : ss1.regs "found" 0 = 0 := by rw [hc1.reg (by decide) 0, hfound0]
-  -- Abbreviate the found-branch emit and the post-coopWindow base.
-  obtain ⟨et, hetdef⟩ : ∃ x, foundBranchEmit (inStride - 5) lHE lEE lElseL lEndL lHL lXL cpH cpX
-      lElseM lEndM lHM lXM lsicL lsicM = x := ⟨_, rfl⟩
-  obtain ⟨base2, hbase2⟩ : ∃ x, base + (coopWindowEmit "found" "p0" "cand0" "searchPos" inStride
-      (inStride - 12) hashLog).length = x := ⟨_, rfl⟩
-  rw [hetdef] at hseg hlr
-  have hpc1' : ss1.pc = base2 := by rw [hpc1, hbase2]
-  have hsegR := hseg.append_right
-  have hlrR := hlr.append_right
-  rw [hbase2] at hsegR hlrR
-  have hsegU : SegAt prog base2 (uifEmit "found" lElse lEnd et
-      [.bin .add "searchPos" "searchPos" (.imm 32)]) := hsegR.append_left
-  have hlrU : LabelsResolve prog base2 (uifEmit "found" lElse lEnd et
-      [.bin .add "searchPos" "searchPos" (.imm 32)]) := hlrR.append_left
-  obtain ⟨hbr, hseg1⟩ := hsegU.cons
-  obtain ⟨_hbra, hseg3⟩ := hseg1.append_right.cons
-  obtain ⟨hlblE, hseg4⟩ := hseg3.cons
-  have hsegE : SegAt prog (base2 + 1 + et.length + 1 + 1)
-      [.bin .add "searchPos" "searchPos" (.imm 32)] := hseg4.append_left
-  obtain ⟨hlblN, _⟩ := hseg4.append_right.cons
-  have hlrE : LabelsResolve prog (base2 + 1 + et.length + 1 + 1)
-      [.bin .add "searchPos" "searchPos" (.imm 32)] :=
-    hlrU.cons.append_right.cons.cons.append_left
-  have hLelse : sfindLabel prog lElse = base2 + 1 + et.length + 1 :=
-    hlrU.cons.append_right.cons 0 lElse (by simp)
-  have hcv := hc1.reg (show "found" ∈ loopR by decide) 0
-  have hbr' : prog[ss1.pc]? = some (.braifnot "found" lElse) := by rw [hpc1']; exact hbr
-  have hb : ¬(((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-      hashLog 0).eval fuel ws).regs "found" == 1) = true := by rw [hfound0]; decide
-  -- Step 2: the `uif` takes the else branch (`found = 0`): braifnot → lElse ; lbl.
-  have s0 : sstep prog ss1 = ss1.setPc (base2 + 1 + et.length + 1) := by
-    rw [braifnot_step prog ss1 "found" lElse hbr', hcv, if_neg hb, hLelse]
-  have hlblE' : prog[(ss1.setPc (base2 + 1 + et.length + 1)).pc]? = some (.lbl lElse) := hlblE
-  have s1 : sstep prog (ss1.setPc (base2 + 1 + et.length + 1))
-      = ss1.setPc (base2 + 1 + et.length + 1 + 1) := by
-    rw [lbl_step prog _ lElse hlblE']; simp [SState.setPc]
-  -- Step 3: the not-found branch (`searchPos += 32`).
-  obtain ⟨ne, ss2, hrE, hpcE, hcE, hmiE⟩ :=
-    simSL'_notFoundBranch loopR (by decide)
-      prog (base2 + 1 + et.length + 1 + 1) (ss1.setPc (base2 + 1 + et.length + 1 + 1))
-      ((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0).eval
-        fuel ws)
-      fuel rfl hsegE hlrE (couple_setPc hc1 _) (machInv_setPc ss1 _ hmi1)
-  have hpcE' : ss2.pc = base2 + 1 + et.length + 1 + 1 + 1 := by
-    rw [hpcE]; simp only [List.length_cons, List.length_nil]
-  have hlblN' : prog[ss2.pc]? = some (.lbl lEnd) := by rw [hpcE]; exact hlblN
-  have huplen : (uifEmit "found" lElse lEnd et
-      [.bin .add "searchPos" "searchPos" (.imm 32)]).length = et.length + 1 + 4 := by
-    rw [uifEmit_length]; simp only [List.length_cons, List.length_nil]
-  have s2 : sstep prog ss2 = ss2.setPc (base2 + (uifEmit "found" lElse lEnd et
-      [.bin .add "searchPos" "searchPos" (.imm 32)]).length) := by
-    rw [lbl_step prog ss2 lEnd hlblN']; congr 1; rw [hpcE', huplen]; omega
-  -- Step 4: the trailing `setp loopC`.
-  obtain ⟨n5, ss5, hr5, hpc5, hc5, hmi5⟩ :=
-    simSL'_setp loopR .lt "loopC" "searchPos" (.imm (inStride - 12)) (by decide)
-      (fun n h => by cases h) (by decide)
-      prog (base2 + (uifEmit "found" lElse lEnd et [.bin .add "searchPos" "searchPos" (.imm 32)]).length)
-      (ss2.setPc (base2 + (uifEmit "found" lElse lEnd et
-        [.bin .add "searchPos" "searchPos" (.imm 32)]).length))
-      ((wseq [.bin .add "searchPos" "searchPos" (.imm 32)]).eval fuel
-        ((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0).eval
-          fuel ws))
-      fuel (by simp only [SState.setPc]) hsegR.append_right hlrR.append_right
-      (couple_setPc hcE _) (machInv_setPc ss2 _ hmiE)
-  -- Assemble the reaches chain and the final coupling.
-  refine ⟨(n1 + (1 + (1 + (ne + 1)))) + n5, ss5,
-    sreaches_trans prog _ n5 _ _ _
-      (sreaches_trans prog n1 _ _ _ _ hr1
-        (sreaches_trans prog 1 _ _ _ _ (sreaches_one_eq s0)
-          (sreaches_trans prog 1 _ _ _ _ (sreaches_one_eq s1)
-            (sreaches_trans prog ne 1 _ _ _ hrE (sreaches_one_eq s2))))) hr5, ?_, ?_, hmi5⟩
-  · rw [hpc5]
-    simp only [SState.setPc, loopCBodyEmit, hetdef, List.length_append, List.length_cons,
-      List.length_nil, huplen]
-    rw [← hbase2]; omega
-  · -- `loopCBodyStmt.eval = setp.eval (notFound.eval cwWs)` since `found = 0`.
-    have hevalChain : (loopCBodyStmt inStride hashLog).eval fuel ws
-        = (WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval fuel
-            ((wseq [.bin .add "searchPos" "searchPos" (.imm 32)]).eval fuel
-              ((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-                hashLog 0).eval fuel ws)) := by
-      simp only [loopCBodyStmt, wseq, WStmt.eval.eq_2, WStmt.eval.eq_10]
-      rw [if_neg hb]
-    rw [hevalChain]; exact hc5
-
 /-- Facts about the post-`coopWindow` state in the window-HIT case, transferred from
-    `LoopCQ` + the window semantics — the hypotheses `foundBranch_sideconds` /
-    `simSL'_foundBranch` consume. -/
-theorem loopCBody_found_cwFacts (inStride hashLog : Nat) (ws : WState)
+    `LoopCQ` + the window semantics: what a found match's branch runs from. -/
+theorem loopCBody_found_cwFacts {B : Nat} (inStride hashLog : Nat) (ws : WState)
     (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride)
-    (hQ : LoopCQ inStride ws) (hguard : (ws.regs "loopC" == 1) = true)
+    (hQ : LoopCQ B inStride ws) (hguard : (ws.regs "loopC" == 1) = true)
     (p c : Nat)
     (hw : window (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) (tableOracle ws.gmem ws.smem hashLog 0 (ws.regs "inBase").toNat)
         (inStride - 12) (ws.regs "searchPos").toNat = some (p, c)) :
@@ -844,7 +706,7 @@ theorem loopCBody_found_cwFacts (inStride hashLog : Nat) (ws : WState)
         + ((evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0
           ws).regs "op").toNat
         + 9 * (inStride - ((evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-          hashLog 0 ws).regs "litAnchor").toNat) < 2 ^ 32
+          hashLog 0 ws).regs "litAnchor").toNat) < B
     ∧ ((evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0
         ws).regs "outBase").toNat
         + ((evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0
@@ -896,222 +758,13 @@ theorem loopCBody_found_cwFacts (inStride hashLog : Nat) (ws : WState)
   · rw [hob, hop, hla]; exact hbud32
   · rw [hob, hop, hla, hgm]; exact hbudsz
 
-/-- **The `loopC` body simulates in the window-HIT case.**  `coopWindow` couples
-    `p0`/`cand0` (`coopWindow_couple_found`), `found = 1`, the `uif` takes the then
-    branch (`simSL'_foundBranch`, its side-conditions from `loopCBody_found_cwFacts`
-    + `foundBranch_sideconds`), then the `loopC` guard recomputes; `Couple.drop2`
-    restores the loop coupling set. -/
-theorem loopCBody_found_reaches (inStride hashLog : Nat)
-    (lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
-    (lsicL lsicM : List SInstr)
-    (hLdef : lsicL = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "litExtra" "litExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "litExtra" (.imm 255)]))))
-    (hMdef : lsicM = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "matExtra" "matExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "matExtra" (.imm 255)]))))
-    (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hlen : inStride < 2 ^ 40)
-    (ws : WState) (hQ : LoopCQ inStride ws) (hguard : (ws.regs "loopC" == 1) = true)
-    (hhl : hashLog ≤ 32) (fuel : Nat) (hfuelb : inStride ≤ fuel) (p c : Nat)
-    (hw : window (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) (tableOracle ws.gmem ws.smem hashLog 0 (ws.regs "inBase").toNat)
-        (inStride - 12) (ws.regs "searchPos").toNat = some (p, c))
-    (prog : Array SInstr) (base : Nat) (ss : SState)
-    (hpc : ss.pc = base)
-    (hseg : SegAt prog base (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL lXL
-      cpH cpX lElseM lEndM lHM lXM lsicL lsicM))
-    (hlr : LabelsResolve prog base (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL
-      lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM))
-    (hc : Couple loopR ss ws) (hmi : MachInv ib ss) (hib40 : ib < 2 ^ 40) :
-    ∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
-      ss'.pc = base + (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL lXL
-        cpH cpX lElseM lEndM lHM lXM lsicL lsicM).length ∧
-      Couple loopR ss' ((loopCBodyStmt inStride hashLog).eval fuel ws) ∧ MachInv ib ss' := by
-  obtain ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ := hQ
-  have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
-    loopCQ_guard inStride ws hstride hipos ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ hguard
-  obtain ⟨cwib0, cwla_p0, cwp0lt, cwbud32, cwbudsz, cwobLB, cwcand, cwp4⟩ :=
-    loopCBody_found_cwFacts inStride hashLog ws hstride hipos
-      ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ hguard p c hw
-  -- the found register is `1`.
-  have hfound1 : (evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-      hashLog 0 ws).regs "found" = 1 := by
-    rw [evalCoopWindow_eq_go, hw, evalCoopWindowGo_regs]; simp [WState.setReg]
-  -- the 9 wEmitMatchSeq side-conditions, on the coopWindow state.
-  obtain ⟨sc1, sc2, sc3, sc4, sc5, sc6, sc7, sc8, sc9⟩ :=
-    foundBranch_sideconds inStride (inStride - 5) fuel
-      (evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0 ws)
-      rfl hlen cwib0 cwla_p0 cwp0lt cwbud32 cwbudsz cwobLB cwcand cwp4 hfuelb
-  obtain ⟨et, hetdef⟩ : ∃ x, foundBranchEmit (inStride - 5) lHE lEE lElseL lEndL lHL lXL cpH cpX
-      lElseM lEndM lHM lXM lsicL lsicM = x := ⟨_, rfl⟩
-  obtain ⟨base2, hbase2⟩ : ∃ x, base + (coopWindowEmit "found" "p0" "cand0" "searchPos" inStride
-      (inStride - 12) hashLog).length = x := ⟨_, rfl⟩
-  rw [loopCBodyEmit] at hseg hlr
-  -- Step 1: coopWindow, coupling p0/cand0.
-  obtain ⟨n1, ss1, hr1, hpc1, hc1, hmi1⟩ :=
-    coopWindow_couple_found loopR inStride (inStride - 12) hashLog (ws.regs "searchPos").toNat p c
-      (by decide) (by decide) (by decide) hib40 (by omega) (by omega) hhl hlen (by omega) (by decide) (by decide)
-      (by decide) ws rfl (fun l ss'' hc'' => by rw [hc''.reg (by decide) l, UInt64.ofNat_toNat]) hw
-      prog base ss fuel hpc hseg.append_left hlr.append_left hc hmi
-  rw [hetdef] at hseg hlr
-  have hpc1' : ss1.pc = base2 := by rw [hpc1, hbase2]
-  have hsegR := hseg.append_right
-  have hlrR := hlr.append_right
-  rw [hbase2] at hsegR hlrR
-  have hsegU : SegAt prog base2 (uifEmit "found" lElse lEnd et
-      [.bin .add "searchPos" "searchPos" (.imm 32)]) := hsegR.append_left
-  have hlrU : LabelsResolve prog base2 (uifEmit "found" lElse lEnd et
-      [.bin .add "searchPos" "searchPos" (.imm 32)]) := hlrR.append_left
-  obtain ⟨hbr, hseg1⟩ := hsegU.cons
-  have hsegT : SegAt prog (base2 + 1) (foundBranchEmit (inStride - 5) lHE lEE lElseL lEndL lHL lXL
-    cpH cpX lElseM lEndM lHM lXM lsicL lsicM) := by rw [hetdef]; exact hseg1.append_left
-  obtain ⟨hbra, hseg3⟩ := hseg1.append_right.cons
-  obtain ⟨hlblE, hseg4⟩ := hseg3.cons
-  obtain ⟨hlblN, _⟩ := hseg4.append_right.cons
-  have hlrT : LabelsResolve prog (base2 + 1) (foundBranchEmit (inStride - 5) lHE lEE lElseL lEndL
-    lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM) := by rw [hetdef]; exact hlrU.cons.append_left
-  have hLend : sfindLabel prog lEnd = base2 + 1 + et.length + 1 + 1 + 1 := by
-    have := hlrU.cons.append_right.cons.cons.append_right 0 lEnd (by simp)
-    simpa only [List.length_cons, List.length_nil] using this
-  have hcv := hc1.reg (show "found" ∈ "p0" :: "cand0" :: loopR by decide) 0
-  have hbr' : prog[ss1.pc]? = some (.braifnot "found" lElse) := by rw [hpc1']; exact hbr
-  have hb1 : (((evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-      hashLog 0 ws).regs "found" == 1) = true) := by rw [hfound1]; decide
-  -- Step 2: the `uif` takes the then branch (`found = 1`).
-  have s0 : sstep prog ss1 = ss1.setPc (base2 + 1) := by
-    rw [braifnot_step prog ss1 "found" lElse hbr', hcv, if_pos hb1, hpc1']
-  -- Step 3: the found branch (`simSL'_foundBranch`) at `R' = p0 :: cand0 :: loopR`.
-  obtain ⟨n4, ss4, hr4, hpc4, hc4, hmi4⟩ :=
-    simSL'_foundBranch ("p0" :: "cand0" :: loopR) inStride (inStride - 5)
-      lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM
-      ⟨by decide, by decide, by decide, by decide, by decide, by decide, by decide⟩ rfl hlen
-      hib40 (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
-      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
-      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
-      (by decide) (by decide) (by decide) lsicL lsicM hLdef hMdef
-      prog (base2 + 1) (ss1.setPc (base2 + 1))
-      (evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0 ws)
-      fuel rfl hsegT hlrT
-      (couple_setPc hc1 _) (machInv_setPc ss1 _ hmi1)
-      cwcand cwp4 (by have := cwp4; have := hfuelb; have := hipos; omega)
-      sc1 sc2 sc3 sc4 sc5 sc6 sc7 sc8 sc9
-  have hcwe : (WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-      hashLog 0).eval fuel ws
-      = evalCoopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0 ws := by
-    simp only [WStmt.eval]
-  rw [← hcwe] at hc4
-  have hpc4' : ss4.pc = base2 + 1 + et.length := by
-    rw [hpc4, hetdef]
-  have hbra' : prog[ss4.pc]? = some (.bra lEnd) := by rw [hpc4']; exact hbra
-  have s1 : sstep prog ss4 = ss4.setPc (base2 + 1 + et.length + 1 + 1 + 1) := by
-    rw [bra_step prog ss4 lEnd hbra', hLend]
-  have hlblN' : prog[(ss4.setPc (base2 + 1 + et.length + 1 + 1 + 1)).pc]? = some (.lbl lEnd) :=
-    hlblN
-  have s2 : sstep prog (ss4.setPc (base2 + 1 + et.length + 1 + 1 + 1))
-      = ss4.setPc (base2 + 1 + et.length + 1 + 1 + 1 + 1) := by
-    rw [lbl_step prog _ lEnd hlblN']; simp [SState.setPc]
-  have huplen : (uifEmit "found" lElse lEnd et
-      [.bin .add "searchPos" "searchPos" (.imm 32)]).length = et.length + 1 + 4 := by
-    rw [uifEmit_length]; simp only [List.length_cons, List.length_nil]
-  -- Step 4: the trailing `setp loopC`.
-  obtain ⟨n5, ss5, hr5, hpc5, hc5, hmi5⟩ :=
-    simSL'_setp ("p0" :: "cand0" :: loopR) .lt "loopC" "searchPos" (.imm (inStride - 12))
-      (by decide) (fun n h => by cases h) (by decide)
-      prog (base2 + (uifEmit "found" lElse lEnd et [.bin .add "searchPos" "searchPos" (.imm 32)]).length)
-      (ss4.setPc (base2 + 1 + et.length + 1 + 1 + 1 + 1))
-      ((foundBranchStmt inStride (inStride - 5)).eval fuel
-        ((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12) hashLog 0).eval
-          fuel ws))
-      fuel (by simp only [SState.setPc, huplen]; omega) hsegR.append_right hlrR.append_right
-      (couple_setPc hc4 _) (machInv_setPc ss4 _ hmi4)
-  refine ⟨(n1 + (1 + (n4 + (1 + 1)))) + n5, ss5,
-    sreaches_trans prog _ n5 _ _ _
-      (sreaches_trans prog n1 _ _ _ _ hr1
-        (sreaches_trans prog 1 _ _ _ _ (sreaches_one_eq s0)
-          (sreaches_trans prog n4 _ _ _ _ hr4
-            (sreaches_trans prog 1 1 _ _ _ (sreaches_one_eq s1) (sreaches_one_eq s2))))) hr5,
-    ?_, ?_, hmi5⟩
-  · rw [hpc5]
-    simp only [SState.setPc, loopCBodyEmit, hetdef, List.length_append, List.length_cons,
-      List.length_nil, huplen]
-    rw [← hbase2]; omega
-  · -- `loopCBodyStmt.eval = setp.eval (foundBranch.eval cwWs)` since `found = 1`, then `drop2`.
-    have hevalChain : (loopCBodyStmt inStride hashLog).eval fuel ws
-        = (WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval fuel
-            ((foundBranchStmt inStride (inStride - 5)).eval fuel
-              ((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-                hashLog 0).eval fuel ws)) := by
-      have hb1' : (((WStmt.coopWindow "found" "p0" "cand0" "searchPos" inStride (inStride - 12)
-          hashLog 0).eval fuel ws).regs "found" == 1) = true := by rw [hcwe, hfound1]; decide
-      simp only [loopCBodyStmt, wseq, WStmt.eval.eq_2, WStmt.eval.eq_10]
-      rw [if_pos hb1']
-    rw [hevalChain]
-    exact Couple.drop2 loopR ss5 _ "p0" "cand0" hc5
-
-/-- **The `loopC` body simulates and preserves the loop invariant / measure** — the
-    `hbody` obligation of `simSL'_measureLoop`.  Cases on the window result
-    (`loopCBody_none_reaches` / `loopCBody_found_reaches` for the simulation half;
-    `loopCBody_Qadvance` for `LoopCQ`-preservation + `searchPos`-advance). -/
-theorem loopCBody_bodySim (inStride hashLog F : Nat)
-    (lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
-    (lsicL lsicM : List SInstr)
-    (hLdef : lsicL = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "litExtra" "litExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "litExtra" (.imm 255)]))))
-    (hMdef : lsicM = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "matExtra" "matExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "matExtra" (.imm 255)]))))
-    (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hlen : inStride < 2 ^ 40)
-    (hib40 : ib < 2 ^ 40)
-    (hhl : hashLog ≤ 32) (hFb : 2 * inStride + 1 ≤ F)
-    (prog : Array SInstr) (base : Nat) (ss : SState) (ws : WState) (fuel : Nat)
-    (hpc : ss.pc = base + 1 + 1)
-    (hseg : SegAt prog (base + 1 + 1) (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL
-      lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM))
-    (hlr : LabelsResolve prog (base + 1 + 1) (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE
-      lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM))
-    (hc : Couple loopR ss ws) (hmi : MachInv ib ss) (hQ : LoopCQ inStride ws)
-    (hguard : (ws.regs "loopC" == 1) = true)
-    (hfloor : F ≤ (ws.regs "searchPos").toNat + fuel + 1) :
-    (∃ (m : Nat) (ss' : SState), SReaches prog m ss ss' ∧
-      ss'.pc = base + 1 + 1 + (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL
-        lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM).length ∧
-      Couple loopR ss' ((loopCBodyStmt inStride hashLog).eval fuel ws) ∧ MachInv ib ss')
-    ∧ LoopCQ inStride ((loopCBodyStmt inStride hashLog).eval fuel ws)
-    ∧ (ws.regs "searchPos").toNat + 1
-        ≤ (((loopCBodyStmt inStride hashLog).eval fuel ws).regs "searchPos").toNat := by
-  have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
-    loopCQ_guard inStride ws hstride hipos hQ hguard
-  have hfuelb : inStride ≤ fuel := by omega
-  refine ⟨?_, (loopCBody_Qadvance inStride hashLog fuel ws hstride hipos (by omega)
-    hfuelb hQ hguard).1, (loopCBody_Qadvance inStride hashLog fuel ws hstride hipos (by omega)
-    hfuelb hQ hguard).2.1⟩
-  cases hw : window (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) (tableOracle ws.gmem ws.smem hashLog 0 (ws.regs "inBase").toNat)
-      (inStride - 12) (ws.regs "searchPos").toNat with
-  | none =>
-      exact loopCBody_none_reaches inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX
-        lElseM lEndM lHM lXM lsicL lsicM hstride hipos hlen ws hQ hguard hhl hw prog (base + 1 + 1)
-        ss fuel hpc hseg hlr hc hmi hib40
-  | some pc =>
-      obtain ⟨p, c⟩ := pc
-      exact loopCBody_found_reaches inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX
-        lElseM lEndM lHM lXM lsicL lsicM hLdef hMdef hstride hipos hlen ws hQ hguard hhl fuel hfuelb
-        p c hw prog (base + 1 + 1) ss hpc hseg hlr hc hmi hib40
-
 /-- The `loopC` loop terminates: each active iteration advances `searchPos` by ≥ 1
     (`loopCBody_Qadvance`) toward the search limit, and the combined measure
     `(searchLim − searchPos) + inStride ≤ fuel` both bounds the remaining iterations
     and keeps the per-iteration fuel `≥ inStride` (so the body simulation applies). -/
-theorem loopC_halts (inStride hashLog : Nat) (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride)
-    (hp64 : inStride < 2 ^ 64) :
-    ∀ (fuel : Nat) (ws : WState), LoopCQ inStride ws →
+theorem loopC_halts {B : Nat} (inStride hashLog : Nat) (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride)
+    (hp64 : inStride < 2 ^ 64) (hB : B ≤ 2 ^ 64) :
+    ∀ (fuel : Nat) (ws : WState), LoopCQ B inStride ws →
       (inStride - 12) - (ws.regs "searchPos").toNat + inStride ≤ fuel →
       WhileHalts "loopC" (loopCBodyStmt inStride hashLog) fuel ws := by
   intro fuel
@@ -1124,17 +777,17 @@ theorem loopC_halts (inStride hashLog : Nat) (hstride : inStride ≤ 65536) (hip
       · rw [if_pos hg]
         have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
           loopCQ_guard inStride ws hstride hipos hQ hg
-        have hqa := loopCBody_Qadvance inStride hashLog n ws hstride hipos hp64 (by omega) hQ hg
+        have hqa := loopCBody_Qadvance inStride hashLog n ws hstride hipos hp64 hB (by omega) hQ hg
         exact ih ((loopCBodyStmt inStride hashLog).eval n ws) hqa.1 (by omega)
       · rw [if_neg hg]; trivial
 
 /-- `LoopCQ` is preserved across the whole `loopC` loop (each active iteration
     preserves it via `loopCBody_Qadvance`; the exit state inherits it). -/
-theorem loopC_loop_preservesInv (inStride hashLog : Nat) (hstride : inStride ≤ 65536)
-    (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64) :
-    ∀ (fuel : Nat) (ws : WState), LoopCQ inStride ws →
+theorem loopC_loop_preservesInv {B : Nat} (inStride hashLog : Nat) (hstride : inStride ≤ 65536)
+    (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64) (hB : B ≤ 2 ^ 64) :
+    ∀ (fuel : Nat) (ws : WState), LoopCQ B inStride ws →
       (inStride - 12) - (ws.regs "searchPos").toNat + inStride ≤ fuel →
-      LoopCQ inStride ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval fuel ws) := by
+      LoopCQ B inStride ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval fuel ws) := by
   intro fuel
   induction fuel with
   | zero => intro ws _ hf; exact absurd hf (by omega)
@@ -1145,15 +798,15 @@ theorem loopC_loop_preservesInv (inStride hashLog : Nat) (hstride : inStride ≤
       · rw [if_pos hg]
         have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
           loopCQ_guard inStride ws hstride hipos hQ hg
-        have hqa := loopCBody_Qadvance inStride hashLog n ws hstride hipos hp64 (by omega) hQ hg
+        have hqa := loopCBody_Qadvance inStride hashLog n ws hstride hipos hp64 hB (by omega) hQ hg
         exact ih ((loopCBodyStmt inStride hashLog).eval n ws) hqa.1 (by omega)
       · rw [if_neg hg]; exact hQ
 
 /-- `litAnchor ≤ inStride − 5` holds at the `loopC` loop exit (preserved each
     iteration via `loopCBody_litAnchor_le`); gives `fLen = inStride − litAnchor ≥ 5`. -/
-theorem loopC_litAnchor_bound (inStride hashLog : Nat) (hstride : inStride ≤ 65536)
-    (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64) :
-    ∀ (fuel : Nat) (ws : WState), LoopCQ inStride ws →
+theorem loopC_litAnchor_bound {B : Nat} (inStride hashLog : Nat) (hstride : inStride ≤ 65536)
+    (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64) (hB : B ≤ 2 ^ 64) :
+    ∀ (fuel : Nat) (ws : WState), LoopCQ B inStride ws →
       (ws.regs "litAnchor").toNat ≤ inStride - 5 →
       (inStride - 12) - (ws.regs "searchPos").toNat + inStride ≤ fuel →
       (((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval fuel ws).regs
@@ -1168,8 +821,8 @@ theorem loopC_litAnchor_bound (inStride hashLog : Nat) (hstride : inStride ≤ 6
       · rw [if_pos hg]
         have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
           loopCQ_guard inStride ws hstride hipos hQ hg
-        have hqa := loopCBody_Qadvance inStride hashLog n ws hstride hipos hp64 (by omega) hQ hg
-        have hla' := loopCBody_litAnchor_le inStride hashLog n ws hstride hipos hp64 (by omega)
+        have hqa := loopCBody_Qadvance inStride hashLog n ws hstride hipos hp64 hB (by omega) hQ hg
+        have hla' := loopCBody_litAnchor_le inStride hashLog n ws hstride hipos hp64 hB (by omega)
           hla5 hQ hg
         exact ih ((loopCBodyStmt inStride hashLog).eval n ws) hqa.1 hla' (by omega)
       · rw [if_neg hg]; exact hla5
@@ -1352,8 +1005,7 @@ theorem finalCpEntry_cpDst (litStart litLen : String) (fuel : Nat) (ws : WState)
   ac_rfl
 
 /-- **The `wEmitFinalSeq` side-conditions** discharged from the post-loop layout facts,
-    with `fLen = inStride − litAnchor`.  The caller obligation `simSL'_wEmitFinalSeq`
-    consumes (mirrors `foundBranch_sideconds`). -/
+    with `fLen = inStride − litAnchor` (mirrors `foundBranch_sideconds`). -/
 theorem finalSeq_sideconds (inStride fuel : Nat) (ws : WState) (hlen : inStride < 2 ^ 40)
     (hib0 : (ws.regs "inBase").toNat < 2 ^ 40)
     (hfLen : (ws.regs "fLen").toNat = inStride - (ws.regs "litAnchor").toNat)
@@ -1437,54 +1089,14 @@ theorem finalSeq_sideconds (inStride fuel : Nat) (ws : WState) (hlen : inStride 
   · rw [show (finalCpEntry "litAnchor" "fLen" fuel ws).gmem.size = ws.gmem.size from
         finalCpEntry_gmem_size _ _ _ _, hcdN, hCfLen]; omega
 
-/-- **The whole `loopC` loop simulates** — `simSL'_measureLoop` instantiated with the
-    body simulation `loopCBody_bodySim`, invariant `LoopCQ`, measure `searchPos`. -/
-theorem loopC_loop_sim (inStride hashLog F : Nat)
-    (lHeadC lEndC lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM : String)
-    (lsicL lsicM : List SInstr)
-    (hLdef : lsicL = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "litExtra" "litExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "litExtra" (.imm 255)]))))
-    (hMdef : lsicM = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "matExtra" "matExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "matExtra" (.imm 255)]))))
-    (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hlen : inStride < 2 ^ 40)
-    (hib40 : ib < 2 ^ 40)
-    (hhl : hashLog ≤ 32) (hFb : 2 * inStride + 1 ≤ F)
-    (prog : Array SInstr) (base : Nat)
-    (hseg : SegAt prog base (uwhileEmit "loopC" lHeadC lEndC (loopCBodyEmit inStride hashLog lElse
-      lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)))
-    (hlr : LabelsResolve prog base (uwhileEmit "loopC" lHeadC lEndC (loopCBodyEmit inStride hashLog
-      lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM))) :
-    ∀ (fuel : Nat) (ss : SState) (ws : WState),
-      ss.pc = base → Couple loopR ss ws → MachInv ib ss → LoopCQ inStride ws →
-      F ≤ (ws.regs "searchPos").toNat + fuel →
-      WhileHalts "loopC" (loopCBodyStmt inStride hashLog) fuel ws →
-      ∃ (n : Nat) (ss' : SState), SReaches prog n ss ss' ∧
-        ss'.pc = base + (uwhileEmit "loopC" lHeadC lEndC (loopCBodyEmit inStride hashLog lElse
-          lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)).length ∧
-        Couple loopR ss' ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval fuel ws)
-          ∧ MachInv ib ss' :=
-  simSL'_measureLoop loopR "loopC" lHeadC lEndC (LoopCQ inStride)
-    (fun ws => (ws.regs "searchPos").toNat) F (loopCBodyStmt inStride hashLog)
-    (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM
-      lHM lXM lsicL lsicM) prog base (by decide)
-    (loopCBody_bodySim inStride hashLog F lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM
-      lEndM lHM lXM lsicL lsicM hLdef hMdef hstride hipos hlen hib40 hhl hFb prog base)
-    hseg hlr
-
 /-- The state after `setp loopC` on a post-prologue state satisfies `LoopCQ`. -/
-theorem setpLoopC_LoopCQ (inStride : Nat) (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64)
+theorem setpLoopC_LoopCQ {B : Nat} (inStride : Nat) (hipos : 12 ≤ inStride) (hp64 : inStride < 2 ^ 64)
     (ws : WState) (hop0 : ws.regs "op" = 0) (hla0 : ws.regs "litAnchor" = 0)
     (hsp0 : ws.regs "searchPos" = 0) (hib0 : (ws.regs "inBase").toNat < 2 ^ 40)
-    (hobN : (ws.regs "outBase").toNat + 9 * inStride < 2 ^ 32)
+    (hobN : (ws.regs "outBase").toNat + 9 * inStride < B)
     (hsize : (ws.regs "outBase").toNat + 9 * inStride ≤ ws.gmem.size)
     (hobLB : (ws.regs "inBase").toNat + inStride ≤ (ws.regs "outBase").toNat) (fuel : Nat) :
-    LoopCQ inStride
+    LoopCQ B inStride
       ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval fuel ws) := by
   have hsetp : (WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval fuel ws
       = ws.setReg "loopC" (if ws.regs "searchPos" < UInt64.ofNat (inStride - 12) then 1 else 0) := by
@@ -1502,337 +1114,9 @@ theorem setpLoopC_LoopCQ (inStride : Nat) (hipos : 12 ≤ inStride) (hp64 : inSt
   · simp only [WState.setReg, String.reduceEq, if_false, hop0, hla0, h0N, Nat.add_zero,
       Nat.sub_zero]; exact hsize
 
-/-- **The full `bodyEncodePrefix` simulates from a post-prologue state.**  `SReaches`
-    glue of `setp loopC` → the `loopC` loop → `mov fLen` / `sub fLen` → `wEmitFinalSeq`;
-    this is the machine-side `hbodySim` (for the concrete coupling set `loopR`). -/
-theorem bodyEncodePrefix_sim (inStride hashLog : Nat)
-    (lHeadC lEndC lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM
-     lElseF lEndF lHF lXF cpHF cpXF : String)
-    (lsicL lsicM lsicBodyF : List SInstr)
-    (hLdef : lsicL = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "litExtra" "litExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "litExtra" (.imm 255)]))))
-    (hMdef : lsicM = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "matExtra" "matExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "matExtra" (.imm 255)]))))
-    (hFdef : lsicBodyF = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "litExtraF" "litExtraF" (.imm 255)]
-          ++ [.setp .ge "lsicC" "litExtraF" (.imm 255)]))))
-    (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hlen : inStride < 2 ^ 40)
-    (hp64 : inStride < 2 ^ 64) (hhl : hashLog ≤ 32)
-    (ws : WState) (hop0 : ws.regs "op" = 0) (hla0 : ws.regs "litAnchor" = 0)
-    (hsp0 : ws.regs "searchPos" = 0) (hib0 : (ws.regs "inBase").toNat < 2 ^ 40)
-    (hobN : (ws.regs "outBase").toNat + 9 * inStride < 2 ^ 32)
-    (hsize : (ws.regs "outBase").toNat + 9 * inStride ≤ ws.gmem.size)
-    (hobLB : (ws.regs "inBase").toNat + inStride ≤ (ws.regs "outBase").toNat)
-    (prog : Array SInstr) (base : Nat) (ss : SState)
-    (hpc : ss.pc = base)
-    (hseg : SegAt prog base
-      ([.setp .lt "loopC" "searchPos" (.imm (inStride - 12))]
-        ++ (uwhileEmit "loopC" lHeadC lEndC (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE
-              lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)
-          ++ (([.mov "fLen" (.imm inStride)] : List SInstr)
-            ++ (([.bin .sub "fLen" "fLen" (.reg "litAnchor")] : List SInstr)
-              ++ wEmitFinalSeqEmit "litAnchor" "fLen" lElseF lEndF lHF lXF cpHF cpXF lsicBodyF)))))
-    (hlr : LabelsResolve prog base
-      ([.setp .lt "loopC" "searchPos" (.imm (inStride - 12))]
-        ++ (uwhileEmit "loopC" lHeadC lEndC (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE
-              lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)
-          ++ (([.mov "fLen" (.imm inStride)] : List SInstr)
-            ++ (([.bin .sub "fLen" "fLen" (.reg "litAnchor")] : List SInstr)
-              ++ wEmitFinalSeqEmit "litAnchor" "fLen" lElseF lEndF lHF lXF cpHF cpXF lsicBodyF)))))
-    (hc : Couple loopR ss ws) (hmi : MachInv ib ss) (hib40 : ib < 2 ^ 40) :
-    ∃ (n : Nat) (ss' : SState), SReaches prog n ss ss' ∧
-      Couple loopR ss' ((bodyEncodePrefix inStride hashLog).eval (inStride + 34 * inStride) ws)
-        ∧ MachInv ib ss' ∧
-      ss'.pc = base +
-        (([.setp .lt "loopC" "searchPos" (.imm (inStride - 12))] : List SInstr)
-          ++ (uwhileEmit "loopC" lHeadC lEndC (loopCBodyEmit inStride hashLog lElse lEnd lHE lEE
-                lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)
-            ++ (([.mov "fLen" (.imm inStride)] : List SInstr)
-              ++ (([.bin .sub "fLen" "fLen" (.reg "litAnchor")] : List SInstr)
-                ++ wEmitFinalSeqEmit "litAnchor" "fLen" lElseF lEndF lHF lXF cpHF cpXF
-                    lsicBodyF)))).length := by
-  obtain ⟨F, hFval⟩ : ∃ x, inStride + 34 * inStride = x := ⟨_, rfl⟩
-  rw [hFval]
-  -- Step 1: `setp loopC`.
-  have hsegR := hseg.append_right
-  have hlrR := hlr.append_right
-  obtain ⟨n1, ss1, hr1, hpc1, hc1, hmi1⟩ :=
-    simSL'_setp loopR .lt "loopC" "searchPos" (.imm (inStride - 12)) (by decide)
-      (fun n h => by cases h) (by decide) prog base ss ws F hpc hseg.append_left hlr.append_left
-      hc hmi
-  have hLoopCQ1 : LoopCQ inStride
-      ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws) :=
-    setpLoopC_LoopCQ inStride hipos hp64 ws hop0 hla0 hsp0 hib0 hobN hsize hobLB F
-  -- the post-`setp` `searchPos` is still `0`.
-  have hsp1 : (((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws).regs
-      "searchPos").toNat = 0 := by
-    simp only [WStmt.eval, WState.setReg, WArg.eval, SCmp.run, String.reduceEq, if_false]
-    rw [hsp0]; rfl
-  have hpc1' : ss1.pc = base + 1 := by simpa using hpc1
-  -- Step 2: the `loopC` loop.
-  have hla1 : (((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws).regs
-      "litAnchor").toNat ≤ inStride - 5 := by
-    simp only [WStmt.eval, WState.setReg, WArg.eval, SCmp.run, String.reduceEq, if_false]
-    rw [hla0]; simp
-  have hFge : inStride ≤ F := by rw [← hFval]; omega
-  obtain ⟨n2, ss2, hr2, hpc2, hc2, hmi2⟩ :=
-    loopC_loop_sim inStride hashLog F lHeadC lEndC lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX
-      lElseM lEndM lHM lXM lsicL lsicM hLdef hMdef hstride hipos hlen hib40 hhl (by rw [← hFval]; omega)
-      prog (base + 1) (by simpa using hsegR.append_left) (by simpa using hlrR.append_left)
-      F ss1 _ hpc1' hc1 hmi1 hLoopCQ1 (by rw [hsp1]; omega)
-      (loopC_halts inStride hashLog hstride hipos hp64 F _ hLoopCQ1 (by rw [hsp1]; omega))
-  have hLoopCQ2 := loopC_loop_preservesInv inStride hashLog hstride hipos hp64 F _ hLoopCQ1
-    (by rw [hsp1]; omega)
-  have hla2 := loopC_litAnchor_bound inStride hashLog hstride hipos hp64 F _ hLoopCQ1 hla1
-    (by rw [hsp1]; omega)
-  obtain ⟨hib2, hlaSp2, hlc2, hobLB2, hbud2, hbudsz2⟩ := hLoopCQ2
-  -- Step 3 & 4: `mov fLen inStride` ; `sub fLen fLen litAnchor`.
-  have hsegR2 := hsegR.append_right
-  have hlrR2 := hlrR.append_right
-  obtain ⟨n3, ss3, hr3, hpc3, hc3, hmi3⟩ :=
-    simSL'_mov loopR "fLen" (.imm inStride) (fun n h => by cases h) (by decide)
-      prog _ ss2 _ F hpc2 hsegR2.append_left hlrR2.append_left hc2 hmi2
-  have hsegR3 := hsegR2.append_right
-  have hlrR3 := hlrR2.append_right
-  obtain ⟨n4, ss4, hr4, hpc4, hc4, hmi4⟩ :=
-    simSL'_bin loopR .sub "fLen" "fLen" (.reg "litAnchor") (by decide) (fun n h => by cases h; decide)
-      (by decide) prog _ ss3 _ F hpc3 hsegR3.append_left hlrR3.append_left hc3 hmi3
-  -- The post-arith eval state `ws4`; frame everything but `fLen` back to the loop-exit `ws2`.
-  have hframe4 : ∀ r, r ≠ "fLen" →
-      ((WStmt.bin WOp.sub "fLen" "fLen" (WArg.reg "litAnchor")).eval F
-        ((WStmt.mov "fLen" (WArg.imm inStride)).eval F
-          ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-            ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)))).regs r
-      = ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-          ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)).regs r :=
-    fun r hr => by simp [WStmt.eval, WState.setReg, WOp.run, WArg.eval, hr]
-  have hgm4 : ((WStmt.bin WOp.sub "fLen" "fLen" (WArg.reg "litAnchor")).eval F
-        ((WStmt.mov "fLen" (WArg.imm inStride)).eval F
-          ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-            ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)))).gmem
-      = ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-          ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)).gmem := by
-    simp [WStmt.eval, WState.setReg, WOp.run, WArg.eval, WState.stgByte]
-  have hfLen4 : (((WStmt.bin WOp.sub "fLen" "fLen" (WArg.reg "litAnchor")).eval F
-        ((WStmt.mov "fLen" (WArg.imm inStride)).eval F
-          ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-            ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)))).regs
-        "fLen").toNat
-      = inStride - (((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-          ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)).regs
-          "litAnchor").toNat := by
-    have hval : ((WStmt.bin WOp.sub "fLen" "fLen" (WArg.reg "litAnchor")).eval F
-        ((WStmt.mov "fLen" (WArg.imm inStride)).eval F
-          ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-            ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)))).regs
-        "fLen"
-        = UInt64.ofNat inStride
-          - ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-              ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)).regs
-              "litAnchor" := by
-      simp [WStmt.eval, WState.setReg, WOp.run, WArg.eval]
-    rw [hval, UInt64.toNat_sub, AlgorithmLib.LZ4Ptx.toNat_ofNat_lt _ (by omega),
-      show 2 ^ 64 - (((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-            ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)).regs
-            "litAnchor").toNat + inStride
-        = 2 ^ 64 + (inStride - (((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-            ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)).regs
-            "litAnchor").toNat) from by omega,
-      Nat.add_mod_left, Nat.mod_eq_of_lt (by omega)]
-  have hfLen4' : (((WStmt.bin WOp.sub "fLen" "fLen" (WArg.reg "litAnchor")).eval F
-        ((WStmt.mov "fLen" (WArg.imm inStride)).eval F
-          ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-            ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)))).regs
-        "fLen").toNat
-      = inStride - (((WStmt.bin WOp.sub "fLen" "fLen" (WArg.reg "litAnchor")).eval F
-          ((WStmt.mov "fLen" (WArg.imm inStride)).eval F
-            ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-              ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)))).regs
-          "litAnchor").toNat := by
-    rw [hframe4 "litAnchor" (by decide)]; exact hfLen4
-  -- discharge the 7 `wEmitFinalSeq` side-conditions from the loop-exit `LoopCQ` + `fLen`.
-  obtain ⟨fc1, fc2, fc3, fc4, fc5, fc6, fc7⟩ :=
-    finalSeq_sideconds inStride F _ hlen (by rw [hframe4 "inBase" (by decide)]; exact hib2)
-      hfLen4' (by rw [hframe4 "litAnchor" (by decide)]; omega)
-      (by rw [hframe4 "outBase" (by decide), hframe4 "op" (by decide),
-          hframe4 "litAnchor" (by decide)]; exact hbud2)
-      (by rw [hframe4 "outBase" (by decide), hframe4 "op" (by decide),
-          hframe4 "litAnchor" (by decide), hgm4]; exact hbudsz2)
-      (by rw [hframe4 "outBase" (by decide), hframe4 "inBase" (by decide)]; exact hobLB2) hFge
-  -- Step 5: `wEmitFinalSeq`.
-  obtain ⟨n5, ss5, hr5, hpc5, hc5, hmi5⟩ :=
-    simSL'_wEmitFinalSeq loopR "litAnchor" "fLen" lElseF lEndF lHF lXF cpHF cpXF
-      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
-      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) (by decide)
-      (by decide) (by decide) lsicBodyF hFdef
-      prog _ ss4 _ F hpc4 hsegR3.append_right hlrR3.append_right hc4 hmi4
-      fc1 fc2 fc3 fc4 fc5 fc6 fc7
-  -- Assemble: `bodyEncodePrefix.eval = wEmitFinalSeq.eval (sub.eval (mov.eval (uwhile.eval (setp.eval ws))))`.
-  refine ⟨n1 + (n2 + (n3 + (n4 + n5))), ss5,
-    sreaches_trans prog n1 _ _ _ _ hr1
-      (sreaches_trans prog n2 _ _ _ _ hr2
-        (sreaches_trans prog n3 _ _ _ _ hr3
-          (sreaches_trans prog n4 n5 _ _ _ hr4 hr5))), ?_, hmi5, ?_⟩
-  · have hbeq : (bodyEncodePrefix inStride hashLog).eval F ws
-        = (wEmitFinalSeq "litAnchor" "fLen").eval F
-            ((WStmt.bin WOp.sub "fLen" "fLen" (WArg.reg "litAnchor")).eval F
-              ((WStmt.mov "fLen" (WArg.imm inStride)).eval F
-                ((WStmt.uwhile "loopC" (loopCBodyStmt inStride hashLog)).eval F
-                  ((WStmt.setp SCmp.lt "loopC" "searchPos" (WArg.imm (inStride - 12))).eval F ws)))) := by
-      simp only [bodyEncodePrefix, loopCBodyStmt, foundBranchStmt, wseq, WStmt.eval.eq_2]
-    rw [hbeq]; exact hc5
-  · rw [hpc5]
-    simp only [List.length_append, List.length_cons, List.length_nil]
-    omega
-
 end LoopAsm
 
-/-- **The sstep-floor (machine-level) roundtrip theorem.**  Given that the machine
-    `sstep`-simulates the compressor body's encode-producing prefix — i.e. from a
-    machine state `ss` coupled to the post-prologue `ws`, execution reaches some `ss'`
-    coupled to `bodyEncodePrefix.eval` — reading the output window from the MACHINE's
-    `gmem` and decompressing recovers the exact input.  Combines the machine
-    simulation (`hbodySim` — the `SimSL'` obligation the coop/loop assembly discharges)
-    with the eval-level `warpKernelDSL_body_roundtrips`, via `Couple.gmem`
-    (`ss'.gmem = (bodyEncodePrefix.eval …).gmem`).  This lands the measured kernel's
-    compressor on the `sstep`/PTX floor. -/
-theorem warpKernelDSL_sstep_roundtrips (R : List String) (inStride hashLog : Nat)
-    (ws : WState) (ss ss' : AlgorithmLib.LZ4Simt.SState) (F : Nat)
-    (hstride : inStride ≤ 65536) (hp64 : inStride < 2 ^ 64) (hipos : 12 ≤ inStride)
-    (hop0 : ws.regs "op" = 0) (hla0 : ws.regs "litAnchor" = 0)
-    (hsp0 : ws.regs "searchPos" = 0) (hib0 : (ws.regs "inBase").toNat < 2 ^ 40)
-    (hobN : (ws.regs "outBase").toNat + 9 * inStride < 2 ^ 64)
-    (hsize : (ws.regs "outBase").toNat + 9 * inStride ≤ ws.gmem.size)
-    (hdisj : (ws.regs "inBase").toNat + inStride ≤ (ws.regs "outBase").toNat)
-    (hinB : (ws.regs "inBase").toNat + inStride < 2 ^ 64)
-    (hencLen : (planToBlock (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
-        (evalPlan ws.gmem ws.smem (ws.regs "inBase").toNat inStride hashLog)).encode.length ≤ 9 * inStride)
-    (hF : F = inStride + 34 * inStride)
-    -- the machine sstep-simulates the body (the `SimSL'` obligation for the assembly):
-    (hbodySim : Couple R ss' ((bodyEncodePrefix inStride hashLog).eval F ws)) :
-    -- reading the output window from the MACHINE's gmem and decompressing = input.
-    AlgorithmLib.LZ4Imp.decompress
-        ((List.range (planToBlock (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
-            (evalPlan ws.gmem ws.smem (ws.regs "inBase").toNat inStride hashLog)).encode.length).map
-          (fun i => ss'.gmem.getD ((ws.regs "outBase").toNat + i) 0))
-        (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride).length
-      = some (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) := by
-  -- The machine's final gmem = the eval's final gmem (via the coupling).
-  have hgmemEq : ss'.gmem = ((bodyEncodePrefix inStride hashLog).eval F ws).gmem := hbodySim.gmem
-  rw [hgmemEq, hF]
-  -- Now identical to the eval-level theorem's window read.
-  exact warpKernelDSL_body_roundtrips inStride hashLog ws hstride hp64 hipos hop0 hla0 hsp0 hib0
-    hobN hsize hdisj hinB hencLen
-
 section
-open AlgorithmLib.LZ4Simt
-
-/-- **The sstep-floor roundtrip, with `hbodySim` DISCHARGED.**  From a post-prologue
-    machine state `ss` coupled to `ws`, the machine executes the encode-producing body's
-    emit (`bodyEncodePrefix_sim`) to some `ss'`, and reading `ss'`'s output window and
-    decompressing recovers the exact input.  No `SimSL'` obligation is assumed — the
-    coupling is built by the loop + final-seq assembly. -/
-theorem warpKernelDSL_sstep_roundtrips_discharged (inStride hashLog : Nat)
-    (lHeadC lEndC lElse lEnd lHE lEE lElseL lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM
-     lElseF lEndF lHF lXF cpHF cpXF : String) (lsicL lsicM lsicBodyF : List SInstr)
-    (hLdef : lsicL = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "litExtra" "litExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "litExtra" (.imm 255)]))))
-    (hMdef : lsicM = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "matExtra" "matExtra" (.imm 255)]
-          ++ [.setp .ge "lsicC" "matExtra" (.imm 255)]))))
-    (hFdef : lsicBodyF = ([.mov "c255" (SArg.imm 255)]
-      ++ (([.bin .add "sbAddr" "outBase" (.reg "op")]
-          ++ ([.stg "sbAddr" "c255"] ++ [.bin .add "op" "op" (.imm 1)]))
-        ++ ([.bin .sub "litExtraF" "litExtraF" (.imm 255)]
-          ++ [.setp .ge "lsicC" "litExtraF" (.imm 255)]))))
-    (hstride : inStride ≤ 65536) (hipos : 12 ≤ inStride) (hlen : inStride < 2 ^ 40)
-    (hib40 : ib < 2 ^ 40)
-    (hp64 : inStride < 2 ^ 64) (hhl : hashLog ≤ 32)
-    (ws : WState) (hop0 : ws.regs "op" = 0) (hla0 : ws.regs "litAnchor" = 0)
-    (hsp0 : ws.regs "searchPos" = 0) (hib0 : (ws.regs "inBase").toNat < 2 ^ 40)
-    (hobN : (ws.regs "outBase").toNat + 9 * inStride < 2 ^ 32)
-    (hsize : (ws.regs "outBase").toNat + 9 * inStride ≤ ws.gmem.size)
-    (hobLB : (ws.regs "inBase").toNat + inStride ≤ (ws.regs "outBase").toNat)
-    (hdisj : (ws.regs "inBase").toNat + inStride ≤ (ws.regs "outBase").toNat)
-    (hinB : (ws.regs "inBase").toNat + inStride < 2 ^ 64)
-    (hencLen : (planToBlock (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
-        (evalPlan ws.gmem ws.smem (ws.regs "inBase").toNat inStride hashLog)).encode.length ≤ 9 * inStride)
-    (prog : Array AlgorithmLib.LZ4Simt.SInstr) (base : Nat) (ss : AlgorithmLib.LZ4Simt.SState)
-    (hpc : ss.pc = base)
-    (hseg : AlgorithmLib.LZ4WarpDSL.SegAt prog base
-      ([.setp .lt "loopC" "searchPos" (.imm (inStride - 12))]
-        ++ (AlgorithmLib.LZ4WarpDSL.uwhileEmit "loopC" lHeadC lEndC
-              (AlgorithmLib.LZ4WarpDSL.loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL
-                lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)
-          ++ (([.mov "fLen" (.imm inStride)] : List AlgorithmLib.LZ4Simt.SInstr)
-            ++ (([.bin .sub "fLen" "fLen" (.reg "litAnchor")] : List AlgorithmLib.LZ4Simt.SInstr)
-              ++ AlgorithmLib.LZ4WarpDSL.wEmitFinalSeqEmit "litAnchor" "fLen" lElseF lEndF lHF lXF
-                  cpHF cpXF lsicBodyF)))))
-    (hlr : AlgorithmLib.LZ4WarpDSL.LabelsResolve prog base
-      ([.setp .lt "loopC" "searchPos" (.imm (inStride - 12))]
-        ++ (AlgorithmLib.LZ4WarpDSL.uwhileEmit "loopC" lHeadC lEndC
-              (AlgorithmLib.LZ4WarpDSL.loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL lEndL
-                lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)
-          ++ (([.mov "fLen" (.imm inStride)] : List AlgorithmLib.LZ4Simt.SInstr)
-            ++ (([.bin .sub "fLen" "fLen" (.reg "litAnchor")] : List AlgorithmLib.LZ4Simt.SInstr)
-              ++ AlgorithmLib.LZ4WarpDSL.wEmitFinalSeqEmit "litAnchor" "fLen" lElseF lEndF lHF lXF
-                  cpHF cpXF lsicBodyF)))))
-    (hc : AlgorithmLib.LZ4WarpDSL.Couple loopR ss ws) (hmi : AlgorithmLib.LZ4WarpDSL.MachInv ib ss) :
-    ∃ (n : Nat) (ss' : AlgorithmLib.LZ4Simt.SState),
-      AlgorithmLib.LZ4Simt.SReaches prog n ss ss' ∧
-      AlgorithmLib.LZ4Imp.decompress
-          ((List.range (planToBlock (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
-              (evalPlan ws.gmem ws.smem (ws.regs "inBase").toNat inStride hashLog)).encode.length).map
-            (fun i => ss'.gmem.getD ((ws.regs "outBase").toNat + i) 0))
-          (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride).length
-        = some (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) ∧
-      AlgorithmLib.LZ4WarpDSL.Couple loopR ss'
-        ((bodyEncodePrefix inStride hashLog).eval (inStride + 34 * inStride) ws) ∧
-      AlgorithmLib.LZ4WarpDSL.MachInv ib ss' ∧
-      ((bodyEncodePrefix inStride hashLog).eval (inStride + 34 * inStride) ws).regs "outBase"
-        = ws.regs "outBase" ∧
-      ((bodyEncodePrefix inStride hashLog).eval (inStride + 34 * inStride) ws).regs "op"
-        = UInt64.ofNat (planToBlock (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
-            (evalPlan ws.gmem ws.smem (ws.regs "inBase").toNat inStride hashLog)).encode.length ∧
-      ((bodyEncodePrefix inStride hashLog).eval (inStride + 34 * inStride) ws).gmem.size
-        = ws.gmem.size ∧
-      ss'.pc = base +
-        (([.setp .lt "loopC" "searchPos" (.imm (inStride - 12))] : List AlgorithmLib.LZ4Simt.SInstr)
-          ++ (AlgorithmLib.LZ4WarpDSL.uwhileEmit "loopC" lHeadC lEndC
-                (AlgorithmLib.LZ4WarpDSL.loopCBodyEmit inStride hashLog lElse lEnd lHE lEE lElseL
-                  lEndL lHL lXL cpH cpX lElseM lEndM lHM lXM lsicL lsicM)
-            ++ (([.mov "fLen" (.imm inStride)] : List AlgorithmLib.LZ4Simt.SInstr)
-              ++ (([.bin .sub "fLen" "fLen" (.reg "litAnchor")] : List AlgorithmLib.LZ4Simt.SInstr)
-                ++ AlgorithmLib.LZ4WarpDSL.wEmitFinalSeqEmit "litAnchor" "fLen" lElseF lEndF lHF
-                    lXF cpHF cpXF lsicBodyF)))).length := by
-  obtain ⟨n, ss', hr, hc', hmi', hpcF⟩ :=
-    bodyEncodePrefix_sim inStride hashLog lHeadC lEndC lElse lEnd lHE lEE lElseL lEndL lHL lXL
-      cpH cpX lElseM lEndM lHM lXM lElseF lEndF lHF lXF cpHF cpXF lsicL lsicM lsicBodyF
-      hLdef hMdef hFdef hstride hipos hlen hp64 hhl ws hop0 hla0 hsp0 hib0 hobN hsize hobLB
-      prog base ss hpc hseg hlr hc hmi hib40
-  refine ⟨n, ss', hr, ?_, hc', hmi',
-    (compressorBody_output_eq inStride hashLog ws hstride hp64 hipos hop0 hla0 hsp0 hib0
-      (by omega) hsize hdisj hinB hencLen).2.2,
-    (compressorBody_output_eq inStride hashLog ws hstride hp64 hipos hop0 hla0 hsp0 hib0
-      (by omega) hsize hdisj hinB hencLen).2.1,
-    (by rw [(compressorBody_output_eq inStride hashLog ws hstride hp64 hipos hop0 hla0 hsp0 hib0
-      (by omega) hsize hdisj hinB hencLen).1, EmitContent.putBytesU_size]), hpcF⟩
-  exact warpKernelDSL_sstep_roundtrips loopR inStride hashLog ws ss ss' (inStride + 34 * inStride)
-    hstride hp64 hipos hop0 hla0 hsp0 hib0 (by omega) hsize hdisj hinB hencLen rfl hc'
-
 end
 
 end AlgorithmLib.LZ4WarpDSL

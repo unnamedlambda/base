@@ -243,12 +243,6 @@ def ldParam (name : String) : PTX (Reg .u64) := do
 def cvtRniU32F32 (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"cvt.rni.u32.f32 {d.raw}, {s.raw}"
 def cvtRziS32F32 (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"cvt.rzi.s32.f32 {d.raw}, {s.raw}"
 def stGlobalU32 (a : Reg .u64) (v : Reg .u32) : PTX Unit := emit s!"st.global.u32 [{a.raw}], {v.raw}"
--- ── Integer shared memory + warp cooperation (LZ4 warp-cooperative compressor) ──
--- Integer shared load/store, dynamic address in a u32 register (shared addrs are 32-bit)
-def ldSharedU32D (d a : Reg .u32) : PTX Unit := emit s!"ld.shared.u32 {d.raw}, [{a.raw}]"
-def stSharedU32D (a v : Reg .u32) : PTX Unit := emit s!"st.shared.u32 [{a.raw}], {v.raw}"
--- Global byte / word loads into a u32 register (input scan + emit)
-def ldGlobalU8RO (d : Reg .u32) (a : Reg .u64) (off : Nat) : PTX Unit := emit s!"ld.global.u8 {d.raw}, [{a.raw}+{off}]"
 -- u32 ALU extras
 def selpR  (d a b : Reg .u32) (p : Reg .pred) : PTX Unit := emit s!"selp.b32 {d.raw}, {a.raw}, {b.raw}, {p.raw}"
 /-- Comparisons against another register rather than an immediate, and a
@@ -268,7 +262,6 @@ def mulLoRR (d a b : Reg .u32) : PTX Unit :=
     decode to, so this is the operation a microscaled format needs and the one
     the element-addressed machine in `ML/` does not have. -/
 def bitsToF (d : Reg .f32) (s : Reg .u32) : PTX Unit := emit s!"mov.b32 {d.raw}, {s.raw}"
-def fToBits (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"mov.b32 {d.raw}, {s.raw}"
 
 -- setp u32 extras
 -- Warp vote (32-bit ballot mask) and index shuffle (broadcast from a lane)

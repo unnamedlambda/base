@@ -89,6 +89,38 @@ theorem needP_dloop (l : DLoop) (body : List Piece) : needP (.dloop l body) = ne
 theorem needP_br (d : Nat) (a : List R) : needP (.br d a) = 0 := rfl
 theorem needP_cont (d : Nat) (a : List R) : needP (.cont d a) = 0 := rfl
 
+mutual
+/-- `needP` by structural recursion: what compiled code runs for it. -/
+def needPC : Piece → Nat
+  | .straight _ => 0
+  | .loop _ pre body => max (needSC pre) (needSC body)
+  | .ite _ thn els _ _ => max (needSC thn) (needSC els)
+  | .dloop _ body => needSC body
+  | .br _ _ => 0
+  | .cont _ _ => 0
+/-- `needS` by structural recursion: what compiled code runs for it. -/
+def needSC : List Piece → Nat
+  | [] => 0
+  | p :: ps => 1 + max (needPC p) (needSC ps)
+end
+
+mutual
+theorem needP_eq_needPC : ∀ p, needP p = needPC p
+  | .straight _ => by simp [needP_straight, needPC]
+  | .loop l pre body => by simp [needP_loop, needPC, needS_eq_needSC pre, needS_eq_needSC body]
+  | .ite m thn els tr er => by simp [needP_ite, needPC, needS_eq_needSC thn, needS_eq_needSC els]
+  | .dloop l body => by simp [needP_dloop, needPC, needS_eq_needSC body]
+  | .br _ _ => by simp [needP_br, needPC]
+  | .cont _ _ => by simp [needP_cont, needPC]
+theorem needS_eq_needSC : ∀ c, needS c = needSC c
+  | [] => by simp [needS_nil, needSC]
+  | p :: ps => by simp [needS_cons, needSC, needP_eq_needPC p, needS_eq_needSC ps]
+end
+
+/-- Compiled code computes `needS` structurally, so `Fine` can be decided by
+    compiled evaluation. -/
+@[csimp] theorem needS_csimp : @needS = @needSC := funext needS_eq_needSC
+
 theorem slotsGo_eq : ∀ g c n, needS c ≤ g → slotsGo g n c = slotsS n c ∧ termsGo g c = termsS c := by
   intro g
   induction g with
@@ -205,6 +237,26 @@ theorem emitDloop_seq {tys α β tb} (init : Vals Slot tys) (cc : ICmpCond) (cb 
 theorem emitIte_seq {jTys α β} (c : Cond Slot) (thn els : St → Option (Vals Slot jTys) × St)
     (k : Vals Slot jTys → St → Option α × St) (g : α → St → Option β × St) (s : St) :
     emitIte c thn els (fun v s => seqE (k v s) g) s = seqE (emitIte c thn els k s) g := rfl
+
+/-- Sequencing is associative. -/
+theorem Prog.bind_assoc {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} {α β γ : Type}
+    (p : Prog V L α) (f : α → Prog V L β) (g : β → Prog V L γ) :
+    (p >>= f) >>= g = p >>= fun a => f a >>= g := by
+  show Prog.bind (Prog.bind p f) g = Prog.bind p (fun a => Prog.bind (f a) g)
+  induction p with
+  | ret a => rfl
+  | op o k ih => simp only [Prog.bind]; congr 1; funext x; exact ih x f
+  | store v a k ih => simp only [Prog.bind]; congr 1; exact ih f
+  | storeUnaligned v a k ih => simp only [Prog.bind]; congr 1; exact ih f
+  | istore8 v a h k ih => simp only [Prog.bind]; congr 1; exact ih f
+  | call fn args k ih => simp only [Prog.bind]; congr 1; funext x; exact ih x f
+  | callLocal r args k ih => simp only [Prog.bind]; congr 1; funext x; exact ih x f
+  | loop init head body k ih1 ih2 ih => simp only [Prog.bind]; congr 1; funext x; exact ih x f
+  | dloop init cc cb gi hg c e body k ih1 ih => simp only [Prog.bind]; congr 1; funext x; exact ih x f
+  | ite c thn els k ih1 ih2 ih => simp only [Prog.bind]; congr 1; funext x; exact ih x f
+  | params tys k ih => simp only [Prog.bind]; congr 1; funext x; exact ih x f
+  | br l args => rfl
+  | cont l args => rfl
 
 /-- **Emitting `p >>= f` is emitting `p`, then `f` of what it answered.** -/
 theorem emitGo_bind {α β} (p : Prog Slot Lvl α) (f : α → Prog Slot Lvl β) (s : St) :

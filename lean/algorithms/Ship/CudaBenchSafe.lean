@@ -53,7 +53,7 @@ theorem CudaSoftmaxPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen n nb : UIn
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
   -- `x`'s bytes, no more than `4 n`, are its allocation's
-  have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+  have hp : devPtrOf 412316860416 = some (0, 0) := by decide
   intro hc
   simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
@@ -97,7 +97,7 @@ theorem CudaSoftmaxPersist_finalize_triple (cfg : Cfg) (dataLen outLen n nb : UI
       { ok := fun _ w' => Contracts.TState.holds [] w', faultOk := false } := by
   check_reach
   -- no more than `y`'s bytes
-  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  have hp : devPtrOf 481036337152 = some (1, 0) := by decide
   intro hc
   simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
@@ -128,7 +128,7 @@ theorem CudaGemvPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w 
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
   -- `A`'s bytes are its allocation's
-  have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+  have hp : devPtrOf 412316860416 = some (0, 0) := by decide
   intro _
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
     Check.PExpr.eval, Check.PArg.bits, hp]
@@ -141,7 +141,7 @@ theorem CudaGemvPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen m n : UInt64)
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
   -- `x`'s bytes, no more than `4 n`, are its allocation's
-  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  have hp : devPtrOf 481036337152 = some (1, 0) := by decide
   intro hc
   simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
@@ -160,9 +160,9 @@ theorem CudaGemvPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen m n : UInt64
     have em : asI32 (m &&& 4294967295) = m.toNat := Contracts.asI32_low hc.2.2.1
     have en : asI32 (n &&& 4294967295) = n.toNat := Contracts.asI32_low hc.1
     have e1 : asI32 1 = 1 := by decide
-    have h0 : devPtrOf 4503599627370496 = some (0, 0) := by decide
-    have h1 : devPtrOf 4503668346847232 = some (1, 0) := by decide
-    have h2 : devPtrOf 4503737066323968 = some (2, 0) := by decide
+    have h0 : devPtrOf 412316860416 = some (0, 0) := by decide
+    have h1 : devPtrOf 481036337152 = some (1, 0) := by decide
+    have h2 : devPtrOf 549755813888 = some (2, 0) := by decide
     have hmn : m.toNat * n.toNat < 2 ^ 62 :=
       Nat.lt_of_lt_of_le (Nat.mul_lt_mul'' hc.2.2.1 hc.1) (by decide)
     simp [Check.vendorVal, Check.blasVal, Check.getAll, Check.argAt, Check.sgemvVal, Check.operandOf,
@@ -176,7 +176,7 @@ theorem CudaGemvPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen m n : UInt64
     simp
     omega
   -- the download: no more than `y`'s bytes
-  · have hp : devPtrOf 4503737066323968 = some (2, 0) := by decide
+  · have hp : devPtrOf 549755813888 = some (2, 0) := by decide
     intro hc
     simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
     simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
@@ -199,7 +199,7 @@ theorem CudaRmsNormPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) 
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
   -- `N` at the start of allocation 0
-  · have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+  · have hp : devPtrOf 412316860416 = some (0, 0) := by decide
     intro hc
     simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
     simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
@@ -208,9 +208,9 @@ theorem CudaRmsNormPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) 
   -- the weights after `N` and `x`
   · intro hc
     simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
-    have hp : devPtrOf (4503599627370496 + dataLen) = some (0, dataLen.toNat) := by
+    have hp : devPtrOf (412316860416 + dataLen) = some (0, dataLen.toNat) := by
       unfold devPtrOf
-      have : (4503599627370496 + dataLen).toNat = 4503599627370496 + dataLen.toNat := by
+      have : (412316860416 + dataLen).toNat = 412316860416 + dataLen.toNat := by
         simp [UInt64.toNat_add]; omega
       simp [this]
       omega
@@ -226,7 +226,7 @@ theorem CudaRmsNormPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen n : UInt64
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
   -- `x` after `N`
-  have hp : devPtrOf 4503599627370504 = some (0, 8) := by decide
+  have hp : devPtrOf 412316860424 = some (0, 8) := by decide
   intro hc
   simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
@@ -241,7 +241,7 @@ theorem CudaRmsNormPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen n : UInt6
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
   -- no more than `y`'s bytes
-  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  have hp : devPtrOf 481036337152 = some (1, 0) := by decide
   intro hc
   simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
@@ -266,7 +266,7 @@ theorem CudaDecodeAttention_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64)
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
   -- K and V, the data after `seq_len`, are their allocation's
-  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  have hp : devPtrOf 481036337152 = some (1, 0) := by decide
   intro _
   simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
     Check.PExpr.eval, Check.PArg.bits, hp]
@@ -309,17 +309,17 @@ theorem CudaDecodeAttention_core_triple (cfg : Cfg) (dataLen outLen s : UInt64) 
       unfold asI64; rw [Check.signed_small rfl (by rw [m64]; show _ < 2 ^ 63; omega), m64]
     have f1 : asI64 s = (s.toNat : Int) := by
       unfold asI64; rw [Check.signed_small rfl (by show _ < 2 ^ 63; omega)]
-    have hV : devPtrOf (4503668346847232 + s * 3584) = some (1, s.toNat * 3584) := by
+    have hV : devPtrOf (481036337152 + s * 3584) = some (1, s.toNat * 3584) := by
       unfold devPtrOf
-      have : (4503668346847232 + s * 3584).toNat = 4503668346847232 + s.toNat * 3584 := by
+      have : (481036337152 + s * 3584).toNat = 481036337152 + s.toNat * 3584 := by
         simp [UInt64.toNat_add, UInt64.toNat_mul]; omega
       simp [this]
       omega
-    have h0 : devPtrOf 4503599627370496 = some (0, 0) := by decide
-    have h1 : devPtrOf 4503668346847232 = some (1, 0) := by decide
-    have h2 : devPtrOf 4503737066323968 = some (2, 0) := by decide
-    have h3 : devPtrOf 4503805785800704 = some (3, 0) := by decide
-    have h4 : devPtrOf 4503874505277440 = some (4, 0) := by decide
+    have h0 : devPtrOf 412316860416 = some (0, 0) := by decide
+    have h1 : devPtrOf 481036337152 = some (1, 0) := by decide
+    have h2 : devPtrOf 549755813888 = some (2, 0) := by decide
+    have h3 : devPtrOf 618475290624 = some (3, 0) := by decide
+    have h4 : devPtrOf 687194767360 = some (4, 0) := by decide
     have c0 : asI32 0 = 0 := by decide
     have c1 : asI32 1 = 1 := by decide
     have c14 : asI32 14 = 14 := by decide

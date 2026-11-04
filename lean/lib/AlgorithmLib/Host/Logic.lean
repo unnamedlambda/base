@@ -11,8 +11,8 @@ import all Init.Data.List.Sort.Basic
 What a claim about a program says is how its loops run, and a loop's run in
 `Sem` is fuel-indexed recursion. Two results make that usable.
 
-* **`runCode_mono`**: a run that finishes at some fuel finishes the same way at
-  every larger fuel. Fuel bounds a run; it never changes what a run that got
+* **`runCode_mono`**: a run that does not get stuck at some fuel --- it
+  finishes, is refused or faults --- ends the same way at every larger fuel. Fuel bounds a run; it never changes what a run that got
   through computes. So a claim can be proved at whatever fuel its argument
   wants and used at the fuel a caller has.
 * **`iter_rule`**: the loop rule. An invariant on the carries and the world
@@ -27,9 +27,10 @@ namespace AlgorithmLib.HProg.Sem
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
 
-/-- A run that did not get stuck or refused. -/
+/-- A run that did not get stuck: it finished, left a region, was refused, or
+    faulted, each at some step it reached. -/
 def CodeRes.fin : CodeRes → Bool
-  | .stuck _ | .misuse _ | .fault _ => false
+  | .stuck _ => false
   | _ => true
 
 /-- What `runCode_mono` says at fuel `k`, for the four functions at once. -/
@@ -85,8 +86,8 @@ theorem monoAt : ∀ k, MonoAt k
             dsimp only at hd ⊢
             cases hr : runCode k cfg Γ0 w arm with
             | stuck s => rw [hr] at hd; simp [CodeRes.fin] at hd
-            | misuse s => rw [hr] at hd; simp [CodeRes.fin] at hd
-            | fault s => rw [hr] at hd; simp [CodeRes.fin] at hd
+            | misuse s => rw [ihC _ _ _ _ _ hr (by rfl) k'' hk'']
+            | fault s => rw [ihC _ _ _ _ _ hr (by rfl) k'' hk'']
             | brk d Γb vs w' => rw [ihC _ _ _ _ _ hr (by rfl) k'' hk'']
             | cont d vs w' => rw [ihC _ _ _ _ _ hr (by rfl) k'' hk'']
             | ok Γ' w' => rw [ihC _ _ _ _ _ hr (by rfl) k'' hk'']
@@ -99,8 +100,8 @@ theorem monoAt : ∀ k, MonoAt k
       simp only [iter] at hd ⊢
       cases h1 : runCode k cfg (bindAt Γ n0 cs) w pre with
       | stuck s => rw [h1] at hd; simp [CodeRes.fin] at hd
-      | misuse s => rw [h1] at hd; simp [CodeRes.fin] at hd
-      | fault s => rw [h1] at hd; simp [CodeRes.fin] at hd
+      | misuse s => rw [ihC _ _ _ _ _ h1 (by rfl) k'' hk'']
+      | fault s => rw [ihC _ _ _ _ _ h1 (by rfl) k'' hk'']
       | brk d Γb vs w' =>
           rw [ihC _ _ _ _ _ h1 (by rfl) k'' hk'']
           cases d <;> rfl
@@ -123,8 +124,8 @@ theorem monoAt : ∀ k, MonoAt k
               simp only [hx] at hd
               cases h2 : runCode k cfg (bindAt Γ1 (slotsOf (n0 + l.pTys.length) pre) cs) w1 body with
               | stuck s => rw [h2] at hd; simp [CodeRes.fin] at hd
-              | misuse s => rw [h2] at hd; simp [CodeRes.fin] at hd
-              | fault s => rw [h2] at hd; simp [CodeRes.fin] at hd
+              | misuse s => rw [ihC _ _ _ _ _ h2 (by rfl) k'' hk'']
+              | fault s => rw [ihC _ _ _ _ _ h2 (by rfl) k'' hk'']
               | brk d Γb vs w2 =>
                   rw [ihC _ _ _ _ _ h2 (by rfl) k'' hk'']
                   cases d <;> rfl
@@ -172,8 +173,8 @@ theorem monoAt : ∀ k, MonoAt k
           simp only [Bool.false_eq_true, if_false] at hd ⊢
           cases h1 : runCode k cfg (bindAt Γ n0 cs) w body with
           | stuck s => rw [h1] at hd; simp [CodeRes.fin] at hd
-          | misuse s => rw [h1] at hd; simp [CodeRes.fin] at hd
-          | fault s => rw [h1] at hd; simp [CodeRes.fin] at hd
+          | misuse s => rw [ihC _ _ _ _ _ h1 (by rfl) k'' hk'']
+          | fault s => rw [ihC _ _ _ _ _ h1 (by rfl) k'' hk'']
           | brk d Γb vs w' =>
               rw [ihC _ _ _ _ _ h1 (by rfl) k'' hk'']
               cases d <;> rfl
@@ -211,8 +212,8 @@ theorem monoAt : ∀ k, MonoAt k
           simp only [runCode] at hd ⊢
           cases h1 : runPiece k cfg Γ w p with
           | stuck s => rw [h1] at hd; simp [CodeRes.fin] at hd
-          | misuse s => rw [h1] at hd; simp [CodeRes.fin] at hd
-          | fault s => rw [h1] at hd; simp [CodeRes.fin] at hd
+          | misuse s => rw [ihP _ _ _ _ _ h1 (by rfl) k'' hk'']
+          | fault s => rw [ihP _ _ _ _ _ h1 (by rfl) k'' hk'']
           | brk d Γb vs w' => rw [ihP _ _ _ _ _ h1 (by rfl) k'' hk'']
           | cont d vs w' => rw [ihP _ _ _ _ _ h1 (by rfl) k'' hk'']
           | ok Γ' w' =>
@@ -220,7 +221,7 @@ theorem monoAt : ∀ k, MonoAt k
               rw [h1] at hd
               exact ihC _ _ _ _ _ rfl hd k'' hk''
 
-/-- **More fuel changes no finished run.** -/
+/-- **More fuel changes no run that did not get stuck.** -/
 theorem runCode_mono {k k' : Nat} (hk : k ≤ k') {cfg : Cfg} {Γ : Env} {w : World} {c : Code}
     {r : CodeRes} (h : runCode k cfg Γ w c = r) (hr : r.fin) : runCode k' cfg Γ w c = r :=
   (monoAt k).2.2.2 cfg Γ w c r h hr k' hk

@@ -63,7 +63,7 @@ theorem arena_addr_mod4 {off : Nat} (h4 : 4 ∣ off) (hspan : off ≤ span) :
     (regionBase .arena + UInt64.ofNat off) % 4 = 0 := by
   obtain ⟨k, rfl⟩ := h4
   apply UInt64.toNat_inj.mp
-  simp only [regionBase, UInt64.toNat_mod, UInt64.toNat_add, UInt64.toNat_ofNat']
+  simp only [regionBase, Region.idx, UInt64.toNat_mod, UInt64.toNat_add, UInt64.toNat_ofNat']
   simp
 
 theorem readIds_of_fits {p : UInt64} {n : Nat} (hf : Fits w.mem p (4 * n)) : (readIds w.mem p n).isSome = true := by

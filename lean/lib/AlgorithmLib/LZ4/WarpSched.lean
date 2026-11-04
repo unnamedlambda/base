@@ -253,3 +253,64 @@ theorem coopWindow_eq_window (inp : List UInt8) (oracle : Nat → Option Nat)
   unfold coopWindow window
   exact (windowGo_eq_firstHit inp oracle searchLim s 32 0).symm
 
+/-- `firstHit` only inspects its argument on `[start, start+b)`, so it respects
+    pointwise agreement there. -/
+theorem firstHit_congr (f g : Nat → Bool) : ∀ (b start : Nat),
+    (∀ k, start ≤ k → k < start + b → f k = g k) →
+    AlgorithmLib.LZ4WarpSched.firstHit f b start
+      = AlgorithmLib.LZ4WarpSched.firstHit g b start := by
+  intro b
+  induction b with
+  | zero => intro start _; rfl
+  | succ b ih =>
+      intro start h
+      show (if f start then some start else AlgorithmLib.LZ4WarpSched.firstHit f b (start + 1))
+        = (if g start then some start else AlgorithmLib.LZ4WarpSched.firstHit g b (start + 1))
+      rw [h start (Nat.le_refl _) (by omega),
+          ih (start + 1) (fun k hk1 hk2 => h k (by omega) (by omega))]
+
+/-- Shifting `firstHit`'s start by one shifts its argument window and result. -/
+theorem firstHit_shift (f : Nat → Bool) : ∀ (b start : Nat),
+    AlgorithmLib.LZ4WarpSched.firstHit f b (start + 1)
+      = (AlgorithmLib.LZ4WarpSched.firstHit (fun k => f (k + 1)) b start).map (· + 1) := by
+  intro b
+  induction b with
+  | zero => intro start; rfl
+  | succ b ih =>
+      intro start
+      show (if f (start + 1) then some (start + 1)
+              else AlgorithmLib.LZ4WarpSched.firstHit f b (start + 1 + 1))
+        = ((if f (start + 1) then some start
+              else AlgorithmLib.LZ4WarpSched.firstHit (fun k => f (k + 1)) b (start + 1)).map (· + 1))
+      by_cases hf : f (start + 1)
+      · simp [hf]
+      · simp only [hf, if_false]; exact ih (start + 1)
+
+/-- **Extend window = model `leadingGood`**: the ballot-scan for the first
+    mismatch (`firstHit` of `¬good`, defaulting to the full window `b`) equals W2's
+    leading-good count — the value one `extendChunk` window advances by. -/
+theorem firstHit_leadingGood (inp : List UInt8) (p c endCap : Nat) : ∀ (b ml : Nat),
+    (AlgorithmLib.LZ4WarpSched.firstHit
+        (fun k => ! AlgorithmLib.LZ4WarpSched.good inp p c endCap (ml + k)) b 0).getD b
+      = AlgorithmLib.LZ4WarpSched.leadingGood inp p c endCap ml b := by
+  intro b
+  induction b with
+  | zero => intro ml; rfl
+  | succ b ih =>
+      intro ml
+      show (if (! AlgorithmLib.LZ4WarpSched.good inp p c endCap (ml + 0)) then some 0
+              else AlgorithmLib.LZ4WarpSched.firstHit
+                (fun k => ! AlgorithmLib.LZ4WarpSched.good inp p c endCap (ml + k)) b 1).getD (b + 1)
+        = (if AlgorithmLib.LZ4WarpSched.good inp p c endCap ml = true
+            then 1 + AlgorithmLib.LZ4WarpSched.leadingGood inp p c endCap (ml + 1) b else 0)
+      rw [Nat.add_zero]
+      by_cases hg : AlgorithmLib.LZ4WarpSched.good inp p c endCap ml = true
+      · simp only [hg, Bool.not_true, if_false]
+        rw [firstHit_shift (fun k => ! AlgorithmLib.LZ4WarpSched.good inp p c endCap (ml + k)) b 0]
+        rw [firstHit_congr (fun k => ! AlgorithmLib.LZ4WarpSched.good inp p c endCap (ml + (k + 1)))
+              (fun k => ! AlgorithmLib.LZ4WarpSched.good inp p c endCap (ml + 1 + k)) b 0
+              (fun k _ _ => by simp only []; rw [show ml + (k + 1) = ml + 1 + k from by omega])]
+        rw [← ih (ml + 1)]
+        cases AlgorithmLib.LZ4WarpSched.firstHit
+          (fun k => ! AlgorithmLib.LZ4WarpSched.good inp p c endCap (ml + 1 + k)) b 0 <;> simp <;> omega
+      · simp [hg]

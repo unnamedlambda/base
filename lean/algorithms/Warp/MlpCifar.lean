@@ -6,9 +6,8 @@ import Lean
 import Std
 import Scan.Layout
 import Scan.Ship
-import AlgorithmLib.ML.Kernel.EmitFacts
 import AlgorithmLib.ML.Launch.HostBridge
-import AlgorithmLib.ML.Model.RegBound
+import AlgorithmLib.ML.Model.BufsOf
 import AlgorithmLib.ML.Model.Schedule
 
 import AlgorithmLib.Surface.Layout
@@ -20,9 +19,7 @@ open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 /-!
   # A CIFAR-10 classifier, trained end to end on proven kernels
 
-  `BackwardWideAlgorithm` proves one dense layer's backward pass and trains it
-  against a synthetic target.  This is the same machinery pointed at a real
-  dataset and a real loss: a two-layer MLP, `3072 → 256 → 10`, trained with
+  A two-layer MLP on a real dataset and a real loss: `3072 → 256 → 10`, trained with
   cross-entropy on CIFAR-10.
 
   Every kernel below is an instance of a schema proven once — `dotBatched`,
@@ -268,8 +265,8 @@ def cifarTape : List TOp := cifarTen.tape NIN
 -- PTX, one slot per kernel
 -- ---------------------------------------------------------------------------
 
-/-- The buffers slot `i` binds — the operation's own, in the order
-    `TOp.localStmt` renumbered them to. -/
+/-- The buffers slot `i` binds — the operation's own, in the order its
+    kernel's table (`unitBufs`) numbers them. -/
 def slotBufs (i : Nat) : List Buf := ((cifarTape[i]?).map (TOp.bufs B)).getD []
 
 /-- The kernels, in the order the tape performs them.
@@ -280,7 +277,7 @@ def slotBufs (i : Nat) : List Buf := ((cifarTape[i]?).map (TOp.bufs B)).getD []
     kernel here and nowhere else. -/
 def ptxAll : List String :=
   cifarTape.map (fun op =>
-    emitProvenKernelN "main" (op.bufs B).length 0 (op.localStmt B))
+    Body.text "main" (unitBufs B [op]).length 0 (unitStmt B [op]))
 
 /-- Kernels shipped. -/
 def NSLOT : Nat := 10
@@ -332,7 +329,7 @@ def slotGrid : List Nat := [GRID1, GRIDH, GRID2, B, GRID2, GRIDDH, GRIDH, GRID1,
 def app : Drv.App :=
   { bufs := bufBytes,
     kernels := (List.range NSLOT).map fun i =>
-      ⟨slotOff i, SLOT, slotBufs i, (slotGrid.getD i 1, 1, 1), (32, 1, 1)⟩,
+      ⟨slotOff i, SLOT, slotBufs i, (slotGrid.getD i 1, 1, 1), (32, 1, 1), []⟩,
     memSize := MEM_SIZE, blas := true, org := ORG }
 
 /-- **Every byte this program names**, not only its PTX slots. -/
@@ -388,53 +385,6 @@ theorem mlp_stage_eligible :
       ∧ adjKernel.ew.StageEligibleB adjB = true
       ∧ dw1Kernel.StageEligibleB dw1B = true
       ∧ smKernel.StageEligibleB dlogB = true := by decide
-
-/-! **Seam guards on the emitted text.**  `FlatTargetsOkB` checks no branch
-    points past the program; `FlatPrintableB` checks nothing `siText` would turn
-    into a comment reaches the printer.  Checked one kernel at a time:
-    `native_decide` compiles what it decides, so an `n`-way conjunction is one
-    compilation unit carrying `n` PTX emissions. -/
-theorem mlp_targets_fwd1 : FlatTargetsOkB (flatKernel (expandEW fwd1Kernel)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_h : FlatTargetsOkB (flatKernel (expandEW hKernel.ew)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_fwd2 : FlatTargetsOkB (flatKernel (expandEW fwd2Kernel)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_dw2 : FlatTargetsOkB (flatKernel (expandEW dw2Kernel)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_dh : FlatTargetsOkB (flatKernel (expandEW dhKernel)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_adj : FlatTargetsOkB (flatKernel (expandEW adjKernel.ew)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_dw1 : FlatTargetsOkB (flatKernel (expandEW dw1Kernel)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_sgd1 : FlatTargetsOkB (flatKernel (expandEW sgd1Kernel.ew)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_sgd2 : FlatTargetsOkB (flatKernel (expandEW sgd2Kernel.ew)) = true :=
-  flatKernel_targets _
-theorem mlp_targets_sm : FlatTargetsOkB (flatKernel (expandEW smKernel)) = true :=
-  flatKernel_targets _
-
-theorem mlp_printable_fwd1 : FlatPrintableB (flatKernel (expandEW fwd1Kernel)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_h : FlatPrintableB (flatKernel (expandEW hKernel.ew)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_fwd2 : FlatPrintableB (flatKernel (expandEW fwd2Kernel)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_dw2 : FlatPrintableB (flatKernel (expandEW dw2Kernel)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_dh : FlatPrintableB (flatKernel (expandEW dhKernel)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_adj : FlatPrintableB (flatKernel (expandEW adjKernel.ew)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_dw1 : FlatPrintableB (flatKernel (expandEW dw1Kernel)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_sgd1 : FlatPrintableB (flatKernel (expandEW sgd1Kernel.ew)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_sgd2 : FlatPrintableB (flatKernel (expandEW sgd2Kernel.ew)) = true :=
-  flatKernel_printable _
-theorem mlp_printable_sm : FlatPrintableB (flatKernel (expandEW smKernel)) = true :=
-  flatKernel_printable _
 
 -- ---------------------------------------------------------------------------
 -- The host input layout
@@ -539,43 +489,53 @@ theorem steps_cover : fwdSteps ++ bwdSteps = List.range NSLOT := by decide
     a column-major `N×M` matrix, so each call below is stated in column-major
     terms and no data is ever transposed in memory.  `Drv.App.sgemm` packs
     every operand, `lda = k if transa else m`, `ldb = n if transb else k`,
-    `ldc = m`, which is exactly what these five need. -/
+    `ldc = m`, which is exactly what these five need.  The products are read
+    off the model's tape under the cuBLAS schedule (`TOp.vendorGemm`), not
+    written beside it. -/
 
-/-- `C ← op(A)·op(B)`, one GEMM. -/
-def gemmStep (base : V .i64) (tA tB m n k aBuf bBuf cBuf : Nat) : Prog V L Unit :=
-  app.sgemm base tA tB m n k aBuf bBuf cBuf
+/-- Every contraction to cuBLAS's strided-batched product. -/
+def GEMM : Backend :=
+  .vendor .cublasSgemmStridedBatched
 
-/-- The five GEMMs, in column-major terms.  `z1 = x·W1ᵀ` becomes
-    `z1ᵀ = W1·xᵀ`, and so on down. -/
-def gemmFwd : List (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) :=
-  [ (1, 0, H, B, IN, w1B, xB, z1B)      -- z1ᵀ(H×B) = W1(H×IN)·xᵀ(IN×B)
-  , (1, 0, C, B, H,  w2B, hB, logB) ]   -- logitsᵀ(C×B) = W2(C×H)·hᵀ(H×B)
+/-- **The schedule.**  The same equations, with the contractions sent to
+    cuBLAS — one value, named where the model is not. -/
+def cifarBlasSched : TenSchedule := { impl := GEMM }
 
-def gemmBwd : List (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) :=
-  [ (0, 1, H, C, B,  hB, dlogB, dw2B)   -- dW2ᵀ(H×C) = hᵀ(H×B)·dlog(B×C)
-  , (0, 0, H, B, C,  w2B, dlogB, dhB)   -- dhᵀ(H×B) = W2ᵀ(H×C)·dlogᵀ(C×B)
-  , (0, 1, IN, H, B, xB, adjB, dw1B) ]  -- dW1ᵀ(IN×H) = xᵀ(IN×B)·adj(B×H)
+/-- The model's tape under that schedule: the same operations in the same
+    order, each contraction cuBLAS's. -/
+def cifarBlasTape : List TOp := (cifarTen.compile NIN cifarBlasSched).2
 
-/-- A run of GEMMs and kernel launches, in the given order, one sync at the end.
-    `.inl` is a kernel's slot; `.inr` is a cuBLAS call. -/
+/-- Operation `i` as the cuBLAS build takes it: cuBLAS's product
+    (`TOp.vendorGemm`) for a contraction, slot `i`'s kernel otherwise. -/
+def blasStep (op : TOp) (i : Nat) : Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) :=
+  match op.vendorGemm with
+  | some g => .inr g
+  | none => .inl i
+
+/-- The cuBLAS tape's operations `lo..hi`, each with its index. -/
+def blasRange (lo hi : Nat) : List (TOp × Nat) := (cifarBlasTape.zipIdx.drop lo).take (hi - lo)
+
+/-- A run of products and kernel launches, in the given order, one sync at the
+    end. `.inl` is a kernel's slot; `.inr` is a cuBLAS product on the
+    program's handle. -/
 def runMixed (steps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
     : Prog V L Unit := do
   let base ← basePtr
   for st in steps do
     match st with
     | .inl i => app.run base i
-    | .inr (tA, tB, m, n, k, a, b, c) => gemmStep base tA tB m n k a b c
+    | .inr (tA, tB, m, n, k, a, b, c) => app.sgemm base (← load64 (← iaddImm base app.BLAS)) tA tB m n k a b c
   Drv.sync
 
-/-- Forward with cuBLAS for both matmuls; `silu` and the softmax stay proven. -/
+/-- The forward with cuBLAS for both matmuls; `silu` and the softmax stay
+    proven kernels. -/
 def fwdBlasSteps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)) :=
-  [ .inr gemmFwd[0]!, .inl 1, .inr gemmFwd[1]!, .inl 3 ]
+  (blasRange 0 4).map fun (op, i) => blasStep op i
 
-/-- Backward likewise; the activation backward and both optimiser steps stay
-    proven. -/
+/-- The backward likewise; the activation backward and both optimiser steps
+    stay proven kernels. -/
 def bwdBlasSteps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)) :=
-  [ .inr gemmBwd[0]!, .inr gemmBwd[1]!, .inl 6, .inr gemmBwd[2]!
-  , .inl 8, .inl 9 ]
+  (blasRange 4 10).map fun (op, i) => blasStep op i
 
 /-- The bodies this artifact ships, in the order their function indices run.
     `clifIR` numbers them from this list, so an index cannot drift from the body
@@ -757,100 +717,17 @@ theorem sgd2_stores (st : WSt) (l : Lane) :
     over real branches, to the state the kernel's semantics predicts.  Proven
     object = executed object, at model width and batch. -/
 
-theorem fwd1_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW fwd1Kernel)) k (0, m)
-          = some ((flatKernel (expandEW fwd1Kernel)).length, m')
-      ∧ m'.toWSt = ((expandEW fwd1Kernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW fwd1Kernel) (expandEW_expFree fwd1Kernel)
-    (expandEW_idxFree fwd1Kernel (by decide)) (expandEW_flat fwd1Kernel (by decide)) m
-
-theorem fwd2_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW fwd2Kernel)) k (0, m)
-          = some ((flatKernel (expandEW fwd2Kernel)).length, m')
-      ∧ m'.toWSt = ((expandEW fwd2Kernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW fwd2Kernel) (expandEW_expFree fwd2Kernel)
-    (expandEW_idxFree fwd2Kernel (by decide)) (expandEW_flat fwd2Kernel (by decide)) m
-
-theorem dh_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW dhKernel)) k (0, m)
-          = some ((flatKernel (expandEW dhKernel)).length, m')
-      ∧ m'.toWSt = ((expandEW dhKernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW dhKernel) (expandEW_expFree dhKernel)
-    (expandEW_idxFree dhKernel (by decide)) (expandEW_flat dhKernel (by decide)) m
-
-theorem dw2_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW dw2Kernel)) k (0, m)
-          = some ((flatKernel (expandEW dw2Kernel)).length, m')
-      ∧ m'.toWSt = ((expandEW dw2Kernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW dw2Kernel) (expandEW_expFree dw2Kernel)
-    (expandEW_idxFree dw2Kernel (by decide)) (expandEW_flat dw2Kernel (by decide)) m
-
-theorem dw1_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW dw1Kernel)) k (0, m)
-          = some ((flatKernel (expandEW dw1Kernel)).length, m')
-      ∧ m'.toWSt = ((expandEW dw1Kernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW dw1Kernel) (expandEW_expFree dw1Kernel)
-    (expandEW_idxFree dw1Kernel (by decide)) (expandEW_flat dw1Kernel (by decide)) m
-
-theorem map_ptx_exact (cta : Nat) (m : MState) :
-    (∃ k m', steps cta (flatKernel (expandEW hKernel.ew)) k (0, m)
-        = some ((flatKernel (expandEW hKernel.ew)).length, m')
-      ∧ m'.toWSt = ((expandEW hKernel.ew).elabIn cta).run m.toWSt)
-    ∧ (∃ k m', steps cta (flatKernel (expandEW adjKernel.ew)) k (0, m)
-        = some ((flatKernel (expandEW adjKernel.ew)).length, m')
-      ∧ m'.toWSt = ((expandEW adjKernel.ew).elabIn cta).run m.toWSt)
-    ∧ (∃ k m', steps cta (flatKernel (expandEW sgd1Kernel.ew)) k (0, m)
-        = some ((flatKernel (expandEW sgd1Kernel.ew)).length, m')
-      ∧ m'.toWSt = ((expandEW sgd1Kernel.ew).elabIn cta).run m.toWSt)
-    ∧ (∃ k m', steps cta (flatKernel (expandEW sgd2Kernel.ew)) k (0, m)
-        = some ((flatKernel (expandEW sgd2Kernel.ew)).length, m')
-      ∧ m'.toWSt = ((expandEW sgd2Kernel.ew).elabIn cta).run m.toWSt) :=
-  ⟨mapKernel_ptx_exact hSpec (fun _ => z1B) hB cta m,
-   mapKernel_ptx_exact adjSpec adjIn adjB cta m,
-   mapKernel_ptx_exact sgdSpec sgd1In w1B cta m,
-   mapKernel_ptx_exact sgdSpec sgd2In w2B cta m⟩
-
 -- ---------------------------------------------------------------------------
 -- Every forward and backward kernel as a pipeline stage
 -- ---------------------------------------------------------------------------
 
-/-! **All nine kernels are stages**, the optimiser steps included.
+/-- **The model's stages**, as the tensor term lowers them: each kernel
+    bundled with the proof that its blocks do not race, the forward half
+    first. -/
+noncomputable def cifarStages : List XStage := (cifarTen.stages B NIN).getD []
 
-    An SGD step reads the buffer it writes, so `mapStageX`'s `inB i ≠ out` is
-    unavailable — but that requirement lives entirely in `valOnly`, and
-    `mapStageIP` discharges it the other way: a block reads `out` only at the
-    address it writes, which is one `Exclusive` says no other block touched.
-    The update is not *idempotent* — running it twice steps twice — which is
-    why it supports `runGrid_value` and not the permutation results. -/
-
-/-- Each pass, bundled with the proof that its blocks do not race — so
-    assembling them is a list literal and nothing else. -/
-def fwd1Stage : XStage :=
-  dotBatchedStageX w1B xB w1Ix xIx z1B B (IN / 32) GRID1 (by decide) (by decide) (by decide)
-def hStage : XStage := mapStageX hSpec (fun _ => z1B) hB GRIDH (by decide)
-def fwd2Stage : XStage :=
-  dotBatchedStageX w2B hB w2Ix hIx logB B (H / 32) GRID2 (by decide) (by decide) (by decide)
-def dw2Stage : XStage :=
-  outerBatchedStageX dlogB hB dw2B dw2AIx dw2BIx H B (H / 32) GRID2
-    (by decide) (by decide) (by decide)
-def dhStage : XStage :=
-  dotBatchedStageX w2B dlogB w2TIx dlIx dhB B (C / 32) GRIDDH
-    (by decide) (by decide) (by decide)
-def adjStage : XStage := mapStageX adjSpec adjIn adjB GRIDH (by decide)
-def dw1Stage : XStage :=
-  outerBatchedStageX adjB xB dw1B dw1AIx dw1BIx IN B (IN / 32) GRID1
-    (by decide) (by decide) (by decide)
-
-def sgd1Stage : XStage := mapStageIPX sgdSpec sgd1In w1B GRIDW1
-def sgd2Stage : XStage := mapStageIPX sgdSpec sgd2In w2B GRIDW2
-
-/-- The forward half, and the backward half through the optimiser. -/
-def smStage : XStage :=
-  softmaxCEStageX logB biasB ohB dlogB .laneId B (by decide) (by decide) (by decide)
-
-def fwdStages : List XStage := [fwd1Stage, hStage, fwd2Stage, smStage]
-def bwdStages : List XStage :=
-  [dw2Stage, dhStage, adjStage, dw1Stage, sgd1Stage, sgd2Stage]
+noncomputable def fwdStages : List XStage := cifarStages.take 4
+noncomputable def bwdStages : List XStage := cifarStages.drop 4
 
 /-- The nine staged kernels, in slot order. -/
 def stagedKernels : List EWStmt :=
@@ -883,8 +760,8 @@ theorem mlp_kernels_are_the_stages :
     cifarTape.map (TOp.stmt B) = stagedKernels
       ∧ cifarTape.length = NSLOT := ⟨rfl, rfl⟩
 
-def fwdPipeline : Pipeline := Pipeline.ofStages fwdStages
-def bwdPipeline : Pipeline := Pipeline.ofStages bwdStages
+noncomputable def fwdPipeline : Pipeline := Pipeline.ofStages fwdStages
+noncomputable def bwdPipeline : Pipeline := Pipeline.ofStages bwdStages
 
 theorem fwdPipeline_exclusive : fwdPipeline.Exclusive := Pipeline.ofStages_exclusive _
 theorem bwdPipeline_exclusive : bwdPipeline.Exclusive := Pipeline.ofStages_exclusive _
@@ -899,60 +776,6 @@ theorem fwdPipeline_runs (st : WSt) :
 theorem bwdPipeline_runs (st : WSt) :
     (bwdPipeline.run st).mem = bwdPipeline.denote st.mem :=
   Pipeline.ofStages_runs _ st
-
--- ---------------------------------------------------------------------------
--- The shipped host program launches exactly this pipeline
--- ---------------------------------------------------------------------------
-
-/-! Everything above is about kernels and their composition.  What follows
-    states the launches the shipped bodies make — `runSeq fwdSteps` and
-    `runSeq bwdSteps`, a `cuLaunchKernel` of each slot in turn
-    (`Drv.App.run`) — and matches them against the stage list, so a driver
-    that dropped a kernel, ran two out of order, or launched one over the
-    wrong grid or bind array realises no pipeline. -/
-
-/-- The memory's address: `v4`, which an entry point's first statement takes,
-    after its four arguments. -/
-def ROOT : Nat := 4
-
-/-- The bind array slot `i` launches with. -/
-def mlpBufs (i : Nat) : List AlgorithmLib.ML.BufDesc := appBufs app i
-
-/-- The launches of the kernels `slots` names, in order. That every run of
-    the shipped `runSeq fwdSteps` and `runSeq bwdSteps` makes exactly these
-    launches is `MlpCifarSafe2.runFwd_realises` and `runBwd_realises`, read
-    off the shipped bodies by the checker. -/
-def mlpOps (slots : List Nat) : List DeviceOp := slots.map (appLaunch app)
-
-/-- **Which slot holds which stage — derived, not asserted.**
-
-    The table is built from the stage list itself, so the correspondence cannot
-    drift from `stages_are_launches`: a stage added, removed or reordered moves
-    its table entry with it. -/
-def mlpTable : List KernelBinding :=
-  ((List.range NSLOT).zip (fwdStages ++ bwdStages)).map
-    (fun p => ⟨slotOff p.1, app.paramsOff p.1, mlpBufs p.1, p.2.val⟩)
-
-set_option maxRecDepth 100000 in
-/-- **…and those launches are the proven pipeline.** -/
-theorem fwd_realises : pipelineOf? mlpTable none (mlpOps fwdSteps) = some fwdPipeline := rfl
-theorem bwd_realises : pipelineOf? mlpTable none (mlpOps bwdSteps) = some bwdPipeline := rfl
-
-/-- **The shipped forward half-step computes its denotation.**
-
-    Its launches resolve through `mlpTable` into `fwdPipeline`, and that
-    pipeline computes the composite of its stages — with no intermediate
-    assumed anywhere along the way. -/
-theorem fwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (mlpOps fwdSteps) = some fwdPipeline
-      ∧ (fwdPipeline.run st).mem = fwdPipeline.denote st.mem :=
-  ⟨fwd_realises, fwdPipeline_runs st⟩
-
-/-- …and the backward half-step, optimiser included. -/
-theorem bwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (mlpOps bwdSteps) = some bwdPipeline
-      ∧ (bwdPipeline.run st).mem = bwdPipeline.denote st.mem :=
-  ⟨bwd_realises, bwdPipeline_runs st⟩
 
 -- ---------------------------------------------------------------------------
 -- A training run, not just a training step
@@ -971,7 +794,7 @@ theorem bwd_host_computes (st : WSt) :
 
 /-- The training step: forward on the device, softmax and the CE gradient on the
     host, backward and both optimiser steps on the device. -/
-def mlpStep (host : Mem → Mem) : Step := ⟨fwdPipeline, host, bwdPipeline⟩
+noncomputable def mlpStep (host : Mem → Mem) : Step := ⟨fwdPipeline, host, bwdPipeline⟩
 
 theorem mlpStep_exclusive (host : Mem → Mem) : (mlpStep host).Exclusive :=
   ⟨fwdPipeline_exclusive, bwdPipeline_exclusive⟩
@@ -1001,25 +824,25 @@ theorem mlp_host_swap (h₁ h₂ : Mem → Mem)
     all, so the whole difference between the configurations is the assumption
     count, and `blas_declared` reports it. -/
 
-noncomputable def gemmDecl (S : StageSpec) : DeclaredStep :=
-  DeclaredStep.ofStage .cublasSgemmStridedBatched S
+/-- **Which implementation each operation gets**: the vendor's product where
+    the cuBLAS schedule sends a contraction to it, the proven kernel
+    elsewhere. -/
+noncomputable def cifarChoices (gemm : Backend) : List (Backend × XStage) :=
+  (cifarBlasTape.zip cifarStages).map fun (op, S) => (if op.vendorGemm.isSome then gemm else .proven, S)
 
-noncomputable def fwdBlasPlan : Plan :=
-  Plan.ofSteps [.inr (gemmDecl fwd1Stage.val), .inl hStage,
-                .inr (gemmDecl fwd2Stage.val), .inl smStage]
+/-- The forward half's choices, and the backward half's. -/
+noncomputable def fwdChoices (gemm : Backend) : List (Backend × XStage) := (cifarChoices gemm).take 4
+noncomputable def bwdChoices (gemm : Backend) : List (Backend × XStage) := (cifarChoices gemm).drop 4
 
-noncomputable def bwdBlasPlan : Plan :=
-  Plan.ofSteps [.inr (gemmDecl dw2Stage.val), .inr (gemmDecl dhStage.val),
-                .inl adjStage, .inr (gemmDecl dw1Stage.val),
-                .inl sgd1Stage, .inl sgd2Stage]
+noncomputable def fwdBlasPlan : Plan := lowerAll (fwdChoices GEMM)
+noncomputable def bwdBlasPlan : Plan := lowerAll (bwdChoices GEMM)
 
 /-- The same four operations with every contraction proven — the schedule the
     bill is compared against. -/
-noncomputable def fwdProvenPlan : Plan :=
-  Plan.ofSteps [.inl fwd1Stage, .inl hStage, .inl fwd2Stage, .inl smStage]
+noncomputable def fwdProvenPlan : Plan := lowerAll (fwdChoices .proven)
 
-theorem fwdBlasPlan_exclusive : fwdBlasPlan.Exclusive := Plan.ofSteps_exclusive _
-theorem bwdBlasPlan_exclusive : bwdBlasPlan.Exclusive := Plan.ofSteps_exclusive _
+theorem fwdBlasPlan_exclusive : fwdBlasPlan.Exclusive := lowerAll_exclusive _
+theorem bwdBlasPlan_exclusive : bwdBlasPlan.Exclusive := lowerAll_exclusive _
 
 /-- **The price of the cuBLAS configuration, as a number.**  Five of nine
     operations rest on the vendor; the other four stay bit-exact. -/
@@ -1081,59 +904,6 @@ theorem blas_plans_run (R : Realisation) (hR : Honours R) (st : WSt) :
    Plan.run_denote R hR bwdBlasPlan bwdBlasPlan_exclusive st⟩
 
 -- ---------------------------------------------------------------------------
--- The shipped cuBLAS driver realises that plan
--- ---------------------------------------------------------------------------
-
-/-! The same seam as `fwd_host_computes`, one level up: a plan mixes proven
-    launches with vendor calls, and the shipped bodies' calls of both have to
-    resolve for the plan to describe the program that runs.
-
-    A vendor call has no PTX slot, so its identity *is* its arguments — which is
-    why `gemmArgs` below spells out all fourteen. Two calls of the same shape on
-    different buffers are different steps, and the operands' slots are what
-    tell them apart. -/
-
-/-- A GEMM call's arguments, as a pipeline reads them off the call
-    `Drv.App.sgemm` makes. -/
-def gemmArgs (t : ML.Gemm) : List AlgorithmLib.ML.BufDesc := (ML.appGemm app t).2.args
-
-/-- The device writes `runMixed steps` makes, in its order. -/
-def mixedOps (steps : List (Sum Nat ML.Gemm)) : List DeviceOp := steps.map (ML.appStep app)
-
-/-- **Which vendor call is which step.**  Keyed on the arguments, so a GEMM
-    bound to the wrong buffers matches nothing rather than matching a step
-    proven about different ones. -/
-noncomputable def blasDeclared : List DeclaredBinding :=
-  [ ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmFwd[0]!, gemmDecl fwd1Stage.val⟩
-  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmFwd[1]!, gemmDecl fwd2Stage.val⟩
-  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmBwd[0]!, gemmDecl dw2Stage.val⟩
-  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmBwd[1]!, gemmDecl dhStage.val⟩
-  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmBwd[2]!, gemmDecl dw1Stage.val⟩ ]
-
-/-- …and they are the plan — five declared steps and four proven ones, in the
-    order the driver issues them. -/
-theorem fwd_blas_realises :
-    planOf? mlpTable blasDeclared none (mixedOps fwdBlasSteps) = some fwdBlasPlan := rfl
-
-theorem bwd_blas_realises :
-    planOf? mlpTable blasDeclared none (mixedOps bwdBlasSteps) = some bwdBlasPlan := rfl
-
-/-- **The shipped cuBLAS configuration computes its denotation**, for any
-    realisation honouring the five declared steps.
-
-    Together with `blas_denotes_the_same`, this says the cuBLAS build and the
-    all-proven build leave the same memory — the entire difference between them
-    being `Honours R`, which is `Law.cublasIsMatvec` at these five call sites. -/
-theorem blas_host_computes (R : Realisation) (hR : Honours R) (st : WSt) :
-    planOf? mlpTable blasDeclared none (mixedOps fwdBlasSteps) = some fwdBlasPlan
-      ∧ planOf? mlpTable blasDeclared none (mixedOps bwdBlasSteps) = some bwdBlasPlan
-      ∧ (Plan.run R fwdBlasPlan st).mem = fwdPipeline.denote st.mem
-      ∧ (Plan.run R bwdBlasPlan st).mem = bwdPipeline.denote st.mem :=
-  ⟨fwd_blas_realises, bwd_blas_realises,
-   (blas_denotes_the_same.1 ▸ Plan.run_denote R hR fwdBlasPlan fwdBlasPlan_exclusive st),
-   (blas_denotes_the_same.2 ▸ Plan.run_denote R hR bwdBlasPlan bwdBlasPlan_exclusive st)⟩
-
--- ---------------------------------------------------------------------------
 -- The same model, as a list of backend choices
 -- ---------------------------------------------------------------------------
 
@@ -1141,9 +911,6 @@ theorem blas_host_computes (R : Realisation) (hR : Honours R) (st : WSt) :
     is written twice: the stages are the same objects, and `lowerAll_denote`
     — proven once, for any model and any assignment — is what says the choice
     cannot change the answer. -/
-
-def GEMM : Backend :=
-  .vendor .cublasSgemmStridedBatched
 
 /-- **What each shipped schedule bills, as build output.**
 
@@ -1191,7 +958,7 @@ def assertedSched : TenSchedule := { asserted := [firstToBlas] }
     all.  Retargeting one operation is denotation-preserving for the same reason
     retargeting all of them is, which the library proved once. -/
 theorem firstToBlas_sound : firstToBlas.Sound := by
-  intro t m b
+  intro _ _ _ _ t m b
   cases t with
   | nil => rfl
   | cons o os =>
@@ -1202,7 +969,7 @@ theorem assertedSched_sound : AssertedSound assertedSched.asserted := by
   intro a ha
   have : a = firstToBlas := by
     simpa [assertedSched] using ha
-  subst this; exact firstToBlas_sound
+  subst this; exact @firstToBlas_sound
 
 /-- **The model still computes the model under it** — the escape hatch does not
     escape `compile_den`, it only adds a hypothesis to it. -/
@@ -1211,14 +978,6 @@ theorem asserted_schedule_is_the_model (m : Buf → Nat → Float32) (b : Buf) :
       = (cifarTen.tape NIN).foldl (fun mm o => o.den mm) m b :=
   cifarTen.compile_den NIN assertedSched assertedSched_sound m b
     (by intro h; exact absurd (show b ∈ ([] : List Buf) from h) (by simp))
-
-/-- The forward half: which implementation each operation gets. -/
-def fwdChoices (gemm : Backend) : List (Backend × XStage) :=
-  [(gemm, fwd1Stage), (.proven, hStage), (gemm, fwd2Stage), (.proven, smStage)]
-
-def bwdChoices (gemm : Backend) : List (Backend × XStage) :=
-  [(gemm, dw2Stage), (gemm, dhStage), (.proven, adjStage), (gemm, dw1Stage),
-   (.proven, sgd1Stage), (.proven, sgd2Stage)]
 
 /-- **The all-proven build and the cuBLAS build compute the same function.**
 
@@ -1338,10 +1097,6 @@ theorem program_allocates :
 
 def cifarTenProgram : TenProg H IN := cifarTen
 
-/-- **The schedule.**  The same equations, with the contractions sent to
-    cuBLAS — one value, named where the model is not. -/
-def cifarBlasSched : TenSchedule := { impl := GEMM }
-
 /-- **The tensor term lowers to the shipped pipeline** — the same stage
     objects the driver launches and the rest of the chain reasons about, by
     `rfl`.  This is what makes the surface a frontend rather than a second
@@ -1411,7 +1166,7 @@ set_option maxRecDepth 8000 in
 /-- **…and all 186 of them lower.**  A depth the model was never instantiated
     at costs no new theorem: `Ten.stack_stages` is the general statement, this
     is the check that the general statement is about something real. -/
-theorem deep93_lowers : ((deepStack 93).stages B 200).isSome = true := by rfl
+theorem deep93_lowers : ((deepStack 93).stages (R := Float32) B 200).isSome = true := by rfl
 
 /-- An RMS norm on its own, at a width a transformer block uses.  `x` is bound
     once and read three times — by the statistic, by the scale, by nothing
@@ -1426,7 +1181,7 @@ theorem rms_ops : (rmsProg.graph 2).length = 3 := rfl
 /-- **…and all three lower to proven stages.**  The broadcast reads — one
     scalar per row, one vector shared by every row — are inside the stage's
     contract rather than beside it. -/
-theorem rms_lowers : (rmsProg.stages 4 2).isSome = true := by rfl
+theorem rms_lowers : (rmsProg.stages (R := Float32) 4 2).isSome = true := by rfl
 
 /-- **The three passes address their second operand differently.**  Non-vacuity
     for the two above: a norm that read every operand at the element index
@@ -1471,7 +1226,7 @@ theorem k3_block_ops : ((k3Stack 1).graph 700).length = 28 := by rfl
 /-- **…and every one of them lowers to a proven stage.**  Nothing in a block
     reaches outside the stage vocabulary: no kernel is declared, no law is
     invoked, and a shape that did not fit would have failed to elaborate. -/
-theorem k3_block_lowers : ((k3Stack 1).stages 1 700).isSome = true := by rfl
+theorem k3_block_lowers : ((k3Stack 1).stages (R := Float32) 1 700).isSome = true := by rfl
 
 set_option maxRecDepth 40000 in
 /-- **Eight blocks compose**, which is the statement `Ten.stack_stages` makes
@@ -1517,7 +1272,7 @@ def qwenBwd : List TOp :=
     backward possible at all. -/
 def qwenTape : List TOp := qwenFwd ++ qwenBwd
 noncomputable def qwenStages : List XStage :=
-  (lowerNet 1 (forget (qwenTape.map TOp.node))).getD []
+  (lowerNet (R := Float32) 1 (forget (qwenTape.map TOp.node))).getD []
 
 /-- **The emitted kernels are the proven stages' own statements.**
 
@@ -1552,11 +1307,6 @@ def qBufBytes : List Nat :=
   qInBytes ++ (List.range (QNBUF - QBASE)).map (fun k =>
     max 128 (qwenBufs.foldl (fun a p => if p.1 == QBASE + k then max a p.2 else a)
       (if QBASE + k == 40 then DM * 4 else 0)))
-
-/-- Where a size-restricted read-only policy would put its cut: everything the
-    block computes between kernels is below it, the weights and gradients are
-    above. -/
-def QRO_BYTES : Nat := 65536
 
 def qBufSize (b : Buf) : Nat := qBufBytes.getD b 0
 
@@ -1635,26 +1385,11 @@ theorem qwen_fwd_fusion_agrees (m : Buf → Nat → Float32) (b : Buf) (hb : b �
         rw [List.mem_singleton] at h33
         exact hb h33)
 
-/-- One PTX kernel per operation.
+/-- One PTX kernel per operation: its statement's body kernel, printed. -/
+def qwenPtxOf (t : List TOp) : List String :=
+  t.map (fun op => Body.text "main" (unitBufs 1 [op]).length 0 (unitStmt 1 [op]))
 
-    Every load a kernel may take through the read-only path, does.  Restricting
-    it to buffers under `QRO_BYTES` is the other schedule and measures the same
-    (259.6 us against 259.4 us per step), so the simpler policy is the one that
-    ships. -/
-def qwenPtxWith (s : TenSchedule) (t : List TOp) : List String :=
-  t.map (fun op => emitProvenKernelN "main" (op.bufs 1).length 0 (op.localStmt 1) s.ro)
-
-def qwenPtx : List String := qwenPtxWith {} (qwenTape ++ qwenFwdFused)
-
-/-- The size-restricted schedule — the same `List FI`, a different text. -/
-def qwenSmallROSched : TenSchedule := { ro := .under QRO_BYTES qBufSize }
-
-def qwenPtxSmallRO : List String := qwenPtxWith qwenSmallROSched qwenTape
-
-/-- **Seam guard: the two emissions differ.**  Non-vacuity for treating the
-    read-only path as a choice: if the policy changed nothing, comparing them
-    would be comparing one thing to itself. -/
-theorem qwen_ro_policies_differ : qwenPtx ≠ qwenPtxSmallRO := by native_decide
+def qwenPtx : List String := qwenPtxOf (qwenTape ++ qwenFwdFused)
 
 /-- Ninety launches for the training step, then twenty-seven for the fused
     forward schedule — one image, two schedules. -/
@@ -1672,23 +1407,6 @@ def MODULE_LIMIT : Nat := 1024
 /-- **Seam guard: the artifact fits the loader.** -/
 theorem qwen_within_module_limit : qwenPtx.length ≤ MODULE_LIMIT := by
   rw [qwen_slot_count]; decide
-
-/-- **Seam guard: the binding table stays below the address scratch.**
-
-    Every buffer a kernel binds becomes `%rd{b}`, and the two registers the
-    address arithmetic writes sit at `PTX_ADDR_SCRATCH`.  A table reaching them
-    would make a load compute its address out of a base pointer it had just
-    overwritten — text `ptxas` accepts, addresses the hardware refuses, and
-    nothing any theorem about the kernel would notice. -/
-theorem qwen_bufs_within_regs :
-    (qwenTape ++ qwenFwdFused).all
-      (fun op => decide ((op.bufs 1).length ≤ AlgorithmLib.ML.PTX_ADDR_SCRATCH))
-      = true :=
-  List.all_eq_true.mpr (fun op _ => by
-    have h := bufs_le_five 1 op
-    have hs : (5 : Nat) ≤ AlgorithmLib.ML.PTX_ADDR_SCRATCH := by decide
-    simp only [decide_eq_true_eq]
-    omega)
 
 /-- **The bound that makes the stack depth-independent.**
 
@@ -1713,58 +1431,6 @@ theorem qwen_bufs_bound :
       ∧ (qwenTape ++ qwenFwdFused).all (fun op => op.compactInjB 1) = true :=
   ⟨List.all_eq_true.mpr (fun op _ => TOp.localBelow 1 op), rfl⟩
 
-/-- **Seam guard: every branch target in every kernel exists.** -/
-theorem qwen_targets :
-    qwenTape.all (fun op =>
-      FlatTargetsOkB (flatKernel (expandEW (op.stmt 1)))) = true :=
-  List.all_eq_true.mpr (fun op _ => flatKernel_targets _)
-
-/-- **Seam guard: every kernel is printable** — no instruction the emitter
-    would have to guess at. -/
-theorem qwen_printable :
-    qwenTape.all (fun op =>
-      FlatPrintableB (flatKernel (expandEW (op.stmt 1)))) = true :=
-  List.all_eq_true.mpr (fun op _ => flatKernel_printable _)
-
-/-- **What the tape is actually checked against**: one comparison per
-    operation, on widths the operation already carries.
-
-    `TOp.regBudget` is arithmetic — no instruction is built to evaluate it, and
-    nothing about it grows with the model. -/
-theorem qwen_reg_budgets :
-    (qwenTape ++ qwenFwdFused).all
-      (fun op => decide (op.regBudget ≤ PTX_ADDR_SCRATCH)) = true := by decide
-
-/-- The two facts a kernel needs: the names it carries, and how many
-    instructions it becomes.  Neither builds the instruction list.
-
-    Stated over `localStmt`, which is what `qwenPtx` emits: a kernel binds its
-    own five-entry table, so the buffer numbers a kernel names are bounded by
-    the vocabulary rather than by how many buffers the model has. -/
-theorem qwen_kernel_regs_checked :
-    (qwenTape ++ qwenFwdFused).all
-      (fun op => (expandEW (op.localStmt 1)).kernelRegsOkB) = true :=
-  List.all_eq_true.mpr (fun op hop =>
-    TOp.kernelRegsOk 1 op
-      (of_decide_eq_true (List.all_eq_true.mp qwen_reg_budgets op hop)))
-
-/-- **Seam guard: no kernel names a register the emitter reserved.** -/
-theorem qwen_regs_ok :
-    (qwenTape ++ qwenFwdFused).all (fun op =>
-      FlatRegsOkB (flatKernel (expandEW (op.localStmt 1)))) = true :=
-  List.all_eq_true.mpr (fun op hop =>
-    flatKernel_regsOk_of_B _ (List.all_eq_true.mp qwen_kernel_regs_checked op hop))
-
-/-- **…and the guard above has something to reject.**
-
-    A check that passes on everything says nothing.  The instruction here is the
-    one the guard exists for: it writes the register address arithmetic uses as
-    its own scratch, so the next access would read an address computed from a
-    value it had overwritten. -/
-theorem regs_ok_rejects_the_scratch :
-    FlatRegsOkB [FI.si (.movIC AlgorithmLib.ML.PTX_ADDR_SCRATCH 0)] = false := by
-  decide
-
 /-- **Seam guard: every kernel fits its slot.** -/
 theorem qwen_ptx_fits :
     qwenPtx.all (fun t => decide (t.toUTF8.toList.length + 1 ≤ 0x8000)) = true := by
@@ -1773,7 +1439,7 @@ theorem qwen_ptx_fits :
 /-- The lowering really is `some`, so the stage list is the one the theorems
     below are about rather than a silently empty default. -/
 theorem qwen_stages_eq :
-    lowerNet 1 (forget (qwenTape.map TOp.node)) = some qwenStages := by rfl
+    lowerNet (R := Float32) 1 (forget (qwenTape.map TOp.node)) = some qwenStages := by rfl
 
 /-- **Running the block's launch sequence performs the block's mathematics.**
 
@@ -1788,6 +1454,10 @@ theorem qwen_run_den (st : WSt) :
   show (qwenStages.map Subtype.val).foldl (fun mm S => S.step mm) st.mem = _
   rw [List.foldl_map]
   exact lowerTOps_den 1 qwenTape qwenStages qwen_stages_eq st.mem
+
+/-- The block's stages write disjoint buffers from those they read. -/
+theorem qwenPipeline_exclusive : (Pipeline.ofStages qwenStages).Exclusive :=
+  Pipeline.ofStages_exclusive qwenStages
 
 /-- **Non-vacuity for the theorem above, and the shape of the defect it rules
     out.**  The contractions carry the extent from their own operand types —
@@ -1878,7 +1548,7 @@ theorem rope_backward_derived :
     is not a term that merely typechecks: it is a launch sequence. -/
 theorem rope_backward_lowers :
     ((Ten.backwardFrom ropeNeeds 9 1 10 [(7, 8)] ropeTape).map
-      (fun ops => (lowerNet 1 (forget (ops.map TOp.node))).isSome)) = some true := by
+      (fun ops => (lowerNet (R := Float32) 1 (forget (ops.map TOp.node))).isSome)) = some true := by
   rfl
 
 /-- **A row pass differentiates by the rule the stack already proved.**
@@ -1915,7 +1585,7 @@ theorem block_backward_derived :
 /-- **…and all 62 lower to proven stages.** -/
 theorem block_backward_lowers :
     ((Ten.backwardFrom blockNeeds 2 1 41 [(39, 40)] blockTape).map
-      (fun ops => (lowerNet 1 (forget (ops.map TOp.node))).isSome)) = some true := by
+      (fun ops => (lowerNet (R := Float32) 1 (forget (ops.map TOp.node))).isSome)) = some true := by
   rfl
 
 /-! ### A schedule that fuses -/
@@ -1926,7 +1596,7 @@ theorem block_backward_lowers :
 theorem k3_fused_ops : ((k3StackFused 1).graph 700).length = 26 := by rfl
 
 /-- **…and all of them lower.** -/
-theorem k3_fused_lowers : ((k3StackFused 1).stages 1 700).isSome = true := by rfl
+theorem k3_fused_lowers : ((k3StackFused 1).stages (R := Float32) 1 700).isSome = true := by rfl
 
 /-- **The fusion computes the same number, bit for bit.**
 
@@ -1983,7 +1653,7 @@ theorem norm_backward_derived :
 /-- **…and the whole adjoint lowers to proven stages.** -/
 theorem norm_backward_lowers :
     ((Ten.backwardFrom normNeeds 2 1 7 [(5, 6)] normTape).map
-      (fun ops => (lowerNet 1 (forget (ops.map TOp.node))).isSome)) = some true := by
+      (fun ops => (lowerNet (R := Float32) 1 (forget (ops.map TOp.node))).isSome)) = some true := by
   rfl
 
 /-! ### The block as a shippable artifact -/
@@ -2028,7 +1698,7 @@ def qAllLaunches : List (Nat × Nat × List Buf) :=
     and each of the 117 kernels handed its own buffers. -/
 def qApp : Drv.App :=
   { bufs := qBufBytes,
-    kernels := qAllLaunches.map fun (i, g, bs) => ⟨qSlotOff i, QSLOT, bs, (g, 1, 1), (32, 1, 1)⟩,
+    kernels := qAllLaunches.map fun (i, g, bs) => ⟨qSlotOff i, QSLOT, bs, (g, 1, 1), (32, 1, 1), []⟩,
     memSize := QMEM_SIZE, org := QORG }
 
 /-- **Every byte this program names.** -/
@@ -2085,9 +1755,8 @@ def qRunUpto (k : Nat) : Prog V L Unit := qRun ((qLaunches 0 qwenTape).take k)
     instantiated and uploaded, so the first replay costs what the others do.
     Every kernel's module is loaded by `main`, which a capture could not do.
 
-    What replay then performs is a *declared* fact about the driver — the
-    launches are not re-derived from the graph — and it is named in the ledger
-    beside the other things the hardware is trusted to do. -/
+    A capture followed by replays leaves memory as that many steps of the
+    tape (`QwenReplaySafe.capture_replay_tape`). -/
 def qCaptureFn : Prog V L Unit := do
   let base ← basePtr
   let _ ← ext (.cuda .streamCreate) %[← iaddImm base QSTREAM_OFF, ← iconst32 1]
@@ -2100,55 +1769,6 @@ def qCaptureFn : Prog V L Unit := do
     ← iconst64 0]
   let _ ← ext (.cuda .graphUpload) %[← load64 (← iaddImm base QEXEC_OFF), s]
   let _ ← ext (.cuda .streamSynchronize) %[s]
-
-/-- **Which slot holds which stage, for the qwen tape** — derived from the
-    stage list, so a stage added, removed or reordered moves its entry with
-    it. -/
-noncomputable def qTable : List KernelBinding :=
-  ((qLaunches 0 qwenTape).zip qwenStages).map
-    (fun p => ⟨qSlotOff p.1.1, qApp.paramsOff p.1.1, appBufs qApp p.1.1, p.2.val⟩)
-
-/-- The pipeline the tape's stages are, in launch order. -/
-noncomputable def qwenPipeline : Pipeline := Pipeline.ofStages qwenStages
-
-theorem qwenPipeline_exclusive : qwenPipeline.Exclusive :=
-  Pipeline.ofStages_exclusive qwenStages
-
-/-- The same device write, issued on stream `s` — what a capture on that
-    stream records in place of what the default-stream pass performs. -/
-def onStream (s : Nat) (op : DeviceOp) : DeviceOp :=
-  ({ op.1 with stream := some s }, op.2)
-
-/-- The launches `qRunFn` makes, in its order. -/
-def qOps : List DeviceOp := (qLaunches 0 qwenTape).map fun p => appLaunch qApp p.1
-
-set_option maxRecDepth 100000 in
-/-- **…and those launches are the proven pipeline.**
-
-    Every record finds its stage in `qTable`, at the grid the stage declares,
-    with the bind array the program wrote.  The qwen counterpart of
-    `fwd_realises`, and what makes the sequence a `Pipeline` rather than a list
-    of records. -/
-theorem qwen_run_realises :
-    pipelineOf? qTable none qOps = some qwenPipeline := rfl
-
-set_option maxRecDepth 100000 in
-/-- **The graph captures the proven pipeline, on one stream.**
-
-    `qCaptureFn` issues `qOps` on a created stream under capture, and those
-    launches resolve through the same table to the same `Pipeline` at that
-    stream as `qOps` do at the default one.  A fragment issued on one stream
-    is ordered, so it is a pipeline; a fragment spread across two is not, and
-    no `s` would satisfy this.
-
-    What the graph *replays* is a separate, declared fact — `graphStep` below.
-    What this rules out is the fast path having captured something other than
-    what was proven. -/
-theorem qwen_capture_records_the_run :
-    ∃ s : Nat,
-      pipelineOf? qTable none qOps = some qwenPipeline
-        ∧ pipelineOf? qTable (some s) (qOps.map (onStream s)) = some qwenPipeline :=
-  ⟨0, rfl, rfl⟩
 
 /-- **The captured step, replayed `k` times.**
 
@@ -2163,88 +1783,6 @@ def qReplayFn (k : Nat) : Prog V L Unit := do
   for _ in List.range k do
     let _ ← ext (.cuda .graphLaunch) %[e, s]
   let _ ← ext (.cuda .streamSynchronize) %[s]
-
-
-/-! ### The replay, in the plan -/
-
-/-- **A replay's record**: the executable graph `capture` instantiated and the
-    stream it made, the first of each the program makes. -/
-def qReplayOp : DeviceOp :=
-  ML.graphOp qApp [HProg.Sem.drvHandle HProg.Sem.kExec 0, HProg.Sem.drvHandle HProg.Sem.kStream 0]
-
-/-- What a replay is handed, as the plan keys it. -/
-def qGraphArgs : List AlgorithmLib.ML.BufDesc := qReplayOp.2.args
-
-/-- **Which declared step a `cuGraphLaunch` here is**: the replay of the
-    sequence `qwen_capture_records_the_run` proves was captured.  Keyed on the
-    arguments, so a replay of a *different* executable matches nothing rather
-    than matching this one. -/
-noncomputable def qDeclared : List DeclaredBinding :=
-  [⟨(IR.Ext.cuda .graphLaunch).symbol, qGraphArgs, graphStep qwenStages⟩]
-
-/-- `k` replays: `k` assumed steps, each denoting the captured pipeline. -/
-noncomputable def qReplayPlan (k : Nat) : Plan :=
-  ⟨List.replicate k (.declared (graphStep qwenStages))⟩
-
-/-- **The device writes `qReplayFn k` makes are `k` replays of the captured
-    pipeline.**
-
-    The replay path is *in* the plan rather than absent from it: it resolves
-    through `qDeclared`, it is counted by `Plan.declaredCount`, and
-    `Plan.lawlessCount` bills it as assumed with no stated equation.  What is
-    assumed is exactly `VendorKernel.cudaGraphLaunch`'s `withholds` line — that
-    the driver replays what was captured — and which sequence that is, is a
-    theorem. -/
-theorem qwen_replay_realises (k : Nat) :
-    planOf? qTable qDeclared none
-        (List.replicate k qReplayOp) = some (qReplayPlan k) := by
-  have hsteps : ∀ n : Nat,
-      stepsOf? qTable qDeclared none (List.replicate n qReplayOp)
-        = some (List.replicate n (PStep.declared (graphStep qwenStages))) := by
-    intro n
-    induction n with
-    | zero => rfl
-    | succ n ih =>
-        show (match stepOf? qTable qDeclared none qReplayOp with
-              | none => none
-              | some t =>
-                  (stepsOf? qTable qDeclared none
-                    (List.replicate n qReplayOp)).map (t :: ·)) = _
-        rw [show stepOf? qTable qDeclared none qReplayOp
-              = some (PStep.declared (graphStep qwenStages)) from rfl, ih]
-        rfl
-  show (stepsOf? qTable qDeclared none
-          (List.replicate k qReplayOp)).map Plan.mk = _
-  rw [hsteps k]
-  rfl
-
-/-- **`k` replays compute `k` steps of the block.**
-
-    The composite the fast path is for: replaying the captured graph `k` times
-    denotes `k` applications of the pipeline the tape lowers to — the same
-    `iterMem` a training run is stated with. -/
-theorem qwen_replay_denote : ∀ (k : Nat) (m : Buf → Nat → Float32),
-    (qReplayPlan k).denote m = iterMem qwenPipeline.denote k m := by
-  intro k
-  induction k with
-  | zero => intro _; rfl
-  | succ k ih =>
-      intro m
-      show (List.replicate k (PStep.declared (graphStep qwenStages))).foldl
-          (fun mm s => s.denote mm) (qwenPipeline.denote m) = _
-      rw [show (List.replicate k (PStep.declared (graphStep qwenStages))).foldl
-                (fun mm s => s.denote mm) (qwenPipeline.denote m)
-            = (qReplayPlan k).denote (qwenPipeline.denote m) from rfl,
-          ih (qwenPipeline.denote m), iterMem_comm]
-      rfl
-
-/-- One synchronisation per launch, so a fault is attributed to the launch
-    that caused it rather than to whatever call next waits on the device. -/
-def qRunSynced : Prog V L Unit := do
-  let base ← basePtr
-  for (i, _, _) in qLaunches 0 qwenTape do
-    qApp.run base i
-    Drv.sync
 
 /-- The forward half only, so a host can re-evaluate the loss at a perturbed
     weight without also recomputing gradients. -/
@@ -2268,7 +1806,6 @@ def qShippedBodies : List (String × Prog.Body) :=
   , ("runTo45", qRunUpto 45)
   , ("runTo60", qRunUpto 60)
   , ("runTo75", qRunUpto 75)
-  , ("runSynced", qRunSynced)
   , ("capture", qCaptureFn)
   , ("replay", qReplayFn 1)
   , ("replay2", qReplayFn 2)
@@ -2318,7 +1855,7 @@ def k3MoeProg : TenProg 1 DM := fun _ =>
     which is the whole reason a mixture needs no new stage. -/
 theorem k3_moe_ops : (k3MoeProg.graph 200).length = 53 := by rfl
 
-theorem k3_moe_lowers : (k3MoeProg.stages 1 200).isSome = true := by rfl
+theorem k3_moe_lowers : (k3MoeProg.stages (R := Float32) 1 200).isSome = true := by rfl
 
 set_option maxRecDepth 100000 in
 /-- **A whole model's worth of blocks lowers** — twenty-four of them, Qwen2's
@@ -2327,7 +1864,7 @@ set_option maxRecDepth 100000 in
     Depth itself is generic: `Ten.stack_stages` is the statement for every `n`.
     This is the check that the generic statement is about a real stack of real
     blocks, at the depth a real model has. -/
-theorem k3_24_lowers : ((k3Stack 24).stages 1 700).isSome = true := by rfl
+theorem k3_24_lowers : ((k3Stack 24).stages (R := Float32) 1 700).isSome = true := by rfl
 
 set_option maxRecDepth 100000 in
 /-- …and the operation count is linear in the depth, which is what says the
@@ -2346,7 +1883,7 @@ theorem ten_schedule_differs :
     output has no sound stage, and the lowering returns `none` rather than
     skipping the node — which would silently ship a pipeline missing a
     kernel. -/
-theorem badNet_rejected : Net.stages B [.input xB, .matvec z1B xB z1B B IN H] = none := rfl
+theorem badNet_rejected : Net.stages (R := Float32) B [.input xB, .matvec z1B xB z1B B IN H] = none := rfl
 
 /-! ### Sparse dispatch: choosing experts is a rebinding -/
 
@@ -2363,12 +1900,8 @@ def MUSED : Nat := 2
     written and never read. -/
 def MSLOT0 : Ref := 4
 
-/-- Where the thirty-two experts' weights actually live.  The term never names
-    these: a slot reads `MSLOT0 + 3j`, and which expert that *is* is which id
-    the bind array holds. -/
-def MSTORE : Ref := MSLOT0 + 3 * MUSED
-
-def MBASE : Ref := MSTORE + 3 * NE
+/-- The first buffer past the slots, where the term's own buffers start. -/
+def MBASE : Ref := MSLOT0 + 3 * MUSED
 
 /-- The router, as its own launch sequence: the host runs it, reads the row it
     writes, and only then knows which weights to bind. -/
@@ -2395,6 +1928,12 @@ def MOUT : Ref := mExpertFlat.1
 
 def MNBUF : Ref := mExpertFlat.2.1
 
+/-- **The allocation the thirty-two experts' weights live in**, past every
+    buffer the term names. The term never names it: a slot reads
+    `MSLOT0 + 3j`, and which expert that *is* is which pointer `bindExperts`
+    writes into the slot. -/
+def MSTORE : Nat := MNBUF
+
 /-- **Six launches to route, eleven to run the two chosen experts.**
 
     The eleven do not grow with the thirty-two: a slot's cost is its own
@@ -2404,7 +1943,7 @@ theorem moe_slot_count : mRouterTape.length = 6 ∧ mExpertTape.length = 11 := b
 
 /-- **Seam guard: the dispatch tape lowers, kernel for kernel.** -/
 theorem moe_kernels_are_the_stages :
-    ((lowerNet 1 (forget (moeTape.map TOp.node))).getD []).map (fun S => S.val.ew)
+    ((lowerNet (R := Float32) 1 (forget (moeTape.map TOp.node))).getD []).map (fun S => S.val.ew)
       = moeTape.map (TOp.stmt 1) := by rfl
 
 /-- **The slots read the bound buffers and nothing else.**
@@ -2416,11 +1955,12 @@ theorem moe_kernels_are_the_stages :
 theorem moe_slots_are_bound :
     (mExpertTape.filterMap (fun op => match op with
       | .mv _ w _ _ _ _ _ _ => some w
-      | _ => none)).all (fun b => decide (b < MSTORE ∨ MBASE ≤ b)) = true := by
+      | _ => none)).all (fun b => decide (MSLOT0 ≤ b ∧ b < MBASE)) = true := by
   decide
 
 /-- …and the store really is outside what the term names. -/
-theorem moe_store_is_unnamed : MSLOT0 + 3 * MUSED = MSTORE := by decide
+theorem moe_store_is_unnamed : moeTape.all (fun op => (op.bufs 1).all (· < MSTORE)) = true := by
+  decide
 
 /-! ### The dispatch artifact -/
 
@@ -2430,7 +1970,6 @@ theorem moe_store_is_unnamed : MSLOT0 + 3 * MUSED = MSTORE := by decide
 def mBufBytes : List Nat :=
   [ NE * 4, NE * MD * 4, MD * 4, 128 ]
     ++ (List.replicate (3 * MUSED) 128)
-    ++ (List.range (3 * NE)).map (fun _ => MDFF * MD * 4)
     ++ (List.range (MNBUF - MBASE)).map (fun k =>
           max 128 (moeTape.foldl
             (fun a op => let p := TOp.outSize 1 op
@@ -2447,45 +1986,16 @@ theorem moe_bufs_within_regs :
     moeTape.all (fun op => decide ((op.bufs 1).length ≤ 5)) = true :=
   List.all_eq_true.mpr (fun op _ => decide_eq_true (bufs_le_five 1 op))
 
-set_option maxRecDepth 20000 in
-/-- The register budget each dispatch kernel needs — one arithmetic comparison
-    per operation, which is what makes the guard scale with depth. -/
-theorem moe_reg_budgets :
-    moeTape.all (fun op => decide (op.regBudget ≤ AlgorithmLib.ML.PTX_ADDR_SCRATCH))
-      = true := by decide
-
-set_option maxRecDepth 20000 in
-/-- The names each dispatch kernel carries and how long it is — the two facts
-    `flatKernel_regsOk` needs, derived from the budget above rather than by
-    expanding each kernel, so the cost is one comparison per operation. -/
-theorem moe_kernel_regs_checked :
-    moeTape.all (fun op => (expandEW (op.localStmt 1)).kernelRegsOkB) = true :=
-  List.all_eq_true.mpr (fun op hop =>
-    TOp.kernelRegsOk 1 op
-      (of_decide_eq_true (List.all_eq_true.mp moe_reg_budgets op hop)))
-
-/-- **Seam guard: every kernel's buffers are inside the binding table, every
-    branch target exists, every instruction prints, and no kernel names a
-    reserved register.** -/
+/-- **Seam guard: every kernel's buffers are inside the binding table**, and
+    the compaction that put them there is injective. -/
 theorem moe_kernels_ok :
     moeTape.all (fun op => op.localBelowB 1) = true
-      ∧ moeTape.all (fun op => op.compactInjB 1) = true
-      ∧ moeTape.all (fun op =>
-          FlatTargetsOkB (flatKernel (expandEW (op.localStmt 1)))) = true
-      ∧ moeTape.all (fun op =>
-          FlatPrintableB (flatKernel (expandEW (op.localStmt 1)))) = true
-      ∧ moeTape.all (fun op =>
-          FlatRegsOkB (flatKernel (expandEW (op.localStmt 1)))) = true :=
-  ⟨List.all_eq_true.mpr (fun op _ => TOp.localBelow 1 op),
-   rfl,
-   List.all_eq_true.mpr (fun op _ => flatKernel_targets _),
-   List.all_eq_true.mpr (fun op _ => flatKernel_printable _),
-   List.all_eq_true.mpr (fun op hop =>
-     flatKernel_regsOk_of_B _ (List.all_eq_true.mp moe_kernel_regs_checked op hop))⟩
+      ∧ moeTape.all (fun op => op.compactInjB 1) = true :=
+  ⟨List.all_eq_true.mpr (fun op _ => TOp.localBelow 1 op), rfl⟩
 
 def moePtx : List String :=
   moeTape.map (fun op =>
-    emitProvenKernelN "main" (op.bufs 1).length 0 (op.localStmt 1))
+    Body.text "main" (unitBufs 1 [op]).length 0 (unitStmt 1 [op]))
 
 theorem moe_ptx_fits :
     moePtx.all (fun t => decide (t.toUTF8.toList.length + 1 ≤ QSLOT)) = true := by
@@ -2494,7 +2004,7 @@ theorem moe_ptx_fits :
 /-- **Seam guard: the launch geometry is the stages' own.** -/
 theorem moe_grids_are_the_stages :
     moeTape.map TOp.gridOf
-      = ((lowerNet 1 (forget (moeTape.map TOp.node))).getD []).map
+      = ((lowerNet (R := Float32) 1 (forget (moeTape.map TOp.node))).getD []).map
           (fun S => S.val.grid) := by rfl
 
 /-- What the host uploads once: the ones row, the router weight, the token,
@@ -2522,25 +2032,20 @@ def mLaunches : List (Nat × Nat × List Buf) :=
 /-- Bytes of one expert matrix. -/
 def MEXPERT : Nat := MDFF * MD * 4
 
-/-- The allocation buffer `b` lives in: its own, but for the store, which is
-    one allocation the experts' matrices lie in, in order, `MEXPERT` bytes
-    apart. -/
-def mAlloc (b : Buf) : Nat :=
-  if b < MSTORE then b else if b < MBASE then MSTORE else b - 3 * NE + 1
-
-/-- Bytes per allocation. -/
-def mAllocBytes : List Nat := mBufBytes.take MSTORE ++ [3 * NE * MEXPERT] ++ mBufBytes.drop MBASE
+/-- Bytes per allocation: each buffer's, then the store, the experts'
+    matrices in order, `MEXPERT` bytes apart. -/
+def mAllocBytes : List Nat := mBufBytes ++ [3 * NE * MEXPERT]
 
 /-- **Seam guard: no kernel names the store**, so a kernel's allocations are
     its buffers', one for one. -/
 theorem moe_store_unbound :
-    mLaunches.all (fun (_, _, bs) => bs.all fun b => b < MSTORE || MBASE ≤ b) = true := by decide
+    mLaunches.all (fun (_, _, bs) => bs.all fun b => b < MSTORE) = true := by decide
 
 /-- **The dispatch in the driver's standard layout**: an allocation per
-    buffer but the store, and each kernel handed its own buffers. -/
+    buffer, then the store, and each kernel handed its own buffers. -/
 def mApp : Drv.App :=
   { bufs := mAllocBytes,
-    kernels := mLaunches.map fun (i, g, bs) => ⟨mSlotOff i, QSLOT, bs.map mAlloc, (g, 1, 1), (32, 1, 1)⟩,
+    kernels := mLaunches.map fun (i, g, bs) => ⟨mSlotOff i, QSLOT, bs, (g, 1, 1), (32, 1, 1), []⟩,
     memSize := MMEM_SIZE, org := MORG }
 
 /-- **Every byte this program names.** -/
@@ -2567,7 +2072,7 @@ def mLoadFn : Prog V L Unit := do
   let base ← basePtr
   let dataPtr ← dataPtr
   mApp.setup base
-  -- The three shared inputs, then the store, which starts at `MSTORE`.
+  -- The three shared inputs, then the store, allocation `MSTORE`.
   for i in List.range 3 do
     mApp.upload base i (← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn i)) (mBufBytes.getD i 0)
   mApp.upload base MSTORE (← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn 3))
@@ -2605,7 +2110,7 @@ def mBindExperts : Prog V L Unit :=
 
 /-- Whether kernel `i` binds a buffer whose pointer `mBindExperts` moves. -/
 def mRebinds (i : Nat) : Bool :=
-  ((mLaunches.getD i (0, 0, [])).2.2).any fun b => MSLOT0 ≤ b && b < MSTORE
+  ((mLaunches.getD i (0, 0, [])).2.2).any fun b => MSLOT0 ≤ b && b < MBASE
 
 /-- Launches `[lo, hi)` of the dispatch tape, one synchronisation at the
     end. A kernel bound to a slot `mBindExperts` rewrites has its parameters
@@ -2619,11 +2124,11 @@ def mRunRange (lo hi : Nat) : Prog V L Unit := do
 
 def mUploadFn (b n : Nat) : Prog V L Unit := do
   let base ← basePtr
-  mApp.upload base (mAlloc b) (← dataPtr) n
+  mApp.upload base b (← dataPtr) n
 
 def mFetchFn (b n : Nat) : Prog V L Unit := do
   let base ← basePtr
-  mApp.download base (← outPtr) (mAlloc b) n
+  mApp.download base (← outPtr) b n
 
 /-- The bodies the mixture-of-experts artifact carries, in the order it numbers
     them. -/

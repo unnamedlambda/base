@@ -143,13 +143,17 @@ def gemmBf16 (h : V .i64) (ta tb : Nat) (m n k : V .i32) (alpha A B beta C : V .
 
 /-- A kernel of a program in the standard layout: where its PTX is and how
     many bytes are kept for it, the allocations it is handed by index, its
-    grid and its block. Its entry point is `main`. -/
+    grid and its block, and which of the allocations it writes. Its entry
+    point is `main`. -/
 structure KSpec where
   ptxOff : Nat
   ptxLen : Nat
   args : List Nat
   grid : Nat × Nat × Nat
   block : Nat × Nat × Nat
+  /-- Which of `args` the kernel writes, in order; one missing is written.
+      The rest it only reads. -/
+  writes : List Bool := []
 
 /-- **A program in the standard layout**: its allocations' sizes in bytes
     (`0` for one whose size the program learns at run time and makes itself),
@@ -290,15 +294,19 @@ def sgemv (a : App) (base : V .i64) (trans m n A x y : Nat) : Prog V L Unit := d
     ← load64 (← iaddImm base (a.bufSlot x)), ← iconst32 1, ← iaddImm base a.ZERO,
     ← load64 (← iaddImm base (a.bufSlot y)), ← iconst32 1]
 
-/-- `C = op(A) op(B)` by cuBLAS on the default stream, each operand packed
+/-- `C = op(A) op(B)` by cuBLAS on handle `h`, each operand packed
     column-major in its allocation: `op(A)` is `m × k`, `op(B)` is `k × n` and
-    `C` is `m × n`, `op` transposing where `ta` or `tb` is `1`. -/
-def sgemm (a : App) (base : V .i64) (ta tb m n k A B C : Nat) : Prog V L Unit := do
-  let _ ← ext (.cublas .sgemm) %[← load64 (← iaddImm base a.BLAS), ← iconst32 ta, ← iconst32 tb,
-    ← iconst32 m, ← iconst32 n, ← iconst32 k, ← iaddImm base a.ONE,
-    ← load64 (← iaddImm base (a.bufSlot A)), ← iconst32 (if ta = 1 then k else m),
-    ← load64 (← iaddImm base (a.bufSlot B)), ← iconst32 (if tb = 1 then n else k),
-    ← iaddImm base a.ZERO, ← load64 (← iaddImm base (a.bufSlot C)), ← iconst32 m]
+    `C` is `m × n`, `op` transposing where `ta` or `tb` is `1`. It is a
+    strided-batched product at a batch of one, `α` and `β` read from the
+    layout's `ONE` and `ZERO`: the one product call a program issues, so its
+    meaning is one the device semantics states (`stridedCall`). -/
+def sgemm (a : App) (base h : V .i64) (ta tb m n k A B C : Nat) : Prog V L Unit := do
+  let z ← iconst64 0
+  let _ ← ext (.cublas .sgemmStridedBatched) %[h, ← iconst32 ta, ← iconst32 tb, ← iconst32 m, ← iconst32 n,
+    ← iconst32 k, ← iaddImm base a.ONE, ← load64 (← iaddImm base (a.bufSlot A)),
+    ← iconst32 (if ta = 1 then k else m), z, ← load64 (← iaddImm base (a.bufSlot B)),
+    ← iconst32 (if tb = 1 then n else k), z, ← iaddImm base a.ZERO,
+    ← load64 (← iaddImm base (a.bufSlot C)), ← iconst32 m, z, ← iconst32 1]
 
 /-- Copy `bytes` bytes from `src` into allocation `i`. -/
 def upload (a : App) (base : V .i64) (i : Nat) (src : V .i64) (bytes : Nat) : Prog V L Unit :=

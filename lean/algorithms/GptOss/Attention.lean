@@ -3,6 +3,10 @@ public import Lean
 public import Std
 public import AlgorithmLib.ML.Kernel.Library
 meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
+public import AlgorithmLib.ML.Machine.Geometry
+meta import AlgorithmLib.ML.Machine.Geometry
 public import AlgorithmLib.Surface.FFI
 meta import AlgorithmLib.Surface.FFI
 public import AlgorithmLib.Core.IR
@@ -154,17 +158,8 @@ def rmsKernelEW : EWStmt :=
   .seq (.seq rmsReduce (.setR 1 rmsScale))
        (.forN (H / 32) (storeBody 2 4 strideIx32 rmsStoreCompute))
 
-def ptxRmsNorm : String := emitProvenKernelN "main" 3 0 rmsKernelEW
-
-/-- **The emitted RMSNorm runs its statement, from raw launch.** No `exp` and
-    no data-dependent address, so this is the unconditional form. -/
-theorem rms_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW rmsKernelEW)) k (0, m)
-          = some ((flatKernel (expandEW rmsKernelEW)).length, m')
-      ∧ m'.toWSt = ((expandEW rmsKernelEW).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW rmsKernelEW) (expandEW_expFree rmsKernelEW)
-    (expandEW_idxFree rmsKernelEW (by decide))
-    (expandEW_flat rmsKernelEW (by decide)) m
+/-- The RMSNorm as the decode launches it: one block of one warp. -/
+def rmsKernel : Kernel.Kernel := Body.kernel "rmsNorm" 3 0 rmsKernelEW
 
 /-! ## Elementwise add
 
@@ -172,22 +167,12 @@ theorem rms_ptx_exact (cta : Nat) (m : MState) :
     input, so it accumulates in place. -/
 
 def twoIn : Fin 2 → Buf := fun i => if i.val = 0 then 0 else 1
-def twoIx : Fin 2 → IdxE := fun _ => elemIx
 def addSpec : Expr 2 := .add (.var ⟨0, by decide⟩) (.var ⟨1, by decide⟩)
 
-def addKernelEW : EWStmt :=
-  compileWKernel twoIn 0 twoIx addSpec elemIx (2 + slots addSpec + 1)
+def addKernelEW : EWStmt := (mapKernel addSpec twoIn 0).ew
 
-def ptxAdd : String := emitProvenKernel "main" addKernelEW
-
-/-- **The emitted add runs its statement, from raw launch.** -/
-theorem add_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW addKernelEW)) k (0, m)
-          = some ((flatKernel (expandEW addKernelEW)).length, m')
-      ∧ m'.toWSt = ((expandEW addKernelEW).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW addKernelEW) (expandEW_expFree addKernelEW)
-    (expandEW_idxFree addKernelEW (by decide))
-    (expandEW_flat addKernelEW (by decide)) m
+/-- The add as the decode launches it, one warp a block. -/
+def addKernel : Kernel.Kernel := Body.kernel "addEW" 2 0 addKernelEW
 
 /-! ## The rotation
 
@@ -216,35 +201,15 @@ def ropeEW (base : Nat) : EWStmt :=
   .seq (ropeBodyEW base)
        (.seq (.storeLane 0 (ropeLoIx base) 6) (.storeLane 0 (ropeHiIx base) 7))
 
-/-- The query launch turns heads at the front of the packed row, the key launch
-    those behind them. Two emitted kernels rather than one reading a base from
-    memory, because a base in memory is a base every soundness statement then
-    has to quantify over — and the two are the same eleven instructions. -/
-def ropeQEW : EWStmt := ropeEW 0
-def ropeKEW : EWStmt := ropeEW QO
+/-- The rotation as the decode launches it: one block of one warp per head. -/
+def ropeKernel (base : Nat) : Kernel.Kernel := Body.kernel "rope" 3 0 (ropeEW base)
 
-/-- **The emitted rotation runs its statement, from raw launch** — stated at
-    the two bases that ship, because `decide` needs a base to decide about and
-    a theorem about a base nothing launches at is a theorem about nothing. -/
-theorem ropeQ_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW ropeQEW)) k (0, m)
-          = some ((flatKernel (expandEW ropeQEW)).length, m')
-      ∧ m'.toWSt
-        = ((expandEW ropeQEW).elabAt cta 0
-            (SI.stepL cta emitPrologue m).ir m.imem).run m.toWSt :=
-  flatKernel_sound cta (expandEW ropeQEW) (expandEW_expFree ropeQEW)
-    (expandEW_idxBelow 3 ropeQEW (by decide))
-    (expandEW_flat ropeQEW (by decide)) m
-
-theorem ropeK_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW ropeKEW)) k (0, m)
-          = some ((flatKernel (expandEW ropeKEW)).length, m')
-      ∧ m'.toWSt
-        = ((expandEW ropeKEW).elabAt cta 0
-            (SI.stepL cta emitPrologue m).ir m.imem).run m.toWSt :=
-  flatKernel_sound cta (expandEW ropeKEW) (expandEW_expFree ropeKEW)
-    (expandEW_idxBelow 3 ropeKEW (by decide))
-    (expandEW_flat ropeKEW (by decide)) m
+/-- The rotations that ship, as (base, heads): the query launch turns heads at
+    the front of the packed row, the key launch those behind them. Two emitted
+    kernels rather than one reading a base from memory, because a base in
+    memory is a base every soundness statement then has to quantify over — and
+    the two are the same eleven instructions. -/
+def ropeShipped : List (Nat × Nat) := [(0, NQ), (QO, NKV)]
 
 /-! ## The cache store
 
@@ -274,38 +239,13 @@ def kvDstIx (hd : Nat) : IdxE :=
 def kvStoreEW (base hd : Nat) : EWStmt :=
   .forN (hd / 32) (.seq (.loadIdx 0 0 (kvSrcIx base hd)) (.storeLane 1 (kvDstIx hd) 0))
 
-def ptxKVStore (base hd : Nat) : String :=
-  emitProvenKernelN "main" 3 0 (kvStoreEW base hd)
+/-- The cache store as the decode launches it: one block of one warp per key
+    head, over the packed row, the cache and the meta. -/
+def kvStoreKernel (base hd : Nat) : Kernel.Kernel := Body.kernel "kvStore" 3 0 (kvStoreEW base hd)
 
-/-- What ships: keys and values, over a bf16 cache and over a `Float32` one.
-
-    The depth is part of none of them -- that is `M_KVSTRIDE` -- so
-    what is left to vary is the width of a head, and only two artifacts make
-    different choices about it. The decode holds bf16 and moves `HDW` words a
-    head, two values to a word; the per-piece slices hold `Float32` and move
-    `HD`. The move does not read what it carries, which is why one kernel
-    serves both. -/
-def kvShipped : List EWStmt :=
-  [ kvStoreEW (QO / 2) HDW, kvStoreEW (KO / 2) HDW
-  , kvStoreEW QO HD, kvStoreEW KO HD ]
-
-/-- **Every emitted cache store runs its statement, from raw launch.** Both the
-    strided source and the slot-dependent destination are covered, at each of
-    the two bases a decode step launches, at each width that ships. -/
-theorem kvStore_ptx_exact :
-    ∀ s ∈ kvShipped, ∀ (cta : Nat) (m : MState),
-      ∃ k m', steps cta (flatKernel (expandEW s)) k (0, m)
-            = some ((flatKernel (expandEW s)).length, m')
-        ∧ m'.toWSt
-          = ((expandEW s).elabAt cta 0
-              (SI.stepL cta emitPrologue m).ir m.imem).run m.toWSt := by
-  intro s hs cta m
-  have h4 : s = kvStoreEW (QO / 2) HDW ∨ s = kvStoreEW (KO / 2) HDW
-          ∨ s = kvStoreEW QO HD ∨ s = kvStoreEW KO HD := by
-    simpa [kvShipped] using hs
-  rcases h4 with h | h | h | h <;> subst h <;>
-    exact flatKernel_sound cta (expandEW _) (expandEW_expFree _)
-      (expandEW_idxBelow 3 _ (by decide)) (expandEW_flat _ (by decide)) m
+/-- The cache stores that ship, as (base, words a head): keys and values, over
+    the decode's bf16 cache and the per-piece slices' `Float32` one. -/
+def kvShipped : List (Nat × Nat) := [(QO / 2, HDW), (KO / 2, HDW), (QO, HD), (KO, HD)]
 
 /-- The destination, in closed form: head, slot, element. -/
 theorem kvDst_eval (hd cta j : Nat) (l : Lane) (ir : Nat → Lane → Nat)
@@ -315,8 +255,8 @@ theorem kvDst_eval (hd cta j : Nat) (l : Lane) (ir : Nat → Lane → Nat)
 
 /-- **The cache store lands the right element at the right address**, for every
     `(loop, lane)` the kernel visits — not merely "some lane wrote it". -/
-theorem kvStore_writes (base hd : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (st : WSt) (i0 : Nat) (l0 : Lane) (hi0 : i0 < hd / 32) :
+theorem kvStore_writes {R : Type} [NumOps R] [NumLit R] (base hd : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) (st : WSt R) (i0 : Nat) (l0 : Lane) (hi0 : i0 < hd / 32) :
     (((kvStoreEW base hd).elabAt cta 0 ir im).run st).mem 1
         ((kvDstIx hd).eval cta i0 l0 ir im)
       = st.mem 0 ((kvSrcIx base hd).eval cta i0 l0 ir im) := by
@@ -398,32 +338,26 @@ def normCompute (ix : IdxE) : EWStmt :=
 
 def normStep (ix : IdxE) : EWStmt := storeBody 2 4 ix (normCompute ix)
 
+/-- A remainder step: every lane computes the element at the same index, and
+    lane 0 stores it, so each element has one writer. -/
+def normStep0 (ix : IdxE) : EWStmt := .seq (normCompute ix) (.storeLane0 2 ix 4)
+
 def smNorm : EWStmt :=
   .seq (.setR 3 (.inv (.reg 0)))
        (.seq (.forM 1 M_CHUNKS (normStep smIx))
-             (.forM 1 M_REM (normStep smTailIx)))
+             (.forM 1 M_REM (normStep0 smTailIx)))
 
 def sinkSoftmaxEW : EWStmt := .seq (.seq (.seq smMax smSum) smSink) smNorm
 
-def ptxSinkSoftmax : String := emitProvenKernelN "main" 4 0 sinkSoftmaxEW
-
-/-- **The emitted softmax runs its statement, from raw launch.** The trip
-    counts and the row base are read from integer memory, so one theorem covers
-    every sequence length this will ever be launched at. -/
-theorem sinkSoftmax_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW sinkSoftmaxEW)) k (0, m)
-          = some ((flatKernel (expandEW sinkSoftmaxEW)).length, m')
-      ∧ m'.toWSt
-        = ((expandEW sinkSoftmaxEW).elabAt cta 0
-            (SI.stepL cta emitPrologue m).ir m.imem).run m.toWSt :=
-  flatKernel_sound cta (expandEW sinkSoftmaxEW) (expandEW_expFree sinkSoftmaxEW)
-    (expandEW_idxBelow 4 sinkSoftmaxEW (by decide))
-    (expandEW_flat sinkSoftmaxEW (by decide)) m
+/-- The softmax as it is launched: one block of one warp per query head, over
+    the scores, the meta, the probabilities and the sinks. -/
+def sinkKernel : Kernel.Kernel := Body.kernel "sinkSoftmax" 4 0 sinkSoftmaxEW
 
 /-- **The sink is in the denominator and out of the numerator.**
 
-    The claim the two edits amount to, checked at the emitted instructions: the
-    only buffer this kernel writes is `2`, the probabilities. Buffer `3` is the
+    The claim the two edits amount to, checked at the statement the kernel
+    prints: of its four buffers, the only one it stores to is `2`, the
+    probabilities. Buffer `3` is the
     sinks and buffer `0` the scores, so neither the sink nor a score can be
     written back however the passes are read — the sink reaches the output only
     through the denominator.
@@ -432,7 +366,6 @@ theorem sinkSoftmax_ptx_exact (cta : Nat) (m : MState) :
     than one, which is the behaviour the model defines and the whole reason the
     term exists. -/
 theorem sink_not_stored :
-    (flatStores (flatKernel (expandEW sinkSoftmaxEW))).all (fun b => decide (b = 2))
-      = true := by native_decide
+    (List.range 4).all (fun b => !(sinkSoftmaxEW.WritesBufB b) || b == 2) = true := by decide
 
 end GptOssAttention

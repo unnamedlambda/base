@@ -1,7 +1,5 @@
 //! Every example application, as one program: `apps <name> [args]`.
 
-#[path = "backward-wide/src/main.rs"]
-mod backward_wide;
 #[path = "blackhole/src/main.rs"]
 mod blackhole;
 #[path = "cli/src/main.rs"]
@@ -49,7 +47,6 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let app = if args.is_empty() { String::new() } else { args[0].clone() };
     match app.as_str() {
-        "backward-wide" => backward_wide::main(args),
         "blackhole" => blackhole::main(args),
         "cli" => cli::main(args),
         "compress" => compress::main(args),
@@ -73,7 +70,6 @@ fn main() {
         "window-demo" => window_demo::main(args),
         _ => {
         eprintln!("usage: apps <name> [args]; the names are:");
-            eprintln!("  backward-wide");
             eprintln!("  blackhole");
             eprintln!("  cli");
             eprintln!("  compress");

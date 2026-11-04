@@ -12,14 +12,16 @@ words — a pipeline's records among them — need not import the model.
 
 namespace AlgorithmLib.HProg.Sem
 
-/-- Where device buffer `n` starts. Allocations lie `2^36` bytes apart, so an
+/-- Where device buffer `n` starts: the address of memory region `.buf n`,
+    region `6 + n` of `2^36` bytes, which is where a kernel finds it too. An
     offset inside one never reaches the next. -/
-def devPtr (n : Nat) : UInt64 := UInt64.ofNat (2 ^ 52 + n * 2 ^ 36)
+def devPtr (n : Nat) : UInt64 := UInt64.ofNat ((6 + n) * 2 ^ 36)
 
-/-- The buffer a device pointer falls in, and the offset into it. -/
+/-- The buffer a device pointer falls in, and the offset into it: the region
+    it decodes to, when that is a device buffer's. -/
 def devPtrOf (p : UInt64) : Option (Nat × Nat) :=
   let x := p.toNat
-  if 2 ^ 52 ≤ x && x < 2 ^ 53 then some ((x - 2 ^ 52) / 2 ^ 36, (x - 2 ^ 52) % 2 ^ 36)
+  if 6 * 2 ^ 36 ≤ x && x < (6 + 268435449) * 2 ^ 36 then some (x / 2 ^ 36 - 6, x % 2 ^ 36)
   else none
 
 /-- A stream, module, function, event, graph or cuBLAS handle: its kind and

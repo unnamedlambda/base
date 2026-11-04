@@ -171,13 +171,17 @@ theorem Extends.bindAt {Γ Γb : Env} (h : Extends Γ Γb) {n : Nat} (hn : Γ.si
 theorem Extends.bindAt_of {Γ Γ' : Env} (h : Extends Γ Γ') {n : Nat} (hn : Γ'.size ≤ n) (vs : List V) :
     Extends Γ (Sem.bindAt Γ' n vs) := Extends.bindAt h (Nat.le_trans h.1 hn) vs
 
-/-- What a call is observed with besides its arguments: a kernel launch
-    through the driver, with the parameter values it reads as it is made. -/
+/-- What a call is observed with besides its arguments: what it reads from
+    host memory as it is made. A kernel launch through the driver, the
+    parameter values it reads; a strided-batched product, the scalars `α`
+    and `β` (`0` where they do not load). -/
 def callWords (w : World) : Callee → List V → List V
   | .ext (.cuda .launchKernel), [hf, _, _, _, _, _, _, _, _, pr, _] =>
       match asBits hf, asBits pr with
       | some f, some p => ((launchWords w.dev w.mem f p).getD []).map (.sc .i64)
       | _, _ => []
+  | .ext (.cublas .sgemmStridedBatched), [_, _, _, _, _, _, pa, _, _, _, _, _, _, pb, _, _, _, _] =>
+      [.sc .i32 ((asBits pa).bind (w.mem.load · 4) |>.getD 0), .sc .i32 ((asBits pb).bind (w.mem.load · 4) |>.getD 0)]
   | _, _ => []
 
 /-- A call, observed with its arguments and what `callWords` adds. -/
@@ -415,6 +419,7 @@ def callOf (locals : Locals) (c : Callee) (vs : List V) (w : World) : Option (Op
       | _ => none
   | .atomic a => atomicCall a vs w
   | .ext e => extCall e vs w
+  | .intr c => (locals c.slot vs w).toOption
 
 /-- Why a call that `callOf` does not answer is stuck. -/
 def uncalled : Callee → String
@@ -424,6 +429,7 @@ def uncalled : Callee → String
   | .host _ _ => "calls a function of the host's whose contract the world does not state"
   | .atomic _ => "an atomic on an unaligned or unmapped address"
   | .ext e => s!"{e.lib.name}!{e.symbol} on arguments it does not define"
+  | .intr c => s!"{c.name}, whose answer the other threads give"
 
 /-- A call `callOf` does not answer: a refused import, and a library called on
     arguments it does not define, are misuse; anything else is stuck. -/
@@ -479,7 +485,7 @@ def runStmt (cfg : Cfg) (Γ : Env) (w : World) : Stmt → Outcome Env
               let lw := ((t.lanes.map (·.1.width)).getD 8) / 8
               match (ls.zipIdx.foldlM
                   (fun mm (x, i) => mm.store (addr + UInt64.ofNat (i * lw)) lw x) w.mem) with
-              | some m => .ok Γ { obsStore w addr n 0 with mem := m }
+              | some m => .ok Γ { obsStore w addr (ls.size * lw) 0 with mem := m }
               | none => .fault s!"vector store to unmapped address {addr}"
       | _, _ => .stuck "store operand is not in scope"
   | .storeUnaligned v a =>
@@ -493,7 +499,7 @@ def runStmt (cfg : Cfg) (Γ : Env) (w : World) : Stmt → Outcome Env
           let lw := ((t.lanes.map (·.1.width)).getD 8) / 8
           match (ls.zipIdx.foldlM
               (fun mm (x, i) => mm.store (addr + UInt64.ofNat (i * lw)) lw x) w.mem) with
-          | some m => .ok Γ { obsStore w addr (tyBytes t) 0 with mem := m }
+          | some m => .ok Γ { obsStore w addr (ls.size * lw) 0 with mem := m }
           | none => .fault s!"vector store to unmapped address {addr}"
       | _, _ => .stuck "store operand is not in scope"
   | .istore8 v a =>
@@ -761,7 +767,7 @@ theorem runStmt_storeUnaligned (cfg : Cfg) (Γ : Env) (w : World) (v a : R) :
             let lw := ((t.lanes.map (·.1.width)).getD 8) / 8
             match (ls.zipIdx.foldlM
                 (fun mm (x, i) => mm.store (addr + UInt64.ofNat (i * lw)) lw x) w.mem) with
-            | some m => .ok Γ { obsStore w addr (tyBytes t) 0 with mem := m }
+            | some m => .ok Γ { obsStore w addr (ls.size * lw) 0 with mem := m }
             | none => .fault s!"vector store to unmapped address {addr}"
         | _, _ => .stuck "store operand is not in scope" := rfl
 
@@ -780,7 +786,7 @@ theorem runStmt_store (cfg : Cfg) (Γ : Env) (w : World) (ty : ClifTy) (v a : R)
                 let lw := ((t.lanes.map (·.1.width)).getD 8) / 8
                 match (ls.zipIdx.foldlM
                     (fun mm (x, i) => mm.store (addr + UInt64.ofNat (i * lw)) lw x) w.mem) with
-                | some m => .ok Γ { obsStore w addr n 0 with mem := m }
+                | some m => .ok Γ { obsStore w addr (ls.size * lw) 0 with mem := m }
                 | none => .fault s!"vector store to unmapped address {addr}"
         | _, _ => .stuck "store operand is not in scope" := rfl
 

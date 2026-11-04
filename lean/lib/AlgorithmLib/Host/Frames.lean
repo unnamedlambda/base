@@ -119,6 +119,8 @@ def calleeFrame : IR.Callee → Option (String × Option Frame)
   | .atomic _ => none
   -- A C library function is foreign code, with its frame from the table.
   | .ext e => some (s!"{e.lib.name}!{e.symbol}", some e.frame)
+  -- A collective's answer, and a barrier's shared memory, come from other threads.
+  | .intr c => some (c.name, some .anywhere)
 
 /-- **The FFI a program actually assumes.**
 

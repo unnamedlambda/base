@@ -17,6 +17,8 @@ public import AlgorithmLib.Host.Driver
 meta import AlgorithmLib.Host.Driver
 public import AlgorithmLib.ML.Model.Frontend
 meta import AlgorithmLib.ML.Model.Frontend
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -64,7 +66,7 @@ def outBuf : Buf := 1
 
 def kernel : EWStmt := compileWKernel (fun _ => inBuf) outBuf inIx spec outIx (D + slots spec + 1)
 
-def ptx : String := emitProvenKernel "main" kernel
+def ptx : String := Body.text "main" 2 0 kernel
 
 theorem mlp_stores (st : WSt) (l0 : Lane) :
     ((kernel.elabIn 0).run st).mem outBuf (outIx.eval 0 0 l0)
@@ -74,11 +76,7 @@ theorem mlp_stores (st : WSt) (l0 : Lane) :
 
 /-! ### Seam guards (`A47` G2) -/
 theorem mlp_guards :
-    kernel.BufBelow 2
-      ∧ kernel.StageEligibleB 1 = true
-      ∧ FlatTargetsOkB (flatKernel (expandEW kernel)) = true
-      ∧ FlatPrintableB (flatKernel (expandEW kernel)) = true := by
-  refine ⟨by decide, by decide, ?_, ?_⟩ <;> native_decide
+    kernel.BufBelow 2 ∧ kernel.StageEligibleB 1 = true := ⟨by decide, by decide⟩
 
 /-- One lane per model instance, `GRID` blocks of 32. -/
 theorem mlp_geometry : GRID * 32 = LANES ∧ NIN = LANES * D := by decide
@@ -95,7 +93,7 @@ open AlgorithmLib.Prog
     outputs' allocations, and the kernel, handed them in that order. -/
 def app : Drv.App :=
   { bufs := [NIN * 4, NOUT * 4],
-    kernels := [⟨PTX_OFF, MEM_SIZE - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩],
+    kernels := [⟨PTX_OFF, MEM_SIZE - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1), []⟩],
     memSize := MEM_SIZE }
 
 def loadFnCode : Prog V Lbl Unit := do
@@ -155,35 +153,6 @@ def Warp.Mlp.main (args : List String) : IO Unit := do
   emitArtifacts outDir (MlpWarp.artifacts clif)
 
 namespace MlpWarp
-
-/-- **The emitted PTX runs the compiled kernel, exactly and unconditionally.**
-
-    `expandEW kernel` is what is actually printed, and this says the instruction
-    list — executed by a program counter over real branches from instruction 0 —
-    performs it, for every block, with no hypothesis. -/
-theorem mlp_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW kernel)) k (0, m)
-          = some ((flatKernel (expandEW kernel)).length, m')
-      ∧ m'.toWSt = ((expandEW kernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW kernel) (expandEW_expFree kernel)
-    (expandEW_idxFree kernel
-      (compileWKernel_idxFree (fun _ => inBuf) outBuf inIx spec outIx _
-        (fun _ => ⟨⟨⟨⟨trivial, trivial⟩, trivial⟩, trivial⟩, trivial⟩) (by decide)))
-    (expandEW_flat kernel (compileWKernel_flat _ _ _ _ _ _)) m
-
-/-- **…and it runs the *unexpanded* kernel, given the one declared
-    approximation.**
-
-    This model contains `exp` (inside SiLU), so unlike the reduction and GEMV
-    kernels its claim does depend on `ExpIsEx2` — the single named identity
-    `e^x = 2^(x·log₂e)`.  Measured cost end to end: 3.27e-7 max relative error
-    against a CPU evaluation of the same three layers. -/
-theorem mlp_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW kernel)) k (0, m)
-          = some ((flatKernel (expandEW kernel)).length, m')
-      ∧ m'.toWSt = (kernel.elabIn cta).run m.toWSt := by
-  obtain ⟨k, m', hs, hw⟩ := mlp_ptx_exact cta m
-  exact ⟨k, m', hs, by rw [hw]; exact expandEW_run h kernel cta 0 m.toWSt⟩
 
 end MlpWarp
 

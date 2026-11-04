@@ -11,9 +11,10 @@ import all Init.Data.List.Sort.Basic
   # Every body an artifact carries was compiled through a checked door
 
   `Prog.compileProg` --- and `Prog.compileProgStatus`, for a body that answers
-  a status --- runs `wf` on the body it emitted and returns an error rather
-  than a function when it fails, so a body compiled through either is
-  well-formed or the generator refuses to write the artifact.
+  a status, and `HProg.compileChecked`, for a kernel's --- runs `wf` on the
+  body it compiles and returns an error rather than a function when it fails,
+  so a body compiled through any of them is well-formed or the generator
+  refuses to write the artifact.
   `HProg.compileBody` takes no such obligation — `CompileSound` relates the two
   runs of an arbitrary body, so the compiler it names cannot demand one.
 
@@ -28,11 +29,12 @@ namespace ShipScan
 
 /-- The unchecked compiler. -/
 def UNCHECKED : Name := `AlgorithmLib.HProg.compileBody
-/-- The doors that carry the obligation: each runs `wf` on the body it emitted
-    and refuses one that fails. Two of them because a body that answers a
-    status is compiled by its own entry point, under the same obligation. -/
+/-- The doors that carry the obligation: each runs `wf` on the body it
+    compiles and refuses one that fails: a host body, one that answers a
+    status, and a kernel body (`Kernel.entry`). -/
 def CHECKED : List Name :=
-  [`AlgorithmLib.Prog.compileProg, `AlgorithmLib.Prog.compileProgStatus]
+  [`AlgorithmLib.Prog.compileProg, `AlgorithmLib.Prog.compileProgStatus,
+   `AlgorithmLib.HProg.compileChecked]
 
 /-- Constants reachable from a declaration's value, not expanding
     `compileProg`: its body names `compileBody`, and that is the one use under

@@ -10,10 +10,10 @@ import all Init.Data.List.Sort.Basic
 /-!
 # The World's device work, as device-program steps
 
-A launch the model runs changes exactly the buffers bound to it, to what the
-kernel oracle says of their contents; a vendor call changes its one output.
-Read as `BufStep`s --- with the buffers they bind as both read and write sets
---- they are steps a `DevProg` can order, and `runLaunch_mem` says the World's
+A launch the model runs changes at most the buffers bound to it that its
+kernel may write, to what the kernel oracle says of their contents; a vendor
+call changes its one output. Read as `BufStep`s --- reading every buffer they
+bind, writing those --- they are steps a `DevProg` can order, and `runLaunch_mem` says the World's
 own `runLaunch` performs its step. So `DevProg.denote_linearisation` is a
 statement about the launches the host contracts issue, not only about an
 abstract program.
@@ -74,31 +74,38 @@ theorem map_fst_zip_sub {ids : List Nat} {outs : List ByteArray} {b : Nat}
 def sizesKept (outs ins : List ByteArray) : Bool :=
   outs.length != ins.length || (outs.zip ins).any (fun (o, i) => o.size != i.size)
 
+theorem Launch.stores_fst {l : Launch} {ids : List Nat} {outs : List ByteArray} {b : Nat}
+    (h : b ∈ (l.stores ids outs).map Prod.fst) : b ∈ ids.filter l.writes.contains := by
+  obtain ⟨p, hp, rfl⟩ := List.mem_map.mp h
+  obtain ⟨hz, hw⟩ := List.mem_filter.mp hp
+  exact List.mem_filter.mpr ⟨map_fst_zip_sub (List.mem_map_of_mem hz), hw⟩
+
 /-- **A launch, as a step**: the kernel oracle's answer for the buffers bound
-    to it, which it both reads and writes. An answer that would change a size
-    is one the World refuses; the step leaves memory alone there. -/
+    to it that it writes; it reads every one. An answer that would change a
+    size is one the World refuses; the step leaves memory alone there. -/
 def launchStep (kernel : Launch → List ByteArray → List ByteArray) (l : Launch)
     (ids : List Nat) : BufStep where
   run m :=
     let ins := ids.map m
     let outs := kernel l ins
-    if sizesKept outs ins then m else writeAll m (ids.zip outs)
+    if sizesKept outs ins then m else writeAll m (l.stores ids outs)
   reads := ids
-  writes := ids
+  writes := ids.filter l.writes.contains
   frame m b hb := by
     dsimp only
     split
     · rfl
-    · exact writeAll_other b _ m (fun h => hb (map_fst_zip_sub h))
+    · exact writeAll_other b _ m (fun h => hb (Launch.stores_fst h))
   local_ m m' hr _ b hb := by
     dsimp only
     have hins : ids.map m = ids.map m' := List.map_congr_left hr
     rw [hins]
+    have hbi : b ∈ ids := (List.mem_filter.mp hb).1
     split
-    · exact hr b hb
-    · by_cases hw : b ∈ (ids.zip (kernel l (ids.map m'))).map Prod.fst
+    · exact hr b hbi
+    · by_cases hw : b ∈ (l.stores ids (kernel l (ids.map m'))).map Prod.fst
       · exact writeAll_written b _ m m' hw
-      · rw [writeAll_other b _ m hw, writeAll_other b _ m' hw]; exact hr b hb
+      · rw [writeAll_other b _ m hw, writeAll_other b _ m' hw]; exact hr b hbi
 
 /-- **A vendor call, as a step**: its output gets the oracle's answer for its
     inputs, where that keeps the output's size. It reads its inputs and its
@@ -187,6 +194,34 @@ theorem runLaunch_mem (d d' : Dev) (kernel : Launch → List ByteArray → List 
     subst h
     simp only [sizesKept]
     rw [if_neg hk]
-    exact devMem_putAll _ d (fun p hp => hlt p.1 (map_fst_zip_sub (List.mem_map_of_mem hp)))
+    exact devMem_putAll _ d (fun p hp => hlt p.1 (List.mem_filter.mp (Launch.stores_fst (List.mem_map_of_mem hp))).1)
+
+/-- **The World's vendor call performs its step**: where `runVendor`
+    succeeds, the device memory it leaves is what `vendorStep` makes of the
+    memory before. -/
+theorem runVendor_mem (d d' : Dev) (vendor : VendorCall → List ByteArray → ByteArray) (c : VendorCall)
+    (ins : List Nat) (out : Nat) (h : d.runVendor vendor c ins out = some d') :
+    devMem d' = (vendorStep vendor c ins out).run (devMem d) := by
+  unfold Dev.runVendor at h
+  obtain ⟨bs, hbs, h⟩ := Option.bind_eq_some_iff.mp h
+  obtain ⟨hmap, -⟩ := mapM_get d ins bs hbs
+  subst hmap
+  obtain ⟨old, hold, h⟩ := Option.bind_eq_some_iff.mp h
+  have hb : (d.bufs[out]?).join = some old := by simpa [Dev.get?] using hold
+  have hlt : out < d.bufs.size := by
+    cases e : d.bufs[out]? with
+    | none => rw [e] at hb; cases hb
+    | some _ => exact (Array.getElem?_eq_some_iff.mp e).1
+  have hm : devMem d out = old := by simp [devMem, hb]
+  simp only [vendorStep]
+  dsimp only at h
+  rw [hm]
+  split at h
+  · cases h
+  · rename_i hsz
+    simp only [Option.some.injEq] at h
+    subst h
+    rw [if_neg hsz]
+    exact devMem_put d out _ hlt
 
 end AlgorithmLib.Device

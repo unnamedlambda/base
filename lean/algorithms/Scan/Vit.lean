@@ -1,7 +1,8 @@
 import Scan.MlSurface
 import Vit.Guards
 import Vit.Dag
-import Vit.Regs
+import Vit.Body
+import Vit.Host
 import Vit.Slot
 /-!
   # What the ViT artifact's claims rest on — computed, not documented
@@ -10,10 +11,10 @@ import Vit.Slot
   generator defines its own `main`, so they cannot share a module.  The
   machinery is `ScanCore`, the surface `MlSurface`.
 
-  **This one is mostly empty, and that is the report.**  `MlpScan` names about a
-  hundred and fifty roots; this names one.  A scanner over a thin root list does
-  not say the artifact is trustworthy — it says exactly how much of it has been
-  argued, which is what was missing while the generator was being tuned.
+  `MlpScan` names about a hundred and fifty roots; this names thirty, and
+  `notYetStated` what they do not reach.  A scanner over a root list does not
+  say the artifact is trustworthy — it says exactly how much of it has been
+  argued.
 
   What the artifact does have is numerical evidence: the forward within 8.0e-07
   of timm, all 148 parameter gradients against autograd, and twenty SGD steps
@@ -50,19 +51,15 @@ namespace VitScan
     that sites were really taken, and that the buffer the answer is read from is
     not one of the temporaries fusion removed.
 
-    **The kernels.**  That every emitted kernel names no reserved register
-    (`vit_regs_ok`, with `vit_regs_ok_rejects_the_scratch` to show the guard can
-    fail), that its buffers are inside its own parameter list, that its branch
-    targets exist and that it is printable at all — and that the units these are
-    stated over are exactly the units that print (`vit_proven_units_are_printed`).
-    The register hazard is not hypothetical here: a collision in this printer
-    once made two of ninety kernels fail to load.  Beyond well-formedness, that
-    the emitted program *executes to* the statement it was built from
-    (`vit_ptx_exact`, from the census `vit_stmts_flat_idxfree` — which is also
-    the statement that nothing here addresses memory with a value it read at run
-    time), and that the slot each launch names holds that group's own kernel
-    (`vit_slot_holds_the_kernel`), which is what the dedup's hash key would
-    otherwise have to be trusted for.
+    **The kernels.**  That launching every group's kernel runs the group's
+    statement (`vit_body`): each word a lane of the launch touches is left as
+    the warp machine's run of the statement for the lane's block leaves it,
+    from the launch's memory — from the decided launch obligations
+    (`vit_static`, per distinct key) and every kernel emitted whole
+    (`vit_fine`).  And that the units these are stated over are exactly the
+    units that print (`vit_proven_units_are_printed`), and that the slot each
+    launch names holds that group's own kernel (`vit_slot_holds_the_kernel`),
+    which is what the dedup's hash key would otherwise have to be trusted for.
 
     **The seams outward.**  That a partly-filled buffer has exactly one writer, so a padded key's rows
     stay the zeros they were allocated with (`vit_pad_tail_unwritten`,
@@ -80,11 +77,6 @@ def roots : List Name :=
   , `Vit.vit_out_survives
   , `Vit.vit_pad_tail_unwritten
   , `Vit.vit_pad_exists
-  , `Vit.vit_regs_ok
-  , `Vit.vit_regs_ok_rejects_the_scratch
-  , `Vit.vit_targets
-  , `Vit.vit_printable
-  , `Vit.vit_bufs_bound
   , `Vit.vit_proven_units_are_printed
   , `Vit.vit_law_bill
   , `Vit.vit_law_bill_nonempty
@@ -97,48 +89,50 @@ def roots : List Name :=
   , `Vit.vit_mask_not_from_host
   , `Vit.vit_padded_key_is_weightless
   , `Vit.vit_mask_law_applies
-  , `Vit.vit_stmts_flat_idxfree
-  , `Vit.vit_ptx_exact
+  , `Vit.vit_body
+  , `Vit.vit_group
+  , `Vit.vit_launch
+  , `Vit.vit_launch_keeps
+  , `Vit.vit_drv_launch
+  , `Vit.vit_schedule_computes_tape
+  , `Vit.vit_schedule_computes_tape_with
+  , `Vit.vit_schedule_computes_vendor_tape
+  , `Vit.vit_fwd_computes_tape_with
+  , `Vit.vit_gemm_words
   , `Vit.vit_slot_holds_the_kernel ]
 
 /-- **What this artifact does not yet state.**
 
-    Two things. The calls every run of a capture makes, which the checker
-    reads off the driver calls once it reads bodies this long; and the seam
-    between the two halves that *are* stated.
+    The calls every run of a capture makes, which the checker reads off the
+    driver calls once it reads bodies this long; and the composition of the
+    launches into the tape.
 
-    `vit_lowering_sound` says the shipped tape's `TOp.den` fold is the model's.
-    `vit_groups_sound` says the
-    conditions under which grouping operations into one kernel is sound all
-    hold.  What is missing is the bridge: that **launching a group performs its
-    members' denotations**.
+    One launch is stated end to end: `vit_group` says launching a group's
+    kernel leaves every word a lane touches as the group's operations'
+    denotations, folded in order, leave it, at the words the hardware computes
+    on.  It rests on `vit_body` (the launch runs the group's statement),
+    `GroupLink.group_den` (a block's run of the renamed members is their
+    pipeline, `TOp.step_den` making each step the op's `den`), and
+    `vit_static`'s decided fact that no block stores a word another touches —
+    so no chunk-locality arithmetic is needed: a stage's value reads only the
+    words its statement touches (`GroupRun.val_reads`).
 
-    The library half of that bridge now exists.  `group_runs_as_pipeline`
-    (`ML/Interchange.lean`) proves that one launch of `s₁ ; … ; sₙ` over `g`
-    blocks lands what running each member over all `g` blocks lands — the loop
-    interchange — from one hypothesis, that updates from different blocks
-    commute, and `commute_of_footprints` reduces that to disjoint writes plus
-    chunk-locality.  It is not vacuous: `mapStages_group_runs_as_pipeline`
-    discharges every hypothesis for two fused elementwise passes, including the
-    case that makes fusion worth doing, where the second reads what the first
-    wrote.
-
-    What ViT still lacks is narrower than it looks, and narrower than it was
-    thought to be.  A `StageSpec` per `TOp` — `dom`, `val` and exclusivity —
-    already exists: `Node.stage?` builds one per constructor and
-    `TOp.step_den` proves each stage's memory action is that op's `den`.  Two
-    things stand between that and a shipped group:
-
-    * **the renaming.**  `vUnitStmt` renames each member onto the group's own
-      table (`compactMap`), and the stages are in global buffer numbering, so
-      the group's elaborated block is `groupBlk` of the members' blocks only up
-      to that renaming.
-    * **the reads.**  `commute_of_reads` wants each block's reads to miss every
-      other block's writes.  The read footprints themselves now exist — one
-      `ReadsIn` lemma per stage builder, for all nine shapes this model uses —
-      so what is left is the arithmetic: that *these* index expressions, at
-      this model's extents, land inside the block's own chunk.  That is the
-      content `vChunkLocal` decides syntactically and nothing yet states.
+    `vit_launch` extends it to every word of the slots: a word no block
+    stores keeps its value on the hardware and under the denotations, and
+    `vit_launch_keeps` that the slots no member outputs keep their words: the
+    kernel writes only the slots `vKSpec` flags as written. `vit_drv_launch`
+    takes it through the driver: a `cuLaunchKernel` of the group leaves every
+    word of device memory as the group's operations, folded over the whole
+    memory, leave it.
+    `vit_schedule_computes_tape` says the units' operations, folded in the
+    order the schedule issues them, compute what the tape `vFused` does, and
+    `VitCalls.run_calls` that the forward run makes its units' calls in
+    that order, and `VitStep.step_agree` that a training step's calls,
+    composed, leave the words the tape does; each group's statement kernel
+    runs over buffers of the layout's sizes (`vit_runs`). At the caller's
+    end, `VitIo.seed_in` puts the caller's data, as handed over, in the
+    backward's start buffer, and `VitIo.fetch_out` leaves the logits buffer
+    in the caller's output byte for byte.
 
     Kept here rather than left implicit because both ends being proven is what
     this development has repeatedly mistaken for the middle being proven. -/
@@ -150,12 +144,7 @@ def notYetStated : List String :=
     "that every run of a capture makes exactly the calls the tape and its \
      schedule say: the capture bodies' call traces, which check_calls decides \
      on the driver calls they make once it reads a body this long",
-    "that a group's renamed statement elaborates to groupBlk of its members' \
-     stage blocks (the compactMap seam)",
-    "that this model's index expressions land in the block's own chunk, which \
-     is what turns the per-stage ReadsIn lemmas into commute_of_reads",
-    "and therefore: that launching a group performs its members' denotations, \
-     and that n training steps are n applications of one step" ]
+    "and therefore: that n training steps are n applications of one step" ]
 
 end VitScan
 
@@ -167,7 +156,6 @@ def nativeRoster : List Name :=
    , `Vit.vit_out_survives
    , `Vit.vit_pad_tail_unwritten
    , `Vit.vit_pad_exists
-   , `Vit.vit_regs_ok
    , `Vit.vit_law_bill
    , `Vit.vit_law_bill_nonempty
    , `Vit.vit_groups_sound
@@ -175,8 +163,15 @@ def nativeRoster : List Name :=
    , `Vit.vit_mask_below_floor
    , `Vit.vit_padded_key_is_weightless
    , `Vit.vit_mask_law_applies
-   , `Vit.vit_stmts_flat_idxfree
-   , `Vit.vit_ptx_exact
+   , `Vit.vit_body
+   , `Vit.vit_group
+   , `Vit.vit_launch
+   , `Vit.vit_launch_keeps
+   , `Vit.vit_drv_launch
+   , `Vit.vit_schedule_computes_tape
+   , `Vit.vit_schedule_computes_tape_with
+   , `Vit.vit_schedule_computes_vendor_tape
+   , `Vit.vit_fwd_computes_tape_with
    , `Vit.vit_slot_holds_the_kernel ]
 
 open TrustScan VitScan in

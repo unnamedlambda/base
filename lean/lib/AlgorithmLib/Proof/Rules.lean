@@ -363,30 +363,30 @@ variable {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
 
 /-- **A counted loop threading an accumulator**: `Inv i a` of the trips made,
     the accumulator and the world, kept by a trip. -/
-theorem wp_forLoopAcc {limit acc0 : Slot .i64} {n a0 : UInt64}
-    {body : Slot .i64 → Slot .i64 → Prog Slot Lvl (Slot .i64)} {Q : Slot .i64 → Env → World → Prop}
+theorem wp_forLoopAcc {ta : ClifTy} {limit : Slot .i64} {acc0 : Slot ta} {n a0 : UInt64}
+    {body : Slot .i64 → Slot ta → Prog Slot Lvl (Slot ta)} {Q : Slot ta → Env → World → Prop}
     (Inv : Nat → UInt64 → World → Prop)
-    (hl : Γ[limit]? = some (.sc .i64 n)) (ha : Γ[acc0]? = some (.sc .i64 a0)) (h0 : Inv 0 a0 w)
-    (hb : ∀ (J' : Post) (Γ' : Env) (wi : World) (i : Nat) (a : UInt64) (si sa : Slot .i64), Extends Γ Γ' →
-      i < n.toNat → Inv i a wi → Γ'[si]? = some (.sc .i64 (UInt64.ofNat i)) → Γ'[sa]? = some (.sc .i64 a) →
+    (hl : Γ[limit]? = some (.sc .i64 n)) (ha : Γ[acc0]? = some (.sc ta a0)) (h0 : Inv 0 a0 w)
+    (hb : ∀ (J' : Post) (Γ' : Env) (wi : World) (i : Nat) (a : UInt64) (si : Slot .i64) (sa : Slot ta), Extends Γ Γ' →
+      i < n.toNat → Inv i a wi → Γ'[si]? = some (.sc .i64 (UInt64.ofNat i)) → Γ'[sa]? = some (.sc ta a) →
       wp cfg (d + 1) J' (body si sa)
-        (fun r Γ'' w'' => Extends Γ' Γ'' ∧ ∃ a', Γ''[r]? = some (.sc .i64 a') ∧ Inv (i + 1) a' w'') Γ' wi)
-    (hk : ∀ Γ' w' r a, Extends Γ Γ' → Γ'[r]? = some (.sc .i64 a) → Inv n.toNat a w' → Q r Γ' w') :
+        (fun r Γ'' w'' => Extends Γ' Γ'' ∧ ∃ a', Γ''[r]? = some (.sc ta a') ∧ Inv (i + 1) a' w'') Γ' wi)
+    (hk : ∀ Γ' w' r a, Extends Γ Γ' → Γ'[r]? = some (.sc ta a) → Inv n.toNat a w' → Q r Γ' w') :
     wp cfg d J (forLoopAcc limit acc0 body) Q Γ w := by
   unfold forLoopAcc wloop2 wloop wloopL
   rw [wp_bind]
   apply wp_iconst64
   have hl' : (Γ.push (.sc .i64 (c64 0)))[limit]? = some (.sc .i64 n) := get_push hl
-  have ha' : (Γ.push (.sc .i64 (c64 0)))[acc0]? = some (.sc .i64 a0) := get_push ha
+  have ha' : (Γ.push (.sc .i64 (c64 0)))[acc0]? = some (.sc ta a0) := get_push ha
   have hc' : (Γ.push (.sc .i64 (c64 0)))[Γ.size]? = some (.sc .i64 (UInt64.ofNat 0)) := get_push_size
   have hext : Extends Γ (Γ.push (.sc .i64 (c64 0))) := (Extends.refl Γ).push_of _
   generalize Γ.push (.sc .i64 (c64 0)) = Γc at hl' ha' hc' hext ⊢
   rw [wp_bind, wp_loop]
-  refine ⟨fun Γ0 cs w' => Γ0 = Γc ∧ ∃ i a, i ≤ n.toNat ∧ cs = [.sc .i64 (UInt64.ofNat i), .sc .i64 a] ∧ Inv i a w',
+  refine ⟨fun Γ0 cs w' => Γ0 = Γc ∧ ∃ i a, i ≤ n.toNat ∧ cs = [.sc .i64 (UInt64.ofNat i), .sc ta a] ∧ Inv i a w',
     fun Γ0 cs a Γ1 w1 => Γ0 = Γc ∧ Γ1 = bindAt Γc Γc.size cs ∧
       a = (contIfULt (ty := .i64) Γc.size limit, %[Γc.size + 1], ()) ∧
-      ∃ i acc, i ≤ n.toNat ∧ cs = [.sc .i64 (UInt64.ofNat i), .sc .i64 acc] ∧ Inv i acc w1,
-    fun Γ0 Γb vs w' => Γ0 = Γc ∧ Extends Γc Γb ∧ ∃ a, vs = [.sc .i64 a] ∧ Inv n.toNat a w', ?_, ?_, ?_, ?_, ?_, ?_⟩
+      ∃ i acc, i ≤ n.toNat ∧ cs = [.sc .i64 (UInt64.ofNat i), .sc ta acc] ∧ Inv i acc w1,
+    fun Γ0 Γb vs w' => Γ0 = Γc ∧ Extends Γc Γb ∧ ∃ a, vs = [.sc ta a] ∧ Inv n.toNat a w', ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro cs hcs
     simp only [Vals.slots, List.mapM_cons, List.mapM_nil, hc', ha', Option.pure_def, Option.bind_eq_bind,
       Option.bind_some, Option.some.injEq] at hcs
@@ -396,7 +396,7 @@ theorem wp_forLoopAcc {limit acc0 : Slot .i64} {n a0 : UInt64}
     simp only [wp_pure]
     exact ⟨by first | rfl | trivial, by first | rfl | trivial, by first | rfl | trivial, hI⟩
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨rfl, rfl, rfl, i, acc, hi, rfl, hinv⟩ hev hx hvs
-    have hev' : evalOp w1.mem (bindAt Γ0 Γ0.size [.sc .i64 (UInt64.ofNat i), .sc .i64 acc])
+    have hev' : evalOp w1.mem (bindAt Γ0 Γ0.size [.sc .i64 (UInt64.ofNat i), .sc ta acc])
         (.icmp .ult Γ0.size limit) = some (boolV (cmpInt .ult .i64 (UInt64.ofNat i) n)) := by
       simp [evalOp, Sem.get, bindAt_head, get_bindAt (Nat.le_refl _) hl', zipIntCmp]
       rfl
@@ -416,7 +416,7 @@ theorem wp_forLoopAcc {limit acc0 : Slot .i64} {n a0 : UInt64}
       Option.bind_eq_bind, Option.bind_some, Option.some.injEq] at hvs
     exact hvs.symm
   · rintro nb Γ0 cs a Γ1 t f wb hnb ⟨rfl, rfl, rfl, i, acc, hi, rfl, hinv⟩ hev hx
-    have hev' : evalOp wb.mem (bindAt Γ0 Γ0.size [.sc .i64 (UInt64.ofNat i), .sc .i64 acc])
+    have hev' : evalOp wb.mem (bindAt Γ0 Γ0.size [.sc .i64 (UInt64.ofNat i), .sc ta acc])
         (.icmp .ult Γ0.size limit) = some (boolV (cmpInt .ult .i64 (UInt64.ofNat i) n)) := by
       simp [evalOp, Sem.get, bindAt_head, get_bindAt (Nat.le_refl _) hl', zipIntCmp]
       rfl
@@ -433,10 +433,10 @@ theorem wp_forLoopAcc {limit acc0 : Slot .i64} {n a0 : UInt64}
         obtain ⟨rfl, rfl⟩ := hev
         simp at hx
     simp only [wp_bind, wp_pure, carriesFrom, Vals.head, Vals.snd, Vals.tail]
-    have hsz : ((bindAt Γ0 Γ0.size [V.sc .i64 (UInt64.ofNat i), .sc .i64 acc]).push (.sc t f)).size ≤ nb := by
+    have hsz : ((bindAt Γ0 Γ0.size [V.sc .i64 (UInt64.ofNat i), .sc ta acc]).push (.sc t f)).size ≤ nb := by
       rw [Array.size_push]; omega
-    have hE : Extends Γ (bindAt ((bindAt Γ0 Γ0.size [V.sc .i64 (UInt64.ofNat i), .sc .i64 acc]).push (.sc t f)) nb
-        [.sc .i64 (UInt64.ofNat i), .sc .i64 acc]) :=
+    have hE : Extends Γ (bindAt ((bindAt Γ0 Γ0.size [V.sc .i64 (UInt64.ofNat i), .sc ta acc]).push (.sc t f)) nb
+        [.sc .i64 (UInt64.ofNat i), .sc ta acc]) :=
       (((hext.bindAt_of (Nat.le_refl _) _).push_of _).bindAt_of hsz _)
     refine wp_mono cfg _ _ _ _ _ ?_ _ _ (hb _ _ wb i acc nb (nb + 1) hE hlt hinv (bindAt_head _ _ _ _)
       (bindAt_second _ _ _ _ _))
@@ -452,7 +452,7 @@ theorem wp_forLoopAcc {limit acc0 : Slot .i64} {n a0 : UInt64}
     simp only [wp_pure, wp_ret, carriesFrom, Vals.head]
     exact hk _ _ _ _ ((hext.trans hEb).bindAt (Nat.le_trans hext.size hle) _) (bindAt_head _ _ _ _) hinv
   · rintro Γ0 cs a Γ1 w1 ⟨rfl, rfl, rfl, i, acc, hi, rfl, hinv⟩ hev
-    have hev' : evalOp w1.mem (bindAt Γ0 Γ0.size [.sc .i64 (UInt64.ofNat i), .sc .i64 acc])
+    have hev' : evalOp w1.mem (bindAt Γ0 Γ0.size [.sc .i64 (UInt64.ofNat i), .sc ta acc])
         (.icmp .ult Γ0.size limit) = some (boolV (cmpInt .ult .i64 (UInt64.ofNat i) n)) := by
       simp [evalOp, Sem.get, bindAt_head, get_bindAt (Nat.le_refl _) hl', zipIntCmp]
       rfl

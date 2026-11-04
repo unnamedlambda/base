@@ -5,7 +5,7 @@ import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
-open AlgorithmLib AlgorithmLib.LZ4WarpDSL AlgorithmLib.LZ4Simt AlgorithmLib.LZ4
+open AlgorithmLib AlgorithmLib.LZ4WarpDSL AlgorithmLib.LZ4
 
 -- Some `simp`/`<;> simp` calls below are shared across several subgoals coming from
 -- a single `refine ⟨_, _, …⟩`; a hypothesis unused in one subgoal can still be load-bearing
@@ -19,8 +19,8 @@ namespace EmitContent
 -- §1. Reproduced from `LZ4WarpEvalBytes_proofs.lean` (structural facts)
 -- ══════════════════════════════════════════════════════════════════════════
 
-/-- Sequential byte writer at a running `UInt64` address (mirrors the machine:
-    each `wStoreByte` writes at `outBase+op` then bumps `op` by one). -/
+/-- Sequential byte writer at a running `UInt64` address (as `wStoreByte`
+    writes at `outBase+op` then bumps `op` by one). -/
 def putBytesU (g : Array UInt8) (base : UInt64) : List UInt8 → Array UInt8
   | [] => g
   | b :: bs => putBytesU (g.set! base.toNat b) (base + 1) bs

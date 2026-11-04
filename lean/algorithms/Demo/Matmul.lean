@@ -196,7 +196,7 @@ theorem matmul_sig : AlgorithmLib.HProg.Sem.ptxParamSizes ptxSource "main" = som
     per 16×16 tile of `C`. -/
 def app (m k n : Nat) : Drv.App :=
   { bufs := [m * k * 4, k * n * 4, m * n * 4, 16],
-    kernels := [⟨PTX_OFF, PTX_REGION, [0, 1, 2, 3], ((n + 15) / 16, (m + 15) / 16, 1), (16, 16, 1)⟩],
+    kernels := [⟨PTX_OFF, PTX_REGION, [0, 1, 2, 3], ((n + 15) / 16, (m + 15) / 16, 1), (16, 16, 1), []⟩],
     memSize := DATA_OFF + (m * k + k * n + m * n) * 4, org := ORG }
 
 def buildPayload (m k n : Nat) : List UInt8 :=

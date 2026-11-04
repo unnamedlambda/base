@@ -1,6 +1,7 @@
 import Scan.Core
 import Lz4.Assumptions
-import AlgorithmLib.LZ4.OpBound
+import Lz4.HostLaunch
+import Ship.Lz4Run
 /-!
   # What the LZ4 compressor's claims actually rest on — computed, not documented
 
@@ -28,17 +29,19 @@ open TrustScan
 /-- **The LZ4 surface.**  Deliberately not `mlSurface`: this development has no
     floats and no cuBLAS, and it must not be able to borrow those allowances.
 
-    * `allowedOpaque` is Lean's own plumbing and nothing else — no float
-      primitive, no vendor kernel.  Every other constant this development
-      reaches is a definition or a theorem.  The trusted base of
-      `Lz4Assumptions` lives *below* Lean (the printer, `ptxas`, the memory
-      model, the Rust FFI), so it is invisible to a closure walk.  That is the
-      point of the ledger: those rows cannot be found by any scan.  What *is*
+    * `allowedOpaque` is Lean's own plumbing, and the float arms of the
+      semantics every launch claim's closure reaches (`evalOpOpaque`), which
+      the compressor never performs — no vendor kernel. Every other constant
+      this development reaches is a definition or a theorem. The trusted base
+      of `Lz4Assumptions` lives *below* Lean (the PTX model's fit to the GPU,
+      `ptxas`, the driver), so it is invisible to a closure walk. That is the
+      point of the ledger: those rows cannot be found by any scan. What *is*
       expressible as a hypothesis is listed below and reported per claim.
 
-    * `allowedHyp` is the arithmetic side-conditions: block-size and pointer
-      bounds (`w < nb`, `iS ≤ 65536`, `outPtr + w * oS + 9 * iS < 2 ^ 32`, …).
-      These constrain the caller, not the world. -/
+    * `allowedHyp` is the arithmetic side-conditions (a buffer large enough,
+      block-size and address bounds), which geometry a claim is about, and the
+      platform the PTX model describes (`HwOk`). These constrain the caller and
+      name the platform; none is an assumption about the compressor. -/
 def lz4Surface : Surface :=
   { allowedOpaque :=
       [ `Lean.opaqueId, `String.Internal.append
@@ -46,268 +49,121 @@ def lz4Surface : Surface :=
         -- `Op.name` keeps that to plain literals so the rendering machinery
         -- behind `repr` stays out of the closure.
       , `String.Internal.length, `String.Internal.pushn
+        -- The checker's refusals render the facts and values they name with
+        -- `repr` (`Check.absStmtsH`), reached through the host program's call
+        -- trace (`warp_run`): message text on the refusing branch only.
+      , `String.Internal.foldl, `String.Internal.isEmpty
+      , .str (.str (.str (.num `_private.Init.Data.Format.Basic 0) "Std") "Format") "be"
         -- `sinf`/`cosf`/`powf`, which the foreign-call model evaluates as
         -- `Libm` states them: the conversions between doubles and integers
         -- its range reduction and `exp2` make.
-      , `Float.toInt64, `Int64.toFloat ]
+      , `Float.toInt64, `Int64.toFloat
+        -- The platform word size, reached by `Std.HashMap`'s hashing: the
+        -- PTX lowering keeps the shipped kernel's facts in hash maps, so the
+        -- artifact's PTX text puts it in the closure of every claim about the
+        -- payload. It says nothing about the compressor or the model.
+      , `System.Platform.getNumBits, `mixHash, `String.hash ]
+      -- A launch claim quantifies over machine states, so it reaches every arm
+      -- of `Sem.evalOp`, the float ones included, which this kernel never
+      -- performs (`evalOpOpaque`).
+      ++ evalOpOpaque
     allowedHyp :=
       [ `LT.lt, `LE.le, `Eq, `Ne, `Nat.lt, `Nat.le, `Not
-        -- structural, not assumptions about the world: `Sim` is the interleaving
-        -- invariant a step lemma carries, `outRegion` names a warp's byte range,
-        -- `Halted` says a state is a fixpoint of the machine.
-      , `AlgorithmLib.LZ4Simt.Sim, `AlgorithmLib.LZ4Simt.Halted
-        -- `Reads`/`Writes` as hypotheses are the *antecedent* of a localisation
-        -- lemma ("if this step touches memory, it does so at a known site"),
-        -- not an assumption that it does.
-      , `AlgorithmLib.LZ4Simt.Reads, `AlgorithmLib.LZ4Simt.Writes
-        -- `s ∈ loadSites …` as a binder: the enumeration ranges over the list,
-        -- it does not assume anything is in it.
+        -- `b = 15 ∨ b = 16`: which shipped geometry a claim is about, its scope.
+      , `Or
+        -- a block's input and output regions as predicates over addresses: the
+        -- scope of the generic launch lemmas, which `launch_roundtrips` and the
+        -- shipped claims instantiate at the artifact's layout.
       , `Membership.mem
-      , `Lz4Interleave.outRegion
-        -- `ValidStepsFrom inp anchor steps fl` is the plan's own well-formedness,
-        -- PROVEN for everything the generator produces by `EvalValid.genLoop_valid`.
-        -- As a hypothesis it says "this is a plan", not "the world behaves".
-      , `AlgorithmLib.LZ4Plan.ValidStepsFrom
-        -- `LoopCQ inStride ws` is the emit loop's OWN invariant: `litAnchor ≤
+        -- the GPU's float rules (`HwOk`): each approximation 32 bits, one NaN.
+        -- The platform the PTX model describes, which the compressor, having no
+        -- floats, never reaches.
+      , `AlgorithmLib.Kernel.PtxSound.HwOk
+        -- `LoopCQ B inStride ws` is the emit loop's OWN invariant: `litAnchor ≤
         -- searchPos`, the guard register agrees with the guard, and the output
-        -- budget holds.  It is established at loop entry and PROVEN preserved by
-        -- `loopCBody_Qadvance` — the very theorem that carries it here.  As a
-        -- hypothesis it says "this is a loop-head state", not "the world behaves".
+        -- budget holds. It is established at loop entry and PROVEN preserved by
+        -- `loopCBody_Qadvance`. As a hypothesis it says "this is a loop-head
+        -- state", not "the world behaves".
       , `AlgorithmLib.LZ4WarpDSL.LoopCQ
-        -- `PcClosed p S exit` says a set of program points is closed under the
-        -- emitted program's own control flow.  It is DECIDABLE at a concrete
-        -- program and every use discharges it by `decide`; as a hypothesis it
-        -- says "this is a region of this program", not "the world behaves".
-      , `AlgorithmLib.LZ4Simt.PcClosed
-        -- `LsicInv` is the tail LSIC loop's OWN region invariant (potential +
-        -- loop guard + lane-uniformity), established at pc 222 and proven
-        -- preserved on the region.  `Or` is the two-store case split.
-      , `Lz4Sites.LsicInv, `Lz4Sites.LsicInvL, `Lz4Sites.LsicInvM, `Lz4Sites.TokInv, `Or
-        -- `TailOOB b` is the two-instruction shape of the kernel's tail.  Like
-        -- `PcClosed` it is decidable at a concrete program and every use
-        -- discharges it — `Lz4Interleave.tail32` and `tail64`, both `decide`.
-      , `Lz4Interleave.TailOOB
-        -- `SchedComplete` names a schedule long enough for every warp to finish.
-        -- It is CONSTRUCTED, not assumed: `schedComplete_exists` builds one from
-        -- the step counts `ShippedCorrect` provides.  It reaches no endpoint —
-        -- the `endpoints` check below is what enforces that.
-      , `Lz4Interleave.SchedComplete ]
+        -- the host triple's conditions, as the driver contracts state them:
+        -- the device runs the launch as its machine says (`Honest`, here
+        -- `lz4Machine`, which `lz4Machine_realized` shows the PTX model's own
+        -- launch realizes), its kernels keep their buffers' sizes (`KeepsSize`),
+        -- and the allocation is ready for the launch's stream (`Ready`). The
+        -- GPU end of the trusted base, named in the claim's type.
+      , `AlgorithmLib.HProg.Contracts.Honest, `AlgorithmLib.HProg.Sem.KeepsSize
+      , `AlgorithmLib.HProg.DevSpec.Ready
+        -- the whole host program's conditions: it starts from what `load`
+        -- leaves (`Run`, the typestate the checker proves `load` reaches,
+        -- with the caller's lengths), on a device honest about the kernel it
+        -- loaded (`LaunchHonest`: `Honest` for `lz4Machine`).
+      , `Lz4CompSafe.Run, `Lz4CompSafe.LaunchHonest ]
     derivedObligations :=
-      [ (`Lz4Ship.ShippedCorrect, `Lz4Ship.shipped32_correct)
-        -- race-freedom is not assumed: it follows from `KernelConfined` plus the
-        -- already-proven disjointness of the warps' output ranges.
-      , (`AlgorithmLib.LZ4Simt.RaceFree, `Lz4Interleave.raceFree_of_confined)
-        -- confinement is not a whole-program property: it follows from the
-        -- ranges of the nine address registers, the site enumeration having
-        -- eliminated the program.
-      , (`Lz4Interleave.KernelConfined, `Lz4Sites.kernelConfined_of_regConfined32)
-        -- a launch's frame is not assumed either: it is the second and third
-        -- conclusions of the interleaving theorem.
-      , (`Lz4Launches.LaunchFrame, `Lz4Interleave.launchFrame_of_confined)
-        -- and the agreement half too: `pc272_unique` identifies the state
-        -- `ShippedCorrect` returns with the one a schedule runs to.
-      , (`Lz4Ship.LaunchAgreesPerWarp, `Lz4Interleave.launchAgrees_of_confined)
-        -- and the bottom of that chain: the twelve load sites are confined by
-        -- the kernel's own clamps, the sixteen store sites by the output
-        -- cursor's budget.  No assumption is left about what an address
-        -- register holds when it is used.
-      , (`Lz4Sites.RegConfined, `Lz4Sites.regConfined_shipped)
-        -- the cursor bound the ten `sbAddr` stores need, for the whole run of
-        -- every warp
-      , (`Lz4Sites.CursorAtSites, `Lz4Sites.cursorAtSites_shipped) ]
-    openObligations :=
-      [ `Lz4Ship.LayoutOK
-        -- a hypothesis of the GENERIC lemmas (`launches_correct` and friends,
-        -- which are stated about any run) and a CONCLUSION of the endpoints
-        -- below, where `launchesTo_of_layout` constructs it.
-      , `Lz4Launches.LaunchesTo ]
+      -- the generic launch lemmas take the kernel's emission to be well formed;
+      -- at the shipped geometries it is decided (`fine15`, `fine16`).
+      [ (`AlgorithmLib.Prog.Fine, `Lz4Code.fine16) ]
     endpoints :=
-      -- the composed claims, and everything they are allowed to assume.  Both
-      -- geometries, so proving a layer at 32 KiB and forgetting 64 KiB fails
-      -- here; and `LayoutOK` alone, so re-introducing an assumption the layers
-      -- below already discharge fails here too.
-      [ (`Lz4Whole.shipped32_run_correct, [`Lz4Ship.LayoutOK])
-      , (`Lz4Whole.shipped64_run_correct, [`Lz4Ship.LayoutOK])
-        -- …and applied to concrete addresses and a concrete memory, so the
-        -- contract cannot be silently unsatisfiable
-      , (`Lz4Whole.run_correct_witness, []) ]
-    reachedExempt :=
-      -- named in a `simp only` list where it never fires, so it is live at
-      -- ELABORATION and absent from the proof term.  Reachability is computed
-      -- over terms, so it cannot see this one; deleting it fails the build.
-      [ `Lz4Sites.cfgRegion_eq ]
+      -- the shipped claim, and everything it is allowed to assume: which
+      -- geometry, the platform, and a buffer large enough. Both geometries are
+      -- one claim, so proving one and forgetting the other fails to elaborate.
+      [ (`Lz4Code.shipped_roundtrips, [`Or, `Eq, `LE.le, `AlgorithmLib.Kernel.PtxSound.HwOk])
+        -- …and over any positive number of launches, as the artifact repeats it
+      , (`Lz4Code.shipped_launches, [`Or, `Eq, `LE.le, `LT.lt, `AlgorithmLib.Kernel.PtxSound.HwOk])
+        -- …and through the driver, the device honest about the launch
+      , (`Lz4Code.lz4_drv_launch, [`Or, `Eq, `LE.le, `AlgorithmLib.HProg.Contracts.Honest,
+          `AlgorithmLib.HProg.Sem.KeepsSize, `AlgorithmLib.HProg.DevSpec.Ready])
+        -- …and the whole emitted host program, upload to download
+      , (`Lz4CompSafe.warp_run, [`Or, `Eq, `Lz4CompSafe.Run, `Lz4CompSafe.LaunchHonest]) ]
     reachedModules :=
-      -- the compressor's own proof modules.  Every declaration in them must be
-      -- reached by some claim above; one that is not was either written and
-      -- never wired in, or is dead.
-      [ `Lz4.Whole, `Lz4.Interleave, `Lz4.Launches, `Lz4.Host, `Lz4.NonVacuity,
-        `Lz4.Geo, `Lz4.Sites, `Lz4.Cursor, `Lz4.Splice, `Lz4.Ckpt, `Lz4.OpLe,
-        `Lz4.Stores, `Lz4.ExtShape, `Lz4.ExtGuard, `Lz4.ExtLoop, `Lz4.Extend,
-        `Lz4.Shape64, `Lz4.Sites64, `Lz4.Cursor64, `Lz4.Splice64, `Lz4.Ckpt64,
-        `Lz4.OpLe64, `Lz4.Stores64, `Lz4.Confine64, `Lz4.Assumptions ] }
+      -- the compressor's proof modules whose every declaration a claim above
+      -- uses: one that none does was either written and never wired in, or is
+      -- dead.
+      [ `Lz4.CodeBallot, `Lz4.CodeBlock, `Lz4.CodeBody, `Lz4.CodeContent, `Lz4.CodeGrid,
+        `Lz4.CodeKernel, `Lz4.CodeLaunch, `Lz4.CodeLayout, `Lz4.CodeLoop, `Lz4.CodeShip,
+        `Lz4.Assumptions, `Lz4.Host, `Lz4.HostLaunch ] }
 
-/-- **The public claims.**  Adding a claim here subjects it to the scan. -/
+/-- **The public claims.** Adding a claim here subjects it to the scan. -/
 def roots : List Name :=
-  [ -- the kernel, at the PTX machine: from raw launch, through the tail
-    `AlgorithmLib.LZ4WarpDSL.warpKernelDSL_prologue_roundtrips
-  , `AlgorithmLib.LZ4WarpDSL.warpKernelDSL_tail_roundtrips
-    -- the shipped claim, at both geometries the artifact emits
-  , `Lz4Ship.shipped32_correct
-  , `Lz4Ship.shipped64_correct
-    -- the proven half of data-race-freedom
-  , `Lz4Ship.warp_regions_disjoint
-    -- whole-launch: every block decodes out of the FINAL memory
-  , `Lz4Ship.launch_correct
-    -- …instantiated at the artifacts, so the top claim is not merely generic
-  , `Lz4NonVacuity.shipped32_launch_correct
-  , `Lz4NonVacuity.shipped64_launch_correct
-    -- …and its contract is inhabited, so none of the above is vacuous
-  , `Lz4NonVacuity.layoutOK_witness32
-  , `Lz4NonVacuity.layoutOK_witness64
-  , `Lz4NonVacuity.layoutOK_witness
-    -- …and over the twenty repetitions the artifact actually runs, decoding to
-    -- the input as the host uploaded it rather than to whatever launch 19 left
-  , `Lz4Launches.input_preserved
-  , `Lz4Launches.layoutOK_preserved
-  , `Lz4Launches.launches_correct
-  , `Lz4Launches.shipped32_launches_correct
-  , `Lz4Launches.shipped64_launches_correct
-    -- the memory model: any interleaving of race-free warps computes what the
-    -- warps compute alone, so LaunchAgreesPerWarp/LaunchFrame are derived
-  , `AlgorithmLib.LZ4Simt.sim_step
-  , `AlgorithmLib.LZ4Simt.crun_sim
-  , `AlgorithmLib.LZ4Simt.interleaving_agrees
-  , `AlgorithmLib.LZ4Simt.schedule_completes
-  , `Lz4Interleave.outRegion_disjoint
-  , `Lz4Interleave.raceFree_of_confined
-  , `Lz4Interleave.launch_agrees
-  , `Lz4Interleave.launchFrame_of_confined
-  , `Lz4Interleave.tail32
-  , `Lz4Interleave.halt_after_272
-  , `Lz4Interleave.pc272_unique
-  , `Lz4Interleave.launchAgrees_of_confined
+  [ -- the shipped claim, at both geometries the artifact emits
+    `Lz4Code.shipped_roundtrips
+  , `Lz4Code.roundtrips15
+  , `Lz4Code.roundtrips16
+    -- …and after the launches the artifact repeats, from the inputs it keeps
+  , `Lz4Code.shipped_launches
+    -- the same at any geometry the layout fits
+  , `Lz4Code.launch_roundtrips
+    -- each block's output after a launch is the warp's run of that block
+  , `Lz4Code.launch_output
+    -- the warp's run makes only the accesses the lanes need, each byte once
+  , `Lz4Code.body_obligations
+    -- the warp's run of the encoding prefix round-trips
+  , `AlgorithmLib.LZ4WarpDSL.warpKernelDSL_body_roundtrips
+    -- the device's machine: what the warp's runs denote, realized by the PTX
+    -- model's own launch, and the host triple for `cuLaunchKernel` under it
+  , `Lz4Code.lz4Machine_realized
+  , `Lz4Code.lz4_drv_launch
     -- the emitted HOST program: both kernel parameters name one allocation
-    -- (the calls it makes are `Lz4CompSafe.warp15_calls`, in `Ship.Lz4Comp`)
   , `Lz4Host.params_same_buffer
-    -- where the kernel can touch global memory at all, enumerated from the
-    -- shipped program, so `KernelConfined` is a located obligation
-  , `Lz4Sites.reads_at_site
-  , `Lz4Sites.writes_at_site
-  , `Lz4Sites.shipped32_load_sites
-  , `Lz4Sites.shipped32_store_sites
-  , `Lz4Sites.shipped64_load_sites
-  , `Lz4Sites.shipped64_store_sites
-  , `Lz4Sites.load_regs32
-  , `Lz4Sites.store_regs32
-  , `Lz4Sites.kernelConfined_of_regConfined32
-  , `Lz4Sites.unconditioned_form_is_false
-  , `Lz4Sites.sbAddr_is_outBase_add_op
-  , `Lz4Sites.la_at_store
-  , `Lz4Sites.cpDo_at_store
-  , `Lz4Sites.load_at_site
-  , `Lz4Sites.outBase_at_store_site
-    -- and what can move the cursor at all: thirteen writes, twelve of them
-    -- accumulations, so `op` cannot jump — only be pushed past the budget
-  , `Lz4Sites.shipped32_op_writes
-  , `Lz4Sites.shipped32_op_accumulates
-  , `Lz4Sites.shipped64_op_writes
-  , `AlgorithmLib.LZ4WarpDSL.emitLoop_head_op_le
-  , `AlgorithmLib.LZ4WarpDSL.loopCBody_op_le
-  , `AlgorithmLib.LZ4WarpDSL.emitLoop_head_op_le_of_final
-  , `Lz4Sites.sbAddr_confined_of_cursor
-  , `Lz4Sites.outBase_const_after_prologue
-  , `Lz4Sites.inBase_const_after_prologue
-    -- control flow as data: successors read off the emitted array, so pc-shape
-    -- facts are decided rather than hand-rolled per region
-  , `AlgorithmLib.LZ4Simt.sstep_pc_mem_succs
-  , `AlgorithmLib.LZ4Simt.pc_in_closed
-  , `AlgorithmLib.LZ4Simt.regs_const_on
-  , `AlgorithmLib.LZ4Simt.potential_on
-  , `AlgorithmLib.LZ4Simt.inv_on
-  , `Lz4Sites.op_const_to_216
-  , `Lz4Sites.lsicFS_closed
-  , `Lz4Sites.lsicInv_op_le
-  , `Lz4Sites.lsicFS_hstep
-  , `Lz4Sites.lsic_op_lt
-    -- the same thirteen-instruction LSIC run appears three times; each instance
-    -- is proven, closing six of the ten `sbAddr` sites
-  , `Lz4Sites.lsicLS_hstep
-  , `Lz4Sites.lsicL_op_lt
-  , `Lz4Sites.lsicMS_hstep
-  , `Lz4Sites.lsicM_op_lt
-    -- and the two token stores need no potential at all: nothing writes the
-    -- cursor between the region entry and the store
-  , `Lz4Sites.bodyPre_closed
-  , `Lz4Sites.op_const_to_130
-    -- the whole token emit as one region: its potential and the seven stores
-  , `Lz4Sites.tokS_closed
-  , `Lz4Sites.tokRem_pos
-  , `Lz4Sites.tokInv_op_lt
-    -- …and the invariant is proven preserved at all sixty-eight program points
-    -- of the emit, so the seven stores inside it are confined
-  , `Lz4Sites.tokS_hstep
-  , `Lz4Sites.tok_op_lt
-    -- the loopC body as a region: what the loop-head checkpoint consumes
-  , `Lz4Sites.loopBodyS_closed
-  , `Lz4Sites.head_not_in_loopBodyS
-  , `AlgorithmLib.LZ4Simt.regs_const_from
-  , `AlgorithmLib.LZ4Simt.pc_next
-  , `AlgorithmLib.LZ4Simt.siter_add
-  , `Lz4Sites.prologue_pc_shape
-  , `Lz4Sites.prologue_not_at_store_site
-    -- the output cursor cannot run backwards: loop head, one iteration and one
-    -- emitted byte are all instances of the same step
-  , `AlgorithmLib.LZ4WarpDSL.planBlockFrom_encode_le9
-  , `AlgorithmLib.LZ4WarpDSL.op_le_of_add
-  , `AlgorithmLib.LZ4WarpDSL.op_le_of_emitLoop
-  , `AlgorithmLib.LZ4WarpDSL.op_le_finalUifOut
-    -- …and inside one token, at the emit points themselves
-  , `AlgorithmLib.LZ4WarpDSL.op_le_matchAfterSetp
-  , `AlgorithmLib.LZ4WarpDSL.op_le_matchUifOut
-    -- and how much of the buffer contract the allocator actually owes
-  , `Lz4NonVacuity.layoutOK_of_alloc
-  , `Lz4NonVacuity.layoutOK_of_alloc_witness
+    -- …and every run of it carries the uploaded bytes through the launches
+    -- to the download, the device honest about the kernel it loaded
+  , `Lz4CompSafe.warp_run
     -- the payload image and the offsets derived from it cannot disagree
   , `Lz4Ship.payload_fits
-    -- the model's block dimension is the one the launch passes
-  , `AlgorithmLib.LZ4Simt.initRegs_ntid
-    -- every address the kernel uses, bounded: the loads from the kernel's own
-    -- clamps and the candidate-select's guards, the stores from the cursor
-  , `Lz4Sites.loads_confined
-  , `Lz4Sites.tail_copy_budget
-  , `Lz4Sites.cpDo_confined2
-  , `Lz4Sites.regConfined_shipped
-  , `Lz4Sites.kernelConfined_shipped
-    -- and the same two at the 64 KiB geometry
-  , `Lz4Sites.regConfined_shipped64
-  , `Lz4Sites.kernelConfined_shipped64
-    -- the composition: `LayoutOK` gives confinement at every memory the run
-    -- passes through, a long-enough schedule is CONSTRUCTED rather than
-    -- assumed, and the twenty launches follow
-  , `Lz4Interleave.exists_nAt
-  , `Lz4Interleave.schedComplete_exists
-  , `Lz4Interleave.confineHyps_of_layoutOK
-  , `Lz4Interleave.oneLaunch_ok
-  , `Lz4Interleave.launchesTo_of_layout
-  , `Lz4Whole.confined32
-  , `Lz4Whole.confined64
-  , `Lz4Whole.run_correct
-  , `Lz4Whole.shipped32_run_correct
-  , `Lz4Whole.shipped64_run_correct
-  , `Lz4Whole.run_correct_witness
     -- the ledger itself: this fails to elaborate if a named theorem moves
   , `Lz4Assumptions.anchors
   ]
 
 end Lz4Scan
 
--- The scan's cost grows with the development it scans: 130 claims, each a
--- transitive-closure walk plus an `isProp` per binder.  This is accounting, not
--- proof, so the default 200k elaboration budget has nothing to say about it —
--- but the growth is linear in the claim count, so the limit is kept close enough
--- to the measured cost to still be a canary if that ever stops being true.
 /-- Claims that rest on the compiler, via `native_decide`. -/
-def nativeRoster : List Name := []
+def nativeRoster : List Name :=
+  -- the shipped kernel compiles and its emission is well formed, decided by
+  -- evaluating the generator at the two shipped geometries
+  [ `Lz4Code.shipped_roundtrips, `Lz4Code.roundtrips15, `Lz4Code.roundtrips16, `Lz4Code.shipped_launches,
+    `Lz4Code.lz4Machine_realized, `Lz4Assumptions.anchors,
+    -- the host program's calls, decided by the checker at the layout's
+    -- offset (`bindOff_15`, `bindOff_16`)
+    `Lz4CompSafe.warp_run ]
 
 set_option maxHeartbeats 600000 in
 open Lz4Scan TrustScan in

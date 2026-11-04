@@ -671,6 +671,57 @@ def libSlot (f : LibFn) : Nat := 2 ^ 32 + f.id
 
 end LibFn
 
+/-- **An instruction of a device kernel whose answer the thread's own
+    arithmetic does not fix.** Either other threads give it --- a warp's
+    shuffles and ballot, a block's barrier --- or the hardware does: its
+    approximate `2^x` and `1/x`, whose bits no formula states. A kernel calls one
+    like any function, and its meaning is given from outside the thread, as an
+    imported function's is. -/
+inductive Intr where
+  /-- `shfl.sync.bfly`: the value lane `l xor m` passed. -/
+  | shflBfly
+  /-- `shfl.sync.idx`: the value lane `m` passed. -/
+  | shflIdx
+  /-- `vote.sync.ballot`: bit `l` set when lane `l` passed non-zero. -/
+  | ballot
+  /-- `bar.sync`: shared memory as every thread of the block left it. -/
+  | barrier
+  /-- `ex2.approx.f32`: the hardware's `2^x`. -/
+  | ex2Approx
+  /-- `rcp.approx.f32`: the hardware's `1/x`. -/
+  | rcpApprox
+  /-- `lg2.approx.f32`: the hardware's `log₂ x`. -/
+  | lg2Approx
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+namespace Intr
+
+def sig : Intr → List ClifTy × Option ClifTy
+  | .shflBfly | .shflIdx => ([.i32, .i32], some .i32)
+  | .ballot => ([.i8], some .i32)
+  | .barrier => ([], none)
+  | .ex2Approx | .rcpApprox | .lg2Approx => ([.f32], some .f32)
+
+def name : Intr → String
+  | .shflBfly => "shfl.bfly" | .shflIdx => "shfl.idx" | .ballot => "ballot" | .barrier => "barrier"
+  | .ex2Approx => "ex2.approx" | .rcpApprox => "rcp.approx" | .lg2Approx => "lg2.approx"
+
+/-- Whether other threads answer it: a collective, rather than the hardware's
+    arithmetic. -/
+def isColl : Intr → Bool
+  | .ex2Approx | .rcpApprox | .lg2Approx => false
+  | _ => true
+
+/-- Where an intrinsic's meaning sits among the functions a run is given,
+    past every library function's. -/
+def slot : Intr → Nat
+  | .shflBfly => 2 ^ 33 | .shflIdx => 2 ^ 33 + 1 | .ballot => 2 ^ 33 + 2 | .barrier => 2 ^ 33 + 3
+  | .ex2Approx => 2 ^ 33 + 4 | .rcpApprox => 2 ^ 33 + 5 | .lg2Approx => 2 ^ 33 + 6
+
+def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx]
+
+end Intr
+
 /-- What a call names.
 
     Each arm is the identity its owner gives it: a library function by its
@@ -703,6 +754,8 @@ inductive Callee where
   | atomic (a : Atomic)
   /-- A function of a C library, called directly. -/
   | ext (e : Ext)
+  /-- A device kernel's intrinsic: answered by other threads or by the hardware. -/
+  | intr (c : Intr)
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- A single CLIF instruction -/
@@ -918,6 +971,7 @@ def Callee.answers (fns : List Bool) : Callee → Bool
   | .native => true
   | .host _ r => r.isSome
   | .atomic a => a.answers
+  | .intr c => c.sig.2.isSome
 
 /-- The artifact's primitives, each once, in the order its functions first
     call them. A symbol two calls give different signatures is two entries,

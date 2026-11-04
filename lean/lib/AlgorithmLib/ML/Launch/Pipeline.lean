@@ -52,6 +52,9 @@ import all Init.Data.List.Sort.Basic
 
 namespace AlgorithmLib.ML
 
+section Carrier
+variable {R : Type} [NumOps R] [NumLit R]
+
 -- ---------------------------------------------------------------------------
 -- Running a grid of blocks over one memory
 -- ---------------------------------------------------------------------------
@@ -69,14 +72,14 @@ namespace AlgorithmLib.ML
     `runBlocks_perm_invariant` proves the resulting memory is the same for any
     block list with the same membership, so the ascending fold is a faithful
     stand-in. -/
-def runGrid (blk : Nat → WStmt) (grid : Nat) (st : WSt) : WSt :=
+def runGrid (blk : Nat → WStmt) (grid : Nat) (st : WSt R) : WSt R :=
   (List.range grid).foldl (fun s cta => (blk cta).run s) st
 
 /-- **A stage**: a kernel, a grid, and the contract it honours.
 
     `dom cta a` — block `cta` owns address `a` of `out`.
     `val m a` — what lands at `a`, as a function of the entry memory. -/
-structure StageSpec where
+structure StageSpec (R : Type := Float32) [NumOps R] [NumLit R] where
   ew   : EWStmt
   /-- **The integer state the launch elaborates against.**
 
@@ -98,12 +101,12 @@ structure StageSpec where
   /-- What lands at an address, as a function of the entry memory **and the
       block that wrote it**.  The block matters: an outer product's value at
       `dW[i·n+j]` depends on row `i`, which is the block, not the address. -/
-  val  : (Buf → Nat → Float32) → Nat → Nat → Float32
+  val  : (Buf → Nat → R) → Nat → Nat → R
   /-- A block writes only its own output addresses. -/
-  frame : ∀ (cta : Nat) (st : WSt) (b : Buf) (a : Nat), (b ≠ out ∨ ¬ dom cta a) →
+  frame : ∀ (cta : Nat) (st : WSt R) (b : Buf) (a : Nat), (b ≠ out ∨ ¬ dom cta a) →
     ((ew.elabAt cta 0 iregs imem).run st).mem b a = st.mem b a
   /-- …and puts `val` there. -/
-  value : ∀ (cta : Nat) (st : WSt) (a : Nat), dom cta a →
+  value : ∀ (cta : Nat) (st : WSt R) (a : Nat), dom cta a →
     ((ew.elabAt cta 0 iregs imem).run st).mem out a = val st.mem cta a
   /-- **The result depends on the output buffer only where this block owns it.**
 
@@ -114,7 +117,7 @@ structure StageSpec where
       them, so within a block the update is sound.  What actually matters is
       that a block reads `out` only at addresses *it* owns, because `Exclusive`
       then says no other block of the launch has written them. -/
-  valOnly : ∀ (m m' : Buf → Nat → Float32) (cta a : Nat), dom cta a →
+  valOnly : ∀ (m m' : Buf → Nat → R) (cta a : Nat), dom cta a →
     (∀ b, b ≠ out → m b = m' b) →
     (∀ a', dom cta a' → m out a' = m' out a') →
     val m cta a = val m' cta a
@@ -123,21 +126,21 @@ structure StageSpec where
     state.  Every theorem below is stated through this rather than `elabIn`, so
     a data-dependent address is modelled at the value the launch actually
     supplies. -/
-def StageSpec.blk (S : StageSpec) (cta : Nat) : WStmt :=
+def StageSpec.blk (S : (StageSpec R)) (cta : Nat) : WStmt :=
   S.ew.elabAt cta 0 S.iregs S.imem
 
 /-- `frame`, restated through `blk` so the rewriter can see it. -/
-theorem StageSpec.frameB (S : StageSpec) (cta : Nat) (st : WSt) (b : Buf) (a : Nat)
+theorem StageSpec.frameB (S : (StageSpec R)) (cta : Nat) (st : WSt R) (b : Buf) (a : Nat)
     (h : b ≠ S.out ∨ ¬ S.dom cta a) : ((S.blk cta).run st).mem b a = st.mem b a :=
   S.frame cta st b a h
 
 /-- …and `value`. -/
-theorem StageSpec.valueB (S : StageSpec) (cta : Nat) (st : WSt) (a : Nat)
+theorem StageSpec.valueB (S : (StageSpec R)) (cta : Nat) (st : WSt R) (a : Nat)
     (h : S.dom cta a) : ((S.blk cta).run st).mem S.out a = S.val st.mem cta a :=
   S.value cta st a h
 
 /-- Distinct blocks own distinct addresses — no two blocks race. -/
-def StageSpec.Exclusive (S : StageSpec) : Prop :=
+def StageSpec.Exclusive (S : (StageSpec R)) : Prop :=
   ∀ cta cta' a, cta < S.grid → cta' < S.grid → S.dom cta a → S.dom cta' a → cta = cta'
 
 /-- **Why the bounds are part of the statement.**
@@ -155,12 +158,12 @@ def StageSpec.Exclusive (S : StageSpec) : Prop :=
     `Geometry.lean` is about, so the grid belongs in the statement.  Nothing is
     weakened for the kernels that do use `ctaId`: for them `dom cta` and
     `dom cta'` are disjoint outright and the bounds go unused. -/
-theorem StageSpec.Exclusive.ofUnbounded {S : StageSpec}
+theorem StageSpec.Exclusive.ofUnbounded {S : StageSpec R}
     (h : ∀ cta cta' a, S.dom cta a → S.dom cta' a → cta = cta') : S.Exclusive :=
   fun cta cta' a _ _ h₁ h₂ => h cta cta' a h₁ h₂
 
 /-- A grid of one block is exclusive whatever it claims. -/
-theorem StageSpec.exclusive_of_grid_one {S : StageSpec} (h : S.grid = 1) :
+theorem StageSpec.exclusive_of_grid_one {S : StageSpec R} (h : S.grid = 1) :
     S.Exclusive := by
   intro cta cta' _ hc hc' _ _
   rw [h] at hc hc'
@@ -178,13 +181,13 @@ theorem StageSpec.exclusive_of_grid_one {S : StageSpec} (h : S.grid = 1) :
     arbitrary-list and permutation results do, which is why they take it as a
     hypothesis rather than a field: an in-place kernel is a perfectly good
     stage, it just is not idempotent. -/
-def StageSpec.Idempotent (S : StageSpec) : Prop :=
-  ∀ (m m' : Buf → Nat → Float32) (cta a : Nat),
+def StageSpec.Idempotent (S : (StageSpec R)) : Prop :=
+  ∀ (m m' : Buf → Nat → R) (cta a : Nat),
     (∀ b, b ≠ S.out → m b = m' b) → S.val m cta a = S.val m' cta a
 
 /-- Memory outside the stage's output buffer is untouched by the whole grid. -/
-theorem runGrid_otherBuf (S : StageSpec) (b : Buf) (hb : b ≠ S.out) :
-    ∀ (n : Nat) (st : WSt), (runGrid S.blk n st).mem b = st.mem b := by
+theorem runGrid_otherBuf (S : (StageSpec R)) (b : Buf) (hb : b ≠ S.out) :
+    ∀ (n : Nat) (st : WSt R), (runGrid S.blk n st).mem b = st.mem b := by
   intro n
   induction n with
   | zero => intro _; rfl
@@ -199,8 +202,8 @@ theorem runGrid_otherBuf (S : StageSpec) (b : Buf) (hb : b ≠ S.out) :
 /-- Addresses that no block of the grid owns are left alone — the address-level
     companion to `runGrid_otherBuf`, and what lets an in-place stage read its
     own output buffer safely. -/
-theorem runGrid_otherAddr (S : StageSpec) (a : Nat) :
-    ∀ (n : Nat) (st : WSt), (∀ c, c < n → ¬ S.dom c a) →
+theorem runGrid_otherAddr (S : (StageSpec R)) (a : Nat) :
+    ∀ (n : Nat) (st : WSt R), (∀ c, c < n → ¬ S.dom c a) →
       (runGrid S.blk n st).mem S.out a = st.mem S.out a := by
   intro n
   induction n with
@@ -218,8 +221,8 @@ theorem runGrid_otherAddr (S : StageSpec) (a : Nat) :
     is exclusive, and no block reads the output buffer — that value survives
     every other block in the grid.  This is the statement a *stage* has, as
     opposed to a *block*. -/
-theorem runGrid_value (S : StageSpec) (hex : S.Exclusive) (a : Nat) :
-    ∀ (n : Nat), n ≤ S.grid → ∀ (cta : Nat), cta < n → S.dom cta a → ∀ (st : WSt),
+theorem runGrid_value (S : (StageSpec R)) (hex : S.Exclusive) (a : Nat) :
+    ∀ (n : Nat), n ≤ S.grid → ∀ (cta : Nat), cta < n → S.dom cta a → ∀ (st : WSt R),
       (runGrid S.blk n st).mem S.out a = S.val st.mem cta a := by
   intro n
   induction n with
@@ -260,12 +263,12 @@ theorem runGrid_value (S : StageSpec) (hex : S.Exclusive) (a : Nat) :
   output buffer. -/
 
 /-- Running any list of blocks: the generalisation of `runGrid` off `List.range`. -/
-def runBlocks (blk : Nat → WStmt) (L : List Nat) (st : WSt) : WSt :=
+def runBlocks (blk : Nat → WStmt) (L : List Nat) (st : WSt R) : WSt R :=
   L.foldl (fun s cta => (blk cta).run s) st
 
 /-- Memory outside the output buffer survives any block list. -/
-theorem runBlocks_otherBuf (S : StageSpec) (b : Buf) (hb : b ≠ S.out) :
-    ∀ (L : List Nat) (st : WSt), (runBlocks S.blk L st).mem b = st.mem b := by
+theorem runBlocks_otherBuf (S : (StageSpec R)) (b : Buf) (hb : b ≠ S.out) :
+    ∀ (L : List Nat) (st : WSt R), (runBlocks S.blk L st).mem b = st.mem b := by
   intro L
   induction L with
   | nil => intro _; rfl
@@ -277,8 +280,8 @@ theorem runBlocks_otherBuf (S : StageSpec) (b : Buf) (hb : b ≠ S.out) :
       exact S.frameB c st b a (Or.inl hb)
 
 /-- An unowned address survives any block list. -/
-theorem runBlocks_unowned (S : StageSpec) (a : Nat) :
-    ∀ (L : List Nat) (st : WSt), (∀ c ∈ L, ¬ S.dom c a) →
+theorem runBlocks_unowned (S : (StageSpec R)) (a : Nat) :
+    ∀ (L : List Nat) (st : WSt R), (∀ c ∈ L, ¬ S.dom c a) →
       (runBlocks S.blk L st).mem S.out a = st.mem S.out a := by
   intro L
   induction L with
@@ -295,9 +298,9 @@ theorem runBlocks_unowned (S : StageSpec) (a : Nat) :
     *twice*, and a second run must not change the answer.  It does not, because
     `valOnly` says the value ignores the output buffer, so re-running the owner
     recomputes the same thing. -/
-theorem runBlocks_keeps (S : StageSpec) (hex : S.Exclusive) (hidem : S.Idempotent)
+theorem runBlocks_keeps (S : (StageSpec R)) (hex : S.Exclusive) (hidem : S.Idempotent)
     (a cta : Nat) (hcta : cta < S.grid) (hdom : S.dom cta a) :
-    ∀ (L : List Nat), (∀ c ∈ L, c < S.grid) → ∀ (st s : WSt),
+    ∀ (L : List Nat), (∀ c ∈ L, c < S.grid) → ∀ (st s : WSt R),
       (∀ b, b ≠ S.out → s.mem b = st.mem b) →
       s.mem S.out a = S.val st.mem cta a →
       (runBlocks S.blk L s).mem S.out a = S.val st.mem cta a := by
@@ -323,10 +326,10 @@ theorem runBlocks_keeps (S : StageSpec) (hex : S.Exclusive) (hidem : S.Idempoten
 
     The value depends on the *entry* memory and the owning block, not on where
     that block sat in the list, nor on which blocks ran before or after it. -/
-theorem runBlocks_value (S : StageSpec) (hex : S.Exclusive) (hidem : S.Idempotent)
+theorem runBlocks_value (S : (StageSpec R)) (hex : S.Exclusive) (hidem : S.Idempotent)
     (a : Nat) :
     ∀ (L : List Nat), (∀ c ∈ L, c < S.grid) → ∀ (cta : Nat), cta ∈ L → S.dom cta a →
-      ∀ (st : WSt),
+      ∀ (st : WSt R),
       (runBlocks S.blk L st).mem S.out a = S.val st.mem cta a := by
   intro L
   induction L with
@@ -354,10 +357,10 @@ theorem runBlocks_value (S : StageSpec) (hex : S.Exclusive) (hidem : S.Idempoten
 /-- **Order independence.**  Any two block lists with the same membership leave
     the same memory — so the ascending fold `runGrid` uses is a faithful stand-in
     for a launch whose blocks are scheduled arbitrarily. -/
-theorem runBlocks_perm_invariant (S : StageSpec) (hex : S.Exclusive)
+theorem runBlocks_perm_invariant (S : (StageSpec R)) (hex : S.Exclusive)
     (hidem : S.Idempotent)
     (L L' : List Nat) (hLg : ∀ c ∈ L, c < S.grid)
-    (hmem : ∀ c, c ∈ L ↔ c ∈ L') (st : WSt) :
+    (hmem : ∀ c, c ∈ L ↔ c ∈ L') (st : WSt R) :
     (runBlocks S.blk L st).mem = (runBlocks S.blk L' st).mem := by
   have hLg' : ∀ c ∈ L', c < S.grid := fun c hc => hLg c ((hmem c).mpr hc)
   funext b a
@@ -379,78 +382,21 @@ theorem runBlocks_perm_invariant (S : StageSpec) (hex : S.Exclusive)
 -- ---------------------------------------------------------------------------
 
 /-- Running a stage: its whole grid. -/
-def StageSpec.run (S : StageSpec) (st : WSt) : WSt := runGrid S.blk S.grid st
+def StageSpec.run (S : (StageSpec R)) (st : WSt R) : WSt R := runGrid S.blk S.grid st
 
 /-- **A stage's contract, as a statement about the buffer.**
 
     This is the form the *next* stage needs: not "block `cta` stored `v` at `a`"
     but "buffer `out` holds `val` at every address the launch covers". -/
-theorem StageSpec.run_value (S : StageSpec) (hex : S.Exclusive) (st : WSt)
+theorem StageSpec.run_value (S : (StageSpec R)) (hex : S.Exclusive) (st : WSt R)
     (a : Nat) (cta : Nat) (hlt : cta < S.grid) (hdom : S.dom cta a) :
     (S.run st).mem S.out a = S.val st.mem cta a :=
   runGrid_value S hex a S.grid (Nat.le_refl _) cta hlt hdom st
 
 /-- …and everything else is exactly as it was. -/
-theorem StageSpec.run_frame (S : StageSpec) (st : WSt) (b : Buf) (hb : b ≠ S.out) :
+theorem StageSpec.run_frame (S : (StageSpec R)) (st : WSt R) (b : Buf) (hb : b ≠ S.out) :
     (S.run st).mem b = st.mem b :=
   runGrid_otherBuf S b hb S.grid st
-
--- ---------------------------------------------------------------------------
--- Lifting the launch to the emitted instruction list
--- ---------------------------------------------------------------------------
-
-/-!
-  Everything above is about `elabIn cta` — the warp machine.  The PTX soundness
-  theorems (`flatKernel_sound_idxFree`) are also per block.  This section lifts
-  both to the grid: run the flat program once per block, threading the machine
-  state, and the resulting memory is the one `runGrid` computes.
--/
-
-/-- **One block of emitted PTX realises one block of the stage model.**
-
-    This is `flatKernel_sound_idxFree` restated in the shape the grid fold
-    needs: from any machine state, running the flat program for block `cta`
-    lands in a state whose `WSt` view is exactly what `elabIn cta` computes. -/
-theorem flat_block_realises (s : EWStmt) (hf : s.ExpFree) (hif : s.IdxFree)
-    (hfl : s.Flat) (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel s) k (0, m) = some ((flatKernel s).length, m')
-      ∧ m'.toWSt = (s.elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta s hf hif hfl m
-
-/-- **`m` reaches `m'` by actually running blocks `0 … n−1`, in order.**
-
-    Spelled out as a relation rather than left implicit, so the theorem below
-    states that its witness is reached *by execution* — not merely that some
-    state exists whose memory matches. -/
-def gridRuns (P : List FI) : Nat → MState → MState → Prop
-  | 0,     m, m' => m' = m
-  | n + 1, m, m' => ∃ mid, gridRuns P n m mid ∧
-      ∃ k, steps n P k (0, mid) = some (P.length, m')
-
-/-- **The whole grid, on the emitted program.**
-
-    There is a genuine execution — blocks `0 … n−1` of the *printed* program,
-    each stepped to completion, threading the machine state — and the memory it
-    ends in is exactly `runGrid`'s.  With `runBlocks_perm_invariant` the
-    ascending order is not a restriction, so this covers a launch whose blocks
-    the scheduler interleaves. -/
-theorem flatGrid_realises (s : EWStmt) (hf : s.ExpFree) (hif : s.IdxFree)
-    (hfl : s.Flat) :
-    ∀ (n : Nat) (m : MState), ∃ m' : MState,
-      gridRuns (flatKernel s) n m m' ∧ m'.toWSt = runGrid s.elabIn n m.toWSt := by
-  intro n
-  induction n with
-  | zero => intro m; exact ⟨m, rfl, rfl⟩
-  | succ n ih =>
-      intro m
-      obtain ⟨mn, hchain, hmn⟩ := ih m
-      obtain ⟨k, m', hs, hw⟩ := flat_block_realises s hf hif hfl n mn
-      refine ⟨m', ⟨mn, hchain, k, hs⟩, ?_⟩
-      rw [hw, hmn]
-      show (s.elabIn n).run
-          ((List.range n).foldl (fun st cta => (s.elabIn cta).run st) m.toWSt)
-        = (List.range (n + 1)).foldl (fun st cta => (s.elabIn cta).run st) m.toWSt
-      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
 
 -- ---------------------------------------------------------------------------
 -- The front door: a map kernel *is* a stage
@@ -474,8 +420,8 @@ theorem elemIx_blocks_disjoint (cta cta' : Nat) (l l' : Lane)
     `compileWKernel_storesAt`, exclusivity from the addressing.  The one
     hypothesis left is what only the caller knows — that the kernel does not read
     the buffer it writes. -/
-def mapStage {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
-    (grid : Nat) (hio : ∀ i, inB i ≠ out) : StageSpec where
+def mapStage [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+    (grid : Nat) (hio : ∀ i, inB i ≠ out) : (StageSpec R) where
   ew   := (mapKernel spec inB out).ew
   grid := grid
   out  := out
@@ -519,8 +465,8 @@ def mapStage {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
     writes, which is one it owns, so `Exclusive` says no other block of the
     launch has touched it.  Not idempotent — running it twice adds twice — so
     it supports `runGrid_value` but not the arbitrary-list results. -/
-def mapStageIP {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
-    (grid : Nat) : StageSpec where
+def mapStageIP [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+    (grid : Nat) : (StageSpec R) where
   ew   := (mapKernel spec inB out).ew
   grid := grid
   out  := out
@@ -557,9 +503,9 @@ def mapStageIP {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
 
 /-- **The map stage is idempotent** — its value is a `denote` over the input
     buffers, none of which is `out`, so re-running a block recomputes it. -/
-theorem mapStage_idempotent {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+theorem mapStage_idempotent [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
     (grid : Nat) (hio : ∀ i, inB i ≠ out) :
-    (mapStage spec inB out grid hio).Idempotent := by
+    (mapStage (R := R) spec inB out grid hio).Idempotent := by
   intro m m' _ a h
   show denote (fun i => m (inB i) a) spec = denote (fun i => m' (inB i) a) spec
   exact congrArg (fun f => denote f spec) (funext fun i => by rw [h (inB i) (hio i)])
@@ -572,9 +518,9 @@ theorem mapStage_idempotent {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (
     id at run time.  Splitting the input addressing out costs nothing — the
     output addressing is still `elemIx`, so `dom` and the exclusivity argument
     are unchanged — and it is what makes an embedding lookup a stage. -/
-def gatherStage {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
+def gatherStage [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
     (out : Buf) (grid : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (hio : ∀ i, inB i ≠ out) : StageSpec where
+    (hio : ∀ i, inB i ≠ out) : (StageSpec R) where
   ew    := (mapKernelAt spec inB inIx out).ew
   iregs := ir
   imem  := im
@@ -614,10 +560,10 @@ def gatherStage {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (inIx : Fin �
     rw [h (inB i) (hio i)]
 
 /-- Its blocks never collide either — same `elemIx` output addressing. -/
-theorem gatherStage_exclusive {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
+theorem gatherStage_exclusive [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
     (inIx : Fin Γ → IdxE) (out : Buf) (grid : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (hio : ∀ i, inB i ≠ out) :
-    (gatherStage spec inB inIx out grid ir im hio).Exclusive := by
+    (gatherStage (R := R) spec inB inIx out grid ir im hio).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   obtain ⟨l, hl⟩ := h
@@ -625,9 +571,9 @@ theorem gatherStage_exclusive {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
   exact elemIx_blocks_disjoint cta cta' l l' (by rw [hl, hl'])
 
 /-- The map stage's blocks never collide. -/
-theorem mapStage_exclusive {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+theorem mapStage_exclusive [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
     (grid : Nat) (hio : ∀ i, inB i ≠ out) :
-    (mapStage spec inB out grid hio).Exclusive := by
+    (mapStage (R := R) spec inB out grid hio).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   obtain ⟨l, hl⟩ := h
@@ -637,8 +583,8 @@ theorem mapStage_exclusive {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (o
 /-- **An in-place map stage is exclusive on the same grounds.**  Ownership is
     `elemIx` addressing either way; reading `out` changes `valOnly`, not who
     owns what. -/
-theorem mapStageIP_exclusive {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
-    (grid : Nat) : (mapStageIP spec inB out grid).Exclusive := by
+theorem mapStageIP_exclusive [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (out : Buf)
+    (grid : Nat) : (mapStageIP (R := R) spec inB out grid).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   obtain ⟨l, hl⟩ := h
@@ -651,7 +597,7 @@ theorem mapStageIP_exclusive {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) 
 
 /-- **The strided dot's only memory effect is its one lane-0 store.** -/
 theorem dotStrided_frame (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
-    (K cta : Nat) (st : WSt) (c : Buf) (j : Nat)
+    (K cta : Nat) (st : WSt R) (c : Buf) (j : Nat)
     (h : ¬ (c = out ∧ j = oi.eval cta 0 ⟨0, by decide⟩)) :
     (((dotStrided bA bB ixA ixB out oi K).elabIn cta).run st).mem c j = st.mem c j := by
   show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
@@ -662,7 +608,7 @@ theorem dotStrided_frame (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
 
 /-- **The fused reduction's only memory effect is its one lane-0 store.** -/
 theorem dotStrided4_frame (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
-    (out : Buf) (oi : IdxE) (K cta : Nat) (st : WSt) (c : Buf) (j : Nat)
+    (out : Buf) (oi : IdxE) (K cta : Nat) (st : WSt R) (c : Buf) (j : Nat)
     (h : ¬ (c = out ∧ j = oi.eval cta 0 ⟨0, by decide⟩)) :
     (((dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).elabIn cta).run st).mem c j
       = st.mem c j := by
@@ -675,7 +621,7 @@ theorem dotStrided4_frame (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFEx
 
 /-- **The strided maximum's only memory effect is its one lane-0 store.** -/
 theorem maxStrided_frame (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
-    (K cta : Nat) (init : Float32) (st : WSt) (c : Buf) (j : Nat)
+    (K cta : Nat) (init : Float32) (st : WSt R) (c : Buf) (j : Nat)
     (h : ¬ (c = out ∧ j = oi.eval cta 0 ⟨0, by decide⟩)) :
     (((maxStrided b ix out oi K init).elabIn cta).run st).mem c j = st.mem c j := by
   show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
@@ -690,13 +636,13 @@ theorem maxStrided_frame (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
     ownership is `a = cta` and needs no address argument.  This is the stage a
     numerically stable softmax subtracts by, and the one an argmax reads. -/
 def maxRowStage (b : Buf) (ix : IdxE) (out : Buf) (K grid : Nat) (init : Float32)
-    (hb : b ≠ out) : StageSpec where
+    (hb : b ≠ out) : (StageSpec R) where
   ew   := maxStrided b ix out .ctaId K init
   grid := grid
   out  := out
   dom  := fun cta a => a = cta
   val  := fun m cta _ => bflyFoldOp (fun a c => NumOps.max a c)
-            (maxStridedLane (m b) (fun i l => ix.eval cta i l) K init) ⟨0, by decide⟩
+            (maxStridedLane (m b) (fun i l => ix.eval cta i l) K (NumLit.lit init)) ⟨0, by decide⟩
   frame := by
     intro cta st c a hc
     refine maxStrided_frame b ix out .ctaId K cta init st c a ?_
@@ -714,7 +660,7 @@ def maxRowStage (b : Buf) (ix : IdxE) (out : Buf) (K grid : Nat) (init : Float32
 
 theorem maxRowStage_exclusive (b : Buf) (ix : IdxE) (out : Buf) (K grid : Nat)
     (init : Float32) (hb : b ≠ out) :
-    (maxRowStage b ix out K grid init hb).Exclusive := by
+    (maxRowStage (R := R) b ix out K grid init hb).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   show cta = cta'
@@ -726,8 +672,8 @@ theorem maxRowStage_exclusive (b : Buf) (ix : IdxE) (out : Buf) (K grid : Nat)
     construction, which is why this shape needs no address argument at all.
     The value is the committed two-level fold, read off `dotStrided_spec`,
     which is stated at an arbitrary block. -/
-def reduceStage (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
-    (hA : bA ≠ out) (hB : bB ≠ out) : StageSpec where
+def reduceStage [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
+    (hA : bA ≠ out) (hB : bB ≠ out) : (StageSpec R) where
   ew   := dotStrided bA bB ixA ixB out .ctaId K
   grid := grid
   out  := out
@@ -755,12 +701,12 @@ def reduceStage (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
     two-level fold as its value.  What differs is the per-element term, which is
     an expression of three operands times a fourth — so a row pass whose only
     consumer is this reduction never has to reach memory. -/
-def reduce4Stage (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32)
-    (hf : ∀ (st' : WSt) (l : Lane),
+def reduce4Stage [LitNat R] (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (g : R → R → R → R)
+    (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
     (out : Buf) (K grid : Nat)
-    (hA : bA ≠ out) (hB : bB ≠ out) (hC : bC ≠ out) (hD : bD ≠ out) : StageSpec where
+    (hA : bA ≠ out) (hB : bB ≠ out) (hC : bC ≠ out) (hD : bD ≠ out) : (StageSpec R) where
   ew   := dotStrided4 bA bB bC bD ixA ixB ixC ixD f out .ctaId K
   grid := grid
   out  := out
@@ -784,8 +730,8 @@ def reduce4Stage (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
     intro m m' _ a _ h _
     rw [h bA hA, h bB hB, h bC hC, h bD hD]
 
-theorem reduce4Stage_exclusive (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE)
-    (f : WFExp) (g : Float32 → Float32 → Float32 → Float32) (hf) (out : Buf)
+theorem reduce4Stage_exclusive [LitNat R] (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE)
+    (f : WFExp) (g : R → R → R → R) (hf) (out : Buf)
     (K grid : Nat) (hA : bA ≠ out) (hB : bB ≠ out) (hC : bC ≠ out) (hD : bD ≠ out) :
     (reduce4Stage bA bB bC bD ixA ixB ixC ixD f g hf out K grid hA hB hC hD).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
@@ -794,17 +740,17 @@ theorem reduce4Stage_exclusive (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE)
   rw [← h, ← h']
 
 /-- **The reduce stage is idempotent** — it folds two buffers, neither `out`. -/
-theorem reduceStage_idempotent (bA bB : Buf) (ixA ixB : IdxE) (out : Buf)
+theorem reduceStage_idempotent [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Buf)
     (K grid : Nat) (hA : bA ≠ out) (hB : bB ≠ out) :
-    (reduceStage bA bB ixA ixB out K grid hA hB).Idempotent := by
+    (reduceStage (R := R) bA bB ixA ixB out K grid hA hB).Idempotent := by
   intro m m' cta a h
   show bflyFold (dotStridedLane (m bA) (m bB) _ _ K) _
      = bflyFold (dotStridedLane (m' bA) (m' bB) _ _ K) _
   rw [h bA hA, h bB hB]
 
-theorem reduceStage_exclusive (bA bB : Buf) (ixA ixB : IdxE) (out : Buf)
+theorem reduceStage_exclusive [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Buf)
     (K grid : Nat) (hA : bA ≠ out) (hB : bB ≠ out) :
-    (reduceStage bA bB ixA ixB out K grid hA hB).Exclusive := by
+    (reduceStage (R := R) bA bB ixA ixB out K grid hA hB).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   show cta = cta'
@@ -818,11 +764,11 @@ theorem reduceStage_exclusive (bA bB : Buf) (ixA ixB : IdxE) (out : Buf)
     only at addresses one of its `(iteration, lane)` pairs owns. -/
 theorem zipPass_frame (bA bB out : Buf) (dA dB r : Nat) (f : WFExp)
     (ixA ixB oix : IdxE) (K cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (st : WSt) (c : Buf) (a : Nat)
+    (st : WSt R) (c : Buf) (a : Nat)
     (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
     (((zipPassEW bA bB out dA dB r f ixA ixB oix K).elabAt cta 0 ir im).run st).mem c a
       = st.mem c a := by
-  have hmem : ∀ (j : Nat) (s : WSt),
+  have hmem : ∀ (j : Nat) (s : WSt R),
       (((EWStmt.seq (.loadIdx dA bA ixA)
           (.seq (.loadIdx dB bB ixB) (.setR r f))).elabAt cta j ir im).run s).mem
         = s.mem := fun _ _ => rfl
@@ -843,7 +789,7 @@ theorem zipPass_frame (bA bB out : Buf) (dA dB r : Nat) (f : WFExp)
     and `K·32 = n` — so this stage depends on the geometry guard
     (`ReduceGeom.covers`) being discharged. -/
 def outerStage (bAdj bX out : Buf) (n K grid : Nat) (_hn : K * 32 = n)
-    (hAo : bAdj ≠ out) (hXo : bX ≠ out) : StageSpec where
+    (hAo : bAdj ≠ out) (hXo : bX ≠ out) : (StageSpec R) where
   ew   := zipPassEW bAdj bX out 1 2 0 (.mul (.reg 1) (.reg 2)) .ctaId
             (stride32 (.lit 0)) (stride32 (.mul .ctaId (.lit n))) K
   grid := grid
@@ -884,7 +830,7 @@ def outerStage (bAdj bX out : Buf) (n K grid : Nat) (_hn : K * 32 = n)
     buffers distinct from `out`. -/
 theorem outerStage_idempotent (bAdj bX out : Buf) (n K grid : Nat) (hn : K * 32 = n)
     (hAo : bAdj ≠ out) (hXo : bX ≠ out) :
-    (outerStage bAdj bX out n K grid hn hAo hXo).Idempotent := by
+    (outerStage (R := R) bAdj bX out n K grid hn hAo hXo).Idempotent := by
   intro m m' cta a h
   show NumOps.mul (m bAdj cta) (m bX (a - cta * n))
      = NumOps.mul (m' bAdj cta) (m' bX (a - cta * n))
@@ -893,7 +839,7 @@ theorem outerStage_idempotent (bAdj bX out : Buf) (n K grid : Nat) (hn : K * 32 
 /-- Rows own disjoint address ranges, given that a row's trips cover it exactly. -/
 theorem outerStage_exclusive (bAdj bX out : Buf) (n K grid : Nat) (hn : K * 32 = n)
     (hAo : bAdj ≠ out) (hXo : bX ≠ out) :
-    (outerStage bAdj bX out n K grid hn hAo hXo).Exclusive := by
+    (outerStage (R := R) bAdj bX out n K grid hn hAo hXo).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   obtain ⟨j, hj, l, hl⟩ := h
@@ -934,15 +880,15 @@ theorem outerStage_exclusive (bAdj bX out : Buf) (n K grid : Nat) (hn : K * 32 =
     the output is a *segment* of the row rather than all of it, which is what
     lets a rotation be written as passes over halves — the index language has no
     conditional, so `i ± half` is an offset, not a branch. -/
-def zipRowStage (bA bB out : Buf) (f : WFExp) (g : Float32 → Float32 → Float32)
+def zipRowStage (bA bB out : Buf) (f : WFExp) (g : R → R → R)
     (ixA ixB : IdxE) (evA evB : Nat → Nat → Nat) (n off K grid : Nat)
     (_hw : off + K * 32 ≤ n)
-    (hf : ∀ (st' : WSt) (l : Lane), f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l))
+    (hf : ∀ (st' : WSt R) (l : Lane), f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l))
     (hA : ∀ cta j (l : Lane),
         ixA.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evA cta (j * 32 + l.val))
     (hB : ∀ cta j (l : Lane),
         ixB.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evB cta (j * 32 + l.val))
-    (hAo : bA ≠ out) (hBo : bB ≠ out) : StageSpec where
+    (hAo : bA ≠ out) (hBo : bB ≠ out) : (StageSpec R) where
   ew   := zipPassEW bA bB out 1 2 0 f ixA ixB
             (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) K
   grid := grid
@@ -975,9 +921,9 @@ def zipRowStage (bA bB out : Buf) (f : WFExp) (g : Float32 → Float32 → Float
 /-- Rows own disjoint address ranges: a block's segment sits inside its own
     row, which is exactly what `off + K·32 ≤ n` says. -/
 theorem zipRowStage_exclusive (bA bB out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32) (ixA ixB : IdxE) (evA evB : Nat → Nat → Nat)
+    (g : R → R → R) (ixA ixB : IdxE) (evA evB : Nat → Nat → Nat)
     (n off K grid : Nat) (hw : off + K * 32 ≤ n)
-    (hf : ∀ (st' : WSt) (l : Lane), f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l))
+    (hf : ∀ (st' : WSt R) (l : Lane), f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l))
     (hA : ∀ cta j (l : Lane),
         ixA.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evA cta (j * 32 + l.val))
     (hB : ∀ cta j (l : Lane),
@@ -1008,11 +954,11 @@ theorem zipRowStage_exclusive (bA bB out : Buf) (f : WFExp)
 /-- **The three-buffer pass touches only its own output addresses.** -/
 theorem zip3Pass_frame (bA bB bC out : Buf) (dA dB dC r : Nat) (f : WFExp)
     (ixA ixB ixC oix : IdxE) (K cta : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (st : WSt) (c : Buf) (a : Nat)
+    (im : Buf → Nat → Nat) (st : WSt R) (c : Buf) (a : Nat)
     (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
     (((zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC oix K).elabAt
         cta 0 ir im).run st).mem c a = st.mem c a := by
-  have hmem : ∀ (j : Nat) (s : WSt),
+  have hmem : ∀ (j : Nat) (s : WSt R),
       (((EWStmt.seq (.loadIdx dA bA ixA)
           (.seq (.loadIdx dB bB ixB)
             (.seq (.loadIdx dC bC ixC) (.setR r f)))).elabAt cta j ir im).run s).mem
@@ -1027,11 +973,11 @@ theorem zip3Pass_frame (bA bB bC out : Buf) (dA dB dC r : Nat) (f : WFExp)
 /-- **The four-buffer pass touches only its own output addresses.** -/
 theorem zip4Pass_frame (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
     (ixA ixB ixC ixD oix : IdxE) (K cta : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (st : WSt) (c : Buf) (a : Nat)
+    (im : Buf → Nat → Nat) (st : WSt R) (c : Buf) (a : Nat)
     (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
     (((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).elabAt
         cta 0 ir im).run st).mem c a = st.mem c a := by
-  have hmem : ∀ (j : Nat) (s : WSt),
+  have hmem : ∀ (j : Nat) (s : WSt R),
       (((EWStmt.seq (.loadIdx dA bA ixA)
           (.seq (.loadIdx dB bB ixB)
             (.seq (.loadIdx dC bC ixC)
@@ -1050,10 +996,10 @@ theorem zip4Pass_frame (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
     rectangle, same ownership, same proofs — the third load changes what the
     lane computes, not who owns what. -/
 def zipRow3Stage (bA bB bC out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32)
+    (g : R → R → R → R)
     (ixA ixB ixC : IdxE) (evA evB evC : Nat → Nat → Nat)
     (n off K grid : Nat) (_hw : off + K * 32 ≤ n)
-    (hf : ∀ (st' : WSt) (l : Lane),
+    (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
     (hA : ∀ cta j (l : Lane),
         ixA.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evA cta (j * 32 + l.val))
@@ -1061,7 +1007,7 @@ def zipRow3Stage (bA bB bC out : Buf) (f : WFExp)
         ixB.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evB cta (j * 32 + l.val))
     (hC : ∀ cta j (l : Lane),
         ixC.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evC cta (j * 32 + l.val))
-    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) : StageSpec where
+    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) : (StageSpec R) where
   ew   := zip3PassEW bA bB bC out 1 2 3 0 f ixA ixB ixC
             (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) K
   grid := grid
@@ -1095,10 +1041,10 @@ def zipRow3Stage (bA bB bC out : Buf) (f : WFExp)
 
 /-- Rows own disjoint address ranges — the two-operand argument, unchanged. -/
 theorem zipRow3Stage_exclusive (bA bB bC out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32)
+    (g : R → R → R → R)
     (ixA ixB ixC : IdxE) (evA evB evC : Nat → Nat → Nat)
     (n off K grid : Nat) (hw : off + K * 32 ≤ n)
-    (hf : ∀ (st' : WSt) (l : Lane),
+    (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
     (hA : ∀ cta j (l : Lane),
         ixA.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evA cta (j * 32 + l.val))
@@ -1134,10 +1080,10 @@ theorem zipRow3Stage_exclusive (bA bB bC out : Buf) (f : WFExp)
     The arity a chain of row passes reaches: two collapse into `zipRow3Stage`,
     and without this the third has to store its input and read it back. -/
 def zipRow4Stage (bA bB bC bD out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32 → Float32)
+    (g : R → R → R → R → R)
     (ixA ixB ixC ixD : IdxE) (evA evB evC evD : Nat → Nat → Nat)
     (n off K grid : Nat) (_hw : off + K * 32 ≤ n)
-    (hf : ∀ (st' : WSt) (l : Lane),
+    (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l) (st'.regs 4 l))
     (hA : ∀ cta j (l : Lane),
         ixA.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evA cta (j * 32 + l.val))
@@ -1147,7 +1093,7 @@ def zipRow4Stage (bA bB bC bD out : Buf) (f : WFExp)
         ixC.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evC cta (j * 32 + l.val))
     (hD : ∀ cta j (l : Lane),
         ixD.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evD cta (j * 32 + l.val))
-    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) : StageSpec where
+    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) : (StageSpec R) where
   ew   := zip4PassEW bA bB bC bD out 1 2 3 4 0 f ixA ixB ixC ixD
             (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) K
   grid := grid
@@ -1183,7 +1129,7 @@ def zipRow4Stage (bA bB bC bD out : Buf) (f : WFExp)
 
 /-- Rows own disjoint address ranges, exactly as at the lower arities. -/
 theorem zipRow4Stage_exclusive (bA bB bC bD out : Buf) (f : WFExp)
-    (g : Float32 → Float32 → Float32 → Float32 → Float32)
+    (g : R → R → R → R → R)
     (ixA ixB ixC ixD : IdxE) (evA evB evC evD : Nat → Nat → Nat)
     (n off K grid : Nat) (hw : off + K * 32 ≤ n) (hf) (hA) (hB) (hC) (hD)
     (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) :
@@ -1221,8 +1167,8 @@ theorem zipRow4Stage_exclusive (bA bB bC bD out : Buf) (f : WFExp)
     address alone once the block is known — and it needs no bound on `cta`,
     which matters because `frame` has to hold for every block index, not only
     the ones the launch runs. -/
-def dotBatchedStage (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
-    (B K grid : Nat) (hg : 0 < grid) (hA : bA ≠ out) (hB : bB ≠ out) : StageSpec where
+def dotBatchedStage [LitNat R] (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
+    (B K grid : Nat) (hg : 0 < grid) (hA : bA ≠ out) (hB : bB ≠ out) : (StageSpec R) where
   ew   := dotBatched bA bB ixA ixB out (fun s => .add (.lit (s * grid)) .ctaId) B K
   grid := grid
   out  := out
@@ -1252,9 +1198,9 @@ def dotBatchedStage (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
 
 /-- Blocks own disjoint address sets: the samples are `grid` apart and a block
     index is below `grid`, so no two blocks can meet. -/
-theorem dotBatchedStage_exclusive (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
+theorem dotBatchedStage_exclusive [LitNat R] (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
     (B K grid : Nat) (hg : 0 < grid) (hA : bA ≠ out) (hB : bB ≠ out) :
-    (dotBatchedStage bA bB ixA ixB out B K grid hg hA hB).Exclusive := by
+    (dotBatchedStage (R := R) bA bB ixA ixB out B K grid hg hA hB).Exclusive := by
   intro cta cta' a hc hc' h h'
   obtain ⟨s, _, hl⟩ := h
   obtain ⟨s', _, hl'⟩ := h'
@@ -1268,8 +1214,8 @@ theorem dotBatchedStage_exclusive (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE
     invisible to the ownership structure and the two stages have the same
     `dom`.  That is the point: two blocks accumulating into one `dW` element
     would be a race, and this shape never lets that arise. -/
-def outerBatchedStage (bA bB out : Buf) (ixA ixB : Nat → IdxE) (n B K grid : Nat)
-    (_hn : K * 32 = n) (hAo : bA ≠ out) (hBo : bB ≠ out) : StageSpec where
+def outerBatchedStage [LitNat R] (bA bB out : Buf) (ixA ixB : Nat → IdxE) (n B K grid : Nat)
+    (_hn : K * 32 = n) (hAo : bA ≠ out) (hBo : bB ≠ out) : (StageSpec R) where
   ew   := outerBatched bA bB out ixA ixB (.mul .ctaId (.lit n)) B K
   grid := grid
   out  := out
@@ -1303,9 +1249,9 @@ def outerBatchedStage (bA bB out : Buf) (ixA ixB : Nat → IdxE) (n B K grid : N
 
 /-- Rows own disjoint address ranges, given that a row's trips cover it exactly
     — the same argument as the unbatched outer product, on the same `dom`. -/
-theorem outerBatchedStage_exclusive (bA bB out : Buf) (ixA ixB : Nat → IdxE)
+theorem outerBatchedStage_exclusive [LitNat R] (bA bB out : Buf) (ixA ixB : Nat → IdxE)
     (n B K grid : Nat) (hn : K * 32 = n) (hAo : bA ≠ out) (hBo : bB ≠ out) :
-    (outerBatchedStage bA bB out ixA ixB n B K grid hn hAo hBo).Exclusive := by
+    (outerBatchedStage (R := R) bA bB out ixA ixB n B K grid hn hAo hBo).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   obtain ⟨j, hj, l, hl⟩ := h
@@ -1335,7 +1281,7 @@ theorem outerBatchedStage_exclusive (bA bB out : Buf) (ixA ixB : Nat → IdxE)
     elementwise pass: block `cta` owns `[cta·32, cta·32+32)`.  The value is
     `smSpec` at the lane that owns the address, which `laneMod` recovers. -/
 def softmaxCEStage (logits bias oneHot out : Buf) (biasIx : IdxE) (grid : Nat)
-    (hl : logits ≠ out) (hb : bias ≠ out) (ho : oneHot ≠ out) : StageSpec where
+    (hl : logits ≠ out) (hb : bias ≠ out) (ho : oneHot ≠ out) : (StageSpec R) where
   ew   := softmaxCE logits bias oneHot out biasIx
   grid := grid
   out  := out
@@ -1370,7 +1316,7 @@ def softmaxCEStage (logits bias oneHot out : Buf) (biasIx : IdxE) (grid : Nat)
 /-- Blocks own disjoint 32-element runs — the same addressing as a map. -/
 theorem softmaxCEStage_exclusive (logits bias oneHot out : Buf) (biasIx : IdxE)
     (grid : Nat) (hl : logits ≠ out) (hb : bias ≠ out) (ho : oneHot ≠ out) :
-    (softmaxCEStage logits bias oneHot out biasIx grid hl hb ho).Exclusive := by
+    (softmaxCEStage (R := R) logits bias oneHot out biasIx grid hl hb ho).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   obtain ⟨l, hl'⟩ := h
@@ -1391,8 +1337,8 @@ theorem softmaxCEStage_exclusive (logits bias oneHot out : Buf) (biasIx : IdxE)
     Everything the user supplies is disequalities between buffer numbers.  No
     proof about kernels, addresses, blocks or frames reaches them: the stage
     constructor discharged those, and this theorem discharges the link. -/
-theorem two_map_stages (fA fB : Expr 1) (b0 b1 b2 : Buf)
-    (h01 : b0 ≠ b1) (h12 : b1 ≠ b2) (grid : Nat) (st : WSt)
+theorem two_map_stages [LitNat R] (fA fB : Expr 1) (b0 b1 b2 : Buf)
+    (h01 : b0 ≠ b1) (h12 : b1 ≠ b2) (grid : Nat) (st : WSt R)
     (cta : Nat) (l : Lane) (hlt : cta < grid) :
     ((mapStage fB (fun _ => b1) b2 grid (fun _ => h12)).run
       ((mapStage fA (fun _ => b0) b1 grid (fun _ => h01)).run st)).mem b2
@@ -1407,12 +1353,12 @@ theorem two_map_stages (fA fB : Expr 1) (b0 b1 b2 : Buf)
     (cta * 32 + l.val) cta hlt ⟨l, rfl⟩
   show ((mapStage fB (fun _ => b1) b2 grid (fun _ => h12)).run
       ((mapStage fA (fun _ => b0) b1 grid (fun _ => h01)).run st)).mem
-      (mapStage fB (fun _ => b1) b2 grid (fun _ => h12)).out (cta * 32 + l.val) = _
+      (mapStage (R := R) fB (fun _ => b1) b2 grid (fun _ => h12)).out (cta * 32 + l.val) = _
   rw [hB]
   show denote (fun _ => ((mapStage fA (fun _ => b0) b1 grid (fun _ => h01)).run st).mem b1
         (cta * 32 + l.val)) fB = _
   show denote (fun _ => ((mapStage fA (fun _ => b0) b1 grid (fun _ => h01)).run st).mem
-        (mapStage fA (fun _ => b0) b1 grid (fun _ => h01)).out (cta * 32 + l.val)) fB = _
+        (mapStage (R := R) fA (fun _ => b0) b1 grid (fun _ => h01)).out (cta * 32 + l.val)) fB = _
   rw [hA]
   rfl
 
@@ -1430,10 +1376,10 @@ theorem two_map_stages (fA fB : Expr 1) (b0 b1 b2 : Buf)
     `hcov` is the scheduling obligation: every address the reduction reads must
     be one the map stage wrote.  A schedule that reduces over elements nobody
     computed is wrong, and this is where that shows up. -/
-theorem map_then_reduce {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
+theorem map_then_reduce [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
     (b1 bW b2 : Buf) (ixA ixW : IdxE)
     (h01 : ∀ i, inB i ≠ b1) (h1 : b1 ≠ b2) (hW : bW ≠ b2) (hWb1 : bW ≠ b1)
-    (K gridA gridB : Nat) (st : WSt) (cta : Nat) (hlt : cta < gridB)
+    (K gridA gridB : Nat) (st : WSt R) (cta : Nat) (hlt : cta < gridB)
     (hcov : ∀ (i : Nat), i < K → ∀ (l : Lane), ∃ c : Nat, c < gridA ∧ ∃ l' : Lane,
       c * 32 + l'.val = ixA.eval cta i l) :
     ((reduceStage b1 bW ixA ixW b2 K gridB h1 hW).run
@@ -1449,7 +1395,7 @@ theorem map_then_reduce {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
     (reduceStage_exclusive b1 bW ixA ixW b2 K gridB h1 hW)
     ((mapStage spec inB b1 gridA h01).run st) cta cta hlt rfl
   show ((reduceStage b1 bW ixA ixW b2 K gridB h1 hW).run _).mem
-      (reduceStage b1 bW ixA ixW b2 K gridB h1 hW).out cta = _
+      (reduceStage (R := R) b1 bW ixA ixW b2 K gridB h1 hW).out cta = _
   rw [hB]
   show bflyFold (dotStridedLane
       (((mapStage spec inB b1 gridA h01).run st).mem b1)
@@ -1462,5 +1408,7 @@ theorem map_then_reduce {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf)
   obtain ⟨c, hc, l'', hl''⟩ := hcov i hi l'
   rw [← hl'']
   exact hA (c * 32 + l''.val) c hc ⟨l'', rfl⟩
+
+end Carrier
 
 end AlgorithmLib.ML

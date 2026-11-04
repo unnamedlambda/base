@@ -11,8 +11,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.ML.Machine.Geometry
 meta import AlgorithmLib.ML.Machine.Geometry
-public import AlgorithmLib.ML.Ptx.Print
-meta import AlgorithmLib.ML.Ptx.Print
+public import AlgorithmLib.ML.Ptx.Body
+meta import AlgorithmLib.ML.Ptx.Body
 public import AlgorithmLib.ML.Math.TapeGrad
 meta import AlgorithmLib.ML.Math.TapeGrad
 public import AlgorithmLib.ML.Ptx.Compile
@@ -73,7 +73,7 @@ def resReg : Nat := G + teleSlots gp.binds + slots (gp.outs ⟨0, by decide⟩) 
     compute and store each partial. -/
 def kernel : EWStmt := compileVWKernel (fun _ => inBuf) outBuf inIx gp outIx resReg
 
-def ptx : String := emitProvenKernel "main" kernel
+def ptx : String := Body.text "main" 2 0 kernel
 
 /-- Scratch register for the narrowed kernel's store. -/
 def resRegD : Nat := G + teleSlots gpD.binds + slots (gpD.outs ⟨0, by decide⟩) + 8
@@ -82,17 +82,13 @@ def resRegD : Nat := G + teleSlots gpD.binds + slots (gpD.outs ⟨0, by decide�
     lowering changes — that is the point of `VProg` being the interface. -/
 def kernelD : EWStmt := compileVWKernel (fun _ => inBuf) outBuf inIx gpD outIx resRegD
 
-def ptxD : String := emitProvenKernel "main" kernelD
+def ptxD : String := Body.text "main" 2 0 kernelD
 
 /-! ### Seam guards (`A47` G2) -/
 theorem grad_guards :
     kernel.BufBelow 2 ∧ kernelD.BufBelow 2
-      ∧ kernel.StageEligibleB outBuf = true ∧ kernelD.StageEligibleB outBuf = true
-      ∧ FlatTargetsOkB (flatKernel (expandEW kernel)) = true
-      ∧ FlatTargetsOkB (flatKernel (expandEW kernelD)) = true
-      ∧ FlatPrintableB (flatKernel (expandEW kernel)) = true
-      ∧ FlatPrintableB (flatKernel (expandEW kernelD)) = true := by
-  refine ⟨by decide, by decide, by decide, by decide, ?_, ?_, ?_, ?_⟩ <;> native_decide
+      ∧ kernel.StageEligibleB outBuf = true ∧ kernelD.StageEligibleB outBuf = true :=
+  ⟨by decide, by decide, by decide, by decide⟩
 
 /-- One lane per input group. -/
 theorem grad_geometry : GRID * 32 = LANES ∧ NIN = LANES * G := by decide
@@ -113,8 +109,8 @@ open AlgorithmLib.Prog
     the point of the pair. -/
 def app : Drv.App :=
   { bufs := [NIN * 4, NOUT * 4],
-    kernels := [⟨PTX_OFF, PTX_D_OFF - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩,
-                ⟨PTX_D_OFF, MEM_SIZE - PTX_D_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩],
+    kernels := [⟨PTX_OFF, PTX_D_OFF - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1), []⟩,
+                ⟨PTX_D_OFF, MEM_SIZE - PTX_D_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1), []⟩],
     memSize := MEM_SIZE }
 
 def loadFnCode : Prog V L Unit := do
@@ -302,25 +298,6 @@ theorem grad_stores (k : Fin G) (st : WSt) (l0 : Lane) :
     have : l = l0 := Fin.ext (by simp only [G] at *; omega)
     rw [this]
 
-/-- **The emitted PTX runs the gradient kernel — exactly, from raw launch.**
-
-    This is the same floor the forward kernels stand on (`mlp_ptx_exact`,
-    `gemv_ptx_computes_spec`): the printed instruction list, executed by a
-    program counter over real branches from instruction 0, performs the
-    compiled statement for every block, unconditionally.  Without this the
-    gradient's chain stopped at the warp machine; with it, proven object =
-    executed object holds for training exactly as for inference. -/
-theorem grad_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW kernel)) k (0, m)
-          = some ((flatKernel (expandEW kernel)).length, m')
-      ∧ m'.toWSt = ((expandEW kernel).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW kernel) (expandEW_expFree kernel)
-    (expandEW_idxFree kernel
-      (compileVWKernel_idxFree (fun _ => inBuf) outBuf inIx gp outIx resReg
-        (fun _ => ⟨⟨⟨⟨trivial, trivial⟩, trivial⟩, trivial⟩, trivial⟩)
-        (fun _ => ⟨⟨⟨⟨trivial, trivial⟩, trivial⟩, trivial⟩, trivial⟩)))
-    (expandEW_flat kernel (compileVWKernel_flat _ _ _ _ _ _)) m
-
 theorem gradD_stores (k : Fin G) (st : WSt) (l0 : Lane) :
     ∃ s0 : WSt,
       ((kernelD.elabIn 0).run st).mem outBuf ((outIx k).eval 0 0 l0)
@@ -349,25 +326,6 @@ theorem gradD_stores (k : Fin G) (st : WSt) (l0 : Lane) :
     have : l = l0 := Fin.ext (by simp only [G] at *; omega)
     rw [this]
 
-/-- **And the narrowed kernel's PTX runs it, from raw launch.** -/
-theorem gradD_ptx_exact (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW kernelD)) k (0, m)
-          = some ((flatKernel (expandEW kernelD)).length, m')
-      ∧ m'.toWSt = ((expandEW kernelD).elabIn cta).run m.toWSt :=
-  flatKernel_sound_idxFree cta (expandEW kernelD) (expandEW_expFree kernelD)
-    (expandEW_idxFree kernelD
-      (compileVWKernel_idxFree (fun _ => inBuf) outBuf inIx gpD outIx resRegD
-        (fun _ => ⟨⟨⟨⟨trivial, trivial⟩, trivial⟩, trivial⟩, trivial⟩)
-        (fun _ => ⟨⟨⟨⟨trivial, trivial⟩, trivial⟩, trivial⟩, trivial⟩)))
-    (expandEW_flat kernelD (compileVWKernel_flat _ _ _ _ _ _)) m
-
-/-- The same, discharging the `exp` in the spec via the one declared identity. -/
-theorem grad_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
-    ∃ k m', steps cta (flatKernel (expandEW kernel)) k (0, m)
-          = some ((flatKernel (expandEW kernel)).length, m')
-      ∧ m'.toWSt = (kernel.elabIn cta).run m.toWSt := by
-  obtain ⟨k, m', hs, hw⟩ := grad_ptx_exact cta m
-  exact ⟨k, m', hs, by rw [hw]; exact expandEW_run h kernel cta 0 m.toWSt⟩
 
 
 end GradWarp

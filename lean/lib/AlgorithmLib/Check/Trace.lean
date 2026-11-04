@@ -349,10 +349,248 @@ theorem Traced.repSucc {a : Tr} {n : Nat} {w0 w1 w2 : World} (h1 : Traced (.rep 
   obtain ⟨c2, e2, k2⟩ := h2
   exact ⟨c1 ++ c2, by rw [e2, e1, List.reverse_append, List.append_assoc], .repSucc k1 k2⟩
 
+/-- What no step of a host program changes: the kernel and vendor oracles
+    and which libraries are present. -/
+def Fixed (w w' : World) : Prop := w'.kernel = w.kernel ∧ w'.vendor = w.vendor ∧ w'.present = w.present
+
+theorem Fixed.refl (w : World) : Fixed w w := ⟨rfl, rfl, rfl⟩
+
+theorem Fixed.trans {a b c : World} (h1 : Fixed a b) (h2 : Fixed b c) : Fixed a c :=
+  ⟨h2.1.trans h1.1, h2.2.1.trans h1.2.1, h2.2.2.trans h1.2.2⟩
+
+/-- A byte no store among `ds` writes. -/
+def Unstored (ds : List Obs) (a : UInt64) : Prop :=
+  ∀ b n v, Obs.store b n v ∈ ds → ∀ i < n, a ≠ b + UInt64.ofNat i
+
+/-- **Host memory changed only where stores were observed**: from `w` to
+    `w'` the observations grew by `ds`, and every byte no store among them
+    writes reads as it did. -/
+def MemLogged (w w' : World) : Prop :=
+  ∃ ds, w'.obs = ds ++ w.obs ∧ ∀ a, Unstored ds a → w'.mem.load a 1 = w.mem.load a 1
+
+theorem MemLogged.refl (w : World) : MemLogged w w := ⟨[], rfl, fun _ _ => rfl⟩
+
+theorem MemLogged.trans {a b c : World} (h1 : MemLogged a b) (h2 : MemLogged b c) : MemLogged a c := by
+  obtain ⟨d1, e1, k1⟩ := h1
+  obtain ⟨d2, e2, k2⟩ := h2
+  refine ⟨d2 ++ d1, by rw [e2, e1, List.append_assoc], fun x hx => ?_⟩
+  rw [k2 x (fun b n v hm => hx b n v (List.mem_append_left _ hm)),
+    k1 x (fun b n v hm => hx b n v (List.mem_append_right _ hm))]
+
+/-- A number outside every range `[lo, hi)` of `K`. -/
+def Outside (K : List (Nat × Nat)) (x : Nat) : Prop := ∀ p ∈ K, x < p.1 ∨ p.2 ≤ x
+
+/-- **No store observed from `w0` to `w` touches the ranges `K`**, where `K`
+    names any: the observations grew by `ds`, and every byte a store among
+    them writes lies outside `K`. -/
+def StoresOut (K : List (Nat × Nat)) (w0 w : World) : Prop :=
+  K = [] ∨ ∃ ds, w.obs = ds ++ w0.obs ∧
+    ∀ b n v, Obs.store b n v ∈ ds → ∀ i < n, Outside K (b + UInt64.ofNat i).toNat
+
+theorem StoresOut.refl (K : List (Nat × Nat)) (w : World) : StoresOut K w w :=
+  .inr ⟨[], rfl, fun _ _ _ h => by cases h⟩
+
+theorem StoresOut.trans {K : List (Nat × Nat)} {a b c : World} (h1 : StoresOut K a b) (h2 : StoresOut K b c) :
+    StoresOut K a c := by
+  rcases h1 with h | ⟨d1, e1, k1⟩
+  · exact .inl h
+  rcases h2 with h | ⟨d2, e2, k2⟩
+  · exact .inl h
+  refine .inr ⟨d2 ++ d1, by rw [e2, e1, List.append_assoc], fun x n v hm => ?_⟩
+  rcases List.mem_append.mp hm with hm | hm
+  · exact k2 x n v hm
+  · exact k1 x n v hm
+
+/-- A step observing one call observes no store. -/
+theorem StoresOut.call {K : List (Nat × Nat)} {w w' : World} {c : Callee} {vs : List V}
+    (ho : w'.obs = .call c vs :: w.obs) : StoresOut K w w' :=
+  .inr ⟨[.call c vs], ho, fun _ _ _ h => by simp at h⟩
+
+/-- A byte untouched by the stores of a longer stretch is untouched by those
+    of a part of it. -/
+theorem Unstored.of_append {ds es : List Obs} {a : UInt64} (h : Unstored (ds ++ es) a) :
+    Unstored ds a ∧ Unstored es a :=
+  ⟨fun b n v hm => h b n v (List.mem_append_left _ hm), fun b n v hm => h b n v (List.mem_append_right _ hm)⟩
+
+/-- **One step of a run, as the device sees it**: one that leaves the device,
+    the oracles and the calls observed as they were, host memory changed only
+    where it observed stores (`MemLogged`); a call into the driver or cuBLAS,
+    observed, and answered as the World's contract says; or one that made
+    some other call (into the program's own functions, a library, the host),
+    observed among those it adds, which leaves the device as that call does. -/
+inductive DevStep : World → World → Prop
+  | host {w w' : World} : w'.dev = w.dev → callsOf w'.obs = callsOf w.obs → Fixed w w' → MemLogged w w' →
+      DevStep w w'
+  | ext {w w' : World} {e : Ext} {vs : List V} {r : Option V} :
+      extCall e vs (obsCall w (.ext e) vs) = some (r, w') →
+      w'.obs = .call (.ext e) (vs ++ callWords w (.ext e) vs) :: w.obs → DevStep w w'
+  | other {w w' : World} {ds : List (Callee × List V)} :
+      callsOf w'.obs = ds ++ callsOf w.obs → (∃ x ∈ ds, ∀ e, x.1 ≠ .ext e) → DevStep w w'
+
+/-- **The steps a run took, as the device sees them.** -/
+inductive DevPath : World → World → Prop
+  | refl (w : World) : DevPath w w
+  | tail {w0 w1 w2 : World} : DevPath w0 w1 → DevStep w1 w2 → DevPath w0 w2
+
+theorem DevPath.trans {w0 w1 w2 : World} (h1 : DevPath w0 w1) (h2 : DevPath w1 w2) : DevPath w0 w2 := by
+  induction h2 with
+  | refl => exact h1
+  | tail _ hs ih => exact .tail ih hs
+
+theorem DevPath.single {w w' : World} (h : DevStep w w') : DevPath w w' := .tail (.refl w) h
+
+/-- Calls the records describe call what the records name. -/
+theorem recsMatch_callees : ∀ {rs : List CallRec} {xs : List (Callee × List V)}, recsMatch rs xs →
+    ∀ x ∈ xs, ∃ r ∈ rs, r.callee = x.1
+  | [], [], _, _, hx => by cases hx
+  | r :: rs, y :: ys, ⟨hm, h⟩, x, hx => by
+      rcases List.mem_cons.mp hx with rfl | hx
+      · exact ⟨r, List.mem_cons_self .., hm.1⟩
+      · obtain ⟨r', hr', e⟩ := recsMatch_callees h x hx
+        exact ⟨r', List.mem_cons_of_mem _ hr', e⟩
+
+/-- **Calls a list of records into the driver and cuBLAS admits are all into
+    them.** -/
+theorem Tr.Has.lit_ext {rs : List CallRec} {xs : List (Callee × List V)} (h : (Tr.lit rs).Has xs)
+    (hr : rs.all (fun r => match r.callee with | .ext _ => true | _ => false) = true) :
+    ∀ x ∈ xs, ∃ e, x.1 = .ext e := by
+  cases h with
+  | lit hm =>
+      intro x hx
+      obtain ⟨r, hr', e⟩ := recsMatch_callees hm x hx
+      have := List.all_eq_true.mp hr r hr'
+      cases hc : r.callee with
+      | ext e' => exact ⟨e', by rw [← e, hc]⟩
+      | _ => rw [hc] at this; cases this
+
+theorem eq_of_length_eleven {α : Type} : ∀ (l : List α), l.length = 11 →
+    ∃ a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10, l = [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10]
+  | [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10], _ => ⟨a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, rfl⟩
+
+theorem eq_of_length_eighteen {α : Type} : ∀ (l : List α), l.length = 18 →
+    ∃ a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17,
+      l = [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17]
+  | [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17], _ =>
+      ⟨a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, rfl⟩
+
+theorem callsOf_call (c : Callee) (vs : List V) (obs : List Obs) :
+    callsOf (.call c vs :: obs) = (c, vs) :: callsOf obs := rfl
+
+/-- A run's calls are the ones made before it and then some. -/
+theorem DevPath.calls {w0 w : World} (h : DevPath w0 w) : ∃ ds, callsOf w.obs = ds ++ callsOf w0.obs := by
+  induction h with
+  | refl => exact ⟨[], rfl⟩
+  | tail _ hs ih =>
+      obtain ⟨ds, e⟩ := ih
+      cases hs with
+      | host _ ho _ => exact ⟨ds, by rw [ho, e]⟩
+      | ext _ ho => exact ⟨_ :: ds, by rw [ho, callsOf_call, e]; rfl⟩
+      | other hd _ => exact ⟨_ ++ ds, by rw [hd, e, List.append_assoc]⟩
+
+/-- **The device's run through calls `cs` into the driver and cuBLAS**, in the
+    order they were made: each answered as the World's contract says, the
+    steps between them leaving the device, the oracles and the calls
+    observed, and host memory but where they observed stores. -/
+inductive ExtRun : World → List (Callee × List V) → World → Prop
+  | nil {w w' : World} : w'.dev = w.dev → callsOf w'.obs = callsOf w.obs → Fixed w w' → MemLogged w w' →
+      ExtRun w [] w'
+  | call {w0 w1 w2 : World} {cs : List (Callee × List V)} {e : Ext} {vs : List V} {r : Option V} :
+      ExtRun w0 cs w1 → extCall e vs (obsCall w1 (.ext e) vs) = some (r, w2) →
+      w2.obs = .call (.ext e) (vs ++ callWords w1 (.ext e) vs) :: w1.obs →
+      ExtRun w0 (cs ++ [(.ext e, vs ++ callWords w1 (.ext e) vs)]) w2
+  | host {w0 w1 w2 : World} {cs : List (Callee × List V)} :
+      ExtRun w0 cs w1 → w2.dev = w1.dev → callsOf w2.obs = callsOf w1.obs → Fixed w1 w2 → MemLogged w1 w2 →
+      ExtRun w0 cs w2
+
+/-- **A run whose calls were all into the driver or cuBLAS is those calls**,
+    in order, as the device sees them. -/
+theorem DevPath.extRun {w0 w : World} (h : DevPath w0 w) :
+    ∀ cs, callsOf w.obs = cs ++ callsOf w0.obs → (∀ x ∈ cs, ∃ e, x.1 = .ext e) → ExtRun w0 cs.reverse w := by
+  induction h with
+  | refl =>
+      intro cs e _
+      have : cs = [] := by
+        have := congrArg List.length e; simpa using this
+      subst this; exact .nil rfl rfl (Fixed.refl _) (MemLogged.refl _)
+  | tail hp hs ih =>
+      intro cs e hall
+      obtain ⟨ds, hd⟩ := hp.calls
+      cases hs with
+      | host hdv ho hf hm =>
+          rw [ho] at e
+          exact .host (ih cs e hall) hdv ho hf hm
+      | ext hx ho =>
+          rw [ho, callsOf_call, hd, ← List.cons_append] at e
+          have e' : cs = _ :: ds := (List.append_cancel_right e).symm
+          subst e'
+          simp only [List.reverse_cons]
+          exact .call (ih ds hd (fun x hx' => hall x (List.mem_cons_of_mem _ hx'))) hx ho
+      | other hds hwit =>
+          rw [hds, hd, ← List.append_assoc] at e
+          have e' := List.append_cancel_right e
+          obtain ⟨x, hx, hne⟩ := hwit
+          obtain ⟨e0, he0⟩ := hall x (by rw [← e']; exact List.mem_append_left _ hx)
+          exact absurd he0 (hne e0)
+
 /-- Worlds with the same observations have made the same calls. -/
 theorem Traced.of_obs {t : Tr} {w0 w w' : World} (h : Traced t w0 w) (e : callsOf w'.obs = callsOf w.obs) :
     Traced t w0 w' := by
   obtain ⟨cs, e1, k⟩ := h
   exact ⟨cs, e.trans e1, k⟩
+
+/-- Calls a repetition of one record admits are that record, as many times. -/
+theorem Tr.Has.rep_lit {r : CallRec} {n : Nat} {s : List (Callee × List V)}
+    (h : (Tr.rep n (.lit [r])).Has s) : recsMatch (List.replicate n r) s := by
+  generalize e : Tr.rep n (.lit [r]) = t at h
+  induction h generalizing n with
+  | repZero => cases e; trivial
+  | @repSucc a m s t h1 h2 ih _ =>
+      cases e
+      cases h2 with
+      | lit hm =>
+          rw [List.replicate_succ']
+          exact recsMatch_append (ih rfl) hm
+  | _ => cases e
+
+/-- Calls one record admits, or none. -/
+theorem Tr.Has.lit_or_nil {r : CallRec} {s : List (Callee × List V)} (h : (Tr.alt (.lit [r]) (.lit [])).Has s) :
+    s = [] ∨ ∃ x, s = [x] ∧ r.Matches x := by
+  generalize e : Tr.alt (.lit [r]) (.lit []) = t at h
+  cases h with
+  | altL h =>
+      cases e
+      cases h with
+      | lit hm =>
+          rcases s with _ | ⟨x, _ | ⟨y, s⟩⟩
+          · exact hm.elim
+          · exact .inr ⟨x, rfl, hm.1⟩
+          · exact hm.2.elim
+  | altR h => cases e; exact .inl (Tr.Has.lit_nil h)
+  | _ => cases e
+
+/-- The stores a stretch of a run observes are among the run's. -/
+theorem stretch_sub {w wA wB w' : World} {dT : List Obs} (eT : w'.obs = dT ++ w.obs)
+    (hX : ∃ X, w'.obs = X ++ wB.obs) (hY : ∃ Y, wA.obs = Y ++ w.obs) :
+    ∀ ds, wB.obs = ds ++ wA.obs → ∀ o ∈ ds, o ∈ dT := by
+  intro ds e o ho
+  obtain ⟨X, hX⟩ := hX
+  obtain ⟨Y, hY⟩ := hY
+  rw [e, hY] at hX
+  have : dT = X ++ ds ++ Y := List.append_cancel_right (by rw [← eT, hX]; simp)
+  rw [this]
+  exact List.mem_append_left _ (List.mem_append_right _ ho)
+
+/-- **A byte in a kept range reads as it did across a stretch of the run**,
+    where no store of the run touches the range. -/
+theorem kept_load {K : List (Nat × Nat)} {dT : List Obs}
+    (kT : ∀ b n v, Obs.store b n v ∈ dT → ∀ i < n, Outside K (b + UInt64.ofNat i).toNat)
+    {p : Nat × Nat} (hp : p ∈ K) {a : UInt64} (ha : p.1 ≤ a.toNat ∧ a.toNat < p.2) {wA wB : World}
+    (hm : MemLogged wA wB) (hsub : ∀ ds, wB.obs = ds ++ wA.obs → ∀ o ∈ ds, o ∈ dT) :
+    wB.mem.load a 1 = wA.mem.load a 1 := by
+  obtain ⟨ds, e, k⟩ := hm
+  refine k a fun b n v hs i hi he => ?_
+  have := kT b n v (hsub ds e _ hs) i hi p hp
+  rw [← he] at this
+  omega
 
 end AlgorithmLib.Check
