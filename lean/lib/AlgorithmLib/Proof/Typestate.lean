@@ -112,6 +112,8 @@ theorem TState.holds_obsCall {S : TState} {w : World} {c : Callee} {vs : List V}
   | nwg _ | wgo _ _ => exact this
   | wg1 _ s => cases s <;> exact this
   | wgText _ _ _ => exact this
+  | threads _ _ _ _ _ => exact this
+  | owns _ _ => exact this
 
 theorem ofInt_nat_val {n : Nat} (h : n < 2 ^ 64) :
     UInt64.ofNat ((n : Int).emod (1 <<< 64)).toNat = UInt64.ofNat n := by
@@ -202,7 +204,7 @@ theorem fits_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : R
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hb : off + n ≤ x.toNat) :
     Fits w.mem a n :=
   ⟨r, off, hd, hp, by have := (hS _ hm).1; omega,
-    by have := (hS _ hm).2; omega⟩
+    by have := (hS _ hm).2.1; omega, Contracts.roomArg_lentOk (hS _ hm)⟩
 
 /-- Bytes at a value past an address, within a length the program was handed. -/
 theorem fits_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : Nat} {r : Region} {off : Nat}
@@ -211,7 +213,7 @@ theorem fits_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : Nat} 
     (hn : 0 < n) : Fits w.mem (b + x) n := by
   have hx := hS _ hm
   have hd' : decodeAddr (b + x) = some (r, off + x.toNat) := by
-    have := Sem.decodeAddr_add (i := x.toNat) hd (by simp only [regionSpan, UInt64.reduceToNat]; have := hx.2; omega)
+    have := Sem.decodeAddr_add (i := x.toNat) hd (by simp only [regionSpan, UInt64.reduceToNat]; have := hx.2.1; omega)
     rwa [UInt64.ofNat_toNat] at this
   exact fits_of_roomArg hS hm hd' hp (by omega)
 
@@ -220,11 +222,11 @@ theorem fits_of_room_add {S : TState} {w : World} {b x : UInt64} {n N : Nat} {r 
     (hS : S.holds w) (hm : Contracts.Fact.room r N ∈ S)
     (hd : decodeAddr b = some (r, off)) (hp : r ≠ .pinned) (hb : off + x.toNat + n ≤ N)
     (hN : N ≤ 2 ^ 36) (hn : 0 < n) : Fits w.mem (b + x) n := by
-  have hx : N ≤ w.mem.sizes r := hS _ hm
+  have hx : N ≤ w.mem.sizes r := (hS _ hm).1
   have hd' : decodeAddr (b + x) = some (r, off + x.toNat) := by
     have := Sem.decodeAddr_add (i := x.toNat) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
     rwa [UInt64.ofNat_toNat] at this
-  exact ⟨r, off + x.toNat, hd', hp, by omega, by omega⟩
+  exact ⟨r, off + x.toNat, hd', hp, by omega, by omega, Contracts.room_lentOk (hS _ hm)⟩
 
 /-- A place a literal past a sum: the same place as the literal added first. -/
 theorem fits_regroup {m : Mem} {b x c : UInt64} {n : Nat} (h : Fits m (b + c + x) n) :
@@ -792,7 +794,7 @@ end ext
 
 /-- A length the caller handed over is at most a region's span. -/
 theorem roomArg_toNat_le {S : Contracts.TState} {w : World} {r : Region} {x : UInt64} (hS : S.holds w)
-    (hm : Contracts.Fact.roomArg r x ∈ S) : x.toNat ≤ 2 ^ 36 := (hS _ hm).2
+    (hm : Contracts.Fact.roomArg r x ∈ S) : x.toNat ≤ 2 ^ 36 := (hS _ hm).2.1
 
 /-- A 64-bit value below `2^63` is itself, signed. -/
 theorem signed_i64_of_lt {x : UInt64} (h : x.toNat < 2 ^ 63) : signed .i64 x = x.toNat := by
@@ -815,13 +817,13 @@ theorem fits_of_roomArg_sub {S : Contracts.TState} {w : World} {a X : UInt64} {n
     (hb : a.toNat - (regionBase r).toNat + n ≤ X.toNat) (hn : 0 < n) : Fits w.mem a n := by
   have hx := hS _ hm
   have hk : a.toNat - (regionBase r).toNat < regionSpan.toNat := by
-    simp only [regionSpan, UInt64.reduceToNat]; have := hx.2; omega
+    simp only [regionSpan, UInt64.reduceToNat]; have := hx.2.1; omega
   have hd := Sem.decodeAddr_base r _ hk
   have hsub : (a - regionBase r).toNat = a.toNat - (regionBase r).toNat :=
     UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr hle)
   rw [← hsub, UInt64.ofNat_toNat, UInt64.add_comm, UInt64.sub_add_cancel] at hd
   rw [hsub] at hd
-  exact ⟨r, _, hd, hp, by have := hx.1; omega, by have := hx.2; omega⟩
+  exact ⟨r, _, hd, hp, by have := hx.1; omega, by have := hx.2.1; omega, Contracts.roomArg_lentOk hx⟩
 
 /-- Bytes at an address past a region's base, within a room the typestate
     names. -/
@@ -829,7 +831,7 @@ theorem fits_of_room_sub {S : Contracts.TState} {w : World} {a : UInt64} {n N : 
     (hS : S.holds w) (hm : Contracts.Fact.room r N ∈ S)
     (hp : r ≠ .pinned) (hle : (regionBase r).toNat ≤ a.toNat)
     (hb : a.toNat - (regionBase r).toNat + n ≤ N) (hN : N ≤ 2 ^ 36) (hn : 0 < n) : Fits w.mem a n := by
-  have hx : N ≤ w.mem.sizes r := hS _ hm
+  have hx : N ≤ w.mem.sizes r := (hS _ hm).1
   have hk : a.toNat - (regionBase r).toNat < regionSpan.toNat := by
     simp only [regionSpan, UInt64.reduceToNat]; omega
   have hd := Sem.decodeAddr_base r _ hk
@@ -837,7 +839,7 @@ theorem fits_of_room_sub {S : Contracts.TState} {w : World} {a : UInt64} {n N : 
     UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr hle)
   rw [← hsub, UInt64.ofNat_toNat, UInt64.add_comm, UInt64.sub_add_cancel] at hd
   rw [hsub] at hd
-  exact ⟨r, _, hd, hp, by omega, by omega⟩
+  exact ⟨r, _, hd, hp, by omega, by omega, Contracts.room_lentOk (hS _ hm)⟩
 
 /-- A mask clearing the low `k` bits rounds down to a multiple of `2^k`. -/
 theorem toNat_and_mask {x : UInt64} {k : Nat} (hk : k < 64) :
@@ -875,7 +877,7 @@ theorem foldlM_lane_stores_some {addr : UInt64} {lw : Nat} : ∀ (l : List (UInt
       obtain ⟨m1, h1⟩ := (h p (by simp)).store p.1
       simp only [List.foldlM_cons, h1, Option.bind_eq_bind, Option.bind_some]
       exact foldlM_lane_stores_some l m1 fun q hq =>
-        (h q (by simp [hq])).congr (Contracts.store_sizes_eq h1)
+        (h q (by simp [hq])).congr (Contracts.store_sizes_eq h1) (Mem.store_lent h1)
 
 /-- A mask that clears the low `k` bits, given by its value. -/
 theorem toNat_and_lowMask {x m : UInt64} (k : Nat) (hk : k < 64) (hm : m.toNat = 2 ^ 64 - 2 ^ k) :

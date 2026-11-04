@@ -178,6 +178,22 @@ theorem foldl_stores_live {α : Type} (f : α → Mem → Option Mem)
       obtain ⟨m1, h1, h⟩ := Option.bind_eq_some_iff.mp h
       exact (foldl_stores_live f hf l m1 m' h).trans (hf x m m1 h1)
 
+theorem foldl_stores_lent {α : Type} (f : α → Mem → Option Mem)
+    (hf : ∀ x m m', f x m = some m' → m'.lent = m.lent) :
+    ∀ (l : List α) (m m' : Mem), l.foldlM (fun mm x => f x mm) m = some m' → m'.lent = m.lent
+  | [], m, m', h => by cases h; rfl
+  | x :: l, m, m', h => by
+      simp only [List.foldlM_cons, Option.bind_eq_bind] at h
+      obtain ⟨m1, h1, h⟩ := Option.bind_eq_some_iff.mp h
+      exact (foldl_stores_lent f hf l m1 m' h).trans (hf x m m1 h1)
+
+/-- Lane stores keep the spans threads own. -/
+theorem lanes_lent {β : Type} (arr : Array β) (f : Mem → β → Option Mem)
+    (hf : ∀ m x m', f m x = some m' → m'.lent = m.lent) {m m' : Mem}
+    (h : arr.foldlM f m = some m') : m'.lent = m.lent := by
+  rw [← Array.foldlM_toList] at h
+  exact foldl_stores_lent (fun x mm => f mm x) (fun x mm mm' h => hf mm x mm' h) _ _ _ h
+
 /-- A program's own stores keep every block. -/
 theorem Blk.stored {w : World} {m : Mem} {x : UInt64} {n : Nat} (h : Blk w x n) {a c : UInt64} {k : Nat}
     (hsz : m.sizes = w.mem.sizes) (hl : m.pinnedLive = w.mem.pinnedLive) :
@@ -209,10 +225,6 @@ theorem load_of {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
   rw [if_neg (by simp [hr]; omega)]
   rfl
 
-theorem readable_off_pinned {m : Mem} {r : Region} (hr : r ≠ .pinned) (off n : Nat) :
-    m.readable r off n = true := by
-  unfold Mem.readable
-  cases r <;> first | rfl | exact absurd rfl hr
 
 theorem foldr_bytes_congr {bs bs' : ByteArray} {off : Nat} : ∀ (l : List Nat) (init : UInt64),
     (∀ i ∈ l, bs'.get! (off + i) = bs.get! (off + i)) →
@@ -281,18 +293,21 @@ theorem bytesAt_congr {bs bs' : ByteArray} {off n : Nat}
 theorem load_kept {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned)
     (hbytes : ∀ i, i < n → decodeAddr (a + UInt64.ofNat i) = some (r, off + i))
-    (h : m.load a n = some v) (hsz : m'.sizes r = m.sizes r)
+    (h : m.load a n = some v) (hsz : m'.sizes r = m.sizes r) (hlent : m'.lent = m.lent)
     (hu : ∀ i, i < n → Unchanged m m' (a + UInt64.ofNat i)) : m'.load a n = some v := by
   obtain ⟨hs, hr, rfl⟩ := load_some hd h
+  have hlo := Mem.lentOk_of_readable hr
   have hs' : off + n ≤ (m'.region r).size := by
     have : (m'.region r).size = (m.region r).size := hsz
     omega
-  rw [load_of hd hs' (readable_off_pinned hp _ _)]
+  rw [load_of hd hs' (Mem.readable_of_ne_pinned hp (hlo.congr hlent))]
   congr 1
   apply bytesAt_congr
   intro i hi
-  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
-  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
+  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega)
+    (Mem.readable_of_ne_pinned hp (hlo.sub (by omega) (by omega)))
+  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega)
+    (Mem.readable_of_ne_pinned hp ((hlo.congr hlent).sub (by omega) (by omega)))
   have e := hu i hi _ _ h1 h1'
   simp [bytesAt] at e
   exact (UInt8.toUInt64_inj.mp e).symm
@@ -301,13 +316,15 @@ theorem load_kept {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} {r : Region} 
     the same. -/
 theorem bytes_kept {m m' : Mem} {a : UInt64} {k : Nat} {r : Region} {off : Nat}
     (hp : r ≠ .pinned) (hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i))
-    (hs : off + k ≤ (m.region r).size)
+    (hs : off + k ≤ (m.region r).size) (hlo : m.LentOk r off k) (hlent : m'.lent = m.lent)
     (hsz : m'.sizes r = m.sizes r) (hu : ∀ i, i < k → Unchanged m m' (a + UInt64.ofNat i)) :
     ∀ i, i < k → (m'.region r).get! (off + i) = (m.region r).get! (off + i) := by
   intro i hi
   have hs' : (m'.region r).size = (m.region r).size := hsz
-  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
-  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
+  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega)
+    (Mem.readable_of_ne_pinned hp (hlo.sub (by omega) (by omega)))
+  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega)
+    (Mem.readable_of_ne_pinned hp ((hlo.congr hlent).sub (by omega) (by omega)))
   have e := hu i hi _ _ h1 h1'
   simp [bytesAt] at e
   exact (UInt8.toUInt64_inj.mp e).symm
@@ -316,7 +333,8 @@ theorem bytes_kept {m m' : Mem} {a : UInt64} {k : Nat} {r : Region} {off : Nat}
     region's size are the same. -/
 theorem strSpan_congr {m m' : Mem} {a : UInt64} {r : Region} {off k : Nat}
     (hsp : Sem.strSpan m a = some (r, off, k)) (hs : (m'.region r).size = (m.region r).size)
-    (hb : ∀ i, i < k → (m'.region r).get! (off + i) = (m.region r).get! (off + i)) :
+    (hb : ∀ i, i < k → (m'.region r).get! (off + i) = (m.region r).get! (off + i))
+    (hrd : m'.readable r off k = m.readable r off k) :
     Sem.strSpan m' a = some (r, off, k) ∧ readCStr m' a = readCStr m a := by
   unfold Sem.strSpan at hsp ⊢
   unfold readCStr
@@ -340,11 +358,33 @@ theorem strSpan_congr {m m' : Mem} {a : UInt64} {r : Region} {off k : Nat}
         rw [hb j (by omega)]; exact h3 j hj
       rw [hf']
       refine ⟨rfl, ?_⟩
-      simp only
-      congr 2
+      simp only [hrd]
+      congr 3
       apply List.map_congr_left
       intro i hi
       exact hb i (by simp at hi; omega)
+
+/-- A C string's bytes, terminator included, may be read. -/
+theorem cstr_readable {m : Mem} {a : UInt64} {r : Region} {off k : Nat}
+    (hsp : Sem.strSpan m a = some (r, off, k)) (hc : (readCStr m a).isSome = true) :
+    m.readable r off k = true := by
+  unfold Sem.strSpan at hsp
+  unfold readCStr at hc
+  cases hd : decodeAddr a with
+  | none => rw [hd] at hsp; cases hsp
+  | some p =>
+    obtain ⟨r0, off0⟩ := p
+    simp only [hd, bind, Option.bind] at hsp hc
+    cases hf : (List.range ((m.region r0).size - off0)).find? (fun i => (m.region r0).get! (off0 + i) == 0) with
+    | none => rw [hf] at hsp; cases hsp
+    | some n =>
+      rw [hf] at hsp hc
+      simp only [Option.some.injEq, Prod.mk.injEq] at hsp
+      obtain ⟨rfl, rfl, rfl⟩ := hsp
+      simp only at hc
+      split at hc
+      · cases hc
+      · rename_i hr; simpa using hr
 
 theorem strSpan_bound {m : Mem} {a : UInt64} {r : Region} {off k : Nat}
     (h : Sem.strSpan m a = some (r, off, k)) : off + k ≤ (m.region r).size := by
@@ -437,7 +477,8 @@ theorem load_store8 {m m' : Mem} {a v : UInt64} {r : Region} {off : Nat}
     simp only [Bool.or_eq_true, decide_eq_true_eq, not_or] at hc
     injection h with h
     subst h
-    rw [load_of hd (by rw [hsz]; omega) (readable_off_pinned hp _ _)]
+    have hlo : m.LentOk r off 8 := Mem.lentOk_of_reachable (by simpa using hc.2)
+    rw [load_of hd (by rw [hsz]; omega) (Mem.readable_of_ne_pinned hp (hlo.congr (Mem.setRegion_lent _ _ _)))]
     congr 1
     rw [Sem.region_setRegion_self]
     unfold bytesAt

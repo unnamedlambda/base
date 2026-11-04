@@ -92,20 +92,21 @@ theorem grid_runs (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
       (startWS numBlocks inStride outStride hashLog c inP (G c)))
     (hI : ∀ c, c < numBlocks → ∀ a, I c a → w.mem.load a 1 = some ((G c).getD a.toNat 0).toUInt64)
     (hO : ∀ c, c < numBlocks → ∀ a, O c a → Writable w.mem a 1)
-    (hdis : ∀ c c', c' < c → c < numBlocks → ∀ a, O c' a → ¬ I c a) (hnan : w.mem.nan = hw.nan) :
+    (hdis : ∀ c c', c' < c → c < numBlocks → ∀ a, O c' a → ¬ I c a) (hnan : w.mem.nan = hw.nan)
+    (hlent0 : w.mem.lent = []) :
     ∀ n, n ≤ numBlocks → ∃ u, BlocksRun (compressorKernel name numBlocks inStride outStride lenOff hashLog) 32
         [.sc .i64 inP, .sc .i64 outA] hw n w u ∧
       (∀ a, NotArena a → u.mem.load a 1 = replay ((List.range n).flatMap fun c =>
         blockStores f (compressorBodyWStmt inStride lenOff hashLog)
           (startWS numBlocks inStride outStride hashLog c inP (G c))) a (w.mem.load a 1)) ∧
-      (∀ a, NotArena a → Writable w.mem a 1 → Writable u.mem a 1) ∧ u.mem.nan = hw.nan := by
+      (∀ a, NotArena a → Writable w.mem a 1 → Writable u.mem a 1) ∧ u.mem.nan = hw.nan ∧ u.mem.lent = [] := by
   intro n
   induction n with
-  | zero => intro _; exact ⟨w, rfl, fun a _ => rfl, fun _ _ h => h, hnan⟩
+  | zero => intro _; exact ⟨w, rfl, fun a _ => rfl, fun _ _ h => h, hnan, hlent0⟩
   | succ n ih =>
       intro hn
-      obtain ⟨v, hv, hvm, hvw, hvn⟩ := ih (by omega)
-      obtain ⟨u, hu, hum, huw, hun⟩ := block_run (cta := n) (outA := outA) (I := I n) (O := O n) (G := G n) hw hw32
+      obtain ⟨v, hv, hvm, hvw, hvn, hvl⟩ := ih (by omega)
+      obtain ⟨u, hu, hum, huw, hun, hul⟩ := block_run (cta := n) (outA := outA) (I := I n) (O := O n) (G := G n) hw hw32
         name v (by omega) (by omega) (by omega) h5 hh hf hfine hflags (hIna n) (hOna n) (hok n (by omega))
         (fun a ha => by
           rw [hvm a (hIna n a ha), replay_notin]
@@ -114,8 +115,8 @@ theorem grid_runs (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
             simp only [List.mem_flatMap, List.mem_range] at hx
             obtain ⟨c', hc', hx⟩ := hx
             exact hdis n c' hc' (by omega) a (e ▸ blockStores_O (hok c' (by omega)) x hx) ha)
-        (fun a ha => hvw a (hOna n a ha) (hO n (by omega) a ha)) hvn
-      refine ⟨u, ⟨v, hv, hu⟩, fun a ha => ?_, fun a ha h => huw a ha (hvw a ha h), hun⟩
+        (fun a ha => hvw a (hOna n a ha) (hO n (by omega) a ha)) hvn hvl
+      refine ⟨u, ⟨v, hv, hu⟩, fun a ha => ?_, fun a ha h => huw a ha (hvw a ha h), hun, hul⟩
       rw [hum a ha, hvm a ha, show List.range (n + 1) = List.range n ++ [n] from List.range_succ, List.flatMap_append,
         replay_append]
       simp [blockStores]

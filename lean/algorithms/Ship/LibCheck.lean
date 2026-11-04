@@ -45,12 +45,13 @@ theorem libStep_of {w w' : World} {P : UInt64 → Nat → Prop} {lo hi : Nat} (h
     (hq : Quiet w w') (hc : Calm w)
     (hP : ∀ c, cellOk c = true → hi ≤ c.toNat ∨ c.toNat + 8 ≤ lo → P c 8) : LibStep w w' lo hi := by
   have hc' := ho.calm hc
-  refine ⟨fun r hr => ho.size r hr, by rw [show w'.mem.busy = [] from hc']; rfl, fun c v hcell hm hl => ?_, hq.calls⟩
+  refine ⟨fun r hr => ho.size r hr, hq.lent, by rw [show w'.mem.busy = [] from hc']; rfl, fun c v hcell hm hl => ?_,
+    hq.calls⟩
   exact ho.keeps.load c 8 v (by decide) ⟨load_inW hl, out_cell hcell, hP c hcell hm⟩ hl
 
 /-- A call that changed nothing left the rest of the world. -/
 theorem libStep_refl {w : World} (hc : Calm w) (lo hi : Nat) : LibStep w w lo hi :=
-  ⟨fun _ _ => rfl, by rw [show w.mem.busy = [] from hc]; rfl, fun _ _ _ _ h => h, ⟨[], rfl⟩⟩
+  ⟨fun _ _ => rfl, rfl, by rw [show w.mem.busy = [] from hc]; rfl, fun _ _ _ _ h => h, ⟨[], rfl⟩⟩
 
 theorem calm_of {w : World} (hi : w.mem.busy.isEmpty = true) : Calm w :=
   List.isEmpty_iff.mp hi

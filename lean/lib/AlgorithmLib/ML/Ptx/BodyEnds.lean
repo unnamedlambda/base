@@ -184,7 +184,7 @@ theorem block_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
       StoresL (cta * nw + o / 32) (imOf rd) ⟨o % 32, Nat.mod_lt _ (by decide)⟩ 0 (ps.getD p .skip) b j →
       t ≠ o → p < q ∧ o < t ∧ o / 32 = t / 32)
     (hfine : Fine (emitGo (fnBody (params nbuf) (Body.body nbuf s nw)) ⟨(params nbuf).length, 0, [], [], [], none⟩).2)
-    (w : World) (hrd : RdOk nbuf w.mem rd) (hnan : w.mem.nan = hw.nan)
+    (w : World) (hrd : RdOk nbuf w.mem rd) (hnan : w.mem.nan = hw.nan) (hlent0 : w.mem.lent = [])
     (hfits : ∀ wi, wi < nw → fits rd (cta * nw + wi) 0 s = true)
     (hRd : ∀ q wi l b j, wi < nw → A q (cta * nw + wi) l b j → rd b j = none)
     (hsz : ∀ q wi l b j, q < ps.length → wi < nw → A q (cta * nw + wi) l b j → 4 * j + 4 ≤ (w.mem.bufs b).size) :
@@ -253,7 +253,7 @@ theorem block_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
     rw [hT, hJ, cntOf_eq, trace_ans, List.getElem?_map, List.getElem?_map,
       List.getElem?_append_right (Nat.le_add_right _ _), Nat.add_sub_cancel_left, List.getElem?_append_left hj]
   obtain ⟨hInv, hcl, -, -⟩ := pass_phases hw hw32 name nbuf smem s ps hsp nw hnw hnw31 cta hcta hN A rd hacc hA hone
-    hlate hfine w hrd hnan hfits hRd hsz w.mem
+    hlate hfine w hrd hnan hlent0 hfits hRd hsz w.mem
     (fun q wi l b j hq hwi h => ⟨rfl, (bufW_ok (hA _ _ l b j h) (hsz q wi l b j hq hwi h) 0).1⟩) T hWd Ws rfl hWs
     (fun t => collCalls (Ws (t + 1)) (Ws t).obs.length) (fun _ _ => rfl)
     (fun t ht => Or.inr (by simp [T, tapeOf]))
@@ -360,8 +360,8 @@ theorem launch_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32)
     | zero =>
       intro _
       have hld : ∀ a n, ({ arena := .empty, data := .empty, out := .empty, bufs, nan := hw.nan } : Mem).load a n =
-          (kmem bufs).load a n := Mem.load_congr (fun r => by cases r <;> rfl) rfl rfl
-      refine ⟨_, rfl, ⟨fun r => by cases r <;> rfl, rfl, rfl⟩, fun b j n h => ?_, rfl⟩
+          (kmem bufs).load a n := Mem.load_congr (fun r => by cases r <;> rfl) rfl rfl rfl
+      refine ⟨_, rfl, ⟨fun r => by cases r <;> rfl, rfl, rfl, rfl⟩, fun b j n h => ?_, rfl⟩
       obtain ⟨h1, h2⟩ := hrd b j n h
       exact ⟨h1, by simp only [rdM] at h2 ⊢; rw [hld]; exact h2⟩
     | succ c ih =>
@@ -396,7 +396,7 @@ theorem launch_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32)
           · exfalso
             exact hdisj (c * nw + t / 32) (c * nw + o' / 32) (ln t) (ln o') q b j (hvt t ht) (hvt o' ho)
               (by omega) hq hAt (hsto _ _ b j p hp hs'))
-        hfine Wp hr hn (fun wi hwi => hfits _ (by omega)) (fun q wi l b j hwi h => hRd q _ l b j (by omega) h)
+        hfine Wp hr hn hs.lent.symm (fun wi hwi => hfits _ (by omega)) (fun q wi l b j hwi h => hRd q _ l b j (by omega) h)
         (fun q wi l b j hq hwi h => by
           have := hs.size (.buf ⟨b, (hA q _ l b j h).2.1⟩)
           simp only [Mem.region] at this

@@ -9,7 +9,7 @@ import all Init.Data.List.Sort.Basic
 # The serial library, called directly
 
 What each `SerialFn` does: the engine's seven functions over the
-`serialport` crate (`base/src/ffi/serial.rs`). The ports the system lists are
+`serialport` crate (`base/src/builtin/serial.rs`). The ports the system lists are
 the world's `serialNames`; a device that opens at a path is its
 `serialDevices`, with the bytes it has sent and not yet been read. A port
 lives outside every region (`serPortAddr`), so a program passes it and never

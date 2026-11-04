@@ -54,7 +54,7 @@ set_option maxHeartbeats 6400000 in
 /-- **The linked program neither misuses a call nor faults, and leaves its
     slot null**: the table's functions are the library's, called at any call
     depth, from any world with no worker running and 256 bytes of arena. -/
-theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
+theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w) (hlent : w.mem.lent = [])
     (hsz : 256 ≤ (w.mem.region .arena).size) (d dl o ol : UInt64) :
     Does { env, steps, locals := termLocals HtDiff.fns env steps k }
       [.sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
@@ -87,11 +87,11 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
   have mk : ∀ n, Misses base (base + c64 16) n := fun n => misses_of hd0 hdk (Or.inr (Or.inl (by decide)))
   have mv : ∀ n, Misses base (base + c64 32) n := fun n => misses_of hd0 hdv (Or.inr (Or.inl (by decide)))
   have mo : ∀ n, Misses base (base + c64 128) n := fun n => misses_of hd0 hdo (Or.inr (Or.inl (by decide)))
-  obtain ⟨kb, hkl, hkb⟩ := (room_out (w := w) (n := 8) hdk hna (by omega) (by decide)).bytes
-  obtain ⟨vb, hvl, hvb⟩ := (room_out (w := w) (n := 8) hdv hna (by omega) (by decide)).bytes
+  obtain ⟨kb, hkl, hkb⟩ := (room_out (w := w) (n := 8) hdk hna (by omega) (by decide) (Mem.lentOk_nil hlent _ _ _)).bytes
+  obtain ⟨vb, hvl, hvb⟩ := (room_out (w := w) (n := 8) hdv hna (by omega) (by decide) (Mem.lentOk_nil hlent _ _ _)).bytes
   have hkne : kb ≠ [] := fun e => by rw [e] at hkl; cases hkl
   have hvne : vb ≠ [] := fun e => by rw [e] at hvl; cases hvl
-  have M0 : Mine w base kb vb := ⟨hc, hkb, hvb, room_out hdo hna (by omega) (by decide)⟩
+  have M0 : Mine w base kb vb := ⟨hc, hkb, hvb, room_out hdo hna (by omega) (by decide) (Mem.lentOk_nil hlent _ _ _)⟩
   have keep : ∀ w1 w2, Outside w1 w2 (Misses base) → Mine w1 base kb vb → Mine w2 base kb vb :=
     fun w1 w2 O M => ⟨O.calm M.1, O.keeps.bytes _ kb hkne ⟨M.2.1.inW hkne, ok, mk _⟩ M.2.1,
       O.keeps.bytes _ vb hvne ⟨M.2.2.1.inW hvne, ov, mv _⟩ M.2.2.1,
@@ -102,7 +102,8 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
   apply wp_iconst32
   -- htInit
   refine wp_callD (cs := [.sc .i64 base]) rfl (by slots)
-    (init_at (i := 1) rfl (obsCall w _ _) base .arena 0 hc hd0 hna (Nat.le_trans (by decide) hsz) k) ?_
+    (init_at (i := 1) rfl (obsCall w _ _) base .arena 0 hc hd0 hna (Nat.le_trans (by decide) hsz)
+      (Mem.lentOk_nil hlent _ _ _) k) ?_
   rintro w1 ⟨⟨c, hl1, hcase⟩, O1⟩
   have M1 := keep _ _ O1 M0
   simp only [wp_ret]
@@ -179,7 +180,7 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
     exact h
 
 /-- The linked program neither misuses a call nor faults. -/
-theorem roundTrip_no_misuse (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
+theorem roundTrip_no_misuse (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w) (hlent : w.mem.lent = [])
     (hsz : 256 ≤ (w.mem.region .arena).size) (d dl o ol : UInt64) (m : String) :
     Sem.run { env, steps, locals := termLocals HtDiff.fns env steps k }
         [.sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
@@ -187,7 +188,7 @@ theorem roundTrip_no_misuse (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm
       Sem.run { env, steps, locals := termLocals HtDiff.fns env steps k }
         [.sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol] w
         (emit (roundTrip HtDiff.lib) ptrParams) ≠ .fault m :=
-  (roundTrip_linked env steps k w hc hsz d dl o ol).sound m
+  (roundTrip_linked env steps k w hc hlent hsz d dl o ol).sound m
 
 end HtLinked
 

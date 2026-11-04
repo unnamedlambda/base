@@ -13,6 +13,8 @@ pub fn app(name: &str) -> Command {
 mod blackhole_smoke;
 #[path = "bytecount/tests/count.rs"]
 mod bytecount_count;
+#[path = "par-sum/tests/sum.rs"]
+mod par_sum_sum;
 #[path = "self-describing/tests/formats.rs"]
 mod self_describing_formats;
 #[path = "bytescrub/tests/scrub.rs"]

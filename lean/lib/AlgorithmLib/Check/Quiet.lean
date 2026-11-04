@@ -28,24 +28,25 @@ structure Quiet (w w' : World) : Prop where
   gpuAdapter : w'.gpuAdapter = w.gpuAdapter
   kernel : w'.kernel = w.kernel
   vendor : w'.vendor = w.vendor
+  lent : w'.mem.lent = w.mem.lent
 
-theorem Quiet.refl (w : World) : Quiet w w := ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl⟩
+theorem Quiet.refl (w : World) : Quiet w w := ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem Quiet.trans {w w' w'' : World} (h1 : Quiet w w') (h2 : Quiet w' w'') : Quiet w w'' := by
   obtain ⟨a, ha⟩ := h1.calls
   obtain ⟨b, hb⟩ := h2.calls
   exact ⟨⟨a ++ b, by rw [hb, ha, List.reverse_append, List.append_assoc]⟩, h2.dev.trans h1.dev,
     h2.display.trans h1.display, h2.cudaDevice.trans h1.cudaDevice, h2.gpuAdapter.trans h1.gpuAdapter,
-    h2.kernel.trans h1.kernel, h2.vendor.trans h1.vendor⟩
+    h2.kernel.trans h1.kernel, h2.vendor.trans h1.vendor, h2.lent.trans h1.lent⟩
 
 /-- Noting a call is quiet. -/
 theorem Quiet.obsCall (w : World) (c : Callee) (vs : List V) : Quiet w (obsCall w c vs) :=
-  ⟨⟨[(c, vs ++ callWords w c vs)], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  ⟨⟨[(c, vs ++ callWords w c vs)], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- A store is quiet. -/
-theorem Quiet.stored (w : World) (a : UInt64) (n : Nat) (v : UInt64) (m : Mem) :
+theorem Quiet.stored (w : World) (a : UInt64) (n : Nat) (v : UInt64) (m : Mem) (hm : m.lent = w.mem.lent) :
     Quiet w { obsStore w a n v with mem := m } :=
-  ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, hm⟩
 
 /-- The callees a library function names: the program's own functions and the
     C library's. -/
@@ -87,7 +88,7 @@ theorem callOf_quiet {L : Locals} (hL : QuietLocals L) {c : Callee} (hq : quietC
       | c f =>
           have hs := Contracts.c_step (bits := []) h
           exact ⟨⟨[], by rw [hs.obs]; rfl⟩, hs.dev, hs.display, hs.cudaDevice,
-            hs.gpuAdapter, hs.kernel, hs.vendor⟩
+            hs.gpuAdapter, hs.kernel, hs.vendor, hs.mem.2.2.2⟩
       | _ => cases hq
   | _ => cases hq
 
@@ -105,28 +106,43 @@ theorem stmt_quiet {cfg : Cfg} (hL : QuietLocals cfg.locals) {s : Stmt} (hq : qu
       · dsimp only at hr
         split at hr
         · split at hr
-          · cases hr; exact Quiet.stored _ _ _ _ _
+          · cases hr; exact Quiet.stored _ _ _ _ _ (by
+            first
+              | exact Mem.store_lent (by assumption)
+              | exact Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption))
           · cases hr
         · split at hr
-          · cases hr; exact Quiet.stored _ _ _ _ _
+          · cases hr; exact Quiet.stored _ _ _ _ _ (by
+            first
+              | exact Mem.store_lent (by assumption)
+              | exact Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption))
           · cases hr
       · cases hr
   | storeUnaligned v a =>
       rw [runStmt_storeUnaligned] at hr
       split at hr
       · split at hr
-        · cases hr; exact Quiet.stored _ _ _ _ _
+        · cases hr; exact Quiet.stored _ _ _ _ _ (by
+            first
+              | exact Mem.store_lent (by assumption)
+              | exact Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption))
         · cases hr
       · dsimp only at hr
         split at hr
-        · cases hr; exact Quiet.stored _ _ _ _ _
+        · cases hr; exact Quiet.stored _ _ _ _ _ (by
+            first
+              | exact Mem.store_lent (by assumption)
+              | exact Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption))
         · cases hr
       · cases hr
   | istore8 v a =>
       rw [runStmt_istore8] at hr
       split at hr
       · split at hr
-        · cases hr; exact Quiet.stored _ _ _ _ _
+        · cases hr; exact Quiet.stored _ _ _ _ _ (by
+            first
+              | exact Mem.store_lent (by assumption)
+              | exact Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption))
         · cases hr
       · cases hr
   | call c args =>

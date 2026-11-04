@@ -19,6 +19,7 @@ pub(crate) mod os;
 pub(crate) mod serial;
 pub(crate) mod stdio;
 pub(crate) mod sync;
+pub(crate) mod thread;
 pub(crate) mod usb;
 pub(crate) mod wgpu;
 pub(crate) mod window;
@@ -43,6 +44,8 @@ crate::builtin::symbols!(
     sync::cl_mem_wait,
     sync::cl_mem_wake,
     sync::cl_clock_now,
+    thread::cl_thread_spawn,
+    thread::cl_thread_join,
 );
 
 /// The string in the `cap`-byte field at `start`, up to its first NUL if any;

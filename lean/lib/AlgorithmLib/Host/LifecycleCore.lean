@@ -44,6 +44,9 @@ theorem store_busy {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store
 theorem copyIn_busy {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m') :
     m'.busy = m.busy := (copyIn_same h).busy.symm
 
+theorem copyIn_lent {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m') :
+    m'.lent = m.lent := (copyIn_same h).lent.symm
+
 theorem put_live (d : Dev) (id : Nat) (b : Option ByteArray) : (d.put id b).live = d.live := rfl
 
 theorem putAll_live : ∀ (ws : List (Nat × ByteArray)) (d : Dev),

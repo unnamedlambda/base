@@ -61,7 +61,7 @@ theorem launch_runs (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxI
   obtain ⟨u, hu, hum, -⟩ := grid_runs (outA := outA) hw (fun k v => by
       have h := hhw.approx k v
       rw [← h, UInt64.toNat_and]; exact Nat.lt_of_le_of_lt Nat.and_le_right (by simp [widthMask])) name I O G
-    (launchWorld bufs hw.nan) hnb h5 hh hf hfine hflags hIna hOna hok hI hO hdis rfl numBlocks (Nat.le_refl _)
+    (launchWorld bufs hw.nan) hnb h5 hh hf hfine hflags hIna hOna hok hI hO hdis rfl rfl numBlocks (Nat.le_refl _)
   have hL : LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
       [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw := ⟨u, hu, rfl⟩
   have hmask : ∀ x : UInt64, x &&& 18446744073709551615 = x := fun x => by

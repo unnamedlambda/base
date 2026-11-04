@@ -19,24 +19,39 @@ buffers' lengths satisfies, and `strSpan` where a string ends.
 namespace AlgorithmLib.HProg.Sem
 
 
+/-- Fewer bytes clear of the spans threads own are clear of them still. -/
+theorem Mem.lentClear_sub {m : Mem} {off n off' n' : Nat} (h : m.lentClear off n = true)
+    (h1 : off ≤ off') (h2 : off' + n' ≤ off + n) : m.lentClear off' n' = true := by
+  unfold Mem.lentClear at h ⊢
+  simp only [List.all_eq_true, Bool.or_eq_true, decide_eq_true_eq] at h ⊢
+  intro x hx
+  rcases h x hx with h | h
+  · exact .inl (by omega)
+  · exact .inr (by omega)
+
 theorem Mem.readable_sub {m : Mem} {r : Region} {off n off' n' : Nat} (h : m.readable r off n = true)
     (h1 : off ≤ off') (h2 : off' + n' ≤ off + n) : m.readable r off' n' = true := by
   unfold Mem.readable at h ⊢
   simp only [Bool.and_eq_true, Bool.or_eq_true] at h ⊢
-  rcases h with hp | ⟨hl, hb⟩
-  · exact .inl hp
-  · refine .inr ⟨?_, ?_⟩
-    · obtain ⟨x, hx, hx'⟩ := List.any_eq_true.mp hl
-      refine List.any_eq_true.mpr ⟨x, hx, ?_⟩
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hx' ⊢
-      omega
-    · refine List.all_eq_true.mpr fun b hb' => ?_
-      have := List.all_eq_true.mp hb b hb'
-      simp only [Busy.clear, Bool.or_eq_true, Bool.not_eq_true', decide_eq_true_eq] at this ⊢
-      rcases this with hw | hc | hc
-      · exact .inl hw
-      · exact .inr (.inl (by omega))
-      · exact .inr (.inr (by omega))
+  obtain ⟨h, hn⟩ := h
+  refine ⟨?_, ?_⟩
+  · rcases h with hp | ⟨hl, hb⟩
+    · exact .inl hp
+    · refine .inr ⟨?_, ?_⟩
+      · obtain ⟨x, hx, hx'⟩ := List.any_eq_true.mp hl
+        refine List.any_eq_true.mpr ⟨x, hx, ?_⟩
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hx' ⊢
+        omega
+      · refine List.all_eq_true.mpr fun b hb' => ?_
+        have := List.all_eq_true.mp hb b hb'
+        simp only [Busy.clear, Bool.or_eq_true, Bool.not_eq_true', decide_eq_true_eq] at this ⊢
+        rcases this with hw | hc | hc
+        · exact .inl hw
+        · exact .inr (.inl (by omega))
+        · exact .inr (.inr (by omega))
+  · rcases hn with hn | hn
+    · exact .inl hn
+    · exact .inr (Mem.lentClear_sub hn h1 h2)
 
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
@@ -46,30 +61,31 @@ structure MemSame (m₁ m₂ : Mem) : Prop where
   size : ∀ r, (m₁.region r).size = (m₂.region r).size
   live : m₁.pinnedLive = m₂.pinnedLive
   busy : m₁.busy = m₂.busy
+  lent : m₁.lent = m₂.lent
 
 /-- A kernel oracle that hands back buffers of the lengths it was given. -/
 def KeepsSize (k : Launch → List ByteArray → List ByteArray) : Prop :=
   ∀ l bs, (k l bs).map ByteArray.size = bs.map ByteArray.size
 
-theorem MemSame.refl (m : Mem) : MemSame m m := ⟨fun _ => rfl, rfl, rfl⟩
+theorem MemSame.refl (m : Mem) : MemSame m m := ⟨fun _ => rfl, rfl, rfl, rfl⟩
 
 theorem MemSame.symm {m₁ m₂ : Mem} (h : MemSame m₁ m₂) : MemSame m₂ m₁ :=
-  ⟨fun r => (h.size r).symm, h.live.symm, h.busy.symm⟩
+  ⟨fun r => (h.size r).symm, h.live.symm, h.busy.symm, h.lent.symm⟩
 
 theorem MemSame.trans {m₁ m₂ m₃ : Mem} (h₁ : MemSame m₁ m₂) (h₂ : MemSame m₂ m₃) : MemSame m₁ m₃ :=
-  ⟨fun r => (h₁.size r).trans (h₂.size r), h₁.live.trans h₂.live, h₁.busy.trans h₂.busy⟩
+  ⟨fun r => (h₁.size r).trans (h₂.size r), h₁.live.trans h₂.live, h₁.busy.trans h₂.busy, h₁.lent.trans h₂.lent⟩
 
 theorem MemSame.retire {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (c : Clock) :
     MemSame (m₁.retire c) (m₂.retire c) :=
-  ⟨fun r => by have := h.size r; cases r <;> exact this, h.live, by simp only [Mem.retire, h.busy]⟩
+  ⟨fun r => by have := h.size r; cases r <;> exact this, h.live, by simp only [Mem.retire, h.busy], h.lent⟩
 
 theorem MemSame.readable {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (r : Region) (off n : Nat) :
     m₁.readable r off n = m₂.readable r off n := by
-  simp only [Mem.readable, h.live, h.busy]
+  simp only [Mem.readable, Mem.lentClear, h.live, h.busy, h.lent]
 
 theorem MemSame.reachable {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (r : Region) (off n : Nat) :
     m₁.reachable r off n = m₂.reachable r off n := by
-  simp only [Mem.reachable, h.live, h.busy]
+  simp only [Mem.reachable, Mem.lentClear, h.live, h.busy, h.lent]
 
 theorem MemSame.load_isSome {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (a : UInt64) (n : Nat) :
     (m₁.load a n).isSome = (m₂.load a n).isSome := by
@@ -189,11 +205,11 @@ theorem MemSame.store_isSome {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (a : UInt
 
 theorem MemSame.setRegion {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (r : Region) {b₁ b₂ : ByteArray}
     (hb : b₁.size = b₂.size) : MemSame (m₁.setRegion r b₁) (m₂.setRegion r b₂) := by
-  refine ⟨fun r' => ?_, ?_, ?_⟩
+  refine ⟨fun r' => ?_, ?_, ?_, ?_⟩
   · by_cases hr : r' = r
     · subst hr; rw [region_setRegion_self, region_setRegion_self, hb]
     · rw [region_setRegion_ne _ _ hr, region_setRegion_ne _ _ hr, h.size r']
-  all_goals cases r <;> first | exact h.live | exact h.busy
+  all_goals cases r <;> first | exact h.live | exact h.busy | exact h.lent
 
 /-- `m'` is `m` with at most `n` bytes from `off` in region `r` changed. -/
 structure StoreFrame (m m' : Mem) (r : Region) (off n : Nat) : Prop where
@@ -585,14 +601,26 @@ theorem copyIn_meta {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a 
 /-- Fewer copies in flight, the same allocations: whatever could be read still
     can be. -/
 theorem Mem.readable_busy_sub {m m' : Mem} (hlive : m'.pinnedLive = m.pinnedLive)
-    (hsub : ∀ b ∈ m.busy, b ∈ m'.busy) (r : Region) (off n : Nat)
+    (hsub : ∀ b ∈ m.busy, b ∈ m'.busy) (hlent : m'.lent = m.lent) (r : Region) (off n : Nat)
     (h : m'.readable r off n = true) : m.readable r off n = true := by
-  unfold Mem.readable at h ⊢
-  rw [hlive] at h
+  unfold Mem.readable Mem.lentClear at h ⊢
+  rw [hlive, hlent] at h
   simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true, List.all_eq_true] at h ⊢
+  obtain ⟨h, hn⟩ := h
+  refine ⟨?_, hn⟩
   rcases h with h | ⟨h2, h3⟩
   · exact Or.inl h
   · exact Or.inr ⟨h2, fun b hb => h3 b (hsub b hb)⟩
+
+/-- More spans owned by threads, the same allocations and copies: whatever
+    could be read still can be. -/
+theorem Mem.readable_lent_sub {m m' : Mem} (hlive : m'.pinnedLive = m.pinnedLive) (hbusy : m'.busy = m.busy)
+    (hsub : ∀ s ∈ m.lent, s ∈ m'.lent) (r : Region) (off n : Nat)
+    (h : m'.readable r off n = true) : m.readable r off n = true := by
+  unfold Mem.readable Mem.lentClear at h ⊢
+  rw [hlive, hbusy] at h
+  simp only [Bool.and_eq_true, Bool.or_eq_true, List.all_eq_true] at h ⊢
+  exact ⟨h.1, h.2.imp id fun h s hs => h s (hsub s hs)⟩
 
 /-- Setting the bytes at `off + i` for `i ∈ is` leaves every other byte and the
     size alone. -/
@@ -703,6 +731,8 @@ theorem Mem.readable_withLive {m : Mem} {L : List (Nat × Nat)} (hL : ∀ r ∈ 
     m.readable r off n = true := by
   unfold Mem.readable at h ⊢
   simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true, List.any_eq_true] at h ⊢
+  obtain ⟨h, hn⟩ := h
+  refine ⟨?_, hn⟩
   rcases h with h | ⟨⟨x, hx, h2⟩, h3⟩
   · exact Or.inl h
   · exact Or.inr ⟨⟨x, hL x hx, h2⟩, h3⟩
@@ -745,6 +775,8 @@ theorem Mem.readable_grow (m : Mem) (extra : ByteArray) (x : Nat × Nat) (r : Re
   unfold Mem.readable at h ⊢
   simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true, List.any_eq_true,
     List.any_cons] at h ⊢
+  obtain ⟨h, hn⟩ := h
+  refine ⟨?_, hn⟩
   rcases h with h | ⟨⟨y, hy, h2⟩, h3⟩
   · exact Or.inl h
   · exact Or.inr ⟨Or.inr ⟨y, hy, h2⟩, h3⟩

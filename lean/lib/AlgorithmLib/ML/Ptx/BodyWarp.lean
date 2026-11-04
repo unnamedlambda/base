@@ -203,7 +203,7 @@ theorem rdOk_arena {nbuf : Nat} {rd : Buf → Nat → Option Nat} {m : Mem} (A0 
     rw [load_buf_arena m A0 (decode_bufW hv.1 hv.2.1 hv.2.2)]; exact hm
 
 theorem memSame_rm {a b : Mem} (h : MemSame a b) (A0 : ByteArray) : MemSame (rm A0 a) (rm A0 b) := by
-  refine ⟨fun r => ?_, h.live, h.busy⟩
+  refine ⟨fun r => ?_, h.live, h.busy, h.lent⟩
   cases r with
   | arena => rfl
   | data => exact h.size .data

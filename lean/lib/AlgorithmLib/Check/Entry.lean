@@ -124,7 +124,7 @@ def oblsOf (fo : Bool) (A : AS) (c : Code) (lib : Bool := false) : Except String
 
 theorem len_desc {Γ : Env} {w : World} {r : Region} (hr : r ≠ .pinned) {x : UInt64}
     (h : (Fact.roomArg r x).holds w) : (AV.len r).Desc Γ w (.sc .i64 x) :=
-  ⟨x, rfl, Nat.zero_le _, by have := h.2; unfold span; omega, Nat.one_dvd _, hr,
+  ⟨x, rfl, Nat.zero_le _, by have := h.2.1; unfold span; omega, Nat.one_dvd _, hr,
     by have := h.1; omega⟩
 
 /-- The facts a list of positions picks out of a typestate hold where it does. -/

@@ -67,7 +67,7 @@ theorem evs_colls (t X : UInt32) (W : Nat → Nat → UInt32) : ∀ k,
 theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (ans : List Answer)
     (hA : AnswersFrom ans w.obs.length cfg)
     (hsh : ∀ (k : Nat) (B : ByteArray), ans[k]? = some (.smem B) → B.size = 1024)
-    (X : UInt32) (mo : Mem) (ht : t.toNat < 256) (hnan : w.mem.nan = gpuNaN)
+    (X : UInt32) (mo : Mem) (ht : t.toNat < 256) (hnan : w.mem.nan = gpuNaN) (hL : w.mem.lent = [])
     (hx : w.mem.load (px + off (b * bd + t)) 4 = some (s32 X))
     (hs0 : 4 * t.toNat + 4 ≤ w.mem.arena.size)
     (hout : t = 0 → ({ w.mem with arena := smemAt ans 8 } : Mem).store (po + off b) 4
@@ -102,7 +102,7 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
   refine wp_iadd32 (x := b * bd) (y := t) (by look) (by look) ?_
   repeat step
   refine wp_loadF32 (by look) hx ?_
-  refine wp_store_arena (by look) (by look) hs0 fun w0' hobs0' hmem0' => ?_
+  refine wp_store_arena (by look) (by look) hs0 hL fun w0' hobs0' hmem0' => ?_
   refine wp_bar hA KernelCorpus.barrier rfl (by rw [hobs0']; simp) (k := 0)
     (by rw [collCalls_evs w _ [.store (smemAddr + off t) 4 (s32 X)] (by rw [hobs0']; rfl)]; rfl)
     fun w0 B0 hb0 hobs00 hmem00 => ?_
@@ -120,14 +120,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
     have hc : t.toNat < 128 := of_decide_eq_true hc
     rw [wp_bind]
     refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 0 t.toNat)) (by look) ?_ ?_
-    · rw [load_arena, hmem0]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 0 = B0 by simp [smemAt, hb0], hsh 0 B0 hb0]; omega)
+    · rw [load_arena _ (show w0.mem.lent = [] by rw [hmem0]; exact hL), hmem0]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 0 = B0 by simp [smemAt, hb0], hsh 0 B0 hb0]; omega)
     repeat step
     refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 128)) (v := s32 (W 0 (t.toNat + 128))) (by look) ?_ ?_
-    · rw [addr_step t 128 (4 * 128) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem0]
+    · rw [addr_step t 128 (4 * 128) rfl (by omega), load_arena _ (show w0.mem.lent = [] by rw [hmem0]; exact hL), toNat_ofNat32 (by omega), hmem0]
       exact aload_word _ _ (by omega) (by rw [show smemAt ans 0 = B0 by simp [smemAt, hb0], hsh 0 B0 hb0]; omega)
     rw [wp_bind]
     refine wp_fadd32w (nan := gpuNaN) (by rw [hmem0]; exact hnan) (by look) (by look) ?_
-    refine wp_store_arena (by look) (by look) (by rw [hmem0]; dsimp only; rw [show smemAt ans 0 = B0 by simp [smemAt, hb0], hsh 0 B0 hb0]; omega)
+    refine wp_store_arena (by look) (by look) (by rw [hmem0]; dsimp only; rw [show smemAt ans 0 = B0 by simp [smemAt, hb0], hsh 0 B0 hb0]; omega) (by rw [hmem0]; exact hL)
       fun ws hobsS hmemS => ?_
     refine ⟨by extc, by rw [hobsS, hobs0]; simp [evs, str, hc], by rw [hmemS, hmem0]⟩
   · intro hc
@@ -152,14 +152,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
       have hc : t.toNat < 64 := of_decide_eq_true hc
       rw [wp_bind]
       refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 1 t.toNat)) (by look) ?_ ?_
-      · rw [load_arena, hmem1]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 1 = B1 by simp [smemAt, hb1], hsh 1 B1 hb1]; omega)
+      · rw [load_arena _ (show w1.mem.lent = [] by rw [hmem1]; exact hL), hmem1]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 1 = B1 by simp [smemAt, hb1], hsh 1 B1 hb1]; omega)
       repeat step
       refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 64)) (v := s32 (W 1 (t.toNat + 64))) (by look) ?_ ?_
-      · rw [addr_step t 64 (4 * 64) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem1]
+      · rw [addr_step t 64 (4 * 64) rfl (by omega), load_arena _ (show w1.mem.lent = [] by rw [hmem1]; exact hL), toNat_ofNat32 (by omega), hmem1]
         exact aload_word _ _ (by omega) (by rw [show smemAt ans 1 = B1 by simp [smemAt, hb1], hsh 1 B1 hb1]; omega)
       rw [wp_bind]
       refine wp_fadd32w (nan := gpuNaN) (by rw [hmem1]; exact hnan) (by look) (by look) ?_
-      refine wp_store_arena (by look) (by look) (by rw [hmem1]; dsimp only; rw [show smemAt ans 1 = B1 by simp [smemAt, hb1], hsh 1 B1 hb1]; omega)
+      refine wp_store_arena (by look) (by look) (by rw [hmem1]; dsimp only; rw [show smemAt ans 1 = B1 by simp [smemAt, hb1], hsh 1 B1 hb1]; omega) (by rw [hmem1]; exact hL)
         fun ws hobsS hmemS => ?_
       refine ⟨by extc, by rw [hobsS, hobs1]; simp [evs, str, hc], by rw [hmemS, hmem1]⟩
     · intro hc
@@ -184,14 +184,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
         have hc : t.toNat < 32 := of_decide_eq_true hc
         rw [wp_bind]
         refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 2 t.toNat)) (by look) ?_ ?_
-        · rw [load_arena, hmem2]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 2 = B2 by simp [smemAt, hb2], hsh 2 B2 hb2]; omega)
+        · rw [load_arena _ (show w2.mem.lent = [] by rw [hmem2]; exact hL), hmem2]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 2 = B2 by simp [smemAt, hb2], hsh 2 B2 hb2]; omega)
         repeat step
         refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 32)) (v := s32 (W 2 (t.toNat + 32))) (by look) ?_ ?_
-        · rw [addr_step t 32 (4 * 32) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem2]
+        · rw [addr_step t 32 (4 * 32) rfl (by omega), load_arena _ (show w2.mem.lent = [] by rw [hmem2]; exact hL), toNat_ofNat32 (by omega), hmem2]
           exact aload_word _ _ (by omega) (by rw [show smemAt ans 2 = B2 by simp [smemAt, hb2], hsh 2 B2 hb2]; omega)
         rw [wp_bind]
         refine wp_fadd32w (nan := gpuNaN) (by rw [hmem2]; exact hnan) (by look) (by look) ?_
-        refine wp_store_arena (by look) (by look) (by rw [hmem2]; dsimp only; rw [show smemAt ans 2 = B2 by simp [smemAt, hb2], hsh 2 B2 hb2]; omega)
+        refine wp_store_arena (by look) (by look) (by rw [hmem2]; dsimp only; rw [show smemAt ans 2 = B2 by simp [smemAt, hb2], hsh 2 B2 hb2]; omega) (by rw [hmem2]; exact hL)
           fun ws hobsS hmemS => ?_
         refine ⟨by extc, by rw [hobsS, hobs2]; simp [evs, str, hc], by rw [hmemS, hmem2]⟩
       · intro hc
@@ -216,14 +216,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
           have hc : t.toNat < 16 := of_decide_eq_true hc
           rw [wp_bind]
           refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 3 t.toNat)) (by look) ?_ ?_
-          · rw [load_arena, hmem3]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 3 = B3 by simp [smemAt, hb3], hsh 3 B3 hb3]; omega)
+          · rw [load_arena _ (show w3.mem.lent = [] by rw [hmem3]; exact hL), hmem3]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 3 = B3 by simp [smemAt, hb3], hsh 3 B3 hb3]; omega)
           repeat step
           refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 16)) (v := s32 (W 3 (t.toNat + 16))) (by look) ?_ ?_
-          · rw [addr_step t 16 (4 * 16) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem3]
+          · rw [addr_step t 16 (4 * 16) rfl (by omega), load_arena _ (show w3.mem.lent = [] by rw [hmem3]; exact hL), toNat_ofNat32 (by omega), hmem3]
             exact aload_word _ _ (by omega) (by rw [show smemAt ans 3 = B3 by simp [smemAt, hb3], hsh 3 B3 hb3]; omega)
           rw [wp_bind]
           refine wp_fadd32w (nan := gpuNaN) (by rw [hmem3]; exact hnan) (by look) (by look) ?_
-          refine wp_store_arena (by look) (by look) (by rw [hmem3]; dsimp only; rw [show smemAt ans 3 = B3 by simp [smemAt, hb3], hsh 3 B3 hb3]; omega)
+          refine wp_store_arena (by look) (by look) (by rw [hmem3]; dsimp only; rw [show smemAt ans 3 = B3 by simp [smemAt, hb3], hsh 3 B3 hb3]; omega) (by rw [hmem3]; exact hL)
             fun ws hobsS hmemS => ?_
           refine ⟨by extc, by rw [hobsS, hobs3]; simp [evs, str, hc], by rw [hmemS, hmem3]⟩
         · intro hc
@@ -248,14 +248,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
             have hc : t.toNat < 8 := of_decide_eq_true hc
             rw [wp_bind]
             refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 4 t.toNat)) (by look) ?_ ?_
-            · rw [load_arena, hmem4]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 4 = B4 by simp [smemAt, hb4], hsh 4 B4 hb4]; omega)
+            · rw [load_arena _ (show w4.mem.lent = [] by rw [hmem4]; exact hL), hmem4]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 4 = B4 by simp [smemAt, hb4], hsh 4 B4 hb4]; omega)
             repeat step
             refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 8)) (v := s32 (W 4 (t.toNat + 8))) (by look) ?_ ?_
-            · rw [addr_step t 8 (4 * 8) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem4]
+            · rw [addr_step t 8 (4 * 8) rfl (by omega), load_arena _ (show w4.mem.lent = [] by rw [hmem4]; exact hL), toNat_ofNat32 (by omega), hmem4]
               exact aload_word _ _ (by omega) (by rw [show smemAt ans 4 = B4 by simp [smemAt, hb4], hsh 4 B4 hb4]; omega)
             rw [wp_bind]
             refine wp_fadd32w (nan := gpuNaN) (by rw [hmem4]; exact hnan) (by look) (by look) ?_
-            refine wp_store_arena (by look) (by look) (by rw [hmem4]; dsimp only; rw [show smemAt ans 4 = B4 by simp [smemAt, hb4], hsh 4 B4 hb4]; omega)
+            refine wp_store_arena (by look) (by look) (by rw [hmem4]; dsimp only; rw [show smemAt ans 4 = B4 by simp [smemAt, hb4], hsh 4 B4 hb4]; omega) (by rw [hmem4]; exact hL)
               fun ws hobsS hmemS => ?_
             refine ⟨by extc, by rw [hobsS, hobs4]; simp [evs, str, hc], by rw [hmemS, hmem4]⟩
           · intro hc
@@ -280,14 +280,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
               have hc : t.toNat < 4 := of_decide_eq_true hc
               rw [wp_bind]
               refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 5 t.toNat)) (by look) ?_ ?_
-              · rw [load_arena, hmem5]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 5 = B5 by simp [smemAt, hb5], hsh 5 B5 hb5]; omega)
+              · rw [load_arena _ (show w5.mem.lent = [] by rw [hmem5]; exact hL), hmem5]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 5 = B5 by simp [smemAt, hb5], hsh 5 B5 hb5]; omega)
               repeat step
               refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 4)) (v := s32 (W 5 (t.toNat + 4))) (by look) ?_ ?_
-              · rw [addr_step t 4 (4 * 4) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem5]
+              · rw [addr_step t 4 (4 * 4) rfl (by omega), load_arena _ (show w5.mem.lent = [] by rw [hmem5]; exact hL), toNat_ofNat32 (by omega), hmem5]
                 exact aload_word _ _ (by omega) (by rw [show smemAt ans 5 = B5 by simp [smemAt, hb5], hsh 5 B5 hb5]; omega)
               rw [wp_bind]
               refine wp_fadd32w (nan := gpuNaN) (by rw [hmem5]; exact hnan) (by look) (by look) ?_
-              refine wp_store_arena (by look) (by look) (by rw [hmem5]; dsimp only; rw [show smemAt ans 5 = B5 by simp [smemAt, hb5], hsh 5 B5 hb5]; omega)
+              refine wp_store_arena (by look) (by look) (by rw [hmem5]; dsimp only; rw [show smemAt ans 5 = B5 by simp [smemAt, hb5], hsh 5 B5 hb5]; omega) (by rw [hmem5]; exact hL)
                 fun ws hobsS hmemS => ?_
               refine ⟨by extc, by rw [hobsS, hobs5]; simp [evs, str, hc], by rw [hmemS, hmem5]⟩
             · intro hc
@@ -312,14 +312,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
                 have hc : t.toNat < 2 := of_decide_eq_true hc
                 rw [wp_bind]
                 refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 6 t.toNat)) (by look) ?_ ?_
-                · rw [load_arena, hmem6]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 6 = B6 by simp [smemAt, hb6], hsh 6 B6 hb6]; omega)
+                · rw [load_arena _ (show w6.mem.lent = [] by rw [hmem6]; exact hL), hmem6]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 6 = B6 by simp [smemAt, hb6], hsh 6 B6 hb6]; omega)
                 repeat step
                 refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 2)) (v := s32 (W 6 (t.toNat + 2))) (by look) ?_ ?_
-                · rw [addr_step t 2 (4 * 2) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem6]
+                · rw [addr_step t 2 (4 * 2) rfl (by omega), load_arena _ (show w6.mem.lent = [] by rw [hmem6]; exact hL), toNat_ofNat32 (by omega), hmem6]
                   exact aload_word _ _ (by omega) (by rw [show smemAt ans 6 = B6 by simp [smemAt, hb6], hsh 6 B6 hb6]; omega)
                 rw [wp_bind]
                 refine wp_fadd32w (nan := gpuNaN) (by rw [hmem6]; exact hnan) (by look) (by look) ?_
-                refine wp_store_arena (by look) (by look) (by rw [hmem6]; dsimp only; rw [show smemAt ans 6 = B6 by simp [smemAt, hb6], hsh 6 B6 hb6]; omega)
+                refine wp_store_arena (by look) (by look) (by rw [hmem6]; dsimp only; rw [show smemAt ans 6 = B6 by simp [smemAt, hb6], hsh 6 B6 hb6]; omega) (by rw [hmem6]; exact hL)
                   fun ws hobsS hmemS => ?_
                 refine ⟨by extc, by rw [hobsS, hobs6]; simp [evs, str, hc], by rw [hmemS, hmem6]⟩
               · intro hc
@@ -344,14 +344,14 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
                   have hc : t.toNat < 1 := of_decide_eq_true hc
                   rw [wp_bind]
                   refine wp_loadF32 (p := smemAddr + off t) (v := s32 (W 7 t.toNat)) (by look) ?_ ?_
-                  · rw [load_arena, hmem7]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 7 = B7 by simp [smemAt, hb7], hsh 7 B7 hb7]; omega)
+                  · rw [load_arena _ (show w7.mem.lent = [] by rw [hmem7]; exact hL), hmem7]; exact aload_word _ _ (by omega) (by rw [show smemAt ans 7 = B7 by simp [smemAt, hb7], hsh 7 B7 hb7]; omega)
                   repeat step
                   refine wp_loadF32 (p := smemAddr + off t + c64 (4 * 1)) (v := s32 (W 7 (t.toNat + 1))) (by look) ?_ ?_
-                  · rw [addr_step t 1 (4 * 1) rfl (by omega), load_arena, toNat_ofNat32 (by omega), hmem7]
+                  · rw [addr_step t 1 (4 * 1) rfl (by omega), load_arena _ (show w7.mem.lent = [] by rw [hmem7]; exact hL), toNat_ofNat32 (by omega), hmem7]
                     exact aload_word _ _ (by omega) (by rw [show smemAt ans 7 = B7 by simp [smemAt, hb7], hsh 7 B7 hb7]; omega)
                   rw [wp_bind]
                   refine wp_fadd32w (nan := gpuNaN) (by rw [hmem7]; exact hnan) (by look) (by look) ?_
-                  refine wp_store_arena (by look) (by look) (by rw [hmem7]; dsimp only; rw [show smemAt ans 7 = B7 by simp [smemAt, hb7], hsh 7 B7 hb7]; omega)
+                  refine wp_store_arena (by look) (by look) (by rw [hmem7]; dsimp only; rw [show smemAt ans 7 = B7 by simp [smemAt, hb7], hsh 7 B7 hb7]; omega) (by rw [hmem7]; exact hL)
                     fun ws hobsS hmemS => ?_
                   refine ⟨by extc, by rw [hobsS, hobs7]; simp [evs, str, hc], by rw [hmemS, hmem7]⟩
                 · intro hc
@@ -375,7 +375,7 @@ theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po : UInt64) (an
                     have hc : t = 0 := of_decide_eq_true hc
                     rw [wp_bind]
                     refine wp_loadF32 (p := smemAddr) (v := s32 (W 8 0)) (by look) ?_ ?_
-                    · rw [load_arena0, hmem8]
+                    · rw [load_arena0 _ (show w8.mem.lent = [] by rw [hmem8]; exact hL), hmem8]
                       exact aload_word _ _ (by decide) (by rw [show smemAt ans 8 = B8 by simp [smemAt, hb8], hsh 8 B8 hb8]; decide)
                     repeat step
                     refine wp_storeF32 (m := mo) (by look) (by look) (by rw [hmem8]; exact hout hc) ?_
@@ -393,7 +393,7 @@ theorem fine : Fine (emitGo (fnBody (idParams ++ params) KernelCorpus.blockSum) 
 /-- **What a blockSum thread leaves**, when it finishes. -/
 theorem thread_spec (b t bd : UInt32) (px po : UInt64) (w u : World) (ans : List Answer)
     (hsh : ∀ (k : Nat) (B : ByteArray), ans[k]? = some (.smem B) → B.size = 1024)
-    (X : UInt32) (mo : Mem) (ht : t.toNat < 256) (hnan : w.mem.nan = gpuNaN)
+    (X : UInt32) (mo : Mem) (ht : t.toNat < 256) (hnan : w.mem.nan = gpuNaN) (hL : w.mem.lent = [])
     (hx : w.mem.load (px + off (b * bd + t)) 4 = some (s32 X))
     (hs0 : 4 * t.toNat + 4 ≤ w.mem.arena.size)
     (hout : t = 0 → ({ w.mem with arena := smemAt ans 8 } : Mem).store (po + off b) 4
@@ -414,7 +414,7 @@ theorem thread_spec (b t bd : UInt32) (px po : UInt64) (w u : World) (ans : List
       (wp_sound cfg 0 _ (fnBody (idParams ++ params) KernelCorpus.blockSum) _)
       (fun Γ' w' h => by
         rw [h.1, h.2]
-        exact thread_wp cfg w b t bd px po ans hA hsh X mo ht hnan hx hs0 hout)
+        exact thread_wp cfg w b t bd px po ans hA hsh X mo ht hnan hL hx hs0 hout)
       (fun _ _ _ h => h)) fine (fun Γ' w' h => ⟨by rw [h.1]; rfl, h⟩)
   exact h1
 
@@ -507,9 +507,9 @@ theorem phase_size (X : Nat → UInt32) (W : Nat → Nat → UInt32) (k : Nat) (
 /-- **One phase of the barrier law**: word `i` of shared memory after phase
     `k` is what thread `i` stores in it, if it stores, and otherwise as before. -/
 theorem phase_word (X : Nat → UInt32) (W : Nat → Nat → UInt32) (k : Nat) (hk : k ≤ 8) (cur : Mem)
-    (hsz : 1024 ≤ cur.arena.size) (i : Nat) (hi : i < 256) :
+    (hsz : 1024 ≤ cur.arena.size) (hL : cur.lent = []) (i : Nat) (hi : i < 256) :
     aword (phase (allStores X W) k cur).arena i = if pact k i then pval X W i k else aword cur.arena i := by
-  rw [phase_all X W k hk, aword_of _ _ (by omega), aword_of _ _ (by omega)]
+  rw [aword_of _ ((Kernel.phase_lent _ _ _).trans hL) _ (by omega), aword_of _ hL _ (by omega), phase_all X W k hk]
   have hap : ∀ t ∈ (List.range 256).filter (pact k), ∀ u ∈ (List.range 256).filter (pact k), t ≠ u →
       Apart4 aaddr t u := fun t ht u hu h => arena_apart
         (List.mem_range.mp (List.mem_filter.mp ht).1) (List.mem_range.mp (List.mem_filter.mp hu).1) h
@@ -517,7 +517,7 @@ theorem phase_word (X : Nat → UInt32) (W : Nat → Nat → UInt32) (k : Nat) (
   · rw [if_pos hp, load_puts aaddr _ _ _ (List.nodup_range.filter _) hap
       (fun t ht => ⟨store_arena_some cur _ _ (by
           have := List.mem_range.mp (List.mem_filter.mp ht).1
-          rw [toNat_ofNat32 (by omega)]; omega), by simp only [s32]; exact UInt32.toNat_lt _⟩)
+          rw [toNat_ofNat32 (by omega)]; omega) hL, by simp only [s32]; exact UInt32.toNat_lt _⟩)
       i (List.mem_filter.mpr ⟨List.mem_range.mpr hi, hp⟩)]
     simp
   · rw [if_neg hp, load_puts_other aaddr _ _ _ (fun t ht => arena_apart
@@ -575,6 +575,11 @@ def tree (X : Nat → UInt32) : Nat → Nat → UInt32
   | 0, i => X i
   | k + 1, i => if i < str (k + 1) then add32G (tree X k i) (tree X k (i + str (k + 1))) else tree X k i
 
+theorem cum_lent (X : Nat → UInt32) (W : Nat → Nat → UInt32) (smem0 : ByteArray) :
+    ∀ k, (cum X W smem0 k).lent = []
+  | 0 => by rw [cum, Kernel.phase_lent]; rfl
+  | k + 1 => by rw [cum, Kernel.phase_lent]; exact cum_lent X W smem0 k
+
 theorem cum_size (X : Nat → UInt32) (W : Nat → Nat → UInt32) (smem0 : ByteArray) :
     ∀ k, k ≤ 8 → (cum X W smem0 k).arena.size = smem0.size := by
   intro k hk
@@ -591,11 +596,12 @@ theorem cum_word (X : Nat → UInt32) (W : Nat → Nat → UInt32) (smem0 : Byte
   induction k with
   | zero =>
     intro i hi
-    rw [cum, phase_word X W 0 (by omega) _ (by simp [mem0, h0]) i hi]
+    rw [cum, phase_word X W 0 (by omega) _ (by simp [mem0, h0]) rfl i hi]
     simp [pact, pval, tree]
   | succ k ih =>
     intro i hi
-    rw [cum, phase_word X W (k + 1) hk _ (by rw [cum_size X W smem0 k (by omega), h0]; exact Nat.le_refl _) i hi]
+    rw [cum, phase_word X W (k + 1) hk _ (by rw [cum_size X W smem0 k (by omega), h0]; exact Nat.le_refl _)
+      (cum_lent X W smem0 k) i hi]
     simp only [pact, pval, tree]
     by_cases hlt : i < str (k + 1)
     · have hs : str (k + 1) ≤ 128 := by
@@ -648,7 +654,7 @@ theorem decode_out (b : Nat) (hb : b < 2 ^ 32) :
     block's 256 words, the barriers answered as the barrier law says. -/
 theorem elem_blocks (X : Nat → UInt32) (grid : Nat) (hsz : grid * 256 ≤ 2 ^ 32) :
     Elem.Blocks K args grid 256 (elem X) := by
-  intro b hb w w' harena hnan hpre hr
+  intro b hb w w' harena hnan hlent hpre hr
   obtain ⟨steps, ans, w'', calls, stores, ans', hfold, hans, hset, rfl⟩ := hr
   have hs0 : (ByteArray.mk (Array.replicate K.smem 0)).size = 1024 := by simp [K, ByteArray.size]
   have hlt : ∀ t, t < 256 → b * 256 + t < 2 ^ 32 := fun t ht => by
@@ -661,14 +667,14 @@ theorem elem_blocks (X : Nat → UInt32) (grid : Nat) (hsz : grid * 256 ≤ 2 ^ 
   let Xl := blockX X b
   let Q (m : Mem) : Prop :=
     (∀ t, t < 256 → m.load (pxw + off (UInt32.ofNat (b * 256 + t))) 4 = some (s32 (Xl t))) ∧
-    (∀ v, (m.store (pow + off (UInt32.ofNat b)) 4 v).isSome) ∧ m.nan = gpuNaN
+    (∀ v, (m.store (pow + off (UInt32.ofNat b)) 4 v).isSome) ∧ m.nan = gpuNaN ∧ m.lent = []
   let A8 (t : Nat) := smemAt (ans t) 8
   let g (t : Nat) (m : Mem) : Mem :=
     if t = 0 then (m.store (pow + off (UInt32.ofNat b)) 4 (s32 (aword (A8 0) 0))).getD m else m
   let f (t : Nat) (m : Mem) : Mem := { g t m with arena := A8 t }
   have hdo := decode_out b hb32
   have hQ0 : Q { w.mem with arena := ByteArray.mk (Array.replicate K.smem 0) } := by
-    refine ⟨fun t ht => ?_, fun v => ?_, hnan⟩
+    refine ⟨fun t ht => ?_, fun v => ?_, hnan, hlent⟩
     · have hp := (hpre 0 (by decide) (by simp [elem])).1 _
         (List.mem_map.mpr ⟨t, List.mem_range.mpr ht, rfl⟩)
       simp only [Nat.add_zero] at hp
@@ -678,8 +684,8 @@ theorem elem_blocks (X : Nat → UInt32) (grid : Nat) (hsz : grid * 256 ≤ 2 ^ 
       rw [store_buf_arena _ _ hdo, Option.isSome_map]
       simpa [elem, Nat.add_zero, Nat.mul_div_cancel] using hp
   have hkeep : ∀ t u m, t ≠ u → (u < 256 ∧ Q m) → (u < 256 ∧ Q (f t m)) := by
-    intro t u m _ ⟨hu, hl, hs, hn⟩
-    refine ⟨hu, fun t' ht' => ?_, fun v => ?_, ?_⟩
+    intro t u m _ ⟨hu, hl, hs, hn, hln⟩
+    refine ⟨hu, fun t' ht' => ?_, fun v => ?_, ?_, ?_⟩
     · simp only [f, g]
       rw [load_buf_arena _ _ (decode_elem _ _)]
       split
@@ -706,6 +712,13 @@ theorem elem_blocks (X : Nat → UInt32) (grid : Nat) (hsz : grid * 256 ≤ 2 ^ 
         | none => exact hn
         | some m' => simp only [Option.getD_some]; rw [Mem.store_nan hst]; exact hn
       · exact hn
+    · show (g t m).lent = _
+      simp only [g]
+      split
+      · cases hst : m.store (pow + off (UInt32.ofNat b)) 4 (s32 (aword (A8 0) 0)) with
+        | none => exact hln
+        | some m' => simp only [Option.getD_some]; rw [Mem.store_lent hst]; exact hln
+      · exact hln
   obtain ⟨hmem, hC⟩ := pass_spec (fun t m => t < 256 ∧ Q m) f
     (fun t _ cs st => cs = List.replicate 9 (.barrier, []) ∧
       st = storesUpTo (UInt32.ofNat t) (Xl t) (fun k i => aword (smemAt (ans t) k) i) 8)
@@ -713,7 +726,8 @@ theorem elem_blocks (X : Nat → UInt32) (grid : Nat) (hsz : grid * 256 ≤ 2 ^ 
       have htn : (UInt32.ofNat t).toNat = t := toNat_ofNat32 (by omega)
       obtain ⟨m1, hm1⟩ := Option.isSome_iff_exists.mp (hQ.2.1 (s32 (aword (smemAt (ans t) 8) 0)))
       obtain ⟨hobs, hmemu⟩ := thread_spec (UInt32.ofNat b) (UInt32.ofNat t) (UInt32.ofNat 256) pxw pow _ u (ans t)
-        (hsh t ht) (Xl t) { m1 with arena := smemAt (ans t) 8 } (by rw [htn]; omega) (by exact hQ.2.2)
+        (hsh t ht) (Xl t) { m1 with arena := smemAt (ans t) 8 } (by rw [htn]; omega) (by exact hQ.2.2.1)
+        (by exact hQ.2.2.2)
         (by rw [gi_eq]; simp only; rw [load_buf_arena _ _ (decode_elem _ _)]; exact hQ.1 t ht)
         (by simp only; rw [hs0, htn]; omega)
         (fun _ => by simp only; rw [store_buf_arena _ _ hdo, store_buf_arena _ _ hdo, hm1]; rfl)

@@ -147,6 +147,33 @@ def regionBase (r : Region) : UInt64 := UInt64.ofNat (r.idx * 0x1000000000)
     function is never one it can load or store through. -/
 def fnBase : UInt64 := 0x5000000000
 
+/-- The handle of the `n`th thread a program starts. -/
+def threadHandle (n : Nat) : UInt64 := UInt64.ofNat (2 ^ 57 + n + 1)
+
+/-- The thread a handle names, by start order. -/
+def threadOf (h : UInt64) : Option Nat :=
+  let x := h.toNat
+  if 2 ^ 57 < x && x ≤ 2 ^ 57 + 2 ^ 48 then some (x - 2 ^ 57 - 1) else none
+
+theorem threadOf_handle {n : Nat} (h : n < 2 ^ 48) : threadOf (threadHandle n) = some n := by
+  have hx : (threadHandle n).toNat = 2 ^ 57 + n + 1 := by
+    unfold threadHandle; rw [UInt64.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
+  unfold threadOf
+  simp only [hx]
+  have h1 : (2 ^ 57 < 2 ^ 57 + n + 1) = True := eq_true (by omega)
+  have h2 : (2 ^ 57 + n + 1 ≤ 2 ^ 57 + 2 ^ 48) = True := eq_true (by omega)
+  simp only [h1, h2, decide_true, Bool.and_self, if_true, Option.some.injEq]
+  omega
+
+/-- A thread a program started: the function it runs (`u0:fn`), the word it
+    was started on, and the arena bytes it owns until it is joined. -/
+structure Thread where
+  fn : Nat
+  arg : UInt64
+  off : Nat
+  len : Nat
+  deriving Inhabited, DecidableEq, Repr
+
 def addrOf (r : Region) (off : Nat) : UInt64 := regionBase r + UInt64.ofNat off
 
 /-- Which region an address names, and how far into it: the region by its
@@ -180,6 +207,9 @@ structure Mem where
       has waited for one, it may not write the bytes it covers, nor read them if
       the copy writes them. -/
   busy : List Busy := []
+  /-- The arena's bytes running threads own, as `(offset, length)` spans: until
+      the thread is joined, no other thread may read or write them. -/
+  lent : List (Nat × Nat) := []
   /-- Device buffers, by index: the memory a kernel runs on. -/
   bufs : Nat → ByteArray := fun _ => ByteArray.empty
   /-- What the platform's float arithmetic leaves where its result is a NaN,
@@ -203,18 +233,81 @@ def Mem.setRegion (m : Mem) : Region → ByteArray → Mem
   | .pinned, b => { m with pinned := b }
   | .buf i, b => { m with bufs := fun j => if j = i.val then b else m.bufs j }
 
+/-- `n` bytes at `off` in the arena are clear of every span a running thread
+    owns. -/
+def Mem.lentClear (m : Mem) (off n : Nat) : Bool :=
+  m.lent.all fun (o, len) => off + n ≤ o || o + len ≤ off
+
+theorem Mem.setRegion_lent (m : Mem) (r : Region) (b : ByteArray) : (m.setRegion r b).lent = m.lent := by
+  cases r <;> rfl
+
 /-- Whether `n` bytes at `off` in region `r` may be written: always, except in
     pinned memory, where they must lie inside one live allocation and clear of
-    every copy still in flight. -/
+    every copy still in flight, and in the arena, where they must be clear of
+    every span a running thread owns. -/
 def Mem.reachable (m : Mem) (r : Region) (off n : Nat) : Bool :=
-  r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
-    && m.busy.all (·.clear off n))
+  (r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
+    && m.busy.all (·.clear off n))) && (r != .arena || m.lentClear off n)
 
 /-- Whether they may be read: the same, except that a copy that only reads
     them (an upload) does not stand in the way. -/
 def Mem.readable (m : Mem) (r : Region) (off n : Nat) : Bool :=
-  r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
-    && m.busy.all (fun b => !b.writes || b.clear off n))
+  (r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
+    && m.busy.all (fun b => !b.writes || b.clear off n))) && (r != .arena || m.lentClear off n)
+
+/-- Bytes outside the arena, or in it clear of every span a thread owns: what
+    any region but pinned memory needs to be read or written. -/
+abbrev Mem.LentOk (m : Mem) (r : Region) (off n : Nat) : Prop := (r != .arena || m.lentClear off n) = true
+
+theorem Mem.lentOk_nil {m : Mem} (h : m.lent = []) (r : Region) (off n : Nat) : m.LentOk r off n := by
+  simp [Mem.LentOk, Mem.lentClear, h]
+
+theorem Mem.lentOk_ne {m : Mem} {r : Region} (h : r ≠ .arena) (off n : Nat) : m.LentOk r off n := by
+  cases r <;> simp_all [Mem.LentOk]
+
+theorem Mem.lentOk_of_readable {m : Mem} {r : Region} {off n : Nat} (h : m.readable r off n = true) :
+    m.LentOk r off n := by
+  unfold Mem.readable at h; simp only [Bool.and_eq_true] at h; exact h.2
+
+theorem Mem.lentOk_of_reachable {m : Mem} {r : Region} {off n : Nat} (h : m.reachable r off n = true) :
+    m.LentOk r off n := by
+  unfold Mem.reachable at h; simp only [Bool.and_eq_true] at h; exact h.2
+
+theorem Mem.LentOk.sub {m : Mem} {r : Region} {off n off' n' : Nat} (h : m.LentOk r off n)
+    (h1 : off ≤ off') (h2 : off' + n' ≤ off + n) : m.LentOk r off' n' := by
+  unfold Mem.LentOk Mem.lentClear at h ⊢
+  simp only [Bool.or_eq_true, List.all_eq_true, decide_eq_true_eq] at h ⊢
+  rcases h with h | h
+  · exact .inl h
+  · exact .inr fun x hx => by rcases h x hx with h | h <;> omega
+
+/-- Outside pinned memory, what may be read or written depends on the spans
+    threads own alone. -/
+theorem Mem.readable_eq_of_ne_pinned {m m' : Mem} {r : Region} (hp : r ≠ .pinned) (hl : m'.lent = m.lent)
+    (off n : Nat) : m'.readable r off n = m.readable r off n := by
+  unfold Mem.readable Mem.lentClear; rw [hl]; cases r <;> first | exact absurd rfl hp | rfl
+
+theorem Mem.reachable_eq_of_ne_pinned {m m' : Mem} {r : Region} (hp : r ≠ .pinned) (hl : m'.lent = m.lent)
+    (off n : Nat) : m'.reachable r off n = m.reachable r off n := by
+  unfold Mem.reachable Mem.lentClear; rw [hl]; cases r <;> first | exact absurd rfl hp | rfl
+
+theorem Mem.readable_of_ne_pinned {m : Mem} {r : Region} (hp : r ≠ .pinned) {off n : Nat} (hl : m.LentOk r off n) :
+    m.readable r off n = true := by
+  unfold Mem.readable
+  cases r <;> first | exact absurd rfl hp | simpa using hl
+
+theorem Mem.reachable_of_ne_pinned {m : Mem} {r : Region} (hp : r ≠ .pinned) {off n : Nat} (hl : m.LentOk r off n) :
+    m.reachable r off n = true := by
+  unfold Mem.reachable
+  cases r <;> first | exact absurd rfl hp | simpa using hl
+
+theorem Mem.readable_of_lent_eq {m m' : Mem} {r : Region} (hp : r ≠ .pinned) (hl : m'.lent = m.lent)
+    {off n : Nat} (h : m.readable r off n = true) : m'.readable r off n = true := by
+  rw [Mem.readable_eq_of_ne_pinned hp hl]; exact h
+
+theorem Mem.LentOk.congr {m m' : Mem} {r : Region} {off n : Nat} (hl : m'.lent = m.lent) (h : m.LentOk r off n) :
+    m'.LentOk r off n := by
+  unfold Mem.LentOk Mem.lentClear at h ⊢; rw [hl]; exact h
 
 /-- `n` bytes at `a`, little-endian, or `none` if they are not all in one
     region — a load the real program would fault on. -/
@@ -228,9 +321,9 @@ def Mem.load (m : Mem) (a : UInt64) (n : Nat) : Option UInt64 := do
 
 /-- A load reads the regions and what may be read of them, nothing else. -/
 theorem Mem.load_congr {m₁ m₂ : Mem} (hr : ∀ r, m₁.region r = m₂.region r) (hl : m₁.pinnedLive = m₂.pinnedLive)
-    (hb : m₁.busy = m₂.busy) (a : UInt64) (n : Nat) : m₁.load a n = m₂.load a n := by
+    (hb : m₁.busy = m₂.busy) (hn : m₁.lent = m₂.lent) (a : UInt64) (n : Nat) : m₁.load a n = m₂.load a n := by
   have hrd : ∀ r o k, m₁.readable r o k = m₂.readable r o k := by
-    intro r o k; simp only [Mem.readable, hl, hb]
+    intro r o k; simp only [Mem.readable, Mem.lentClear, hl, hb, hn]
   simp only [Mem.load, hr, hrd]
 
 def Mem.store (m : Mem) (a : UInt64) (n : Nat) (v : UInt64) : Option Mem := do
@@ -242,6 +335,25 @@ def Mem.store (m : Mem) (a : UInt64) (n : Nat) (v : UInt64) : Option Mem := do
       (fun (b : ByteArray) i => b.set! (off + i) (((v >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8))
       bs
     some (m.setRegion r bs)
+
+/-- A store leaves what may be read where it was. -/
+theorem Mem.store_readable {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m') :
+    m'.readable = m.readable := by
+  unfold Mem.store at h
+  obtain ⟨⟨r, off⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
+  dsimp only at h
+  split at h
+  · cases h
+  · cases h; funext r' o k; unfold Mem.readable Mem.lentClear Mem.setRegion; split <;> rfl
+
+theorem Mem.store_lent {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m') :
+    m'.lent = m.lent := by
+  unfold Mem.store at h
+  obtain ⟨⟨r, off⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
+  dsimp only at h
+  split at h
+  · cases h
+  · cases h; exact Mem.setRegion_lent _ _ _
 
 /-- A store leaves the platform's NaN rule. -/
 theorem Mem.store_nan {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m') :
@@ -1467,6 +1579,17 @@ structure World where
       to a dispatch, from their contents before it. A read-only binding keeps
       its contents whatever this says, by construction. -/
   shader : Dispatch → List ByteArray → List ByteArray := fun _ bs => bs
+  /-- **The arena bytes a thread owns**, as `(offset, length)`, by the function
+      it runs and the word it is started on: which bytes a worker reaches is
+      what the program's claim states of it, as its proof checks. A start this
+      says nothing of is undefined. -/
+  lend : Nat → UInt64 → Option (Nat × Nat) := fun _ _ => none
+  /-- The threads the program started, by start order; `none` once joined. -/
+  threads : Array (Option Thread) := #[]
+  /-- **What a thread leaves**: the bytes of its span after it, and the word
+      its function answers, from the bytes before. The model does not run the
+      thread here; the worker's own proof is what pins this down. -/
+  threadOut : Thread → ByteArray → ByteArray × UInt64 := fun _ b => (b, 0)
   wg : WgState := {}
   wl : WlState := {}
   /-- **What arrives through the window library**: each pump appends the next

@@ -798,15 +798,16 @@ theorem decode_arena (i : UInt32) : decodeAddr (smemAddr + off i) = some (.arena
   rw [off_eq, smemAddr, addrOf, show regionBase .arena + UInt64.ofNat 0 = regionBase .arena by simp]
   exact decodeAddr_base _ _ (by rw [regionSpan_toNat]; omega)
 
-theorem load_arena (m : Mem) (i : UInt32) : m.load (smemAddr + off i) 4 = aload m.arena i.toNat := by
+theorem load_arena (m : Mem) (hL : m.lent = []) (i : UInt32) :
+    m.load (smemAddr + off i) 4 = aload m.arena i.toNat := by
   unfold aload
   rw [UInt32.ofNat_toNat]
   simp only [Mem.load]
   rw [decode_arena]
-  simp [Mem.region, Mem.readable]
+  simp [Mem.region, Mem.readable, Mem.lentClear, hL]
 
-theorem load_arena0 (m : Mem) : m.load smemAddr 4 = aload m.arena 0 := by
-  have := load_arena m 0
+theorem load_arena0 (m : Mem) (hL : m.lent = []) : m.load smemAddr 4 = aload m.arena 0 := by
+  have := load_arena m hL 0
   simpa using this
 
 theorem store_arena_eq {m m' : Mem} {i : UInt32} {v : UInt64} (h : m.store (smemAddr + off i) 4 v = some m') :
@@ -818,11 +819,11 @@ theorem store_arena_eq {m m' : Mem} {i : UInt32} {v : UInt64} (h : m.store (smem
   · cases h
   · cases h; rfl
 
-theorem store_arena_some (m : Mem) (i : UInt32) (v : UInt64) (h : 4 * i.toNat + 4 ≤ m.arena.size) :
-    (m.store (smemAddr + off i) 4 v).isSome := by
+theorem store_arena_some (m : Mem) (i : UInt32) (v : UInt64) (h : 4 * i.toNat + 4 ≤ m.arena.size)
+    (hL : m.lent = []) : (m.store (smemAddr + off i) 4 v).isSome := by
   simp only [Mem.store]
   rw [decode_arena]
-  simp [Mem.region, Mem.reachable]
+  simp [Mem.region, Mem.reachable, Mem.lentClear, hL]
   omega
 
 theorem addr_step (t : UInt32) (s : Nat) (k : Int) (hk : k = 4 * (s : Int)) (h : t.toNat + s < 2 ^ 32) :
@@ -842,11 +843,11 @@ theorem addr_step (t : UInt32) (s : Nat) (k : Int) (hk : k = 4 * (s : Int)) (h :
 theorem wp_store_arena {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World} {v : Slot .f32} {a : Slot .i64}
     {x : UInt64} {i : UInt32} {Q : Unit → Env → World → Prop}
     (hv : Γ[v]? = some (.sc .f32 x)) (ha : Γ[a]? = some (.sc .i64 (smemAddr + off i)))
-    (hsz : 4 * i.toNat + 4 ≤ w.mem.arena.size)
+    (hsz : 4 * i.toNat + 4 ≤ w.mem.arena.size) (hL : w.mem.lent = [])
     (h : ∀ w1 : World, w1.obs = .store (smemAddr + off i) 4 x :: w.obs →
       w1.mem = { w.mem with arena := w1.mem.arena } → Q () Γ w1) :
     wp cfg d J (store v a) Q Γ w := by
-  obtain ⟨m, hm⟩ := Option.isSome_iff_exists.mp (store_arena_some w.mem i x hsz)
+  obtain ⟨m, hm⟩ := Option.isSome_iff_exists.mp (store_arena_some w.mem i x hsz hL)
   exact wp_storeF32 hv ha hm (h _ rfl (store_arena_eq hm))
 
 theorem collCalls_evs (w u : World) (L : List Obs) (h : u.obs = L.reverse ++ w.obs) :
@@ -881,7 +882,7 @@ theorem aload_word (B : ByteArray) (i : Nat) (hi : i < 2 ^ 32) (h : 4 * i + 4 �
     have hc := toNat_ofNat32 hi
     simp only [Mem.load]
     rw [decode_arena]
-    simp [Mem.region, Mem.readable]
+    simp [Mem.region, Mem.readable, Mem.lentClear]
     omega
   obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hl
   have hlt := load4_lt hv
@@ -893,9 +894,9 @@ theorem aload_word (B : ByteArray) (i : Nat) (hi : i < 2 ^ 32) (h : 4 * i + 4 �
 /-- Word `t` of shared memory's address. -/
 abbrev aaddr (t : Nat) : UInt64 := smemAddr + off (UInt32.ofNat t)
 
-theorem aword_of (m : Mem) (i : Nat) (hi : i < 2 ^ 32) :
+theorem aword_of (m : Mem) (hL : m.lent = []) (i : Nat) (hi : i < 2 ^ 32) :
     aword m.arena i = ((m.load (aaddr i) 4).getD 0).toUInt32 := by
-  rw [aaddr, load_arena, toNat_ofNat32 hi]; rfl
+  rw [aaddr, load_arena m hL, toNat_ofNat32 hi]; rfl
 
 theorem puts_size (val : Nat → UInt64) : ∀ (ts : List Nat) (m : Mem),
     (ts.foldl (fun m t => put aaddr val t m) m).arena.size = m.arena.size
@@ -907,10 +908,20 @@ theorem puts_size (val : Nat → UInt64) : ∀ (ts : List Nat) (m : Mem),
     | none => rfl
     | some m' => exact store_sizes h .arena
 
+theorem puts_lent (val : Nat → UInt64) : ∀ (ts : List Nat) (m : Mem),
+    (ts.foldl (fun m t => put aaddr val t m) m).lent = m.lent
+  | [], _ => rfl
+  | t :: ts, m => by
+    rw [List.foldl_cons, puts_lent val ts]
+    unfold put
+    cases h : m.store (aaddr t) 4 (val t) with
+    | none => rfl
+    | some m' => exact Mem.store_lent h
+
 theorem store_buf_arena (m : Mem) (A' : ByteArray) {a : UInt64} {i : Fin 268435449} {o : Nat}
     (hd : decodeAddr a = some (.buf i, o)) (n : Nat) (v : UInt64) :
     ({ m with arena := A' } : Mem).store a n v = (m.store a n v).map fun m' => { m' with arena := A' } := by
-  simp only [Mem.store, hd, Mem.region, Mem.reachable, Mem.setRegion]
+  simp only [Mem.store, hd, Mem.region, Mem.reachable, Mem.lentClear, Mem.setRegion]
   simp only [bind, Option.bind]
   split <;> simp_all
 

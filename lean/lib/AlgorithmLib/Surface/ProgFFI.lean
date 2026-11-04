@@ -330,6 +330,16 @@ def memWake (p : V .i64) (count : V .i32) : Prog V L Unit := ext (.base .memWake
     the system's own call. -/
 def clockNow : Prog V L (V .i64) := ext (.base .clockNow) %[]
 
+/-- Start a thread running the program's function at `f` (`funcAddr`) on the
+    word `arg`, with a stack of `stack` bytes, the system's own size for 0:
+    `pthread_create` through `std::thread`. The answer is its handle, or 0
+    where the system made none. The thread owns the arena bytes the start
+    lends it until it is joined; the checker says which (`AS.spawnRule`). -/
+def threadSpawn (f arg stack : V .i64) : Prog V L (V .i64) := ext (.base .threadSpawn) %[f, arg, stack]
+/-- Wait for the thread `h` to end: `pthread_join`. The answer is what its
+    function answered; its bytes are the program's again, as it left them. -/
+def threadJoin (h : V .i64) : Prog V L (V .i64) := ext (.base .threadJoin) %[h]
+
 /-- The length of the file at the path in the `cap`-byte field at `path`,
     `-1` for none. -/
 def fileSize (path cap : V .i64) : Prog V L (V .i64) := ext (.base .fileSize) %[path, cap]

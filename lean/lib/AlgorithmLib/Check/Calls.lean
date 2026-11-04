@@ -88,14 +88,14 @@ theorem known_bits {Γ : Env} {w : World} {a : AV} {x k : UInt64} (hd : ∃ t, a
 
 theorem memN_readable {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p k = true) : Readable w.mem x k := by
-  obtain ⟨r, off, hdec, hp, hs, hn⟩ := memN_spec hS hd h
-  exact Contracts.copyOut_isSome hdec hp hs hn
+  obtain ⟨r, off, hdec, hp, hs, hn, hl⟩ := memN_spec hS hd h
+  exact Contracts.copyOut_isSome hdec hp hs hn hl
 
 theorem memN_writable {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p k = true) : Writable w.mem x k := by
-  obtain ⟨r, off, hdec, hp, hs, hn⟩ := memN_spec hS hd h
+  obtain ⟨r, off, hdec, hp, hs, hn, hl⟩ := memN_spec hS hd h
   intro src hsrc; subst hsrc
-  exact Contracts.copyIn_isSome src hdec hp hs hn
+  exact Contracts.copyIn_isSome src hdec hp hs hn hl
 
 theorem roomIn_mono {S : TState} {r : Region} {k n : Nat} (h : roomIn S r k = true) (hn : n ≤ k) :
     roomIn S r n = true := by
@@ -114,20 +114,27 @@ theorem memN_mono {S : TState} {p : AV} {k n : Nat} (h : memN S p k = true) (hn 
     simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.or_eq_true] at h ⊢
     obtain ⟨⟨hs, hlt⟩, hr⟩ := h
     refine ⟨⟨by omega, hlt⟩, ?_⟩
-    rcases hr with hr | hr
-    · exact .inl (roomIn_mono hr (by omega))
+    rcases hr with (hr | hr) | hr
+    · exact .inl (.inl (roomIn_mono hr (by omega)))
+    · refine .inl (.inr ?_)
+      unfold ownsIn at hr ⊢
+      simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at hr ⊢
+      obtain ⟨hr0, x, hx, hk⟩ := hr
+      refine ⟨hr0, x, hx, ?_⟩
+      cases x <;> simp_all
+      omega
     · refine .inr ?_
       split at hr
       · rename_i r' d hfit
-        simp only [Bool.and_eq_true, decide_eq_true_eq] at hr ⊢
-        exact ⟨⟨hr.1.1, by omega⟩, hr.2⟩
+        simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.or_eq_true] at hr ⊢
+        exact ⟨⟨⟨hr.1.1.1, by omega⟩, hr.1.2⟩, hr.2⟩
       · cases hr
   · cases h
 
 theorem memN_slot8 {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p 8 = true) : Contracts.Slot8 w.mem x := by
-  obtain ⟨r, off, hdec, hp, hs, -⟩ := memN_spec hS hd h
-  exact fun v => Contracts.store_isSome hdec hp hs v
+  obtain ⟨r, off, hdec, hp, hs, -, hl⟩ := memN_spec hS hd h
+  exact fun v => Contracts.store_isSome hdec hp hs hl v
 
 /-- A length bounded by the region an address points into, no further than
     the bound leaves room for. -/
@@ -136,7 +143,7 @@ def memLen (S : TState) (p n : AV) : Bool :=
   | .ptr r m, some nn =>
       match nn.fit with
       | some (r', s, d) => decide (r = r') && decide (s = 1) && decide (m.hi ≤ d) &&
-          decide (m.hi + nn.hi ≤ span) && decide (m.hi < span)
+          decide (m.hi + nn.hi ≤ span) && decide (m.hi < span) && (decide (r ≠ .arena) || arenaFree S)
       | none => false
   | _, _ => false
 
@@ -150,7 +157,7 @@ def memB (S : TState) (p n : AV) : Bool :=
 theorem memLen_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memLen S p n = true) :
     ∃ r off, decodeAddr x = some (r, off) ∧ r ≠ .pinned ∧ off + k.toNat ≤ w.mem.sizes r ∧
-      off + k.toNat ≤ 2 ^ 36 := by
+      off + k.toNat ≤ 2 ^ 36 ∧ w.mem.LentOk r off k.toNat := by
   obtain ⟨t0, hp0⟩ := hp
   have hp : ∃ t, p.asPtr.Desc Γ w (.sc t x) := ⟨t0, AV.asPtr_desc hp0⟩
   unfold memLen at h
@@ -159,8 +166,8 @@ theorem memLen_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64
     rw [hpe] at hp
     split at h
     · rename_i r' s d hf
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at h
-      obtain ⟨⟨⟨⟨rfl, rfl⟩, hd⟩, hs⟩, h3⟩ := h
+      simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.or_eq_true] at h
+      obtain ⟨⟨⟨⟨⟨rfl, rfl⟩, hd⟩, hs⟩, h3⟩, ha⟩ := h
       obtain ⟨t, off, e, ⟨h1, h2, -⟩, -⟩ := hp
       simp only [V.sc.injEq] at e
       obtain ⟨-, rfl⟩ := e
@@ -171,14 +178,17 @@ theorem memLen_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64
       obtain ⟨-, hy2, -, hfit⟩ := hy
       rw [hf] at hfit
       obtain ⟨hpin, hle⟩ := hfit
-      exact ⟨r, off, ptr_decode h2 h3, hpin, by omega, by unfold span at hs; omega⟩
+      refine ⟨r, off, ptr_decode h2 h3, hpin, by omega, by unfold span at hs; omega, ?_⟩
+      rcases ha with ha | ha
+      · exact Mem.lentOk_ne ha _ _
+      · exact arenaFree_spec hS ha _ _ _
     · cases h
   · cases h
 
 theorem memB_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memB S p n = true) :
     ∃ r off, decodeAddr x = some (r, off) ∧ r ≠ .pinned ∧ off + k.toNat ≤ w.mem.sizes r ∧
-      off + k.toNat ≤ 2 ^ 36 := by
+      off + k.toNat ≤ 2 ^ 36 ∧ w.mem.LentOk r off k.toNat := by
   unfold memB at h
   split at h
   · rename_i k' hk
@@ -191,8 +201,9 @@ theorem memB_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} 
         obtain ⟨t, hd⟩ := hn
         obtain ⟨y, e, hy⟩ := AV.num_desc hd hnn
         cases e
-        obtain ⟨r, off, hdec, hpin, hs, h36⟩ := memN_spec hS hp h
-        exact ⟨r, off, hdec, hpin, by have := hy.2.1; omega, by have := hy.2.1; omega⟩
+        obtain ⟨r, off, hdec, hpin, hs, h36, hl⟩ := memN_spec hS hp h
+        exact ⟨r, off, hdec, hpin, by have := hy.2.1; omega, by have := hy.2.1; omega,
+          hl.sub (Nat.le_refl _) (by have := hy.2.1; omega)⟩
       · cases h
 
 /-- Bytes `[p, p + n)`: by `memB`, or by `rb`, which answers for the
@@ -213,15 +224,16 @@ theorem memBR_fits {Γ : Env} {w : World} {S : TState} {rb : Nat → Nat → Boo
 theorem memB_readable {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memB S p n = true) :
     Readable w.mem x k.toNat := by
-  obtain ⟨r, off, hdec, hpin, hs, h36⟩ := memB_spec hS hp hn h
-  exact Contracts.copyOut_isSome hdec hpin hs h36
+  obtain ⟨r, off, hdec, hpin, hs, h36, hl⟩ := memB_spec hS hp hn h
+  exact Contracts.copyOut_isSome hdec hpin hs h36 hl
 
 theorem memB_writable {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memB S p n = true) :
     Writable w.mem x k.toNat := by
-  obtain ⟨r, off, hdec, hpin, hs, h36⟩ := memB_spec hS hp hn h
+  obtain ⟨r, off, hdec, hpin, hs, h36, hl⟩ := memB_spec hS hp hn h
   intro src hsrc
   exact Contracts.copyIn_isSome src hdec hpin (by rw [hsrc]; exact hs) (by rw [hsrc]; exact h36)
+    (by rw [hsrc]; exact hl)
 
 /-- A C string the typestate names at a known address. -/
 def cstrB (S : TState) (a : AV) : Bool :=

@@ -7,7 +7,7 @@ import all Init.Data.List.Sort.Basic
 
 /-! The machine code `CpuBenchAlgorithm` carries: LLVM's code for each
     workload's Rust kernel, with the arguments taken in registers. Each keeps
-    the contract in `base/src/ffi/native.rs`. -/
+    the contract in `base/src/builtin/native.rs`. -/
 
 namespace CpuBenchAsm
 

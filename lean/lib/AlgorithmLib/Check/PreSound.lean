@@ -36,25 +36,25 @@ macro_rules
 variable {Γ : Env} {w : World} {S : TState} {rb : Nat → Nat → Bool}
 
 theorem fits_readable {x : UInt64} {k j : Nat} (hf : Fits w.mem x k) (hj : j ≤ k) : Readable w.mem x j := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := hf
-  exact Contracts.copyOut_isSome hd hp (by omega) (by omega)
+  obtain ⟨r, off, hd, hp, hs, hn, hl⟩ := hf
+  exact Contracts.copyOut_isSome hd hp (by omega) (by omega) (hl.sub (Nat.le_refl _) (by omega))
 
 theorem fits_writable {x : UInt64} {k j : Nat} (hf : Fits w.mem x k) (hj : j ≤ k) : Writable w.mem x j := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := hf
+  obtain ⟨r, off, hd, hp, hs, hn, hl⟩ := hf
   intro src hsrc
-  exact Contracts.copyIn_isSome src hd hp (by omega) (by omega)
+  exact Contracts.copyIn_isSome src hd hp (by omega) (by omega) (by rw [hsrc]; exact hl.sub (Nat.le_refl _) (by omega))
 
 theorem fits_slot8 {x : UInt64} (hf : Fits w.mem x 8) : Contracts.Slot8 w.mem x := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := hf
-  exact fun v => Contracts.store_isSome hd hp hs v
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := hf
+  exact fun v => Contracts.store_isSome hd hp hs hl v
 
 theorem fits_load8 {x : UInt64} (hf : Fits w.mem x 8) : Contracts.Load8 w.mem x := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := hf
-  exact Contracts.load_isSome hd hp hs
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := hf
+  exact Contracts.load_isSome hd hp hs hl
 
 theorem fits_load4 {x : UInt64} (hf : Fits w.mem x 4) : (w.mem.load x 4).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := hf
-  exact Contracts.load_isSome hd hp hs
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := hf
+  exact Contracts.load_isSome hd hp hs hl
 
 /-- An offset into the program's memory that is a multiple of four leaves its
     address one: the region starts at a multiple of four, and no offset the
@@ -67,12 +67,12 @@ theorem arena_addr_mod4 {off : Nat} (h4 : 4 ∣ off) (hspan : off ≤ span) :
   simp
 
 theorem readIds_of_fits {p : UInt64} {n : Nat} (hf : Fits w.mem p (4 * n)) : (readIds w.mem p n).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := hf
+  obtain ⟨r, off, hd, hp, hs, hn, hl0⟩ := hf
   have hl : ((List.range n).mapM fun i => w.mem.load (p + UInt64.ofNat (4 * i)) 4).isSome = true := by
     refine Contracts.mapM_isSome_of fun i hi => ?_
     have hi := List.mem_range.mp hi
     have hd' := Sem.decodeAddr_add (i := 4 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-    exact Contracts.load_isSome hd' hp (by omega)
+    exact Contracts.load_isSome hd' hp (by omega) (hl0.sub (by omega) (by omega))
   obtain ⟨raw, hraw⟩ := Option.isSome_iff_exists.mp hl
   unfold readIds
   rw [hraw]; rfl
@@ -336,13 +336,13 @@ theorem fits_forParty {m : Mem} {x : UInt64} {k : Nat} (p : Nat) (hf : Fits m x 
   exact ⟨r, off, hd, hp, by rw [Contracts.forParty_sizes]; exact hs, hn⟩
 
 theorem fits_readable_mem {m : Mem} {x : UInt64} {k j : Nat} (hf : Fits m x k) (hj : j ≤ k) : Readable m x j := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := hf
-  exact Contracts.copyOut_isSome hd hp (by omega) (by omega)
+  obtain ⟨r, off, hd, hp, hs, hn, hl⟩ := hf
+  exact Contracts.copyOut_isSome hd hp (by omega) (by omega) (hl.sub (Nat.le_refl _) (by omega))
 
 theorem fits_writable_mem {m : Mem} {x : UInt64} {k j : Nat} (hf : Fits m x k) (hj : j ≤ k) : Writable m x j := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := hf
+  obtain ⟨r, off, hd, hp, hs, hn, hl⟩ := hf
   intro src hsrc
-  exact Contracts.copyIn_isSome src hd hp (by omega) (by omega)
+  exact Contracts.copyIn_isSome src hd hp (by omega) (by omega) (by rw [hsrc]; exact hl.sub (Nat.le_refl _) (by omega))
 
 /-- A party that knows every access may run any operation. -/
 theorem opReady_of_ready {p : Nat} (hS : S.holds w) (hq : readyIn S p = true) (rs ws : List Nat) :

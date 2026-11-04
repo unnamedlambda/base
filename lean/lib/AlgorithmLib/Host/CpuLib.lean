@@ -9,7 +9,7 @@ import all Init.Data.List.Sort.Basic
 # The CPU library, called directly
 
 What each `CpuFn` does: the engine's five functions over what the operating
-system answers (`base/src/ffi/cpu.rs`). The CPUs are the world's `cpus`, each
+system answers (`base/src/builtin/cpu.rs`). The CPUs are the world's `cpus`, each
 with the core and package the system reports for it; whether a thread may be
 pinned is its `cpuPins`. Every call is defined for any argument, answers an
 `int`, and changes nothing a program can read: which CPU a thread runs on is

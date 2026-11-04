@@ -1527,7 +1527,7 @@ def roomIn (S : TState) (r : Region) (n : Nat) : Bool :=
   decide (r ≠ .pinned) && S.any fun | .room r' k => decide (r' = r) && decide (n ≤ k) | _ => false
 
 theorem roomIn_spec {S : TState} {w : World} {r : Region} {n : Nat} (hS : S.holds w)
-    (h : roomIn S r n = true) : r ≠ .pinned ∧ n ≤ w.mem.sizes r := by
+    (h : roomIn S r n = true) : r ≠ .pinned ∧ n ≤ w.mem.sizes r ∧ ∀ off k, w.mem.LentOk r off k := by
   unfold roomIn at h
   simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
   obtain ⟨hp, x, hx, hr⟩ := h
@@ -1536,8 +1536,29 @@ theorem roomIn_spec {S : TState} {w : World} {r : Region} {n : Nat} (hS : S.hold
   | room r' k =>
       simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
       obtain ⟨rfl, hk⟩ := hr
-      exact Nat.le_trans hk (hS _ hx)
+      exact ⟨Nat.le_trans hk (hS _ hx).1, fun _ _ => Contracts.room_lentOk (hS _ hx)⟩
   | _ => cases hr
+
+/-- No thread owns any of the arena: what the typestate says by naming room
+    in it. -/
+def arenaFree (S : TState) : Bool := roomIn S .arena 0
+
+theorem arenaFree_nil {S : TState} {w : World} (hS : S.holds w) (h : arenaFree S = true) : w.mem.lent = [] := by
+  unfold arenaFree roomIn at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
+  obtain ⟨-, x, hx, hr⟩ := h
+  cases x with
+  | room r' k =>
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
+      obtain ⟨rfl, -⟩ := hr
+      exact (hS _ hx).2 rfl
+  | _ => cases hr
+
+theorem arenaFree_spec {S : TState} {w : World} (hS : S.holds w) (h : arenaFree S = true) (r : Region)
+    (off k : Nat) : w.mem.LentOk r off k := by
+  by_cases ha : r = .arena
+  · subst ha; exact (roomIn_spec hS h).2.2 off k
+  · exact Mem.lentOk_ne ha _ _
 
 theorem ptr_decode {r : Region} {off hi : Nat} (h1 : off ≤ hi) (h2 : hi < span) :
     decodeAddr (regionBase r + UInt64.ofNat off) = some (r, off) :=
@@ -1551,15 +1572,33 @@ theorem addr_toNat (r : Region) {off : Nat} (h : off ≤ span) :
   unfold span at h
   rw [UInt64.toNat_add, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (a := off) (by omega), Nat.mod_eq_of_lt (by omega)]
 
+/-- Arena bytes from offset `lo` up to `hi` lie in a span the typestate says
+    is the holder's. -/
+def ownsIn (S : TState) (r : Region) (lo hi : Nat) : Bool :=
+  decide (r = .arena) && S.any fun | .owns o l => decide (o ≤ lo) && decide (hi ≤ o + l) | _ => false
+
+theorem ownsIn_spec {S : TState} {w : World} {r : Region} {lo hi : Nat} (hS : S.holds w)
+    (h : ownsIn S r lo hi = true) : r = .arena ∧ ∃ o l, o ≤ lo ∧ hi ≤ o + l ∧ (Fact.owns o l).holds w := by
+  unfold ownsIn at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
+  obtain ⟨hr, x, hx, hk⟩ := h
+  refine ⟨hr, ?_⟩
+  cases x with
+  | owns o l =>
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hk
+      exact ⟨o, l, hk.1, hk.2, hS _ hx⟩
+  | _ => cases hk
+
 /-- The bytes `[x, x + k)` lie in one region: by the room the typestate gives
-    it, or by the bound an address carries. -/
+    it, by a span it says is the holder's, or by the bound an address carries. -/
 def memN (S : TState) (p : AV) (k : Nat) : Bool :=
   match p with
   | .known (.sc _ x) => roomAt S x k
   | .ptr r n => decide (n.hi + k ≤ span) && decide (n.hi < span) &&
-      (roomIn S r (n.hi + k) ||
+      (roomIn S r (n.hi + k) || ownsIn S r n.lo (n.hi + k) ||
         (match n.fit with
-         | some (r', 1, d) => decide (r' = r) && decide (k ≤ d) && decide (r ≠ .pinned)
+         | some (r', 1, d) => decide (r' = r) && decide (k ≤ d) && decide (r ≠ .pinned) &&
+             (decide (r ≠ .arena) || arenaFree S)
          | _ => false))
   | _ => false
 
@@ -1568,7 +1607,7 @@ def memN (S : TState) (p : AV) (k : Nat) : Bool :=
 theorem memN_spec {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p k = true) :
     ∃ r off, decodeAddr x = some (r, off) ∧ r ≠ .pinned ∧ off + k ≤ w.mem.sizes r ∧
-      off + k ≤ 2 ^ 36 := by
+      off + k ≤ 2 ^ 36 ∧ w.mem.LentOk r off k := by
   obtain ⟨t, hd⟩ := hd
   unfold memN at h
   split at h
@@ -1582,16 +1621,23 @@ theorem memN_spec {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k :
     obtain ⟨off, e, ⟨h1, h2, -, hf⟩, -⟩ := hd
     simp only [V.sc.injEq] at e
     obtain ⟨-, rfl⟩ := e
-    rcases hr with hr | hr
-    · obtain ⟨hp, hsz⟩ := roomIn_spec hS hr
-      exact ⟨r, off, ptr_decode h2 h3, hp, by omega, by unfold span at hs; omega⟩
+    rcases hr with (hr | hr) | hr
+    · obtain ⟨hp, hsz, hl⟩ := roomIn_spec hS hr
+      exact ⟨r, off, ptr_decode h2 h3, hp, by omega, by unfold span at hs; omega, hl _ _⟩
+    · obtain ⟨rfl, o, l, hlo, hhi, ho1, -, ho3⟩ := ownsIn_spec hS hr
+      refine ⟨.arena, off, ptr_decode h2 h3, by decide, Nat.le_trans (by omega) ho1, by unfold span at hs; omega, ?_⟩
+      have hc : w.mem.lentClear off k = true := Mem.lentClear_sub ho3 (by omega) (by omega)
+      simp [Mem.LentOk, hc]
     · split at hr
       · rename_i r' d hfit
-        simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
-        obtain ⟨⟨rfl, hkd⟩, hp⟩ := hr
+        simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.or_eq_true] at hr
+        obtain ⟨⟨⟨rfl, hkd⟩, hp⟩, ha⟩ := hr
         rw [hfit] at hf
         obtain ⟨-, hle⟩ := hf
-        exact ⟨r', off, ptr_decode h2 h3, hp, by omega, by unfold span at hs; omega⟩
+        refine ⟨r', off, ptr_decode h2 h3, hp, by omega, by unfold span at hs; omega, ?_⟩
+        rcases ha with ha | ha
+        · exact Mem.lentOk_ne ha _ _
+        · exact arenaFree_spec hS ha _ _ _
       · cases hr
   · cases h
 

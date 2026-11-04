@@ -516,6 +516,15 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
        ("the bytes readable", .documented "pwrite(2): size bytes from src")]
   | .base .stdinReadline =>
       [("room for the line, up to cap", .documented "fgets: at most cap bytes written at dst")]
+  | .base .threadSpawn =>
+      [("a function of the program, one word in and one out",
+        .documented "pthread_create(3): start_routine; thread.rs: extern \"C\" fn(i64) -> i64"),
+       ("the bytes it owns clear of every running thread's",
+        .documented "C11 5.1.2.4, Rust's memory model: a data race is undefined behaviour"),
+       ("the system may make no thread", .unmodelled "the world's grants \"thread\"")]
+  | .base .threadJoin =>
+      [("a thread started and not joined", .documented "pthread_join(3): joining a thread twice is undefined"),
+       ("what the thread leaves", .unmodelled "the world's threadOut, which the worker's proof pins down")]
   | .serial .count => [("the ports listed", .unmodelled "the world's serialNames")]
   | .serial .name =>
       [("cap bytes writable", .documented "serial.rs: base_serial_name writes at most cap bytes"),
@@ -1324,11 +1333,12 @@ theorem cudaPre_length {f : CudaFn} {bits : List UInt64} {w : World} (h : cudaPr
     into**, and answers a number of the type its signature returns, or
     nothing. -/
 theorem baseCall_same {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : baseCall f bits w = some (r, w')) :
+    (hf : f.thread = false) (h : baseCall f bits w = some (r, w')) :
     w' = { w with mem := w'.mem, native := w'.native, fs := w'.fs, stdin := w'.stdin, stdout := w'.stdout } ∧
     (w'.mem = w.mem ∨ (f = .fileReadToPtr ∨ f = .stdinReadline) ∧ ∃ a bs, copyIn w.mem a bs = some w'.mem) ∧
       ∀ v, r = some v → ∃ x, v = .sc ((Ext.base f).sig.2.getD .i64) x := by
-  cases f <;> simp only [baseCall, ffiClockNow, ffiGrant, ffiMemWait, ffiMemWake, ffiNativeLoad,
+  cases f <;> simp only [BaseFn.thread, reduceCtorEq] at hf <;>
+  simp only [baseCall, ffiClockNow, ffiGrant, ffiMemWait, ffiMemWake, ffiNativeLoad,
     ffiNativeFree, ffiNativeArch, ffiCpuHas, ffiFileCreateDirAll, ffiFileSize, ffiFileSetLen,
     ffiFileReadToPtr, ffiFileWriteFromPtr, ffiStdinReadline, ffiStdoutWrite] at h <;>
     (repeat' (first
@@ -1742,7 +1752,7 @@ theorem cudaStep_respects_frame (f : CudaFn) (bits : List UInt64) (w : World) (r
     obtain ⟨p, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨⟨id, off, b⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨_, _, m, hk, hreg, -, -⟩ := asyncCopy_region h
+    obtain ⟨_, _, m, hk, hreg, -, -, -⟩ := asyncCopy_region h
     simp only [Option.some.injEq, Prod.mk.injEq] at hk
     obtain ⟨-, rfl⟩ := hk
     exact Unchanged.of_region hreg a
@@ -1751,7 +1761,7 @@ theorem cudaStep_respects_frame (f : CudaFn) (bits : List UInt64) (w : World) (r
     · cases h
     obtain ⟨p, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨⟨id, off, b⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨_, _, m, hk, hreg, hlive, hsub⟩ := asyncCopy_region h
+    obtain ⟨_, _, m, hk, hreg, hlive, hlent0, hsub⟩ := asyncCopy_region h
     obtain ⟨m0, hm0, hk⟩ := Option.bind_eq_some_iff.mp hk
     simp only [Option.some.injEq, Prod.mk.injEq] at hk
     obtain ⟨-, rfl⟩ := hk
@@ -1761,7 +1771,7 @@ theorem cudaStep_respects_frame (f : CudaFn) (bits : List UInt64) (w : World) (r
       Mem.load_congr hreg (Mem.readable_busy_sub (hlive.trans rfl)
         (fun b hb => hsub b (by
           rw [hb0] at hb
-          exact (List.mem_filter.mp hb).1))) hy
+          exact (List.mem_filter.mp hb).1)) (hlent0.trans rfl)) hy
     rw [copyIn_other hm0 a (by
       intro i hi e
       rw [ByteArray.size_extract] at hi
@@ -1977,12 +1987,35 @@ theorem cpuCall_respects_frame (f : CpuFn) (bits : List UInt64) (w : World) (r :
   · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
     exact Unchanged.refl _ _
 
+/-- **Starting a thread writes no memory**: it only records which bytes the
+    thread owns, so a byte that still loads loads as it did. -/
+theorem threadSpawn_unchanged {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : baseCall .threadSpawn bits w = some (r, w')) (a : UInt64) : Unchanged w.mem w'.mem a := by
+  simp only [baseCall, ffiThreadSpawn] at h
+  repeat' (first
+    | (split at h)
+    | (rw [Option.bind_eq_bind, Option.bind_eq_some_iff] at h; obtain ⟨_, _, h⟩ := h))
+  all_goals first
+    | (cases h; done)
+    | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
+    | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
+       intro x y hx hy
+       have := AlgorithmLib.HProg.Mem.load_congr (m := w.mem) (fun r => by cases r <;> rfl)
+         (fun r o k hr => Mem.readable_lent_sub (by rfl) (by rfl) (fun s hs => List.mem_cons_of_mem _ hs) r o k hr) hy
+       rw [hx] at this; exact (Option.some.inj this))
+
 /-- **An engine function writes host memory only inside its frame**: a file
-    or a line read, where it was asked to land; nothing otherwise. -/
+    or a line read, where it was asked to land; a thread's join, its
+    allocation, which no argument names; nothing otherwise. -/
 theorem baseCall_respects_frame (f : BaseFn) (bits : List UInt64) (w : World) (r : Option V)
     (w' : World) (h : baseCall f bits w = some (r, w')) (a : UInt64)
     (hout : ¬ (Ext.base f).frame.allows bits (r.bind asBits) a) : Unchanged w.mem w'.mem a := by
-  obtain ⟨-, hm | ⟨rfl | rfl, -⟩, -⟩ := baseCall_same h
+  cases hf : f.thread
+  case true =>
+    cases f <;> simp only [BaseFn.thread, Bool.false_eq_true] at hf
+    · exact threadSpawn_unchanged h a
+    · exact absurd (by simp [Ext.frame, Frame.allows]) hout
+  obtain ⟨-, hm | ⟨rfl | rfl, -⟩, -⟩ := baseCall_same hf h
   · rw [hm]; exact Unchanged.refl _ _
   · simp only [baseCall, ffiFileReadToPtr] at h
     split at h

@@ -27,9 +27,11 @@ namespace AlgorithmLib.HProg.Contracts
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 
 /-- The engine's own libraries, whose calls change only their own handles and
-    the memory in their frame. -/
+    the memory in their frame: every engine function but a thread's start and
+    join, which change which memory is the program's. -/
 def _root_.AlgorithmLib.IR.Ext.aside : Ext → Bool
-  | .present _ | .c _ | .window _ | .cpu _ | .serial _ | .usb _ | .base _ => true
+  | .present _ | .c _ | .window _ | .cpu _ | .serial _ | .usb _ => true
+  | .base f => !f.thread
   | _ => false
 
 /-- The kind of handle a call opens. -/
@@ -135,19 +137,20 @@ theorem map_push_live {α : Type} (live : α → Bool) (arr : Array α) (x : α)
 /-- `m'` is `m` with at most its bytes changed and pinned memory grown:
     every other region as large. -/
 def Rewritten (m m' : Mem) : Prop :=
-  (∀ r, r ≠ .pinned → m'.sizes r = m.sizes r) ∧ m.sizes .pinned ≤ m'.sizes .pinned ∧ m'.busy = m.busy
+  (∀ r, r ≠ .pinned → m'.sizes r = m.sizes r) ∧ m.sizes .pinned ≤ m'.sizes .pinned ∧ m'.busy = m.busy ∧
+    m'.lent = m.lent
 
-theorem Rewritten.refl (m : Mem) : Rewritten m m := ⟨fun _ _ => rfl, Nat.le_refl _, rfl⟩
+theorem Rewritten.refl (m : Mem) : Rewritten m m := ⟨fun _ _ => rfl, Nat.le_refl _, rfl, rfl⟩
 
 theorem Rewritten.of_eq {m m' : Mem} (hs : m'.sizes = m.sizes)
-    (hb : m'.busy = m.busy) : Rewritten m m' :=
-  ⟨fun r _ => by rw [hs], by rw [hs]; exact Nat.le_refl _, hb⟩
+    (hb : m'.busy = m.busy) (hl : m'.lent = m.lent) : Rewritten m m' :=
+  ⟨fun r _ => by rw [hs], by rw [hs]; exact Nat.le_refl _, hb, hl⟩
 
 theorem Rewritten.copyIn (m : Mem) (a : UInt64) (src : ByteArray) :
     Rewritten m ((Sem.copyIn m a src).getD m) := by
   cases h : Sem.copyIn m a src with
   | none => exact Rewritten.refl m
-  | some m' => exact Rewritten.of_eq (copyIn_sizes_eq h) (copyIn_busy h)
+  | some m' => exact Rewritten.of_eq (copyIn_sizes_eq h) (copyIn_busy h) (copyIn_lent h)
 
 theorem Blk.live {w : World} {x : UInt64} {n : Nat} (h : Blk w x n) : Held.live .heap w x = true := by
   obtain ⟨off, m, hat, -⟩ := h
@@ -167,6 +170,7 @@ structure LibStep (e : Ext) (bits : List UInt64) (w : World) (r : Option V) (w' 
   present : w'.present = w.present
   wg : w'.wg = w.wg
   wgslOk : w'.wgslOk = w.wgslOk
+  threads : w'.threads = w.threads ∧ w'.lend = w.lend ∧ w'.grants = w.grants
   mem : Rewritten w.mem w'.mem
   held : ∀ k a, e.closes ≠ some k → k.live w a = true → k.live w' a = true
   opens : ∀ k x, e.opens = some k → r.bind asBits = some x → x ≠ 0 → k.live w' x = true
@@ -335,7 +339,7 @@ theorem wl_step {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := wlCall_of h
   obtain ⟨wl, inp, he⟩ := wlEffect_shape c w
   have hwl : ((wlEffect c w).2).wl = wl := by rw [he]
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he]; exact ⟨rfl, rfl, rfl⟩, hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | window =>
@@ -452,7 +456,7 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
     (h : serialCall f bits w = some (r, w')) : LibStep (.serial f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := serialCall_of h
   obtain ⟨ser, he⟩ := serEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he]; exact ⟨rfl, rfl, rfl⟩, hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | port =>
@@ -607,7 +611,7 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
     (h : usbCall f bits w = some (r, w')) : LibStep (.usb f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := usbCall_of h
   obtain ⟨usb, ifs, he⟩ := usbEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he]; exact ⟨rfl, rfl, rfl⟩, hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | usbInterface =>
@@ -666,24 +670,24 @@ theorem cpu_step {f : CpuFn} {bits : List UInt64} {w : World} {r : Option V} {w'
   split at h
   · cases h
   · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl, ?_,
+    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, Rewritten.refl _, fun _ _ _ hl => hl, ?_,
       fun ⟨_, h⟩ => nomatch h⟩
     intro k x hk; simp [Ext.opens] at hk
 
 theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : baseCall f bits w = some (r, w')) : LibStep (.base f) bits w r w' := by
-  obtain ⟨hw, hmem, -⟩ := ExtContracts.baseCall_same h
+    (hf : f.thread = false) (h : baseCall f bits w = some (r, w')) : LibStep (.base f) bits w r w' := by
+  obtain ⟨hw, hmem, -⟩ := ExtContracts.baseCall_same hf h
   have hr : Rewritten w.mem w'.mem := by
     rcases hmem with hm | ⟨-, _, _, hc⟩
     · rw [hm]; exact Rewritten.refl _
-    · exact Rewritten.of_eq (copyIn_sizes_eq hc) (copyIn_busy hc)
+    · exact Rewritten.of_eq (copyIn_sizes_eq hc) (copyIn_busy hc) (copyIn_lent hc)
   generalize w'.native = n at hw
   generalize w'.fs = fs at hw
   generalize w'.stdin = si at hw
   generalize w'.stdout = so at hw
   generalize w'.mem = m at hw hr
   subst hw
-  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hr,
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, hr,
     fun k _ _ hl => by cases k <;> exact hl,
     fun k x hk => by simp [Ext.opens] at hk, fun ⟨_, h⟩ => nomatch h⟩
 
@@ -695,7 +699,7 @@ theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {
 theorem LibStep.of_mem {e : Ext} {bits : List UInt64} {w : World} {r : Option V} {m : Mem}
     (hm : Rewritten w.mem m) (ho : e.opens = none) (hl : m.pinnedLive = w.mem.pinnedLive) :
     LibStep e bits w r { w with mem := m } :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hm, fun k _ _ hl => by cases k <;> exact hl,
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, hm, fun k _ _ hl => by cases k <;> exact hl,
     fun k _ hk => (by rw [ho] at hk; cases hk), fun _ _ _ _ h => h.same rfl hm.2.1 hl⟩
 
 theorem find_cons_isSome {α : Type} (p : α → Bool) (x : α) (l : List α) (h : (l.find? p).isSome = true) :
@@ -715,18 +719,18 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm) (copyIn_lent hm)) rfl
       (DevSpec.copyIn_same hm).live.symm
   -- memmove
   · obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm) (copyIn_lent hm)) rfl
       (DevSpec.copyIn_same hm).live.symm
   -- memset
   · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm) (copyIn_lent hm)) rfl
       (DevSpec.copyIn_same hm).live.symm
   -- strlen
   · obtain ⟨i, -, h⟩ := Option.bind_eq_some_iff.mp h
@@ -738,13 +742,13 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     · cases h
     split at h
     · cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun k _ _ hl => hl, ?_,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, Rewritten.refl _, fun k _ _ hl => hl, ?_,
         fun _ _ _ _ h => h⟩
       intro k x _ hx h0
       exact (answer_zero rfl hx h0).elim
     · rename_i hz hroom
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, rfl⟩,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, ⟨fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, rfl, rfl⟩,
         fun k a _ hl => ?_, ?_, fun _ _ _ _ h => h.alloc _⟩
       · simp only [Mem.sizes, Mem.region, ByteArray.size_append]; omega
       · cases k
@@ -766,7 +770,7 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
       exact LibStep.of_mem (Rewritten.refl _) rfl rfl
     · obtain ⟨⟨off, n⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq (funext fun r => by cases r <;> rfl) rfl,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, Rewritten.of_eq (funext fun r => by cases r <;> rfl) rfl rfl,
         fun k a hk hl => ?_, ?_, fun _ hc => absurd rfl hc⟩
       · cases k
         all_goals first | exact hl | exact absurd rfl hk
@@ -803,7 +807,7 @@ theorem lib_step {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {r : O
   case c f => exact c_step h
   case present l =>
     obtain ⟨rfl, -⟩ := present_same h
-    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl,
+    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, Rewritten.refl _, fun _ _ _ hl => hl,
       fun k x hk => by simp [Ext.opens] at hk, fun ⟨_, h⟩ => nomatch h⟩
   all_goals
     simp only [extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true, Bool.false_eq_true,
@@ -812,7 +816,7 @@ theorem lib_step {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {r : O
   · exact cpu_step h
   · exact serial_step h
   · exact usb_step h
-  · exact base_step h
+  · exact base_step (by simpa using ha) h
 
 /-- Whether a call with these argument bits keeps a fact, whatever it
     answers. A close keeps no handle of the kind it closes: which one it
@@ -827,6 +831,7 @@ def extKeeps (e : Ext) (bits : List UInt64) : Fact → Bool
   | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => e.aside
   | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ _ | .modText _ _ | .fnText _ _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => e.aside
   | .nwg _ | .wgo _ _ | .wg1 _ _ => e.aside
+  | .threads _ _ _ _ _ | .owns _ _ => e.aside
   | .wgText a n _ => e.aside && !(e.frame.touches bits a n)
   | .text _ _ _ _ => false
   | .pinnedUsed _ => false
@@ -858,18 +863,18 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       · show w'.display = w.display; rw [st.display]
       · show w'.cudaDevice = w.cudaDevice; rw [st.cudaDevice]
       · show w'.gpuAdapter = w.gpuAdapter; rw [st.gpuAdapter]
-      · show w'.mem.busy.isEmpty = w.mem.busy.isEmpty; rw [st.mem.2.2]
+      · show w'.mem.busy.isEmpty = w.mem.busy.isEmpty; rw [st.mem.2.2.1]
       · show w'.has _ = w.has _; simp only [World.has, st.present]
   | room rg n =>
-      show n ≤ w'.mem.sizes rg
+      refine ⟨?_, fun ha => by rw [st.mem.2.2.2]; exact hx.2 ha⟩
       by_cases hp : rg = .pinned
-      · subst hp; exact Nat.le_trans hx st.mem.2.1
-      · rw [st.mem.1 rg hp]; exact hx
+      · subst hp; exact Nat.le_trans hx.1 st.mem.2.1
+      · rw [st.mem.1 rg hp]; exact hx.1
   | cell a v =>
       simp only [extKeeps, Bool.and_eq_true] at hk
       obtain ⟨⟨-, hok⟩, hno⟩ := hk
       obtain ⟨rg, off, hd, hp, hbytes⟩ := cellOk_spec hok
-      refine load_kept hd hp hbytes hx (st.mem.1 _ hp) fun i hi => ?_
+      refine load_kept hd hp hbytes hx (st.mem.1 _ hp) st.mem.2.2.2 fun i hi => ?_
       have hm : e.frame.mayWrite bits (a + UInt64.ofNat i) = false := by
         have := List.all_eq_true.mp hno i (List.mem_range.mpr hi)
         simpa using this
@@ -896,21 +901,22 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl st.wg hx
   | wgText a n sh =>
       simp only [extKeeps, Bool.and_eq_true, Bool.not_eq_true'] at hk
-      refine wgText_kept hx (fun rg hp => st.mem.1 rg hp) st.wgslOk fun i hi => ?_
+      refine wgText_kept hx (fun rg hp => st.mem.1 rg hp) st.wgslOk st.mem.2.2.2 fun i hi => ?_
       exact ExtContracts.ext_respects_frame e vs w r w' h bits hb _
         (Frame.mayWrite_sound (Frame.touches_false hk.2 i hi) _)
   | roomArg rg x =>
-      show x.toNat ≤ w'.mem.sizes rg ∧ _
-      refine ⟨?_, hx.2⟩
+      refine ⟨?_, hx.2.1, hx.2.2⟩
       by_cases hp : rg = .pinned
       · subst hp; exact Nat.le_trans hx.1 st.mem.2.1
       · rw [st.mem.1 rg hp]; exact hx.1
   | cstrIn a n =>
       simp only [extKeeps, Bool.and_eq_true, Bool.not_eq_true'] at hk
-      refine cstrIn_kept hx (fun rg hp => st.mem.1 rg hp) fun i hi => ?_
+      refine cstrIn_kept hx (fun rg hp => st.mem.1 rg hp) st.mem.2.2.2 fun i hi => ?_
       exact ExtContracts.ext_respects_frame e vs w r w' h bits hb _
         (Frame.mayWrite_sound (Frame.touches_false hk.2 i hi) _)
   | htAt _ _ _ | cstr _ => simp [extKeeps] at hk
+  | threads _ _ _ _ _ => exact threads_kept hx st.threads (st.mem.1 .arena (by decide)) st.mem.2.2.2
+  | owns _ _ => exact owns_kept hx (st.mem.1 .arena (by decide)) st.mem.2.2.2
 
 /-- **The typestate follows a library call**: from a typestate that holds,
     a call of the engine's own libraries lands in what `extAfter` computes. -/
@@ -1042,7 +1048,7 @@ theorem lib_scalar {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {v :
     all_goals (repeat' split at hr) <;> first
       | (cases hr <;> exact ⟨_, _, rfl⟩)
       | (cases hr <;> exact usbDecode_answer hc)
-  · obtain ⟨x, hx⟩ := (ExtContracts.baseCall_same h).2.2 _ rfl
+  · obtain ⟨x, hx⟩ := (ExtContracts.baseCall_same (by simpa using ha) h).2.2 _ rfl
     exact ⟨_, x, hx⟩
 
 /-- **An open answers a 64-bit word**: the handle it opened, or null. -/
@@ -1180,8 +1186,8 @@ theorem baseNeeds_pre {f : BaseFn} {bits : List UInt64} {w : World} {hs : List (
         (Fits.mono (Nat.min_le_left _ _) (room _ (List.mem_cons_of_mem _ List.mem_cons_self))).writable⟩
     | (split at hn
        · rename_i ha; cases hn
-         obtain ⟨r, off, hd, hp, hs, -⟩ := room _ List.mem_cons_self
-         exact ⟨ha, load_isSome hd hp hs⟩
+         obtain ⟨r, off, hd, hp, hs, -, hl⟩ := room _ List.mem_cons_self
+         exact ⟨ha, load_isSome hd hp hs hl⟩
        · cases hn)
 
 /-- The C strings a call reads: a window's title. -/

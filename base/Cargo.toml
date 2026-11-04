@@ -22,23 +22,23 @@ libc = "0.2"
 # that is not installed makes its functions absent rather than the engine
 # unloadable.
 libloading = "0.8"
-# wgpu, built from source by cargo: `ffi/wgpu.rs` is the functions a program's
+# wgpu, built from source by cargo: `builtin/wgpu.rs` is the functions a program's
 # `Ext.wgpu` calls reach, one call into the crate each.
 wgpu = { version = "=29.0.1", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "gles", "std", "parking_lot"] }
 pollster = "0.4"
-# Windows and their input (`ffi/window.rs`): pure Rust, opening the desktop's
+# Windows and their input (`builtin/window.rs`): pure Rust, opening the desktop's
 # own X11 or Wayland libraries at run time.
 winit = "0.30"
-# Pinning a thread to a CPU (`ffi/cpu.rs`).
+# Pinning a thread to a CPU (`builtin/cpu.rs`).
 core_affinity = "=0.8.3"
-# Serial ports (`ffi/serial.rs`): without libudev, it lists ports from sysfs on
+# Serial ports (`builtin/serial.rs`): without libudev, it lists ports from sysfs on
 # Linux and reaches termios and the Win32 comm API itself.
 serialport = { version = "=4.10.1", default-features = false }
-# USB devices (`ffi/usb.rs`): usbfs on Linux, IOKit on macOS, WinUSB on
+# USB devices (`builtin/usb.rs`): usbfs on Linux, IOKit on macOS, WinUSB on
 # Windows, all reached from Rust.
 nusb = "=0.2.7"
 wasmtime-internal-jit-icache-coherence = "=36.0.13"
-# Waiting on a word of memory (`ffi/sync.rs`): the system's own address wait
+# Waiting on a word of memory (`builtin/sync.rs`): the system's own address wait
 # (futex, WaitOnAddress, os_sync_wait_on_address), which a host's threads meet.
 wait_on_address = "=0.1.6"
 # A thread's priority on one scale for every system (`builtin/os.rs`).

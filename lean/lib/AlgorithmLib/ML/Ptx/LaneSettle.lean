@@ -658,7 +658,7 @@ variable (hw : Hw) (cta : Nat) (im : Buf → Nat → Nat) (S : Nat) (MF : Lane �
 
 theorem relW_ans {l : Lane} {x : LCtx} {a : List Answer} {ws : WSt F32} {cl : Bool} {li : LI}
     (h : RelW hw S MF MB MI WS im l { x with ans := a } ws cl li) : RelW hw S MF MB MI WS im l x ws cl li :=
-  ⟨h.reg, h.f, h.fmem, h.bmem, h.imem, h.wr, h.asz, h.sm, h.nan, h.start, h.ptr, h.w32⟩
+  ⟨h.reg, h.f, h.fmem, h.bmem, h.imem, h.wr, h.asz, h.sm, h.nan, h.start, h.ptr, h.w32, by first | exact h.lent | exact (Mem.store_lent (by assumption)).trans h.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans h.lent⟩
 
 theorem prefix_get {α : Type} {l₁ l₂ : List α} (h : l₁ <+: l₂) {k : Nat} {x : α} (hk : l₁[k]? = some x) :
     l₂[k]? = some x := by

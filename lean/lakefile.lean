@@ -71,7 +71,7 @@ lean_lib Ship where
     `Ship.WgpuDraw, `Ship.WgpuFallingSand, `Ship.WgpuWindowDemo, `Ship.WgpuWindowDemoMain, `Ship.WgpuRaymarch, `Ship.WgpuRaymarchMain, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CudaApps, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.CudaPipeline, `Ship.Lz4Comp, `Ship.Lz4Run, `Ship.MlpCifar1, `Ship.MlpCifar2, `Ship.QwenReplay, `Ship.QwenRun, `Ship.QwenLoad, `Ship.VitState, `Ship.VitDag, `Ship.VitSafe, `Ship.VitIo, `Ship.VitReach, `Ship.VitRuns, `Ship.VitRunsBwd, `Ship.VitCapture, `Ship.VitCaptureStep, `Ship.VitCaptureCalls, `Ship.VitCaptureReach, `Ship.VitReplayWords, `Ship.VitCalls, `Ship.VitWords, `Ship.VitStep,
     `Ship.GemvWarpQwen, `Ship.GemvWarpMid, `Ship.GemvWarpMid2, `Ship.GemvWarpWide,
     `Ship.FallingSandMain,
-    `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Libs, `Ship.HtSpec, `Ship.LibCheck, `Ship.MathSpec, `Ship.MathCheck, `Ship.HtRuns, `Ship.HtLinked, `Ship.HtCheck]
+    `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Threads, `Ship.ParSumSpec, `Ship.Libs, `Ship.HtSpec, `Ship.LibCheck, `Ship.MathSpec, `Ship.MathCheck, `Ship.HtRuns, `Ship.HtLinked, `Ship.HtCheck]
   moreLeanArgs := #["--tstack=262144", "-M", "3500"]
 
 -- The scans' machinery, which the generators import to scan themselves: its
@@ -109,6 +109,8 @@ lean_exe genclialgorithm where
   root := `Main.Demo.Cli
 lean_exe genbytecountalgorithm where
   root := `Main.Demo.ByteCount
+lean_exe genparsumalgorithm where
+  root := `Main.Demo.ParSum
 lean_exe genselfdescribingalgorithm where
   root := `Main.Demo.SelfDescribing
 lean_exe genbytescrubalgorithm where
@@ -179,3 +181,5 @@ lean_exe genhprognativecorpus where
   root := `Main.Host.NativeCorpus
 lean_exe genhproglocalcorpus where
   root := `Main.Host.LocalCorpus
+lean_exe genhprogthreadcorpus where
+  root := `Main.Host.ThreadCorpus

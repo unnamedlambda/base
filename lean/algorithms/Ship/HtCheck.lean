@@ -69,10 +69,9 @@ theorem misses_num {x p : UInt64} {n m : Nat} (h : p.toNat + m ≤ x.toNat ∨ x
 /-- Room outside pinned memory, where no worker runs, is room. -/
 theorem NPRoom.room {w : World} {p : UInt64} {k : Nat} (h : NPRoom w p k) :
     Room w p k ∧ Out p := by
-  obtain ⟨r, off, hd, hr, hs, h36⟩ := h
-  refine ⟨.inr ⟨r, off, hd, hs, h36, ?_⟩, fun r' off' hd' => by rw [hd] at hd'; cases hd'; exact hr⟩
-  simp only [Mem.reachable, Bool.not_false, Bool.true_and, Bool.or_eq_true]
-  exact Or.inl (by cases r <;> first | rfl | exact absurd rfl hr)
+  obtain ⟨r, off, hd, hr, hs, h36, hl⟩ := h
+  exact ⟨.inr ⟨r, off, hd, hs, h36, Mem.reachable_of_ne_pinned hr hl⟩,
+    fun r' off' hd' => by rw [hd] at hd'; cases hd'; exact hr⟩
 
 section linked
 variable {fns : Nat → Option Fn} {env : FnEnv} {steps : Nat}
@@ -110,9 +109,9 @@ theorem htOk_linked (hq : ∀ i f, fns i = some f → quietCode f.code = true)
     (hLookup : fns (LibFn.libSlot .htLookup) = some (implFn [.i64, .i64, .i32, .i64] (.status lookup)))
     (k : Nat) : HtOk (termLocals fns env steps k) where
   init := fun w x hi hcell hroom => by
-    obtain ⟨r, off, hd, hr, hs, -⟩ := hroom
+    obtain ⟨r, off, hd, hr, hs, -, hlo⟩ := hroom
     have hc := calm_of hi
-    refine libCall_of_callsD hq (by simp) (init_at hInit w x r off hc hd hr hs k) fun w' ⟨⟨s, hl, hT⟩, ho⟩ hquiet => ?_
+    refine libCall_of_callsD hq (by simp) (init_at hInit w x r off hc hd hr hs hlo k) fun w' ⟨⟨s, hl, hT⟩, ho⟩ hquiet => ?_
     refine ⟨?_, libStep_of ho hquiet hc fun c _ hm => misses_num (m := 8) (by omega) (Nat.le_refl _)⟩
     rcases hT with rfl | hT
     · exact HtObj.null hd hr hl 0 0
@@ -195,8 +194,8 @@ theorem htOk_linked (hq : ∀ i f, fns i = some f → quietCode f.code = true)
         · have hle : (T.entries[p]'hp).2.size ≤ n := hb _ (List.getElem_mem hp)
           have hst := hW.stays
           have hc' := hst.calm hc
-          refine ⟨fun rg hrg => hst.size rg hrg, by rw [show _ = [] from hc']; rfl, fun c v hcell hm hlc => ?_,
-            hquiet.calls⟩
+          refine ⟨fun rg hrg => hst.size rg hrg, hst.lent, by rw [show _ = [] from hc']; rfl,
+            fun c v hcell hm hlc => ?_, hquiet.calls⟩
           obtain ⟨rc, oc, hdc, hpc, -⟩ := cellOk_spec hcell
           rw [hW.load hdc fun _ r2 o2 hd2 => ?_]
           · exact hlc

@@ -110,7 +110,7 @@ namespace AlgorithmLib.LibSpec
 theorem readable_of_reachable {m : Mem} {r : Region} {off n : Nat} (h : m.reachable r off n = true) :
     m.readable r off n = true := by
   simp only [Mem.reachable, Mem.readable, Bool.and_eq_true, Bool.or_eq_true, List.all_eq_true] at h ⊢
-  refine h.imp id fun ⟨h1, h2⟩ => ⟨h1, fun b hb => ?_⟩
+  refine ⟨h.1.imp id fun ⟨h1, h2⟩ => ⟨h1, fun b hb => ?_⟩, h.2⟩
   simp [h2 b hb]
 
 theorem readable_setRegion (m : Mem) (r r' : Region) (b : ByteArray) (off n : Nat) :
@@ -260,7 +260,8 @@ theorem reachable_sub {m : Mem} {r : Region} {off n off' k : Nat} (h : m.reachab
     (h1 : off ≤ off') (h2 : off' + k ≤ off + n) : m.reachable r off' k = true := by
   simp only [Mem.reachable, Bool.and_eq_true, Bool.or_eq_true, List.any_eq_true, List.all_eq_true,
     decide_eq_true_eq, Busy.clear] at h ⊢
-  refine h.imp id fun ⟨⟨a, ha, hc⟩, hb⟩ => ⟨⟨a, ha, by omega⟩, fun b hb' => ?_⟩
+  refine ⟨h.1.imp id fun ⟨⟨a, ha, hc⟩, hb⟩ => ⟨⟨a, ha, by omega⟩, fun b hb' => ?_⟩,
+    h.2.imp id fun hc => Mem.lentClear_sub hc h1 h2⟩
   rcases hb b hb' with h | h
   · exact Or.inl (by omega)
   · exact Or.inr (by omega)
@@ -354,6 +355,7 @@ structure Grows (w w' : World) : Prop where
   room : ∀ p n, Room w p n → Room w' p n
   whole : ∀ x n, Whole w x n → Whole w' x n
   psize : (w.mem.region .pinned).size ≤ (w'.mem.region .pinned).size
+  lent : w'.mem.lent = w.mem.lent
 
 /-- **What `w` has of calm, blocks and room, `w'` has**: what a store leaves,
     and what more heap leaves. -/
@@ -361,40 +363,41 @@ structure Stays (w w' : World) : Prop where
   calm : Calm w → Calm w'
   blk : ∀ x n, Blk w x n → Blk w' x n
   size : ∀ r, r ≠ .pinned → (w'.mem.region r).size = (w.mem.region r).size
+  lent : w'.mem.lent = w.mem.lent
 
-theorem Stays.refl (w : World) : Stays w w := ⟨id, fun _ _ h => h, fun _ _ => rfl⟩
+theorem Stays.refl (w : World) : Stays w w := ⟨id, fun _ _ h => h, fun _ _ => rfl, rfl⟩
 
 theorem Stays.trans {w w' w'' : World} (h : Stays w w') (h' : Stays w' w'') : Stays w w'' :=
-  ⟨fun c => h'.calm (h.calm c), fun x n b => h'.blk x n (h.blk x n b), fun r hr => (h'.size r hr).trans (h.size r hr)⟩
+  ⟨fun c => h'.calm (h.calm c), fun x n b => h'.blk x n (h.blk x n b), fun r hr => (h'.size r hr).trans (h.size r hr),
+    h'.lent.trans h.lent⟩
 
-theorem Grows.stays {w w' : World} (h : Grows w w') : Stays w w' := ⟨h.calm, h.blk, h.size⟩
+theorem Grows.stays {w w' : World} (h : Grows w w') : Stays w w' := ⟨h.calm, h.blk, h.size, h.lent⟩
 
 theorem stays_stored {w : World} {p x : UInt64} {m : Mem} (hs : w.mem.store p 8 x = some m) :
     Stays w (stored w p x m) :=
-  ⟨fun c => c.stored hs, fun _ _ b => Blk.keep b hs, fun r _ => store_sizes hs r⟩
+  ⟨fun c => c.stored hs, fun _ _ b => Blk.keep b hs, fun r _ => store_sizes hs r, Mem.store_lent hs⟩
 
 /-- Eight bytes with room, outside pinned memory, can be written where no
     worker is running. -/
 theorem store_room {m : Mem} {a x : UInt64} {r : Region} {off : Nat} (hd : decodeAddr a = some (r, off))
-    (hr : r ≠ .pinned) (hs : off + 8 ≤ (m.region r).size) : ∃ m', m.store a 8 x = some m' := by
+    (hr : r ≠ .pinned) (hs : off + 8 ≤ (m.region r).size) (hl : m.LentOk r off 8) :
+    ∃ m', m.store a 8 x = some m' := by
   unfold Mem.store
   simp only [hd, Option.bind_eq_bind, Option.bind_some]
   rw [if_neg (by
-    have : m.reachable r off 8 = true := by
-      simp only [Mem.reachable, Bool.not_false, Bool.true_and, Bool.or_eq_true]
-      exact Or.inl (by cases r <;> first | rfl | exact absurd rfl hr)
+    have : m.reachable r off 8 = true := Mem.reachable_of_ne_pinned hr hl
     simp [this]; omega)]
   exact ⟨_, rfl⟩
 
 theorem Grows.refl (w : World) : Grows w w :=
   ⟨id, fun _ _ h => h, fun _ _ _ h => h, fun _ _ => rfl, fun _ _ h => h, fun _ _ h => h, fun _ _ h => h,
-    Nat.le_refl _⟩
+    Nat.le_refl _, rfl⟩
 
 theorem Grows.trans {w w' w'' : World} (h : Grows w w') (h' : Grows w' w'') : Grows w w'' :=
   ⟨fun c => h'.calm (h.calm c), fun x n b => h'.blk x n (h.blk x n b), fun a k v l => h'.load a k v (h.load a k v l),
     fun r hr => (h'.size r hr).trans (h.size r hr), fun p bs b => h'.bytes p bs (h.bytes p bs b),
     fun p n b => h'.room p n (h.room p n b), fun x n b => h'.whole x n (h.whole x n b),
-    Nat.le_trans h.psize h'.psize⟩
+    Nat.le_trans h.psize h'.psize, h'.lent.trans h.lent⟩
 
 theorem Grows.fld {w w' : World} (h : Grows w w') {s v : UInt64} {j : Nat} (hf : fld w s j = some v) :
     fld w' s j = some v := h.load _ _ _ hf
@@ -422,7 +425,7 @@ theorem alloc_grows (w : World) (b : Nat) : Grows w (alloc w b) := by
     rw [alloc_size]; have := pinnedNext_ge w.mem; omega
   refine ⟨fun c => c, fun x n h => Blk.alloc h b, fun a k v h => ?_,
     fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, fun p bs h => ?_, fun p n h => ?_,
-    fun x n h => ?_, hsz⟩
+    fun x n h => ?_, hsz, rfl⟩
   rotate_left
   · rcases h with rfl | ⟨r, off, hd, hs, h36, hr, hg⟩
     · exact Or.inl rfl
@@ -430,21 +433,21 @@ theorem alloc_grows (w : World) (b : Nat) : Grows w (alloc w b) := by
       · subst e
         refine Or.inr ⟨.pinned, off, hd, Nat.le_trans hs hsz, h36, ?_, fun i hi => ?_⟩
         · simp only [Mem.readable, Bool.and_eq_true, Bool.or_eq_true] at hr ⊢
-          refine hr.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩
+          refine ⟨hr.1.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩, hr.2⟩
           show ((w.mem.pinnedNext, b) :: w.mem.pinnedLive).any _ = true
           rw [List.any_cons, h1, Bool.or_true]
         · rw [← hg i hi]
           exact ByteArray.get!_append_left' _ _ _ (by have : off + bs.length ≤ w.mem.pinned.size := hs; omega)
       · have hreg : (alloc w b).mem.region r = w.mem.region r := by cases r <;> first | rfl | exact absurd rfl e
         exact Or.inr ⟨r, off, hd, by rw [hreg]; exact hs, h36,
-          readable_off_pinned e _ _, fun i hi => by rw [hreg]; exact hg i hi⟩
+          Mem.readable_of_lent_eq e (by rfl) hr, fun i hi => by rw [hreg]; exact hg i hi⟩
   · rcases h with h0 | ⟨r, off, hd, hs, h36, hr⟩
     · exact Or.inl h0
     · by_cases e : r = .pinned
       · subst e
         refine Or.inr ⟨.pinned, off, hd, Nat.le_trans hs hsz, h36, ?_⟩
         simp only [Mem.reachable, Bool.and_eq_true, Bool.or_eq_true] at hr ⊢
-        refine hr.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩
+        refine ⟨hr.1.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩, hr.2⟩
         show ((w.mem.pinnedNext, b) :: w.mem.pinnedLive).any _ = true
         rw [List.any_cons, h1, Bool.or_true]
       · have hreg : (alloc w b).mem.region r = w.mem.region r := by cases r <;> first | rfl | exact absurd rfl e
@@ -476,7 +479,7 @@ theorem alloc_grows (w : World) (b : Nat) : Grows w (alloc w b) := by
                          omega)
         (by
           simp only [Mem.readable, Bool.and_eq_true, Bool.or_eq_true] at hr ⊢
-          refine hr.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩
+          refine ⟨hr.1.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩, hr.2⟩
           show ((w.mem.pinnedNext, b) :: w.mem.pinnedLive).any _ = true
           rw [List.any_cons, h1, Bool.or_true])]
       congr 1
@@ -486,7 +489,7 @@ theorem alloc_grows (w : World) (b : Nat) : Grows w (alloc w b) := by
         omega)
     · have hreg : (alloc w b).mem.region r = w.mem.region r := by cases r <;> first | rfl | exact absurd rfl e
       rw [load_of hd (by rw [hreg]; exact hs)
-        (readable_off_pinned e _ _), hreg]
+        (Mem.readable_of_lent_eq e (by rfl) hr), hreg]
 
 theorem get!_zeros (b : ByteArray) (n i : Nat) (hi : b.size ≤ i) :
     (b ++ ByteArray.mk (Array.replicate n 0)).get! i = 0 := by
@@ -507,7 +510,7 @@ theorem alloc_zero {w : World} {b j : Nat} (hc : Calm w) (hj : j + 8 ≤ b) (hro
   rw [load_of hd (by rw [show (alloc w b).mem.region .pinned = (alloc w b).mem.pinned from rfl, alloc_size]; omega)
     (by
       simp only [Mem.readable, Bool.and_eq_true, Bool.or_eq_true]
-      refine Or.inr ⟨?_, ?_⟩
+      refine ⟨Or.inr ⟨?_, ?_⟩, Or.inl rfl⟩
       · show ((w.mem.pinnedNext, b) :: w.mem.pinnedLive).any _ = true
         rw [List.any_cons]
         simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
@@ -594,7 +597,7 @@ theorem calloc_cases {n sz : UInt64} (w : World) (hn : n ≠ 0) (hsz : sz = 1) :
 
 theorem obs_grows (w : World) (c : Callee) (vs : List V) : Grows w (obsCall w c vs) :=
   ⟨id, fun _ _ h => h, fun _ _ _ h => h, fun _ _ => rfl, fun _ _ h => h, fun _ _ h => h, fun _ _ h => h,
-    Nat.le_refl _⟩
+    Nat.le_refl _, rfl⟩
 
 section steps
 variable {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
@@ -705,12 +708,13 @@ structure Freed (w w' : World) (x : UInt64) : Prop where
   room : ∀ n, Whole w x n → ∀ p k, Room w p k → Off x n p k → Room w' p k
   load : ∀ n, Whole w x n → ∀ a k v, 0 < k → Off x n a k → w.mem.load a k = some v → w'.mem.load a k = some v
   psize : (w'.mem.region .pinned).size = (w.mem.region .pinned).size
+  lent : w'.mem.lent = w.mem.lent
   outBytes : ∀ p bs, Out p → Bytes w p bs → Bytes w' p bs
   outRoom : ∀ p k, Out p → Room w p k → Room w' p k
 
 theorem Freed.refl (w : World) (x : UInt64) : Freed w w x :=
   ⟨id, fun _ _ _ h => h, fun _ _ _ _ _ _ _ h => h, fun _ _ _ _ _ _ => rfl, fun _ _ => rfl,
-    fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl,
+    fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl, rfl,
     fun _ _ _ h => h, fun _ _ _ h => h⟩
 
 theorem find?_erase_ne {l : List (Nat × Nat)} {a : Nat × Nat} {k : Nat} (h : a.1 ≠ k) :
@@ -754,7 +758,7 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
     rcases hb with rfl | ⟨r, o, hd, hs, h36, hr, hg⟩
     · exact Or.inl rfl
     have e := ho r o hd
-    exact Or.inr ⟨r, o, hd, by rw [hreg]; exact hs, h36, readable_off_pinned e _ _,
+    exact Or.inr ⟨r, o, hd, by rw [hreg]; exact hs, h36, Mem.readable_of_lent_eq e (by rfl) hr,
       fun i hi => by rw [hreg]; exact hg i hi⟩
   have hor : ∀ p k, Out p → Room w p k → Room (freed w off n) p k := by
     intro p k ho hrm
@@ -763,7 +767,7 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
     have e := ho r o hd
     exact Or.inr ⟨r, o, hd, by rw [hreg]; exact hs, h36, by cases r <;> first | exact hr | exact absurd rfl e⟩
   refine ⟨fun c => c, ?_, ?_, ?_, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, ?_, ?_, ?_,
-    rfl, hob, hor⟩
+    rfl, rfl, hob, hor⟩
   rotate_left 3
   · rintro y k hne ⟨hb, oy, hy⟩
     have ho := heapAt_off_ne hx hy hne
@@ -792,9 +796,9 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
     · subst e
       have hcl := (ho .pinned o off hd hxd).resolve_left (fun c => c rfl)
       simp only [Mem.readable, Bool.and_eq_true, Bool.or_eq_true] at hr ⊢
-      refine hr.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩
+      refine ⟨hr.1.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩, hr.2⟩
       exact hkeep o bs.length (by omega) hcl h1
-    · rw [readable_off_pinned e]
+    · exact Mem.readable_of_lent_eq e (by rfl) hr
   · rintro n' ⟨-, o', hw⟩ p k hrm ho
     rw [hx] at hw
     cases hw
@@ -808,7 +812,7 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
     · subst e
       have hcl := (ho .pinned o off hd hxd).resolve_left (fun c => c rfl)
       simp only [Mem.reachable, Bool.and_eq_true, Bool.or_eq_true] at hr ⊢
-      refine hr.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩
+      refine ⟨hr.1.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩, hr.2⟩
       exact hkeep o k (by omega) hcl h1
     · cases r <;> first | exact hr | exact absurd rfl e
   · rintro n' ⟨-, o', hw⟩ a k v hk ho hl
@@ -825,9 +829,9 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
         · subst e
           have hcl := (ho .pinned o off hd hxd).resolve_left (fun c => c rfl)
           simp only [Mem.readable, Bool.and_eq_true, Bool.or_eq_true] at hr ⊢
-          refine hr.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩
+          refine ⟨hr.1.imp id fun ⟨h1, h2⟩ => ⟨?_, h2⟩, hr.2⟩
           exact hkeep o k hk hcl h1
-        · rw [readable_off_pinned e]), hreg]
+        · exact Mem.readable_of_lent_eq e (by rfl) hr), hreg]
   · rintro y k hne ⟨oy, m, hat, hk, hm, hsz, h36, hlv⟩
     have ho := heapAt_off_ne hx hat hne
     obtain ⟨hd, hf⟩ := heapAt_decode hat
@@ -846,7 +850,7 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
     unfold LibSpec.fld
     rw [load_of (m := (freed w off n).mem) hdj (show _ ≤ ((freed w off n).mem.region .pinned).size from hs) (by
       simp only [Mem.readable, Bool.and_eq_true, Bool.or_eq_true] at hr ⊢
-      refine hr.imp id fun ⟨_, h2⟩ => ⟨?_, h2⟩
+      refine ⟨hr.1.imp id fun ⟨_, h2⟩ => ⟨?_, h2⟩, hr.2⟩
       show (w.mem.pinnedLive.erase (off, n)).any _ = true
       rw [List.any_eq_true]
       exact ⟨(oy, m), (List.mem_erase_of_ne (by intro e; exact ho (congrArg Prod.fst e))).mpr hlv,
@@ -856,7 +860,7 @@ theorem freed_spec {w : World} {x : UInt64} {off n : Nat} (hx : w.heapAt? x = so
     unfold Mem.load
     simp only [hd, Option.bind_eq_bind, Option.bind_some]
     rw [show (freed w off n).mem.region r = w.mem.region r from by cases r <;> rfl,
-      readable_off_pinned hr, readable_off_pinned hr]
+      Mem.readable_eq_of_ne_pinned hr (m := w.mem) (m' := (freed w off n).mem) rfl]
 
 section steps
 variable {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
@@ -880,7 +884,7 @@ theorem wp_free {a : Slot .i64} {x : UInt64} {n : Nat} {Q : Unit → Env → Wor
     rintro r w' hrw
     cases hrw
     exact h _ ⟨id, fun _ _ _ h => h, fun _ _ _ _ _ _ _ h => h, fun _ _ _ _ _ _ => rfl, fun _ _ => rfl,
-      fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl,
+      fun _ _ _ h => h, fun _ _ _ _ h _ => h, fun _ _ _ _ h _ => h, fun _ _ _ _ _ _ _ h => h, rfl, rfl,
       fun _ _ _ h => h, fun _ _ _ h => h⟩
   · have hx0 : (x == 0) = false := by simpa using Blk.ne_zero hb
     obtain ⟨off, m, hat, -⟩ := hb
@@ -890,7 +894,7 @@ theorem wp_free {a : Slot .i64} {x : UInt64} {n : Nat} {Q : Unit → Env → Wor
     rintro r w' hrw
     cases hrw
     have f := freed_spec hat'
-    exact h _ ⟨f.calm, f.blk, f.fld, f.out, f.size, f.whole, f.bytes, f.room, f.load, f.psize,
+    exact h _ ⟨f.calm, f.blk, f.fld, f.out, f.size, f.whole, f.bytes, f.room, f.load, f.psize, f.lent,
       f.outBytes, f.outRoom⟩
 
 /-- A branch taken for effect: `R` holds of the world either way. -/
@@ -1097,7 +1101,7 @@ theorem copyIn_spec {m : Mem} {a : UInt64} {r : Region} {off : Nat} {bs : List U
 theorem Wrote.stays {w w' : World} {d : UInt64} {n : Nat} (h : Wrote w w' d n) : Stays w w' :=
   ⟨fun c => h.same.busy.symm.trans c,
     fun _ _ b => b.same h.heap (Nat.le_of_eq (h.same.size .pinned)) h.same.live.symm,
-    fun r _ => (h.same.size r).symm⟩
+    fun r _ => (h.same.size r).symm, h.same.lent.symm⟩
 
 theorem Wrote.whole {w w' : World} {d : UInt64} {n : Nat} (h : Wrote w w' d n) {x : UInt64} {k : Nat}
     (hx : Whole w x k) : Whole w' x k := by
@@ -1915,6 +1919,7 @@ structure Moved (w w' : World) (s : UInt64) (a c : Nat) (old : UInt64) (oc : Nat
   size : ∀ r, r ≠ .pinned → (w'.mem.region r).size = (w.mem.region r).size
   inw : ∀ q n, InW w q n → InW w' q n
   psize : (w.mem.region .pinned).size ≤ (w'.mem.region .pinned).size
+  lent : w'.mem.lent = w.mem.lent
 
 /-- **A block moved to a fresh one**: more heap with a fresh block `x`, a
     write inside `x`, the old block freed, and two fields of the block `s`
@@ -1958,7 +1963,7 @@ theorem moved {w w1 w2 w3 w5 : World} {s old x v2 : UInt64} {n a c a1 a2 oc N k 
   have c2 : ∀ {ww : World}, Blk ww s n → ∀ r off oy, decodeAddr (s + UInt64.ofNat a2) = some (r, off) →
       decodeAddr x = some (.pinned, oy) → r ≠ .pinned ∨ off + 8 ≤ oy ∨ oy + N ≤ off :=
     fun hb => a_xs.symm.clear hb (by omega)
-  refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩, W5.whole (W4.whole (F.whole _ _ hxo (W.whole f.whole))), ?_, fld_stored hm5,
+  refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩, W5.whole (W4.whole (F.whole _ _ hxo (W.whole f.whole))), ?_, fld_stored hm5,
     ?_, ?_, ?_⟩
   · refine ((((g1.keeps _).trans (W.keeps _ fun q n hn hp => ?_)).trans (F.keeps wo2 _ fun q k hp => hp.2.1)).trans
       (W4.keeps _ fun q n hn hp => Off.sub bs3 hp.2.2 h1.1 h1.2 hac (by omega))).trans
@@ -1973,6 +1978,7 @@ theorem moved {w w1 w2 w3 w5 : World} {s old x v2 : UInt64} {n a c a1 a2 oc N k 
   · exact fun _ _ hi => InW.wrote W5 (InW.wrote W4 (InW.freed F (InW.wrote W (InW.grows g1 hi))))
   · rw [← W5.same.size, ← W4.same.size, F.psize, ← W.same.size]
     exact g1.psize
+  · exact W5.stays.lent.trans (W4.stays.lent.trans (F.lent.trans (W.stays.lent.trans g1.lent)))
   · exact (fld_kept bs4 (by omega) (by omega) h12 hm5).trans (fld_stored hm4)
   · intro j v hj hj1 hj2 hv
     have h2' : fld w2 s j = some v := (W.fld_blk bs1 hj c_xs).trans (g1.fld hv)
@@ -2264,26 +2270,27 @@ structure Outside (w w' : World) (P : UInt64 → Nat → Prop) : Prop where
   keeps : Keeps w w' (fun q n => InW w q n ∧ Out q ∧ P q n)
   calm : Calm w → Calm w'
   size : ∀ r, r ≠ .pinned → (w'.mem.region r).size = (w.mem.region r).size
+  lent : w'.mem.lent = w.mem.lent
 
-theorem Outside.refl (w : World) (P : UInt64 → Nat → Prop) : Outside w w P := ⟨Keeps.refl _ _, id, fun _ _ => rfl⟩
+theorem Outside.refl (w : World) (P : UInt64 → Nat → Prop) : Outside w w P := ⟨Keeps.refl _ _, id, fun _ _ => rfl, rfl⟩
 
 theorem Outside.trans {w w' w'' : World} {P : UInt64 → Nat → Prop} (h : Outside w w' P) (h' : Outside w' w'' P) :
     Outside w w'' P :=
   ⟨h.keeps.next h'.keeps fun _ _ _ hp hi' => ⟨hi', hp.2.1, hp.2.2⟩, fun c => h'.calm (h.calm c),
-    fun r hr => (h'.size r hr).trans (h.size r hr)⟩
+    fun r hr => (h'.size r hr).trans (h.size r hr), h'.lent.trans h.lent⟩
 
 theorem Outside.mono {w w' : World} {P P' : UInt64 → Nat → Prop} (h : Outside w w' P)
     (hP : ∀ q n, P' q n → P q n) : Outside w w' P' :=
-  ⟨h.keeps.mono fun q n hp => ⟨hp.1, hp.2.1, hP q n hp.2.2⟩, h.calm, h.size⟩
+  ⟨h.keeps.mono fun q n hp => ⟨hp.1, hp.2.1, hP q n hp.2.2⟩, h.calm, h.size, h.lent⟩
 
 /-- More heap changes only the heap. -/
 theorem Grows.outside {w w' : World} (g : Grows w w') (P : UInt64 → Nat → Prop) : Outside w w' P :=
-  ⟨g.keeps _, g.calm, g.size⟩
+  ⟨g.keeps _, g.calm, g.size, g.lent⟩
 
 /-- A free changes only the heap. -/
 theorem Freed.outside {w w' : World} {x : UInt64} (f : Freed w w' x) (P : UInt64 → Nat → Prop) : Outside w w' P := by
   refine ⟨⟨fun q cs _ hp hb => f.outBytes q cs hp.2.1 hb, fun q k _ hp hr => f.outRoom q k hp.2.1 hr,
-    fun q k v _ hp hl => ?_⟩, f.calm, f.size⟩
+    fun q k v _ hp hl => ?_⟩, f.calm, f.size, f.lent⟩
   cases hd : decodeAddr q with
   | none => simp [Mem.load, hd] at hl
   | some a =>
@@ -2294,7 +2301,7 @@ theorem Freed.outside {w w' : World} {x : UInt64} (f : Freed w w' x) (P : UInt64
 theorem Wrote.outside {w w' : World} {d : UInt64} {n : Nat} (W : Wrote w w' d n)
     (hd : ∀ r off, decodeAddr d = some (r, off) → r = .pinned) (P : UInt64 → Nat → Prop) : Outside w w' P :=
   ⟨W.keeps _ fun _ _ _ hp r off r' off' hdd hq => Or.inl fun e => hp.2.1 r' off' hq (e.trans (hd r off hdd)),
-    W.stays.calm, W.stays.size⟩
+    W.stays.calm, W.stays.size, W.stays.lent⟩
 
 /-- A field of a block set changes only the heap. -/
 theorem Outside.setFld {w : World} {s x : UInt64} {n j : Nat} {m : Mem} (hb : Blk w s n) (hj : j < n)
@@ -2323,10 +2330,8 @@ theorem misses_of {slot p : UInt64} {n : Nat} {r r' : Region} {off off' : Nat}
     running. -/
 theorem room_out {w : World} {p : UInt64} {n : Nat} {r : Region} {off : Nat} (hd : decodeAddr p = some (r, off))
     (hr : r ≠ .pinned) (hs : off + n ≤ (w.mem.region r).size) (h36 : off + n ≤ 2 ^ 36)
-    : Room w p n :=
-  Or.inr ⟨r, off, hd, hs, h36, by
-    simp only [Mem.reachable, Bool.not_false, Bool.true_and, Bool.or_eq_true]
-    exact Or.inl (by cases r <;> first | rfl | exact absurd rfl hr)⟩
+    (hl : w.mem.LentOk r off n) : Room w p n :=
+  Or.inr ⟨r, off, hd, hs, h36, Mem.reachable_of_ne_pinned hr hl⟩
 
 /-- A slot written changes, outside the heap, at most the slot. -/
 theorem Wrote.outsideBut {w w' : World} {slot : UInt64} (W : Wrote w w' slot 8) : Outside w w' (Misses slot) :=
@@ -2335,7 +2340,7 @@ theorem Wrote.outsideBut {w w' : World} {slot : UInt64} (W : Wrote w w' slot 8) 
       · exact Or.inl (Ne.symm h)
       · exact Or.inr (Or.inr h)
       · exact Or.inr (Or.inl h),
-    W.stays.calm, W.stays.size⟩
+    W.stays.calm, W.stays.size, W.stays.lent⟩
 
 theorem CallsA.mono {L : Sem.Locals} {i : Nat} {args : List V} {w : World} {Q Q' : UInt64 → World → Prop}
     (h : CallsA L i args w Q) (hq : ∀ x w', Q x w' → Q' x w') : CallsA L i args w Q' := by

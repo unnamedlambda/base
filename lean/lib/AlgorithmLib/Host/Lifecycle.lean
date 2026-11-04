@@ -15,6 +15,12 @@ namespace AlgorithmLib.HProg.Contracts
 -- Typestates
 -- ---------------------------------------------------------------------------
 
+/-- Running threads as the typestate lists them: by distinct start order, each
+    owning a span of at least one byte apart from every other's. -/
+def LiveOk (live : List (Nat × Nat × UInt64 × Nat × Nat)) : Prop :=
+  (∀ t ∈ live, 0 < t.2.2.2.2) ∧ live.Pairwise fun a b => a.1 ≠ b.1 ∧
+    (a.2.2.2.1 + a.2.2.2.2 ≤ b.2.2.2.1 ∨ b.2.2.2.1 + b.2.2.2.2 ≤ a.2.2.2.1)
+
 /-- **A fact a typestate names**: a lifecycle part's value, that a region is at
     least so large, what an eight-byte cell of memory holds, or that a handle
     a library handed out is held open. -/
@@ -121,6 +127,15 @@ inductive Fact where
   /-- The `n` bytes at `a` are UTF-8, and where `shader` is set, a WGSL source
       the device accepts: what a step that leaves those bytes alone keeps. -/
   | wgText (a : UInt64) (n : Nat) (shader : Bool)
+  /-- The program's threads: `n` started, the arena at least `sz` bytes, the
+      running ones `live` as (start order, function, word, offset, length),
+      their spans exactly the arena's owned ones; each start of `lends` owns
+      the span it names; and, where `granted`, the system makes threads. -/
+  | threads (n sz : Nat) (live : List (Nat × Nat × UInt64 × Nat × Nat))
+      (lends : List (Nat × UInt64 × Nat × Nat)) (granted : Bool)
+  /-- The `len` arena bytes at `off` are the holder's: there, and no running
+      thread's. -/
+  | owns (off len : Nat)
   deriving Repr, DecidableEq
 
 /-- A hash of a fact from its constructor and leading numbers, cheap to
@@ -168,7 +183,7 @@ def WritesAs (o : Option (List Bool)) (flags : List Bool) : Prop :=
 
 def Fact.holds : Fact → World → Prop
   | .part p b, w => p.get w = b
-  | .room r n, w => n ≤ w.mem.sizes r
+  | .room r n, w => n ≤ w.mem.sizes r ∧ (r = .arena → w.mem.lent = [])
   | .cell a v, w => w.mem.load a 8 = some v
   | .held k a, w => k.live w a = true
   | .opened k a, w => a ≠ 0 → k.live w a = true
@@ -178,7 +193,7 @@ def Fact.holds : Fact → World → Prop
   | .oracles, w => Sem.KeepsSize w.kernel ∧ VendorKeeps w.vendor
   | .cstrIn a n, w => CStr w.mem a ∧ a.toNat + n < 2 ^ 64 ∧
       ∃ r off k, r ≠ .pinned ∧ off + n < 2 ^ 36 ∧ Sem.strSpan w.mem a = some (r, off, k) ∧ k ≤ n
-  | .roomArg r x, w => x.toNat ≤ w.mem.sizes r ∧ x.toNat ≤ 2 ^ 36
+  | .roomArg r x, w => x.toNat ≤ w.mem.sizes r ∧ x.toNat ≤ 2 ^ 36 ∧ r ≠ .arena
   | .devBuf a n, w => Device.BufIs (asI32 a) n.toNat w.dev
   | .pinnedUsed n, w => w.mem.sizes .pinned ≤ n
   | .streams l, w => w.dev.streams.toList = l
@@ -218,6 +233,11 @@ def Fact.holds : Fact → World → Prop
   | .wgText a n sh, w => a.toNat + n < 2 ^ 64 ∧
       (∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ w.mem.sizes r ∧ off + n ≤ 2 ^ 36) ∧
       ∃ t, Sem.wgText w.mem a (UInt64.ofNat n) = some t ∧ (sh = true → w.wgslOk t = true)
+  | .threads n sz live lends g, w => w.threads.size = n ∧ sz ≤ w.mem.arena.size ∧ sz ≤ 2 ^ 36 ∧
+      (g = true → w.grants "thread" = true) ∧ (∀ l ∈ lends, w.lend l.1 l.2.1 = some l.2.2) ∧
+      (∀ t ∈ live, w.threads[t.1]? = some (some ⟨t.2.1, t.2.2.1, t.2.2.2.1, t.2.2.2.2⟩)) ∧
+      w.mem.lent = live.map (fun t => (t.2.2.2.1, t.2.2.2.2)) ∧ LiveOk live
+  | .owns off len, w => off + len ≤ w.mem.arena.size ∧ off + len ≤ 2 ^ 36 ∧ w.mem.lentClear off len = true
 
 /-- A fact about the device's streams, events and tracker. -/
 def Fact.isDev : Fact → Bool
@@ -485,7 +505,7 @@ theorem cstr_other {m m' : Mem} {x a : UInt64} {n : Nat} {v : UInt64} (ho : othe
       unfold CStr readCStr at hc ⊢
       rw [ha] at hc ⊢
       simp only [Option.bind_eq_bind, Option.bind_some] at hc ⊢
-      rw [store_region_other h hx hr]
+      rw [store_region_other h hx hr, Mem.store_readable h]
       exact hc
 
 /-- A byte past a range that does not wrap is outside it. -/
@@ -541,14 +561,15 @@ theorem Frame.touches_false {fr : Frame} {args : List UInt64} {a : UInt64} {n : 
 /-- **A C string within `n` bytes is kept** by a step that keeps every
     region's size and leaves those bytes alone. -/
 theorem cstrIn_kept {w w' : World} {a : UInt64} {n : Nat} (hx : (Fact.cstrIn a n).holds w)
-    (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r) (hlent : w'.mem.lent = w.mem.lent)
     (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.cstrIn a n).holds w' := by
   obtain ⟨hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩ := hx
   have hd := strSpan_decode hsp
   have hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := fun i hi =>
     Sem.decodeAddr_add hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  have hb := bytes_kept hp hbytes (strSpan_bound hsp) (hsz r hp) (fun i hi => hu i (by omega))
-  obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb
+  have hb := bytes_kept hp hbytes (strSpan_bound hsp) (Mem.lentOk_of_readable (cstr_readable hsp hc)) hlent
+    (hsz r hp) (fun i hi => hu i (by omega))
+  obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb (Mem.readable_eq_of_ne_pinned hp hlent _ _)
   refine ⟨?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩
   unfold CStr; rw [hrd]; exact hc
 
@@ -557,13 +578,15 @@ theorem text_kept {w w' : World} {a : UInt64} {s : Option String} {n : Nat} {sg 
     (hx : (Fact.text a s n sg).holds w)
     (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
     (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i))
-    (hkw : w'.dev.kernelWrites = w.dev.kernelWrites) : (Fact.text a s n sg).holds w' := by
+    (hkw : w'.dev.kernelWrites = w.dev.kernelWrites) (hlent : w'.mem.lent = w.mem.lent) :
+    (Fact.text a s n sg).holds w' := by
   obtain ⟨⟨hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩, t, hs, hst, hsg⟩ := hx
   have hd := strSpan_decode hsp
   have hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := fun i hi =>
     Sem.decodeAddr_add hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  have hb := bytes_kept hp hbytes (strSpan_bound hsp) (hsz r hp) (fun i hi => hu i (by omega))
-  obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb
+  have hb := bytes_kept hp hbytes (strSpan_bound hsp) (Mem.lentOk_of_readable (cstr_readable hsp hc)) hlent
+    (hsz r hp) (fun i hi => hu i (by omega))
+  obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb (Mem.readable_eq_of_ne_pinned hp hlent _ _)
   refine ⟨⟨?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩, t, ?_, hst, by rw [hkw]; exact hsg⟩
   · unfold CStr; rw [hrd]; exact hc
   · show readCStr w'.mem a = some t; rw [hrd]; exact hs
@@ -706,28 +729,25 @@ theorem devAfter_copy {S : TState} {w w' : World} (hS : S.holds w) (hc : Device.
       rw [hr]
       exact ((readyIn_sound hS h).op_self hop).grow rfl rfl (DevSpec.sync_grows _ _)
 
-theorem reachable_of {m : Mem} {r : Region} (hp : r ≠ .pinned) (off n : Nat) :
-    m.reachable r off n = true := by
-  cases r <;> first | exact absurd rfl hp | (unfold Mem.reachable; rfl)
 
 theorem store_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + n ≤ m.sizes r)
-    (v : UInt64) : (m.store a n v).isSome = true := by
+    (hl : m.LentOk r off n) (v : UInt64) : (m.store a n v).isSome = true := by
   unfold Mem.store
   simp only [hd, Option.bind_eq_bind, Option.bind_some]
   rw [if_neg]
   · rfl
-  · simp only [reachable_of hp, Bool.not_true, Bool.or_false, decide_eq_true_eq]
+  · simp only [Mem.reachable_of_ne_pinned hp hl, Bool.not_true, Bool.or_false, decide_eq_true_eq]
     unfold Mem.sizes at hs; omega
 
 theorem load_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + n ≤ m.sizes r)
-    : (m.load a n).isSome = true := by
-  rw [load_of hd hs (readable_off_pinned hp _ _)]; rfl
+    (hl : m.LentOk r off n) : (m.load a n).isSome = true := by
+  rw [load_of hd hs (Mem.readable_of_ne_pinned hp hl)]; rfl
 
 theorem copyOut_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + n ≤ m.sizes r)
-    (hn : off + n ≤ 2 ^ 36) : (copyOut m a n).isSome = true := by
+    (hn : off + n ≤ 2 ^ 36) (hok : m.LentOk r off n) : (copyOut m a n).isSome = true := by
   unfold copyOut
   suffices ∀ (l : List Nat) (acc : ByteArray), (∀ i ∈ l, i < n) →
       (l.foldlM (fun (acc : ByteArray) i => do
@@ -741,9 +761,42 @@ theorem copyOut_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
       intro acc hl
       have hi := hl i List.mem_cons_self
       have hd' := Sem.decodeAddr_add hd (i := i) (by rw [Sem.regionSpan_toNat]; omega)
-      obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (load_isSome (m := m) (n := 1) hd' hp (by omega))
+      obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp
+        (load_isSome (m := m) (n := 1) hd' hp (by omega) (hok.sub (by omega) (by omega)))
       simp only [List.foldlM_cons, hb]
       exact ih _ (fun j hj => hl j (List.mem_cons_of_mem _ hj))
+
+/-- **Bytes copied out each load.** -/
+theorem copyOut_load {m : Mem} {a : UInt64} {n : Nat} {bs : ByteArray} (h : copyOut m a n = some bs)
+    {i : Nat} (hi : i < n) : (m.load (a + UInt64.ofNat i) 1).isSome = true := by
+  unfold copyOut at h
+  suffices ∀ (l : List Nat) (acc : ByteArray), i ∈ l →
+      (l.foldlM (fun (acc : ByteArray) i => do
+        let b ← m.load (a + UInt64.ofNat i) 1
+        pure (acc.push b.toUInt8)) acc).isSome = true → (m.load (a + UInt64.ofNat i) 1).isSome = true from
+    this _ _ (List.mem_range.mpr hi) (by rw [h]; rfl)
+  intro l
+  induction l with
+  | nil => intro _ hm; cases hm
+  | cons j l ih =>
+      intro acc hm hs
+      simp only [List.foldlM_cons] at hs
+      cases hb : m.load (a + UInt64.ofNat j) 1 with
+      | none => rw [hb] at hs; cases hs
+      | some b =>
+          rw [hb] at hs
+          rcases List.mem_cons.mp hm with rfl | hm
+          · rw [hb]; rfl
+          · exact ih _ hm hs
+
+/-- A byte that loads, where a step keeps its region's size and the spans
+    threads own, still loads. -/
+theorem load_isSome_kept {m m' : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
+    (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : m'.sizes r = m.sizes r)
+    (hlent : m'.lent = m.lent) (h : (m.load a n).isSome = true) : (m'.load a n).isSome = true := by
+  obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp h
+  obtain ⟨hsz, hr, -⟩ := load_some hd hx
+  exact load_isSome hd hp (by rw [hs]; exact hsz) ((Mem.lentOk_of_readable hr).congr hlent)
 
 /-- Memory whose bytes from `a` load as they did copies out the same. -/
 theorem copyOut_congr {m m' : Mem} {a : UInt64} {n : Nat}
@@ -771,16 +824,21 @@ theorem copyOut_congr {m m' : Mem} {a : UInt64} {n : Nat}
 theorem wgText_kept {w w' : World} {a : UInt64} {n : Nat} {sh : Bool}
     (hx : (Fact.wgText a n sh).holds w)
     (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
-    (hok : w'.wgslOk = w.wgslOk)
+    (hok : w'.wgslOk = w.wgslOk) (hlent : w'.mem.lent = w.mem.lent)
     (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.wgText a n sh).holds w' := by
   obtain ⟨hw, ⟨r, off, hd, hp, hs, hsp⟩, t, ht, hok'⟩ := hx
   refine ⟨hw, ⟨r, off, hd, hp, by rw [hsz r hp]; exact hs, hsp⟩, t, ?_, by rw [hok]; exact hok'⟩
   have hn : (UInt64.ofNat n).toNat = n := by rw [UInt64.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
+  obtain ⟨bs, hcw⟩ : ∃ bs, copyOut w.mem a n = some bs := by
+    unfold Sem.wgText readBytes at ht; rw [hn] at ht
+    cases hb : copyOut w.mem a n with
+    | none => rw [hb] at ht; cases ht
+    | some bs => exact ⟨bs, rfl⟩
   have hc : copyOut w'.mem a n = copyOut w.mem a n := copyOut_congr fun i hi => by
     have hd' := Sem.decodeAddr_add hd (i := i) (by rw [Sem.regionSpan_toNat]; omega)
-    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp (load_isSome (m := w.mem) (n := 1) hd' hp (by omega))
-    obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp
-      (load_isSome (m := w'.mem) (n := 1) hd' hp (by rw [hsz r hp]; omega))
+    have hl1 := copyOut_load hcw hi
+    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp hl1
+    obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp (load_isSome_kept hd' hp (hsz r hp) hlent hl1)
     rw [hx, hy, hu i hi x y hx hy]
   unfold Sem.wgText readBytes at ht ⊢
   rw [hn] at ht ⊢
@@ -788,24 +846,25 @@ theorem wgText_kept {w w' : World} {a : UInt64} {n : Nat} {sh : Bool}
 
 theorem copyIn_isSome {m : Mem} {a : UInt64} {r : Region} {off : Nat} (src : ByteArray)
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + src.size ≤ m.sizes r)
-    (hn : off + src.size ≤ 2 ^ 36) : (copyIn m a src).isSome = true := by
+    (hn : off + src.size ≤ 2 ^ 36) (hok : m.LentOk r off src.size) : (copyIn m a src).isSome = true := by
   unfold copyIn
   suffices ∀ (l : List Nat) (mm : Mem), (∀ i ∈ l, i < src.size) →
-      mm.sizes r = m.sizes r →
+      mm.sizes r = m.sizes r → mm.lent = m.lent →
       (l.foldlM (fun (mm : Mem) i => mm.store (a + UInt64.ofNat i) 1 (src.get! i).toUInt64) mm).isSome = true from
-    this _ _ (fun i hi => List.mem_range.mp hi) rfl
+    this _ _ (fun i hi => List.mem_range.mp hi) rfl rfl
   intro l
   induction l with
-  | nil => intro _ _ _; rfl
+  | nil => intro _ _ _ _; rfl
   | cons i l ih =>
-      intro mm hl hsz
+      intro mm hl hsz hlt
       have hi := hl i List.mem_cons_self
       have hd' := Sem.decodeAddr_add hd (i := i) (by rw [Sem.regionSpan_toNat]; omega)
       obtain ⟨m1, hm1⟩ := Option.isSome_iff_exists.mp
-        (store_isSome (n := 1) hd' hp (by rw [hsz]; omega) (src.get! i).toUInt64)
+        (store_isSome (n := 1) hd' hp (by rw [hsz]; omega)
+          ((hok.congr hlt).sub (by omega) (by omega)) (src.get! i).toUInt64)
       simp only [List.foldlM_cons, hm1, Option.bind_eq_bind, Option.bind_some]
       exact ih m1 (fun j hj => hl j (List.mem_cons_of_mem _ hj))
-        ((congrFun (store_sizes_eq hm1) r).trans hsz)
+        ((congrFun (store_sizes_eq hm1) r).trans hsz) ((Mem.store_lent hm1).trans hlt)
 
 /-- **The CUDA context is live**, where the typestate says so. -/
 theorem ctxOk_of_state {S : TState} {w : World} (hS : S.holds w)
@@ -823,41 +882,44 @@ theorem capture_of_state {S : TState} {w : World} (hS : S.holds w)
 def roomAt (S : TState) (a : UInt64) (n : Nat) : Bool :=
   match decodeAddr a with
   | some (r, off) => decide (r ≠ .pinned) && decide (off + n ≤ 2 ^ 36) &&
-      S.any fun | .room r' k => decide (r' = r) && decide (off + n ≤ k) | _ => false
+      S.any fun
+        | .room r' k => decide (r' = r) && decide (off + n ≤ k)
+        | .owns o l => decide (r = .arena) && decide (o ≤ off) && decide (off + n ≤ o + l)
+        | _ => false
   | none => false
 
 /-- `n` bytes at `a` lie inside one region outside pinned memory, within the
-    span an address names: a load or a store of them
-    finds them, and so does one of any part of them. -/
+    span an address names, and clear of every span a running thread owns: a
+    load or a store of them finds them, and so does one of any part of them. -/
 def Fits (m : Mem) (a : UInt64) (n : Nat) : Prop :=
   ∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ m.sizes r ∧
-    off + n ≤ 2 ^ 36
+    off + n ≤ 2 ^ 36 ∧ m.LentOk r off n
 
 theorem Fits.load {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : ∃ x, m.load a n = some x := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := h
-  exact Option.isSome_iff_exists.mp (load_isSome hd hp hs)
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := h
+  exact Option.isSome_iff_exists.mp (load_isSome hd hp hs hl)
 
 theorem Fits.store {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) (v : UInt64) :
     ∃ m', m.store a n v = some m' := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := h
-  exact Option.isSome_iff_exists.mp (store_isSome hd hp hs v)
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := h
+  exact Option.isSome_iff_exists.mp (store_isSome hd hp hs hl v)
 
 theorem Fits.mono {m : Mem} {a : UInt64} {n n' : Nat} (hn : n ≤ n') (h : Fits m a n') : Fits m a n := by
-  obtain ⟨r, off, hd, hp, hs, hsp⟩ := h
-  exact ⟨r, off, hd, hp, by omega, by omega⟩
+  obtain ⟨r, off, hd, hp, hs, hsp, hl⟩ := h
+  exact ⟨r, off, hd, hp, by omega, by omega, hl.sub (Nat.le_refl _) (by omega)⟩
 
 /-- Part of bytes that fit fits. -/
 theorem Fits.part {m : Mem} {a : UInt64} {n i k : Nat} (h : Fits m a n) (hik : i + k ≤ n) (hk : 0 < k) :
     Fits m (a + UInt64.ofNat i) k := by
-  obtain ⟨r, off, hd, hp, hs, hsp⟩ := h
+  obtain ⟨r, off, hd, hp, hs, hsp, hl⟩ := h
   have hd' := Sem.decodeAddr_add (i := i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  exact ⟨r, off + i, hd', hp, by omega, by omega⟩
+  exact ⟨r, off + i, hd', hp, by omega, by omega, hl.sub (by omega) (by omega)⟩
 
-/-- A fit asks only a region's size. -/
-theorem Fits.congr {m m' : Mem} {a : UInt64} {n : Nat} (hs : m'.sizes = m.sizes)
+/-- A fit asks only a region's size and the spans threads own. -/
+theorem Fits.congr {m m' : Mem} {a : UInt64} {n : Nat} (hs : m'.sizes = m.sizes) (hlent : m'.lent = m.lent)
     (h : Fits m a n) : Fits m' a n := by
-  obtain ⟨r, off, hd, hp, hsz, hsp⟩ := h
-  exact ⟨r, off, hd, hp, by rw [hs]; exact hsz, hsp⟩
+  obtain ⟨r, off, hd, hp, hsz, hsp, hl⟩ := h
+  exact ⟨r, off, hd, hp, by rw [hs]; exact hsz, hsp, hl.congr hlent⟩
 
 theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) : Fits w.mem a n := by
@@ -866,52 +928,62 @@ theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.hold
   · rename_i r off hd
     simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
     obtain ⟨⟨hp, hn⟩, x, hx, hr⟩ := h
-    refine ⟨r, off, hd, hp, ?_, hn⟩
+    refine ⟨r, off, hd, hp, ?_⟩
     cases x with
     | room r' k =>
         simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
         obtain ⟨rfl, hk⟩ := hr
-        exact Nat.le_trans hk (hS _ hx)
+        obtain ⟨h1, h2⟩ := hS _ hx
+        refine ⟨Nat.le_trans hk h1, hn, ?_⟩
+        by_cases ha : r' = .arena
+        · exact Mem.lentOk_nil (h2 ha) _ _ _
+        · exact Mem.lentOk_ne ha _ _
+    | owns o l =>
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
+        obtain ⟨⟨rfl, hlo⟩, hhi⟩ := hr
+        obtain ⟨h1, -, h3⟩ := hS _ hx
+        refine ⟨Nat.le_trans hhi h1, hn, ?_⟩
+        simp [Mem.LentOk, Mem.lentClear_sub h3 hlo hhi]
     | part _ _ => cases hr
     | cell _ _ => cases hr
     | held _ _ | opened _ _ | htAt _ _ _ | cstr _ | devSeq | oracles | cstrIn _ _ | roomArg _ _ | devBuf _ _
     | pinnedUsed _ | streams _ | events _ | evLive _ | readyAll _ | evAll _ | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ _ | modText _ _ | fnText _ _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ | text _ _ _ _
-    | nwg _ | wgo _ _ | wg1 _ _ | wgText _ _ _ => cases hr
+    | nwg _ | wgo _ _ | wg1 _ _ | wgText _ _ _ | threads _ _ _ _ _ => cases hr
   · cases h
 
 theorem slot8_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w) (h : roomAt S a 8 = true) :
     Slot8 w.mem a := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
-  exact store_isSome hd hp hs
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := roomAt_spec hS h
+  exact store_isSome hd hp hs hl
 
 theorem store_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) (v : UInt64) : (w.mem.store a n v).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
-  exact store_isSome hd hp hs v
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := roomAt_spec hS h
+  exact store_isSome hd hp hs hl v
 
 theorem load_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) : (w.mem.load a n).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
-  exact load_isSome hd hp hs
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := roomAt_spec hS h
+  exact load_isSome hd hp hs hl
 
 theorem load8_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w) (h : roomAt S a 8 = true) :
     Load8 w.mem a := by
-  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
-  exact load_isSome hd hp hs
+  obtain ⟨r, off, hd, hp, hs, -, hl⟩ := roomAt_spec hS h
+  exact load_isSome hd hp hs hl
 
 theorem load8_of_cell {S : TState} {w : World} {a v : UInt64} (hS : S.holds w)
     (h : S.contains (.cell a v) = true) : Load8 w.mem a := by
   unfold Load8; rw [TState.holds_cell hS h]; rfl
 
 theorem Fits.readable {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : Readable m a n := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := h
-  exact copyOut_isSome hd hp hs hn
+  obtain ⟨r, off, hd, hp, hs, hn, hl⟩ := h
+  exact copyOut_isSome hd hp hs hn hl
 
 theorem Fits.writable {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : Writable m a n := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := h
+  obtain ⟨r, off, hd, hp, hs, hn, hl⟩ := h
   intro src hsrc
   subst hsrc
-  exact copyIn_isSome src hd hp hs hn
+  exact copyIn_isSome src hd hp hs hn hl
 
 theorem readable_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) : Readable w.mem a n :=
@@ -1034,7 +1106,7 @@ def storeKeeps (a : UInt64) (n : Nat) : Fact → Bool
   | .part _ _ | .room _ _ | .held _ _ | .opened _ _ | .devSeq | .oracles | .roomArg _ _
   | .devBuf _ _ | .pinnedUsed _ | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _
   | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ _ | .modText _ _ | .fnText _ _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => true
-  | .nwg _ | .wgo _ _ | .wg1 _ _ => true
+  | .nwg _ | .wgo _ _ | .wg1 _ _ | .threads _ _ _ _ _ | .owns _ _ => true
   | .text c _ k _ | .wgText c k _ => decide (a.toNat + n ≤ c.toNat ∨ (c.toNat + k ≤ a.toNat ∧ a.toNat + n ≤ 2 ^ 64))
   | .cell c _ => cellOk c && cellKeeps a n c
   | .cstr _ => false
@@ -1081,18 +1153,40 @@ def afterStoreFast (a v : Option UInt64) (n : Nat) (S : TState) : TState :=
   funext a v n S
   cases a <;> cases v <;> simp [afterStore, afterStoreFast, filterKeep_eq]
 
+/-- What says which threads run is kept by a step that keeps the threads, the
+    oracles naming their spans and grant, the arena's size and the spans
+    threads own. -/
+theorem threads_kept {w w' : World} {n sz : Nat} {live : List (Nat × Nat × UInt64 × Nat × Nat)}
+    {lends : List (Nat × UInt64 × Nat × Nat)} {g : Bool} (hx : (Fact.threads n sz live lends g).holds w)
+    (hth : w'.threads = w.threads ∧ w'.lend = w.lend ∧ w'.grants = w.grants)
+    (hsz : w'.mem.arena.size = w.mem.arena.size) (hlent : w'.mem.lent = w.mem.lent) :
+    (Fact.threads n sz live lends g).holds w' := by
+  obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8⟩ := hx
+  obtain ⟨e1, e2, e3⟩ := hth
+  exact ⟨by rw [e1]; exact h1, by rw [hsz]; exact h2, h3, by rw [e3]; exact h4, by rw [e2]; exact h5,
+    by rw [e1]; exact h6, by rw [hlent]; exact h7, h8⟩
+
+theorem owns_kept {w w' : World} {o l : Nat} (hx : (Fact.owns o l).holds w)
+    (hsz : w'.mem.arena.size = w.mem.arena.size) (hlent : w'.mem.lent = w.mem.lent) :
+    (Fact.owns o l).holds w' := by
+  obtain ⟨h1, h2, h3⟩ := hx
+  refine ⟨by rw [hsz]; exact h1, h2, ?_⟩
+  unfold Mem.lentClear at h3 ⊢; rw [hlent]; exact h3
+
 /-- A step that keeps every part, every region's size and every handle
     held keeps every fact but the cells. -/
 theorem nonCell_kept {S : TState} {w w' : World} (hS : S.holds w) (hp : ∀ p : Part, p.get w' = p.get w)
     (hh : ∀ (k : Held) (a : UInt64), k.live w' a = k.live w a)
     (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor ∧ w'.wg = w.wg ∧ w'.wgslOk = w.wgslOk)
-    (hsz : w'.mem.sizes = w.mem.sizes) : TState.holds (S.filter (!·.isCell)) w' := by
+    (hsz : w'.mem.sizes = w.mem.sizes) (hlent : w'.mem.lent = w.mem.lent)
+    (hth : w'.threads = w.threads ∧ w'.lend = w.lend ∧ w'.grants = w.grants) :
+    TState.holds (S.filter (!·.isCell)) w' := by
   intro x hx
   obtain ⟨hm, hc⟩ := List.mem_filter.mp hx
   have := hS x hm
   cases x with
   | part p b => exact (hp p).trans this
-  | room r n => show n ≤ w'.mem.sizes r; rw [hsz]; exact this
+  | room r n => exact ⟨by rw [hsz]; exact this.1, fun ha => by rw [hlent]; exact this.2 ha⟩
   | cell _ _ => cases hc
   | held k a => show k.live w' a = true; rw [hh k a]; exact this
   | opened k a => show a ≠ 0 → k.live w' a = true; rw [hh k a]; exact this
@@ -1102,13 +1196,15 @@ theorem nonCell_kept {S : TState} {w w' : World} (hS : S.holds w) (hp : ∀ p : 
   | oracles => show Sem.KeepsSize w'.kernel ∧ _; rw [hdv.2.1, hdv.2.2.1]; exact this
   | cstrIn _ _ => cases hc
   | text _ _ _ _ => cases hc
-  | roomArg r x => show x.toNat ≤ w'.mem.sizes r ∧ _; rw [hsz]; exact this
+  | roomArg r x => exact ⟨by rw [hsz]; exact this.1, this.2.1, this.2.2⟩
   | devBuf _ _ => show Device.BufIs _ _ w'.dev; rw [hdv.1]; exact this
   | pinnedUsed n => show w'.mem.sizes .pinned ≤ n; rw [hsz]; exact this
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl hdv.1 this
   | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ _ | modText _ _ | fnText _ _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl hdv.1 this
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl hdv.2.2.2.1 this
   | wgText _ _ _ => cases hc
+  | threads _ _ _ _ _ => exact threads_kept this hth (congrFun hsz .arena) hlent
+  | owns _ _ => exact owns_kept this (congrFun hsz .arena) hlent
 
 /-- A store that cannot reach a cell's eight bytes leaves what the cell
     holds. -/
@@ -1117,7 +1213,7 @@ theorem store_cell_kept {w w' : World} {a b c v : UInt64} {n : Nat}
     (hc : cellOk c = true) (hk : ∀ i, i < 8 → within a n (c + UInt64.ofNat i) = false)
     (hx : w.mem.load c 8 = some v) : w'.mem.load c 8 = some v := by
   obtain ⟨rg, off, hd, hpin, hb⟩ := cellOk_spec hc
-  refine load_kept hd hpin hb hx (congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+  refine load_kept hd hpin hb hx (congrFun hsz rg) (Mem.store_lent h) fun i hi => Unchanged.of_eq ?_
   refine Mem.store_other h _ fun j hj e => ?_
   have := within_of hn ⟨j, hj, e⟩
   rw [hk i hi] at this; cases this
@@ -1125,19 +1221,20 @@ theorem store_cell_kept {w w' : World} {a b c v : UInt64} {n : Nat}
 theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (hS : S.holds w)
     (hp : ∀ p : Part, p.get w' = p.get w) (hh : ∀ (k : Held) (a : UInt64), k.live w' a = k.live w a)
     (hhp : w'.heap = w.heap) (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor ∧ w'.wg = w.wg ∧ w'.wgslOk = w.wgslOk)
-    (hsz : w'.mem.sizes = w.mem.sizes)
+    (hsz : w'.mem.sizes = w.mem.sizes) (hth : w'.threads = w.threads ∧ w'.lend = w.lend ∧ w'.grants = w.grants)
     (h : w.mem.store a n b = some w'.mem) (hn : n ≤ 2 ^ 64) : TState.holds (S.filter (storeKeeps a n)) w' := by
   intro x hx
   obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
   have hx0 := hS x hm
   cases x with
   | part p b => exact (hp p).trans hx0
-  | room r k => show k ≤ w'.mem.sizes r; rw [hsz]; exact hx0
+  | room r k => exact ⟨by rw [hsz]; exact hx0.1, fun ha => by rw [Mem.store_lent h]; exact hx0.2 ha⟩
   | held k a => show k.live w' a = true; rw [hh k a]; exact hx0
   | opened k a => show a ≠ 0 → k.live w' a = true; rw [hh k a]; exact hx0
   | cstr _ => simp [storeKeeps] at hk
   | devSeq => show Device.TrackOk w'.dev ∧ _; rw [hdv.1]; exact hx0
-  | roomArg r x => show x.toNat ≤ w'.mem.sizes r ∧ _; rw [hsz]; exact hx0
+  | roomArg r x =>
+      exact ⟨by rw [hsz]; exact hx0.1, hx0.2.1, hx0.2.2⟩
   | devBuf _ _ => show Device.BufIs _ _ w'.dev; rw [hdv.1]; exact hx0
   | pinnedUsed n => show w'.mem.sizes .pinned ≤ n; rw [hsz]; exact hx0
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl hdv.1 hx0
@@ -1145,7 +1242,8 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl hdv.2.2.2.1 hx0
   | wgText c k sh =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
-      refine wgText_kept hx0 (fun rg _ => congrFun hsz rg) hdv.2.2.2.2 fun i hi => Unchanged.of_eq ?_
+      refine wgText_kept hx0 (fun rg _ => congrFun hsz rg) hdv.2.2.2.2 (Mem.store_lent h)
+        fun i hi => Unchanged.of_eq ?_
       refine Mem.store_other h _ fun j hj e => ?_
       have hw : c.toNat + k < 2 ^ 64 := hx0.1
       have e2 := congrArg UInt64.toNat e
@@ -1156,10 +1254,12 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
   | oracles => show Sem.KeepsSize w'.kernel ∧ _; rw [hdv.2.1, hdv.2.2.1]; exact hx0
+  | threads _ _ _ _ _ => exact threads_kept hx0 hth (congrFun hsz .arena) (Mem.store_lent h)
+  | owns _ _ => exact owns_kept hx0 (congrFun hsz .arena) (Mem.store_lent h)
   | cstrIn c k =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
       have hw := hx0.2.1
-      refine cstrIn_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      refine cstrIn_kept hx0 (fun rg _ => congrFun hsz rg) (Mem.store_lent h) fun i hi => Unchanged.of_eq ?_
       refine Mem.store_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -1172,6 +1272,7 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
       simp only [storeKeeps, decide_eq_true_eq] at hk
       have hw := hx0.1.2.1
       refine text_kept hx0 (fun rg _ => congrFun hsz rg) (fun i hi => Unchanged.of_eq ?_) (by rw [hdv.1])
+        (Mem.store_lent h)
       refine Mem.store_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -1249,15 +1350,16 @@ theorem afterStore_sound {S : TState} {w w' : World} {ao vo : Option UInt64} {a 
     (hS : S.holds w) (hp : ∀ p : Part, p.get w' = p.get w) (hh : ∀ (k : Held) (a : UInt64), k.live w' a = k.live w a)
     (hhp : w'.heap = w.heap)
     (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor ∧ w'.wg = w.wg ∧ w'.wgslOk = w.wgslOk)
-    (hsz : w'.mem.sizes = w.mem.sizes)
+    (hsz : w'.mem.sizes = w.mem.sizes) (hlent : w'.mem.lent = w.mem.lent)
+    (hth : w'.threads = w.threads ∧ w'.lend = w.lend ∧ w'.grants = w.grants)
     (h : ao.isSome → w.mem.store a n b = some w'.mem) (ha : ∀ x, ao = some x → x = a)
     (hv : ∀ x, vo = some x → x = b) (hn : n ≤ 2 ^ 64) : (afterStore ao vo n S).holds w' := by
   cases ao with
-  | none => exact nonCell_kept hS hp hh hdv hsz
+  | none => exact nonCell_kept hS hp hh hdv hsz hlent hth
   | some a' =>
       obtain rfl := ha a' rfl
       have hst := h rfl
-      have hk := storeKeeps_sound hS hp hh hhp hdv hsz hst hn
+      have hk := storeKeeps_sound hS hp hh hhp hdv hsz hth hst hn
       cases vo with
       | none => exact hk
       | some v' =>
@@ -1487,12 +1589,12 @@ theorem mapM_isSome_of {α β : Type} {f : α → Option β} :
 /-- Bindings in room can be read. -/
 theorem readIds_of_state {S : TState} {w : World} {p : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S p (4 * n) = true) : (readIds w.mem p n).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, hn⟩ := roomAt_spec hS h
+  obtain ⟨r, off, hd, hp, hs, hn, hl0⟩ := roomAt_spec hS h
   have hl : ((List.range n).mapM fun i => w.mem.load (p + UInt64.ofNat (4 * i)) 4).isSome = true := by
     refine mapM_isSome_of fun i hi => ?_
     have hi := List.mem_range.mp hi
     have hd' := Sem.decodeAddr_add (i := 4 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-    exact load_isSome hd' hp (by omega)
+    exact load_isSome hd' hp (by omega) (hl0.sub (by omega) (by omega))
   obtain ⟨raw, hraw⟩ := Option.isSome_iff_exists.mp hl
   unfold readIds
   rw [hraw]; rfl
@@ -1515,6 +1617,15 @@ theorem cstrIn_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w)
   simp only [beq_iff_eq] at hr; subst hr
   exact (hS _ hx).1
 
+theorem room_lentOk {w : World} {r : Region} {n : Nat} (hx : (Fact.room r n).holds w)
+    {off k : Nat} : w.mem.LentOk r off k := by
+  by_cases ha : r = .arena
+  · exact Mem.lentOk_nil (hx.2 ha) _ _ _
+  · exact Mem.lentOk_ne ha _ _
+
+theorem roomArg_lentOk {w : World} {r : Region} {x : UInt64} (hx : (Fact.roomArg r x).holds w)
+    {off n : Nat} : w.mem.LentOk r off n := Mem.lentOk_ne hx.2.2 _ _
+
 /-- **Memory a call reads or writes, by a length the program was handed**: its
     region holds that many bytes, and the access lies within them. -/
 theorem copyOut_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : Region} {off : Nat}
@@ -1522,7 +1633,7 @@ theorem copyOut_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r 
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hb : off + n ≤ x.toNat) :
     (copyOut w.mem a n).isSome = true := by
   have hx := hS _ hm
-  exact copyOut_isSome hd hp (by have := hx.1; omega) (by have := hx.2; omega)
+  exact copyOut_isSome hd hp (by have := hx.1; omega) (by have := hx.2.1; omega) (roomArg_lentOk hx)
 
 theorem readable_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : Region} {off : Nat}
     (hS : S.holds w) (hm : Fact.roomArg r x ∈ S)
@@ -1537,7 +1648,7 @@ theorem writable_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r
   have hx := hS _ hm
   intro src hsrc
   subst hsrc
-  exact copyIn_isSome src hd hp (by have := hx.1; omega) (by have := hx.2; omega)
+  exact copyIn_isSome src hd hp (by have := hx.1; omega) (by have := hx.2.1; omega) (roomArg_lentOk hx)
 
 /-- The same, at an address a value past a known one. -/
 theorem readable_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : Nat} {r : Region} {off : Nat}

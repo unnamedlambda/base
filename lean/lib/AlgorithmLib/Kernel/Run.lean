@@ -140,6 +140,21 @@ def laneArg (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Int
 def phase (all : List (Nat × UInt64 × Nat × UInt64)) (b : Nat) (cur : Mem) : Mem :=
   all.foldl (fun c x => if x.1 = b then (c.store x.2.1 x.2.2.1 x.2.2.2).getD c else c) cur
 
+/-- A phase's stores keep the spans threads own. -/
+theorem phase_lent (all : List (Nat × UInt64 × Nat × UInt64)) (b : Nat) : ∀ cur : Mem,
+    (phase all b cur).lent = cur.lent := by
+  unfold phase
+  induction all with
+  | nil => intro cur; rfl
+  | cons x xs ih =>
+      intro cur
+      rw [List.foldl_cons, ih]
+      split
+      · cases h : cur.store x.2.1 x.2.2.1 x.2.2.2 with
+        | none => rfl
+        | some m => exact Mem.store_lent h
+      · rfl
+
 /-- Shared memory after each of a block's barriers: the block's shared stores
     applied phase by phase. -/
 def snapshots (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))

@@ -265,7 +265,7 @@ theorem bfly_shift (nan : ClifTy → UInt64 → UInt64) (X : Nat → UInt32) (c 
     sum of the warp's words, the laws answering every shuffle. -/
 theorem elem_blocks (X : Nat → UInt32) (grid bd : Nat) (hbd : bd % 32 = 0) (hsz : grid * bd ≤ 2 ^ 32) :
     Elem.Blocks K args grid bd (elem X) := by
-  intro b hb w w' harena hnan hpre hr
+  intro b hb w w' harena hnan hlent hpre hr
   have hw0 : ({ w with mem := { w.mem with arena := ByteArray.mk (Array.replicate K.smem 0) } } : World) = w :=
     world_arena w (by rw [harena]; rfl)
   obtain ⟨steps, ans, w'', calls, stores, ans', hfold, hans, hset, rfl⟩ := hr
@@ -279,7 +279,7 @@ theorem elem_blocks (X : Nat → UInt32) (grid bd : Nat) (hbd : bd % 32 = 0) (hs
   let Q (m : Mem) : Prop := m.arena = ByteArray.mk (Array.replicate K.smem 0) ∧
     (∀ t, t < bd → m.load (pxw + off (UInt32.ofNat (b * bd + t))) 4 = some (s32 (Xl t))) ∧
     (∀ t, t < bd → t % 32 = 0 → ∀ v, (m.store (outAddr pow (UInt32.ofNat (b * bd + t))) 4 v).isSome) ∧
-    m.nan = gpuNaN
+    m.nan = gpuNaN ∧ m.lent = []
   let f (t : Nat) (m : Mem) : Mem :=
     if t < bd ∧ t % 32 = 0 then
       (m.store (outAddr pow (UInt32.ofNat (b * bd + t))) 4 (s32 (sums gpuNaN (Xl t) (wordAt (ans t)) 5))).getD m
@@ -287,7 +287,7 @@ theorem elem_blocks (X : Nat → UInt32) (grid bd : Nat) (hbd : bd % 32 = 0) (hs
   have hW : ∀ t, t < bd → Words (ans t) := fun t ht => by
     rw [← hset t ht]; exact answersOf_words (answers_at hans ht)
   have hQ0 : Q w.mem := by
-    refine ⟨harena, fun t ht => ?_, fun t ht hl v => ?_, hnan⟩
+    refine ⟨harena, fun t ht => ?_, fun t ht hl v => ?_, hnan, hlent⟩
     · have hp := hpre (32 * (t / 32)) (by omega) (by simp only [elem, decide_eq_true_eq]; omega)
       have := hp.1 _ (List.mem_map.mpr ⟨t % 32, List.mem_range.mpr (Nat.mod_lt _ (by decide)), rfl⟩)
       rw [show b * bd + 32 * (t / 32) + t % 32 = b * bd + t by omega] at this
@@ -295,21 +295,21 @@ theorem elem_blocks (X : Nat → UInt32) (grid bd : Nat) (hbd : bd % 32 = 0) (hs
     · have hp := hpre t ht (by simp only [elem, decide_eq_true_eq]; omega)
       exact hp.2 v
   have hkeep : ∀ t u m, t ≠ u → (u < bd ∧ Q m) → (u < bd ∧ Q (f t m)) := by
-    intro t u m _ ⟨hu, ha, hl, hs, hn⟩
+    intro t u m _ ⟨hu, ha, hl, hs, hn, hln⟩
     refine ⟨hu, ?_⟩
     simp only [f]
     split
     · rename_i hc
       cases hst : m.store (outAddr pow (UInt32.ofNat (b * bd + t))) 4 (s32 (sums gpuNaN (Xl t) (wordAt (ans t)) 5)) with
-      | none => exact ⟨ha, hl, hs, hn⟩
+      | none => exact ⟨ha, hl, hs, hn, hln⟩
       | some m' =>
         obtain ⟨_, _, _, hF⟩ := store_frame hst
         simp only [Option.getD_some]
         refine ⟨by rw [store_arena (decode_out _) hst]; exact ha, fun t' ht' => ?_, fun t' ht' hl' v => ?_,
-          by rw [Mem.store_nan hst]; exact hn⟩
+          by rw [Mem.store_nan hst]; exact hn, by rw [Mem.store_lent hst]; exact hln⟩
         · rw [load_store_clear hst (decode_out _) (decode_elem _ _) (Or.inl (by simp)), hl t' ht']
         · rw [← MemSame.store_isSome hF.same _ 4 v v]; exact hs t' ht' hl' v
-    · exact ⟨ha, hl, hs, hn⟩
+    · exact ⟨ha, hl, hs, hn, hln⟩
   obtain ⟨hmem, hcalls⟩ := pass_spec (fun t m => t < bd ∧ Q m) f
     (fun t _ cs _ => cs = callsOf gpuNaN (Xl t) (wordAt (ans t)))
     (fun t s u ⟨ht, hQ⟩ hu => by
@@ -319,15 +319,15 @@ theorem elem_blocks (X : Nat → UInt32) (grid bd : Nat) (hbd : bd % 32 = 0) (hs
           (hQ.2.2.1 t ht hl (s32 (sums gpuNaN (Xl t) (wordAt (ans t)) 5)))
         have h := thread_spec (UInt32.ofNat b) (UInt32.ofNat t) (UInt32.ofNat bd) pxw pow (addrOf .arena 0)
           s u (ans t) (hW t ht) (Xl t) m (by rw [gi_eq]; exact hQ.2.1 t ht)
-          (fun _ => by rw [gi_eq, hQ.2.2.2]; exact hm) hu
-        rw [hQ.2.2.2] at h
+          (fun _ => by rw [gi_eq, hQ.2.2.2.1]; exact hm) hu
+        rw [hQ.2.2.2.1] at h
         rw [gi_eq, if_pos ((lane0_iff (hlt t ht)).mpr (by omega))] at h
         refine ⟨?_, h.1⟩
         rw [h.2]; simp only [f, if_pos (And.intro ht hl), hm, Option.getD_some]
       · have h := thread_spec (UInt32.ofNat b) (UInt32.ofNat t) (UInt32.ofNat bd) pxw pow (addrOf .arena 0)
           s u (ans t) (hW t ht) (Xl t) s.mem (by rw [gi_eq]; exact hQ.2.1 t ht)
           (fun h => absurd ((lane0_iff (hlt t ht)).mp (by rw [gi_eq] at h; exact h)) (by omega)) hu
-        rw [hQ.2.2.2] at h
+        rw [hQ.2.2.2.1] at h
         rw [gi_eq, if_neg (fun h => by have := (lane0_iff (hlt t ht)).mp h; omega)] at h
         refine ⟨?_, h.1⟩
         rw [h.2]; simp only [f, hl, and_false, if_false])

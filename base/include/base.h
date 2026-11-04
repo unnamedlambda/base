@@ -3,7 +3,9 @@
  * `base_driver_load` compiles an artifact as `dlopen` loads a library,
  * `base_driver_function` answers a function by name as `dlsym` does, and the
  * host calls it directly, from any number of threads at once. Only a load
- * fails with something to say; a trap in a program ends the process.
+ * fails with something to say; a trap in a program ends the process. A program
+ * may start threads of its own on its functions (`pthread_create` through
+ * `std::thread`); one not yet joined runs on after the call that started it.
  */
 #ifndef BASE_H
 #define BASE_H

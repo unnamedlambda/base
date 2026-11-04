@@ -223,7 +223,7 @@ def W32 (ws : WSt F32) : Prop :=
 
 /-- A store of `n` bytes at `a` succeeds in `m`. -/
 def Writable (m : Mem) (a : UInt64) (n : Nat) : Prop :=
-  ∃ r off, decodeAddr a = some (r, off) ∧ off + n ≤ (m.region r).size ∧ r ≠ .pinned
+  ∃ r off, decodeAddr a = some (r, off) ∧ off + n ≤ (m.region r).size ∧ r ≠ .pinned ∧ m.LentOk r off n
 
 /-- **Lane `l` agrees with the warp**: its registers the warp's column, its
     memory the warp's at every element and byte it reads and every index
@@ -243,6 +243,8 @@ structure RelW (l : Lane) (x : LCtx) (ws : WSt F32) (cl : Bool) (li : LI) : Prop
   start : x.start ≤ li.w.obs.length
   ptr : ∀ b, x.ptr b = ws.int.ptr b
   w32 : W32 ws
+  /-- No other thread owns any of the lane's memory. -/
+  lent : li.w.mem.lent = []
 
 end
 
@@ -544,11 +546,11 @@ theorem bytesOf_get (n : Nat) (f : Nat → UInt8) {k : Nat} (hk : k < n) : (byte
 
 /-- **A half-word of shared memory** the warp's bytes hold. -/
 theorem load_half {m : Mem} {S : Nat} {f : Nat → UInt8} {a : UInt64} (hS : a.toNat + 2 ≤ S) (h36 : S ≤ 2 ^ 36)
-    (har : m.arena = bytesOf S f) :
+    (har : m.arena = bytesOf S f) (hL : m.lent = []) :
     m.load (addrOf .arena 0 + a) 2 = some ((f a.toNat).toUInt64 ||| ((f (a.toNat + 1)).toUInt64 <<< 8)) := by
   rw [Mem.load_eq (arena_decodeL (by omega))]
   have hsz : (m.region .arena).size = S := by show m.arena.size = S; rw [har, bytesOf_size]
-  rw [if_neg (by simp [Mem.readable, hsz]; omega)]
+  rw [if_neg (by simp [Mem.readable, Mem.lentClear, hL, hsz]; omega)]
   congr 1
   show (List.range 2).foldr _ 0 = _
   simp only [show m.region .arena = bytesOf S f from har, List.range, List.range.loop, List.foldr_cons,
@@ -559,14 +561,14 @@ theorem load_half {m : Mem} {S : Nat} {f : Nat → UInt8} {a : UInt64} (hS : a.t
 
 theorem Writable.store {m m' : Mem} {a b v : UInt64} {n k : Nat} (h : m.store b k v = some m')
     (hw : Writable m a n) : Writable m' a n := by
-  obtain ⟨r, o, hd, hsz, hr⟩ := hw
-  exact ⟨r, o, hd, by rw [HProg.Contracts.store_sizes h r]; exact hsz, hr⟩
+  obtain ⟨r, o, hd, hsz, hr, hl⟩ := hw
+  exact ⟨r, o, hd, by rw [HProg.Contracts.store_sizes h r]; exact hsz, hr, hl.congr (Mem.store_lent h)⟩
 
 theorem Writable.stores {m : Mem} {a : UInt64} {n : Nat} (hw : Writable m a n) (v : UInt64) :
     ∃ m', m.store a n v = some m' := by
-  obtain ⟨r, o, hd, hsz, hr⟩ := hw
+  obtain ⟨r, o, hd, hsz, hr, hl⟩ := hw
   simp only [Mem.store, hd, Option.bind_eq_bind, Option.bind_some]
-  have hrc : m.reachable r o n = true := by simp [Mem.reachable, hr]
+  have hrc : m.reachable r o n = true := Mem.reachable_of_ne_pinned hr hl
   rw [if_neg (by simp [hrc]; omega)]
   exact ⟨_, rfl⟩
 
@@ -735,7 +737,7 @@ theorem lane_setR (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (x : LCtx) (i
   obtain ⟨o1, o2, o3, o4⟩ := exLog_obs hw li.f e li.w x.start hr.start
   refine ⟨_, rfl, ?_, ?_, ?_, ?_⟩
   · simp only [hhw]
-    refine ⟨hr.reg, fun r => ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hr.ptr, ?_⟩
+    refine ⟨hr.reg, fun r => ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hr.ptr, ?_, by show (exLog hw li.f e li.w).mem.lent = []; rw [o4]; exact hr.lent⟩
     · simp only [LI.setF, run, EWStmt.run, WSt.setReg]
       by_cases hrd : r = d
       · subst hrd; simp [fexp_agree hw hr.f e]
@@ -771,7 +773,7 @@ theorem lane_ballot (x : LCtx) (i : Nat) (d : Nat) (p : IExp) (ws : WSt F32) (cl
     rw [ansW_val hk, s32_m32, and_mask32 (ballot_lt _)]
   refine ⟨_, by simp only [laneI, if_pos hr.start]; rfl, ?_, ?_, ?_, ?_⟩
   · refine ⟨fun r => ?_, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan,
-      by simp [obsCall]; have := hr.start; omega, hr.ptr, hr.w32⟩
+      by simp [obsCall]; have := hr.start; omega, hr.ptr, hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
     simp only [LI.set, run, EWStmt.run, WSt.withInt, ISt.set, hv]
     by_cases hrd : r = d <;> simp [hrd, hr.reg r]
   · simp [trace, callLeaf, collCalls_call hr.start, Intr.isColl, hp]
@@ -792,7 +794,7 @@ theorem lane_shflIdx (x : LCtx) (i : Nat) (d : Nat) (v sr : IExp) (ws : WSt F32)
     rw [ansW_val hk, s32_m32]
   refine ⟨_, by simp only [laneI, if_pos hr.start]; rfl, ?_, ?_, ?_, ?_⟩
   · refine ⟨fun r => ?_, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan,
-      by simp [obsCall]; have := hr.start; omega, hr.ptr, hr.w32⟩
+      by simp [obsCall]; have := hr.start; omega, hr.ptr, hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
     simp only [LI.set, run, EWStmt.run, WSt.withInt, ISt.set, hv]
     by_cases hrd : r = d <;> simp [hrd, hr.reg r]
   · simp [trace, callLeaf, collCalls_call hr.start, Intr.isColl, iexp_agree hr.reg h.lv h.cv hr.ptr]
@@ -819,7 +821,7 @@ theorem lane_shflXor (x : LCtx) (i : Nat) (d sr m : Nat) (ws : WSt F32) (cl : Bo
     omega
   refine ⟨_, by simp only [laneI, if_pos (And.intro hm hr.start)]; rfl, ?_, ?_, ?_, ?_⟩
   · refine ⟨hr.reg, fun r => ?_, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan,
-      by simp [obsCall]; have := hr.start; omega, hr.ptr, ⟨fun r l' => ?_, hr.w32.2.1, hr.w32.2.2⟩⟩
+      by simp [obsCall]; have := hr.start; omega, hr.ptr, ⟨fun r l' => ?_, hr.w32.2.1, hr.w32.2.2⟩, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent⟩
     · simp only [LI.setF, run, EWStmt.run, WSt.setReg, hv]
       by_cases hrd : r = d <;> simp [hrd, hr.f r]
     · simp only [run, EWStmt.run, WSt.setReg]
@@ -841,7 +843,7 @@ theorem lane_barrier (x : LCtx) (i : Nat) (ws : WSt F32) (cl : Bool) (li : LI)
   have hk := get_of_drop ht
   refine ⟨_, by simp only [laneI, if_pos hr.start, hk]; rfl, ?_, ?_, ?_, ?_⟩
   · refine ⟨hr.reg, hr.f, fun b j hb => ?_, fun a ha => ?_, fun b j hb => ?_, fun a n ha => ?_, ?_,
-      fun _ => rfl, hr.nan, by simp [obsCall]; have := hr.start; omega, hr.ptr, hr.w32⟩
+      fun _ => rfl, hr.nan, by simp [obsCall]; have := hr.start; omega, hr.ptr, hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
     · rw [load_setArena (h.naF l b j hb)]; exact hr.fmem b j hb
     · rw [load_setArena (h.naB l a ha)]; exact hr.bmem a ha
     · rw [load_setArena (h.naI b j hb)]; exact hr.imem b j hb
@@ -864,7 +866,7 @@ theorem lane_ldB (x : LCtx) (i : Nat) (d : Nat) (a : IExp) (ws : WSt F32) (cl : 
   have hb : MB l (a.eval ws.int cta l) := h.ok l
   refine ⟨_, by simp only [laneI, ha, hr.bmem _ hb]; rfl, ?_, by simp [trace, callLeaf, LI.set],
     by simp [trace, storeLeaf, LI.set], by simpa [trace, ansLeaf, LI.set] using h.tape⟩
-  refine ⟨fun r => ?_, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr, hr.w32⟩
+  refine ⟨fun r => ?_, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr, hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
   simp only [LI.set, run, EWStmt.run, WSt.withInt, ISt.set, ISt.byte]
   by_cases hrd : r = d <;> simp [hrd, hr.reg r]
 
@@ -877,7 +879,7 @@ theorem lane_loadIdx (x : LCtx) (i : Nat) (d : Nat) (b : Buf) (ix : IdxE) (ws : 
   refine ⟨_, by simp only [laneI, hj, Option.bind_eq_bind, Option.bind_some, hr.fmem _ _ hmf]; rfl, ?_, by simp [trace, callLeaf, LI.setF],
     by simp [trace, storeLeaf, LI.setF], by simpa [trace, ansLeaf, LI.setF] using h.tape⟩
   refine ⟨hr.reg, fun r => ?_, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr,
-    ⟨fun r l' => ?_, hr.w32.2.1, hr.w32.2.2⟩⟩
+    ⟨fun r l' => ?_, hr.w32.2.1, hr.w32.2.2⟩, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent⟩
   · simp only [LI.setF, run, EWStmt.run, WSt.setReg]
     by_cases hrd : r = d <;> simp [hrd, hr.f r]
   · simp only [run, EWStmt.run, WSt.setReg]
@@ -920,7 +922,7 @@ theorem lane_loadV4 (x : LCtx) (i : Nat) (d0 d1 d2 d3 : Nat) (b : Buf) (ix : Idx
     by simp [trace, callLeaf, LI.setF], by simp [trace, storeLeaf, LI.setF],
     by simpa [trace, ansLeaf, LI.setF] using h.tape⟩
   refine ⟨hr.reg, fun r => ?_, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr,
-    ⟨fun r l' => ?_, hr.w32.2.1, hr.w32.2.2⟩⟩
+    ⟨fun r l' => ?_, hr.w32.2.1, hr.w32.2.2⟩, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent⟩
   · simp only [LI.setF, run, EWStmt.run, WSt.setReg]
     repeat' split
     all_goals simp [hJ, hr.f r]
@@ -934,11 +936,11 @@ theorem lane_ldH (x : LCtx) (i : Nat) (d : Nat) (a : IExp) (ws : WSt F32) (cl : 
   have hr := h.rel
   have ha := iexp_agree hr.reg h.lv h.cv hr.ptr a
   obtain ⟨hcl, hs36, hA⟩ := h.ok
-  have hv := load_half (hA l) hs36 (hr.sm hcl)
+  have hv := load_half (hA l) hs36 (hr.sm hcl) hr.lent
   rw [← h.smq] at hv
   refine ⟨_, by simp only [laneI, ha, hv]; rfl, ?_, by simp [trace, callLeaf, LI.set],
     by simp [trace, storeLeaf, LI.set], by simpa [trace, ansLeaf, LI.set] using h.tape⟩
-  refine ⟨fun r => ?_, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr, hr.w32⟩
+  refine ⟨fun r => ?_, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr, hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
   simp only [LI.set, run, EWStmt.run, WSt.withInt, ISt.set, ISt.half]
   by_cases hrd : r = d <;> simp [hrd, hr.reg r]
 
@@ -959,13 +961,14 @@ theorem lane_stH (x : LCtx) (i : Nat) (a v g : IExp) (ws : WSt F32) (cl : Bool) 
     have hd := arena_decodeL (a := a.eval ws.int cta l) (by have := h.ok.1; omega)
     rw [← h.smq] at hd
     obtain ⟨m', hm'⟩ : ∃ m', li.w.mem.store (x.sm + a.eval ws.int cta l) 2 (v.eval ws.int cta l &&& 0xffff) = some m' :=
-      Writable.stores ⟨.arena, _, hd, by show _ ≤ li.w.mem.arena.size; rw [hr.asz]; exact hA, by decide⟩ _
+      Writable.stores ⟨.arena, _, hd, by show _ ≤ li.w.mem.arena.size; rw [hr.asz]; exact hA, by decide,
+        Mem.lentOk_nil hr.lent _ _ _⟩ _
     refine ⟨{ li with w := { obsStore li.w (x.sm + a.eval ws.int cta l) 2 (v.eval ws.int cta l &&& 0xffff) with mem := m' } },
       by simp only [laneI, eg, if_pos hg, ea, ev, stw, hm']; rfl, ?_, ?_, ?_, ?_⟩
     · refine ⟨fun r => by rw [hr.reg r]; exact (congrFun hrun.1 r ▸ rfl), hr.f, fun b j hb => ?_, fun a' ha' => ?_,
         fun b j hb => ?_, fun a' n ha' => (hr.wr a' n ha').store hm', ?_, fun hc => by simp [hcl] at hc,
         (Mem.store_nan hm').trans hr.nan, by simp [obsStore]; have := hr.start; omega,
-        fun b => (hr.ptr b).trans (congrFun hrun.2.1 b).symm, hr.w32⟩
+        fun b => (hr.ptr b).trans (congrFun hrun.2.1 b).symm, hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
       · exact load_arenaStore hm' hd (h.naF l b j hb) (hr.fmem b j hb)
       · rw [hrun.2.2]; exact load_arenaStore hm' hd (h.naB l a' ha') (hr.bmem a' ha')
       · exact load_arenaStore hm' hd (h.naI b j hb) (hr.imem b j hb)
@@ -983,7 +986,7 @@ theorem lane_stH (x : LCtx) (i : Nat) (a v g : IExp) (ws : WSt F32) (cl : Bool) 
     refine ⟨fun r => by rw [hr.reg r]; exact (congrFun hrun.1 r ▸ rfl), hr.f, hr.fmem, by rw [hrun.2.2]; exact hr.bmem,
       hr.imem, hr.wr,
       hr.asz, fun hc => by simp [hcl] at hc, hr.nan, hr.start, fun b => (hr.ptr b).trans (congrFun hrun.2.1 b).symm,
-      hr.w32⟩
+      hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
 
 theorem lane_stB (x : LCtx) (i : Nat) (a v g : IExp) (ws : WSt F32) (cl : Bool) (li : LI)
     (R : List Answer) (h : LanePre hw cta im S MF MB MI WS l x i (.stB a v g) ws cl li R) :
@@ -1018,7 +1021,7 @@ theorem lane_stB (x : LCtx) (i : Nat) (a v g : IExp) (ws : WSt F32) (cl : Bool) 
     · refine ⟨fun r' => by rw [hr.reg r', hrun, hst.1], hr.f, fun b j hb => ?_, fun a' ha' => ?_,
         fun b j hb => ?_, fun a' n ha' => (hr.wr a' n ha').store hm', ?_, fun hc => ?_,
         (Mem.store_nan hm').trans hr.nan, by simp [obsStore]; have := hr.start; omega,
-        fun b => by rw [hr.ptr b, hrun, hst.2.2], hr.w32⟩
+        fun b => by rw [hr.ptr b, hrun, hst.2.2], hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
       · rcases hMF l b j hb with ⟨-, hf⟩ | ⟨r', o', hd', hap⟩
         · exact hf.elim
         · rw [load_apart hm' hd hd' hap]; exact hr.fmem b j hb
@@ -1045,7 +1048,7 @@ theorem lane_stB (x : LCtx) (i : Nat) (a v g : IExp) (ws : WSt F32) (cl : Bool) 
       by simp [trace, storeLeaf, hg0], by simpa [trace, ansLeaf] using h.tape⟩
     refine ⟨fun r' => by rw [hr.reg r', hrun, hst.1], hr.f, hr.fmem, fun a' ha' => ?_, hr.imem, hr.wr,
       hr.asz, fun hc => by rw [hr.sm hc, hrun, hst.2.1], hr.nan, hr.start, fun b => by rw [hr.ptr b, hrun, hst.2.2],
-      hr.w32⟩
+      hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
     rw [hrun, storeB_other _ _ _ _ _ (hno a' ha' (fun h' => absurd hg0 h'))]
     exact hr.bmem a' ha'
 
@@ -1092,7 +1095,7 @@ theorem lane_storeLane (x : LCtx) (i : Nat) (b : Buf) (ix : IdxE) (n : Nat) (ws 
       fun a' ha' => ?_, fun b' j' hb' => ?_, fun a' k ha' => (hr.wr a' k ha').store hm',
       by show m'.arena.size = S; rw [harena]; exact hr.asz, fun hc => by show m'.arena = _; rw [harena, hr.sm hc, hi1],
       (Mem.store_nan hm').trans hr.nan, by simp [obsStore]; have := hr.start; omega,
-      fun b'' => by rw [hr.ptr b'', hi1], storeLanes_w32 _ _ _ _ hr.w32⟩
+      fun b'' => by rw [hr.ptr b'', hi1], storeLanes_w32 _ _ _ _ hr.w32, (Mem.store_lent hm').trans hr.lent⟩
     · by_cases hown : b' = b ∧ j' = J
       · obtain ⟨rfl, rfl⟩ := hown
         rw [load_store4 (hr.w32.1 n l |> fun h32 => by rw [hr.f n]; exact h32) hm', hr.f n]
@@ -1158,7 +1161,7 @@ theorem lane_storeLane0 (x : LCtx) (i : Nat) (b : Buf) (ix : IdxE) (n : Nat) (ws
         fun a' ha' => ?_, fun b' j' hb' => ?_, fun a' k ha' => (hr.wr a' k ha').store hm',
         by show m'.arena.size = S; rw [harena]; exact hr.asz, fun hc => by show m'.arena = _; rw [harena, hr.sm hc]; rfl,
         (Mem.store_nan hm').trans hr.nan, by simp [obsStore]; have := hr.start; omega,
-        fun b'' => hr.ptr b'', ⟨hr.w32.1, fun b1 j1 => ?_, hr.w32.2.2⟩⟩
+        fun b'' => hr.ptr b'', ⟨hr.w32.1, fun b1 j1 => ?_, hr.w32.2.2⟩, (Mem.store_lent hm').trans hr.lent⟩
       · by_cases hown : b' = b ∧ j' = J
         · obtain ⟨rfl, rfl⟩ := hown
           rw [load_store4 (by rw [hr.f n]; exact hr.w32.1 n lane0) hm', hr.f n]
@@ -1186,7 +1189,7 @@ theorem lane_storeLane0 (x : LCtx) (i : Nat) (b : Buf) (ix : IdxE) (n : Nat) (ws
       by simpa [trace, ansLeaf] using h.tape⟩
     rw [hrun]
     refine ⟨hr.reg, hr.f, fun b' j' hb' => ?_, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr,
-      ⟨hr.w32.1, fun b1 j1 => ?_, hr.w32.2.2⟩⟩
+      ⟨hr.w32.1, fun b1 j1 => ?_, hr.w32.2.2⟩, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent⟩
     · rcases hMF l b' j' hb' with ⟨hll, -⟩ | ⟨r', o', hd', hap⟩
       · exact absurd hll hl0
       · have hne' : ¬ (b' = b ∧ j' = J) := by
@@ -1205,9 +1208,9 @@ theorem lastOr_append (d : Bool) (A B : List Bool) : lastOr d (A ++ B) = lastOr 
 /-- The relation sees of the context its buffers and its first observation alone. -/
 theorem RelW.ctx {x x' : LCtx} {ws : WSt F32} {cl : Bool} {li : LI} (h : RelW hw S MF MB MI WS im l x ws cl li)
     (hp : x'.ptr = x.ptr) (hs : x'.start = x.start) : RelW hw S MF MB MI WS im l x' ws cl li := by
-  obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12⟩ := h
+  obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13⟩ := h
   exact ⟨h1, h2, by rw [hp]; exact h3, h4, by rw [hp]; exact h5, h6, h7, h8, h9, by rw [hs]; exact h10,
-    by rw [hp]; exact h11, h12⟩
+    by rw [hp]; exact h11, h12, h13⟩
 
 theorem lane_seq (a b : EWStmt)
     (iha : ∀ x i ws cl li R, LanePre hw cta im S MF MB MI WS l x i a ws cl li R →
@@ -1270,7 +1273,7 @@ theorem lane_locals (rs : List Nat) (b : EWStmt)
   obtain ⟨l1, r1, rel1, c1, s1, t1⟩ := ihb x i ws cl li R { h with ok := h.ok, tape := h.tape }
   refine ⟨restoreL rs li l1, by simp only [laneI, r1, Option.map_some], ?_, c1, s1, t1⟩
   refine ⟨fun r => ?_, rel1.f, rel1.fmem, rel1.bmem, rel1.imem, rel1.wr, rel1.asz, rel1.sm, rel1.nan, rel1.start,
-    rel1.ptr, rel1.w32⟩
+    rel1.ptr, rel1.w32, by first | exact rel1.lent | exact (Mem.store_lent (by assumption)).trans rel1.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans rel1.lent⟩
   simp only [restoreL, run, EWStmt.run, WSt.withInt, ISt.restore]
   split
   · exact hr.reg r
@@ -1454,7 +1457,7 @@ theorem lane_iwhile (n : Nat) (c : IExp) (cs : List Nat) (b : EWStmt)
             rw [hsucc]; unfold wtrip; rw [if_pos hg]
           rw [hst, htsucc, if_pos hg, lastOr_append]
           refine ⟨fun r => ?_, rel1.f, rel1.fmem, rel1.bmem, rel1.imem, rel1.wr, rel1.asz, rel1.sm, rel1.nan,
-            rel1.start, rel1.ptr, rel1.w32⟩
+            rel1.start, rel1.ptr, rel1.w32, by first | exact rel1.lent | exact (Mem.store_lent (by assumption)).trans rel1.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans rel1.lent⟩
           simp only [keepL, WSt.withInt, ISt.keep]
           split
           · exact rel1.reg r

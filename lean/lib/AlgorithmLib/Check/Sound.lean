@@ -3,6 +3,7 @@ public import AlgorithmLib.Check.PreSound
 public import AlgorithmLib.Check.Exec
 public import AlgorithmLib.Check.Lib
 public import AlgorithmLib.Check.BlasSound
+public import AlgorithmLib.Check.ThreadSound
 @[expose] public section
 
 /-!
@@ -121,27 +122,6 @@ theorem AS.Holds.keep {A : AS} {Γ : Env} {w w' : World} (h : A.Holds vals Γ w)
     (hb : ∀ x n, Contracts.Blk w x n → Contracts.Blk w' x n) : (A.withFacts S).Holds vals Γ w' :=
   h.world hS (fun r _ => congrFun hw r) hh hb
 
-theorem AS.Holds.obsCall {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) (c : Callee) (vs : List V) :
-    A.Holds vals Γ (obsCall w c vs) := by
-  obtain ⟨⟨hs, hy, hp⟩, hd, hf⟩ := h
-  refine ⟨⟨hs, fun i hi => Sym.fits_congr (hy i hi) (fun _ _ => rfl) rfl (fun _ _ => rfl) (Nat.le_refl _),
-    hp.1, hp.2.1, AlgorithmLib.Prog.TState.holds_obsCall hp.2.2.1, hp.2.2.2⟩,
-    fun i hi => ?_, AlgorithmLib.Prog.TState.holds_obsCall hf⟩
-  obtain ⟨v, hv, hd⟩ := hd i hi
-  exact ⟨v, hv, AV.desc_transport hd (fun _ _ => rfl) (fun _ _ => rfl) (fun k _ _ _ hk => by cases k <;> exact hk)
-    (fun _ _ _ _ hk => hk.same rfl (Nat.le_refl _) rfl)⟩
-
-theorem descAll_of {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) :
-    ∀ {args : List R} {vs : List V}, args.mapM (fun r => Γ[r]?) = some vs → DescAll Γ w (args.map A.get) vs
-  | [], vs, h => by
-      simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h
-      subst h; trivial
-  | r :: rs, vs, h => by
-      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
-        Option.some.injEq] at h
-      obtain ⟨v, hv, vs', hvs, rfl⟩ := h
-      exact ⟨hA.descAt hv, descAll_of hA hvs⟩
-
 -- ---------------------------------------------------------------------------
 -- Stores
 -- ---------------------------------------------------------------------------
@@ -189,6 +169,7 @@ theorem absStore_scalar {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = 
   have hx := Fits.toNat_le hfit
   have hn : n ≤ 2 ^ 64 := by omega
   have hsz := store_sizes_eq hm
+  have hlt := Mem.store_lent hm
   have hl := Contracts.store_live hm
   have hp := fun p => store_parts (a := x) (n := k) (b := c) (w := w) (store_busy hm) p
   have hda : (A.get a).Desc Γ w (.sc t x) := hA.descAt ha
@@ -200,7 +181,7 @@ theorem absStore_scalar {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = 
       (A.par.keepWorld (rangeKeeps lo hi)).At vals Γ { obsStore w x k c with mem := m } := fun hlo hhi =>
     hA.1.2.2.keepWorld (fun _ _ => rfl) (fun _ _ => rfl) fun f hf hx =>
       storeKeeps_sound (S := [f]) (fun g hg => by rw [List.mem_singleton.mp hg]; exact hx) hp
-        (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz hm hn f
+        (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz ⟨rfl, rfl, rfl⟩ hm hn f
         (List.mem_filter.mpr ⟨List.mem_singleton_self _, rangeKeeps_store hf hlo hhi (by omega)⟩)
   split at h
   next t0 x0 lo hi ty hty =>
@@ -221,19 +202,19 @@ theorem absStore_scalar {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = 
         exact ⟨b, hv, by rw [hb rfl] at hm; exact Contracts.cell_of_store hok hm⟩
       · cases ha
     by_cases h8 : n = 8
-    · exact afterStore_sound hA.2.2 hp (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz
+    · exact afterStore_sound hA.2.2 hp (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz hlt ⟨rfl, rfl, rfl⟩
         (fun _ => hm) (fun _ e => (Option.some.inj e).symm)
         (fun y hy => by
           obtain ⟨t', e⟩ := AV.bits_desc (hA.descAt hv) hy
           cases e; exact (hb h8).symm) hn
     · rw [afterStore_ne8 h8]
-      exact afterStore_sound hA.2.2 hp (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz
+      exact afterStore_sound hA.2.2 hp (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz hlt ⟨rfl, rfl, rfl⟩
         (fun _ => hm) (fun _ e => (Option.some.inj e).symm) (fun _ e => by cases e) hn
   next lo hi _ =>
     cases h
     obtain ⟨hlo, hhi⟩ := storeSpan_spec hda hsp
     refine AS.Holds.withPar (hA.keep ?_ hsz (fun kk _ hk => by cases kk <;> exact hk) (fun _ _ hk => hk.stored hsz hl)) (hpar hlo hhi)
-    have hk := storeKeeps_sound hA.2.2 hp (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz hm hn
+    have hk := storeKeeps_sound hA.2.2 hp (fun kk _ => by cases kk <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz ⟨rfl, rfl, rfl⟩ hm hn
     intro f hf
     obtain ⟨hf1, hf2⟩ := List.mem_filter.mp hf
     exact hk f (List.mem_filter.mpr ⟨hf1, rangeKeeps_store hf2 hlo hhi (by omega)⟩)
@@ -243,7 +224,7 @@ theorem absStore_scalar {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = 
 theorem absStore_vec {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = .ok A') {Γ : Env}
     {w : World} (hA : A.Holds vals Γ w) (hsc : (A.get v).scTy = none) {x c : UInt64} {m : Mem} {k : Nat}
     (hsz : m.sizes = w.mem.sizes) (hz : m.busy = w.mem.busy)
-    (hl : m.pinnedLive = w.mem.pinnedLive) :
+    (hl : m.pinnedLive = w.mem.pinnedLive) (hlt : m.lent = w.mem.lent) :
     A'.Holds vals Γ { obsStore w x k c with mem := m } := by
   unfold absStore at h
   cases hk : storeBytes A v n with
@@ -256,10 +237,10 @@ theorem absStore_vec {A A' : AS} {v a : R} {n : Nat} (h : absStore A v a n = .ok
         | contradiction
         | (cases h
            refine AS.Holds.withPar (hA.keep (nonCell_kept hA.2.2 (store_parts hz) (fun kk _ => by cases kk <;> rfl)
-             ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz) hsz (fun kk _ hk => by cases kk <;> exact hk) (fun _ _ hk => hk.stored hsz hl))
+             ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz hlt ⟨rfl, rfl, rfl⟩) hsz (fun kk _ hk => by cases kk <;> exact hk) (fun _ _ hk => hk.stored hsz hl))
              (hA.1.2.2.keepWorld (fun _ _ => rfl) (fun _ _ => rfl) fun f hf hx =>
                nonCell_kept (S := [f]) (fun g hg => by rw [List.mem_singleton.mp hg]; exact hx) (store_parts hz)
-                 (fun kk _ => by cases kk <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz f
+                 (fun kk _ => by cases kk <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz hlt ⟨rfl, rfl, rfl⟩ f
                  (List.mem_filter.mpr ⟨List.mem_singleton_self _, hf⟩)))
 
 /-- Lanes inside bytes that fit all store. -/
@@ -322,9 +303,10 @@ theorem store_sound {cfg : Cfg} {A A' : AS} {ty : ClifTy} {v a : R} {fo : Bool}
     obtain ⟨mm, hmm⟩ := lanes_store hfit (lanes_pos hl)
     obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
     have hl := Contracts.foldl_stores_live _ (fun _ _ _ h => Contracts.store_live h) _ _ _ hmm
+    have hlt := Contracts.foldl_stores_lent _ (fun _ _ _ h => Mem.store_lent h) _ _ _ hmm
     rw [Array.foldlM_toList] at hmm
     simp only [hmm]
-    exact absStore_vec h hA hsc hs hz hl
+    exact absStore_vec h hA hsc hs hz hl hlt
 
 theorem storeU_sound {cfg : Cfg} {A A' : AS} {v a : R} {fo : Bool}
     (h : absStore A v a (tyBytes ((A.get v).scTy.getD .i64)) = .ok A') :
@@ -344,9 +326,10 @@ theorem storeU_sound {cfg : Cfg} {A A' : AS} {v a : R} {fo : Bool}
     obtain ⟨mm, hmm⟩ := lanes_store hfit (lanes_pos hl)
     obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
     have hl := Contracts.foldl_stores_live _ (fun _ _ _ h => Contracts.store_live h) _ _ _ hmm
+    have hlt := Contracts.foldl_stores_lent _ (fun _ _ _ h => Mem.store_lent h) _ _ _ hmm
     rw [Array.foldlM_toList] at hmm
     simp only [hmm]
-    exact absStore_vec h hA hsc hs hz hl
+    exact absStore_vec h hA hsc hs hz hl hlt
 
 theorem istore8_sound {cfg : Cfg} {A A' : AS} {v a : R} {tv : ClifTy} {fo : Bool}
     (hsc : (A.get v).scTy = some tv)
@@ -366,9 +349,9 @@ theorem istore8_sound {cfg : Cfg} {A A' : AS} {v a : R} {tv : ClifTy} {fo : Bool
 /-- Whatever a store writes, every fact but the cells survives it. -/
 theorem wild_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {x c : UInt64} {k : Nat} {m : Mem}
     (hsz : m.sizes = w.mem.sizes) (hz : m.busy = w.mem.busy)
-    (hl : m.pinnedLive = w.mem.pinnedLive) :
+    (hl : m.pinnedLive = w.mem.pinnedLive) (hlt : m.lent = w.mem.lent) :
     (A.withFacts (A.facts.filter (!·.isCell))).Holds vals Γ { obsStore w x k c with mem := m } :=
-  hA.keep (nonCell_kept hA.2.2 (store_parts hz) (fun kk _ => by cases kk <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz) hsz
+  hA.keep (nonCell_kept hA.2.2 (store_parts hz) (fun kk _ => by cases kk <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz hlt ⟨rfl, rfl, rfl⟩) hsz
     (fun kk _ hk => by cases kk <;> exact hk) (fun _ _ hk => hk.stored hsz hl)
 
 theorem wild_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} :
@@ -379,14 +362,14 @@ theorem wild_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} :
   · dsimp only
     split
     · split
-      · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm)
+      · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm) (Mem.store_lent hm)
       · rfl
     · split
       · rename_i m hm
         rw [← Array.foldlM_toList] at hm
         obtain ⟨hs, hz⟩ := Contracts.foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_busy h⟩) _ _ _ hm
         have hl := Contracts.foldl_stores_live _ (fun _ _ _ h => Contracts.store_live h) _ _ _ hm
-        exact wild_holds hA hs hz hl
+        exact wild_holds hA hs hz hl (Contracts.foldl_stores_lent _ (fun _ _ _ h => Mem.store_lent h) _ _ _ hm)
       · rfl
   · trivial
 
@@ -396,7 +379,7 @@ theorem wild_storeU {cfg : Cfg} {A : AS} {v a : R} :
   rw [runStmt_storeUnaligned]
   split
   · split
-    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm)
+    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm) (Mem.store_lent hm)
     · rfl
   · dsimp only
     split
@@ -404,7 +387,7 @@ theorem wild_storeU {cfg : Cfg} {A : AS} {v a : R} :
       rw [← Array.foldlM_toList] at hm
       obtain ⟨hs, hz⟩ := Contracts.foldl_stores_sizes _ (fun _ _ _ h => ⟨store_sizes_eq h, store_busy h⟩) _ _ _ hm
       have hl := Contracts.foldl_stores_live _ (fun _ _ _ h => Contracts.store_live h) _ _ _ hm
-      exact wild_holds hA hs hz hl
+      exact wild_holds hA hs hz hl (Contracts.foldl_stores_lent _ (fun _ _ _ h => Mem.store_lent h) _ _ _ hm)
     · rfl
   · trivial
 
@@ -414,7 +397,7 @@ theorem wild_istore8 {cfg : Cfg} {A : AS} {v a : R} :
   rw [runStmt_istore8]
   split
   · split
-    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm)
+    · rename_i m hm; exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm) (Mem.store_lent hm)
     · rfl
   · trivial
 
@@ -445,7 +428,7 @@ theorem rel_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} {fo : Bool}
         rcases store_val (hA.descAt hv) hk with ⟨tv, b, hsc, rfl, rfl⟩ | ⟨T, lane, cnt, ls, hsc, hl, rfl, hn, rfl⟩
         · obtain ⟨m, hm⟩ := hfit.store b
           simp only [hm]
-          exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm)
+          exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm) (Mem.store_lent hm)
         · have hlw : ((some (lane, cnt)).map (·.1.width)).getD 8 / 8 = tyBytes lane := rfl
           simp only [hl]
           rw [hlw]
@@ -453,9 +436,10 @@ theorem rel_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} {fo : Bool}
           obtain ⟨mm, hmm⟩ := lanes_store hfit (lanes_pos hl)
           obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
           have hl := Contracts.foldl_stores_live _ (fun _ _ _ h => Contracts.store_live h) _ _ _ hmm
+          have hlt := Contracts.foldl_stores_lent _ (fun _ _ _ h => Mem.store_lent h) _ _ _ hmm
           rw [Array.foldlM_toList] at hmm
           simp only [hmm]
-          exact wild_holds hA hs hz hl
+          exact wild_holds hA hs hz hl hlt
 
 theorem rel_storeU {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
     (hm : (storeBytes A v (tyBytes ((A.get v).scTy.getD .i64))).any (memRel A a) = true) :
@@ -477,7 +461,7 @@ theorem rel_storeU {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
         · simp only [hsc, Option.getD_some] at hfit
           obtain ⟨m, hm⟩ := hfit.store b
           simp only [hm]
-          exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm)
+          exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm) (Mem.store_lent hm)
         · have hlw : ((some (lane, cnt)).map (·.1.width)).getD 8 / 8 = tyBytes lane := rfl
           simp only [hl]
           rw [hlw]
@@ -485,9 +469,10 @@ theorem rel_storeU {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
           obtain ⟨mm, hmm⟩ := lanes_store hfit (lanes_pos hl)
           obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
           have hl := Contracts.foldl_stores_live _ (fun _ _ _ h => Contracts.store_live h) _ _ _ hmm
+          have hlt := Contracts.foldl_stores_lent _ (fun _ _ _ h => Mem.store_lent h) _ _ _ hmm
           rw [Array.foldlM_toList] at hmm
           simp only [hmm]
-          exact wild_holds hA hs hz hl
+          exact wild_holds hA hs hz hl hlt
 
 theorem rel_istore8 {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
     (hm : (storeBytes A v 1).any (memRel A a) = true) :
@@ -515,7 +500,7 @@ theorem rel_istore8 {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
           subst hk1
           obtain ⟨m, hm⟩ := hfit.store (b &&& 0xff)
           simp only [hm]
-          exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm)
+          exact wild_holds hA (store_sizes_eq hm) (store_busy hm) (Contracts.store_live hm) (Mem.store_lent hm)
 
 /-- **Bytes the checker places inside a heap block** can be read and written. -/
 theorem memBlk_spec {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {a : R} {n : Nat}
@@ -571,7 +556,7 @@ theorem blk_store {cfg : Cfg} {A : AS} {ty : ClifTy} {v a : R} {fo : Bool}
       obtain ⟨m, hm'⟩ := (memBlk_spec hA hm ha).1 b
       rw [runStmt_store, hv, ha]
       simp only [hm']
-      exact wild_holds hA (store_sizes_eq hm') (store_busy hm') (Contracts.store_live hm')
+      exact wild_holds hA (store_sizes_eq hm') (store_busy hm') (Contracts.store_live hm') (Mem.store_lent hm')
 
 theorem blk_storeU {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
     (hs : (A.get v).scTy.isSome = true) (hm : memBlk A a (tyBytes ((A.get v).scTy.getD .i64)) = true) :
@@ -589,7 +574,7 @@ theorem blk_storeU {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
       obtain ⟨m, hm'⟩ := (memBlk_spec hA hm ha).1 b
       rw [runStmt_storeUnaligned, hv, ha]
       simp only [hm']
-      exact wild_holds hA (store_sizes_eq hm') (store_busy hm') (Contracts.store_live hm')
+      exact wild_holds hA (store_sizes_eq hm') (store_busy hm') (Contracts.store_live hm') (Mem.store_lent hm')
 
 theorem blk_istore8 {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
     (hs : (A.get v).scTy.isSome = true) (hm : memBlk A a 1 = true) :
@@ -606,7 +591,7 @@ theorem blk_istore8 {cfg : Cfg} {A : AS} {v a : R} {fo : Bool}
       obtain ⟨m, hm'⟩ := (memBlk_spec hA hm ha).1 (b &&& 0xff)
       rw [runStmt_istore8, hv, ha]
       simp only [hm']
-      exact wild_holds hA (store_sizes_eq hm') (store_busy hm') (Contracts.store_live hm')
+      exact wild_holds hA (store_sizes_eq hm') (store_busy hm') (Contracts.store_live hm') (Mem.store_lent hm')
 
 theorem storeF_sound {cfg : Cfg} {A A' : AS} {ty : ClifTy} {v a : R} {fo : Bool}
     (h : absStoreF fo A v a (tyBytes ty) = .ok A') : Stmt1 cfg (A.Holds vals) (.store ty v a) (A'.Holds vals) fo := by
@@ -780,7 +765,7 @@ theorem extCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} (ha : e.asid
     exact TyV.sc (t := .i32) rfl
   · simp only [extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true, Bool.false_eq_true,
       if_false, hb, Option.bind_eq_bind, Option.bind_some] at hcall
-    obtain ⟨x, hx⟩ := (ExtContracts.baseCall_same hcall).2.2 _ rfl
+    obtain ⟨x, hx⟩ := (ExtContracts.baseCall_same (by simpa [Ext.aside] using ha) hcall).2.2 _ rfl
     cases hx
     exact TyV.sc (ExtContracts.base_ret_lanes _)
   · rename_i f
@@ -818,7 +803,7 @@ theorem callee_vendor {A B : AS} {e : Ext} {args : List R} {av : AV}
         ((vendorVal A.facts e ((args.map A.get).map (·.bits)) ||
             vendorValR A.facts e ((args.map A.get).map AV.rng)) = true ∨
           ∃ pas, args.mapM (parArg A) = some pas ∧ eOblOf A e pas ∈ A.par.obls) := by
-  simp only [AS.callee, hv, if_true] at h
+  simp only [AS.callee, Ext.threadFn_vendor hv, hv, if_true] at h
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true] at hc
@@ -845,7 +830,7 @@ theorem callee_vendor {A B : AS} {e : Ext} {args : List R} {av : AV}
 theorem callee_row {A B : AS} {e : Ext} {args : List R} {av : AV}
     (h : A.callee lb (.ext e) args = .ok (B, av)) (hv : e.vendor = true) :
     ∃ S av', vendorRow A.facts e (args.map A.get) = some (S, av') := by
-  simp only [AS.callee, hv, if_true] at h
+  simp only [AS.callee, Ext.threadFn_vendor hv, hv, if_true] at h
   split at h
   · split at h
     · rename_i S av' hr
@@ -880,10 +865,11 @@ theorem vendorStep_unchanged {e : Ext} {bits : List UInt64} {w : World} {r : Opt
     held, where its regions keep their sizes. -/
 theorem vendor_cell_kept {e : Ext} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (hf : writesNone e = true) (h : vendorStep e bits w = some (r, w'))
-    (hsz : ∀ rg, rg ≠ .pinned → w'.mem.sizes rg = w.mem.sizes rg) {a v : UInt64} (hok : cellOk a = true)
+    (hsz : ∀ rg, rg ≠ .pinned → w'.mem.sizes rg = w.mem.sizes rg) (hlent : w'.mem.lent = w.mem.lent)
+    {a v : UInt64} (hok : cellOk a = true)
     (hc : w.mem.load a 8 = some v) : w'.mem.load a 8 = some v := by
   obtain ⟨rg, off, hd, hp, hb⟩ := Contracts.cellOk_spec hok
-  exact Contracts.load_kept hd hp hb hc (hsz rg hp) fun i _ => vendorStep_unchanged hf h _
+  exact Contracts.load_kept hd hp hb hc (hsz rg hp) hlent fun i _ => vendorStep_unchanged hf h _
 
 /-- **A vendor call the checker accepts** ends where its state says, with the
     answer its row gives, the rest of the world kept. -/
@@ -961,7 +947,7 @@ theorem vendorCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} {S : TSta
     have hcell : ∀ a v, (writesNone e) = true → cellOk a = true →
         (obsCall w (.ext e) vs).mem.load a 8 = some v → w'.mem.load a 8 = some v := by
       intro a v hkp hok hc
-      exact vendor_cell_kept hkp hstep hk.sizes hok hc
+      exact vendor_cell_kept hkp hstep hk.sizes hk.lent hok hc
     refine hW.withPar ⟨hP.1, hP.2.1, fun x hx => ?_, hP.2.2.2.1, fun c hc => ?_, hP.2.2.2.2.2⟩
     rotate_left
     · -- a slot holding what a kept cell holds
@@ -1018,18 +1004,42 @@ theorem vendorCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} {S : TSta
   · exact hW
 
 theorem callee_ext {A B : AS} {e : Ext} {args : List R} {av : AV} (h : A.callee lb (.ext e) args = .ok (B, av))
-    (hv : e.vendor = false) :
+    (hv : e.vendor = false) (ht : e.threadFn = none) :
     e.aside = true ∧ (args.map A.get).all (fun a => a.scTy.isSome) = true ∧
       preExt A.facts (relRb A args) e (args.map A.get) = true ∧
       B = (A.forgetExt e).withFacts (A.facts.filter (extKeepsA e (args.map A.get))) ∧
       av = extAnswer e (args.map A.get) := by
-  simp only [AS.callee, hv, Bool.false_eq_true, if_false] at h
+  simp only [AS.callee, ht, hv, Bool.false_eq_true, if_false] at h
   split at h
   · rename_i hc
     cases h
     simp only [Bool.and_eq_true] at hc
     exact ⟨hc.1.1, hc.1.2, hc.2, rfl, rfl⟩
   · cases h
+
+/-- **A thread's start or join the checker accepts** answers, and leaves a
+    world the state after describes, every region's size and the
+    observations as they were once it was made. -/
+theorem callee_thread {cfg : Cfg} {A B : AS} {e : Ext} {f : BaseFn} {args : List R} {av : AV}
+    (h : A.callee lb (.ext e) args = .ok (B, av)) (ht : e.threadFn = some f)
+    {Γ : Env} {w : World} {vs : List V} (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
+    ∃ r w', callOf cfg.locals (.ext e) vs (obsCall w (.ext e) vs) = some (r, w') ∧ B.Holds vals Γ w' ∧
+      (∀ v, r = some v → av.Desc (Γ.push v) w' v) ∧ Contracts.KeepsRooms w w' ∧
+      w'.obs = (obsCall w (.ext e) vs).obs := by
+  obtain ⟨g, rfl⟩ : ∃ g, e = .base g := by cases e <;> first | exact ⟨_, rfl⟩ | cases ht
+  have hg : g.thread = true ∧ g = f := by
+    simp only [Ext.threadFn] at ht; split at ht
+    · rename_i hg; cases ht; exact ⟨hg, rfl⟩
+    · cases ht
+  obtain ⟨hg, rfl⟩ := hg
+  cases g <;> simp only [BaseFn.thread, Bool.false_eq_true] at hg <;>
+    simp only [AS.callee, Ext.threadFn, BaseFn.thread, if_true] at h
+  · split at h
+    · rename_i r hr; cases h; exact spawn_core hr hA hvs
+    · cases h
+  · split at h
+    · rename_i r hr; cases h; exact join_core hr hA hvs
+    · cases h
 
 /-- **A call the checker accepts that is no library's answers**, ends where
     the rule's state says, and its answer is the one the rule gives. -/
@@ -1042,8 +1052,13 @@ theorem callee_total {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args :
   cases c with
   | lib f => exact absurd rfl (hn f)
   | ext e =>
+      cases ht : e.threadFn with
+      | some f =>
+          obtain ⟨r, w', hc, hB, hd, -⟩ := callee_thread (cfg := cfg) h ht hA hvs
+          exact ⟨r, w', hc, hB, hd⟩
+      | none =>
       cases hv : e.vendor
-      · obtain ⟨ha, hsc, hp, rfl, rfl⟩ := callee_ext h hv
+      · obtain ⟨ha, hsc, hp, rfl, rfl⟩ := callee_ext h hv ht
         exact extCall_core (cfg := cfg) ha hsc hp hA hvs
       · obtain ⟨hi, hsc, S, hr, rfl, hob⟩ := callee_vendor h hv hA.1.2.2.1
         obtain ⟨r, w', hcall, hA', hans, -⟩ := vendorCall_core (cfg := cfg) hv hi hsc hob hr hA hvs
@@ -1089,12 +1104,10 @@ theorem libKeeps_sound {w w' : World} {lo hi : Nat} (hs : LibStep w w' lo hi) {x
       exact hs.idle
   | room r n =>
       have hr : r ≠ .pinned := by rintro rfl; exact absurd (show (Region.pinned != Region.pinned) = true from hk) (by decide)
-      show n ≤ w'.mem.sizes r
-      rw [hs.rooms r hr]; exact hx
+      exact ⟨by rw [hs.rooms r hr]; exact hx.1, fun ha => by rw [hs.lent]; exact hx.2 ha⟩
   | roomArg r y =>
       have hr : r ≠ .pinned := by rintro rfl; exact absurd (show (Region.pinned != Region.pinned) = true from hk) (by decide)
-      show y.toNat ≤ w'.mem.sizes r ∧ _
-      rw [hs.rooms r hr]; exact hx
+      exact ⟨by rw [hs.rooms r hr]; exact hx.1, hx.2.1, hx.2.2⟩
   | cell c v =>
       simp only [libKeeps, Bool.and_eq_true, Bool.or_eq_true, decide_eq_true_eq] at hk
       exact hs.cell c v hk.1 hk.2 hx
@@ -1165,8 +1178,8 @@ theorem npRoom_of {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {r : 
     (ht : (A.get r).scTy = some .i64) (hm : memN A.facts (A.get r) k = true) :
     ∃ x, Γ[r]? = some (.sc .i64 x) ∧ NPRoom w x k ∧ (A.get r).Desc Γ w (.sc .i64 x) := by
   obtain ⟨x, hx, hd⟩ := hA.getSc ht
-  obtain ⟨rg, off, hdec, hp, hs, h36⟩ := memN_spec hA.2.2 ⟨_, hd⟩ hm
-  exact ⟨x, hx, ⟨rg, off, hdec, hp, hs, h36⟩, hd⟩
+  obtain ⟨rg, off, hdec, hp, hs, h36, hl⟩ := memN_spec hA.2.2 ⟨_, hd⟩ hm
+  exact ⟨x, hx, ⟨rg, off, hdec, hp, hs, h36, hl⟩, hd⟩
 
 /-- A slot known exactly holds what it is known to. -/
 theorem known_of {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {r : R} {u v : V}
@@ -1514,7 +1527,7 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
         simp only [absStmt, answersAs, if_true] at h
         split at h
         · rename_i B av hB
-          obtain ⟨ha, hsc, hp, rfl, rfl⟩ := callee_ext hB rfl
+          obtain ⟨ha, hsc, hp, rfl, rfl⟩ := callee_ext hB rfl rfl
           cases h
           refine call_rule fun Γ w vs hA hvs => ?_
           obtain ⟨r, w', hcall, hA', hr⟩ := extCall_core (cfg := cfg) ha hsc hp hA hvs
@@ -1528,7 +1541,7 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
           simp only [callOf, extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true,
             Bool.false_eq_true, if_false, hb, Option.bind_eq_bind, Option.bind_some] at hc2
           subst hv
-          obtain ⟨x, rfl⟩ := (ExtContracts.baseCall_same hc2).2.2 _ rfl
+          obtain ⟨x, rfl⟩ := (ExtContracts.baseCall_same rfl hc2).2.2 _ rfl
           have hP := hA'.push hdv
           have hlen : Γ.size = A.len := hA.1.1
           have hat : ∀ u, (Γ.push (.sc .i64 x))[A.len]? = some u → u = .sc .i64 x := by
@@ -2730,12 +2743,19 @@ theorem lessRange_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w)
         intro hA2
         by_cases hpos : 0 < nx.lo + s
         · rw [if_pos hpos]
-          rw [hfit] at hf
-          refine ⟨hA2.1, hA2.2.1, TState.holds_cons ?_ hA2.2.2⟩
-          show (nx.lo + s) * s' + d ≤ w.mem.sizes r
-          have hm := Nat.mul_le_mul_right s' (show nx.lo + s ≤ zb by have := hxa.1; omega)
-          have := hf.2
-          omega
+          split
+          · rename_i har
+            rw [hfit] at hf
+            refine ⟨hA2.1, hA2.2.1, TState.holds_cons ?_ hA2.2.2⟩
+            refine ⟨?_, fun ha => ?_⟩
+            · have hm := Nat.mul_le_mul_right s' (show nx.lo + s ≤ zb by have := hxa.1; omega)
+              have := hf.2
+              omega
+            · subst ha
+              rcases Bool.or_eq_true_iff.mp har with h | h
+              · exact absurd h (by decide)
+              · exact arenaFree_nil hA2.2.2 h
+          · exact hA2
         · rw [if_neg hpos]; exact hA2
     · exact hA
   · exact hA
@@ -3829,8 +3849,14 @@ theorem callee_rooms {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args :
   cases c with
   | lib f => exact absurd rfl (hn f)
   | ext e =>
+      cases ht : e.threadFn with
+      | some f =>
+          obtain ⟨r, w', hcall, -, -, hk, -⟩ := callee_thread (cfg := cfg) h ht hA hvs
+          rw [hcall] at hc; cases hc
+          exact hk
+      | none =>
       cases hv : e.vendor
-      · obtain ⟨ha, hsc, -, -, -⟩ := callee_ext h hv
+      · obtain ⟨ha, hsc, -, -, -⟩ := callee_ext h hv ht
         exact ext_rooms hA ha hsc hvs hc
       · obtain ⟨hi, hsc, S, hr, -, hob⟩ := callee_vendor h hv hA.1.2.2.1
         obtain ⟨r, w', hcall, -, -, hk⟩ := vendorCall_core (cfg := cfg) hv hi hsc hob hr hA hvs
@@ -3848,8 +3874,14 @@ theorem callee_obs {cfg : Cfg} [Linked lb cfg] {A B : AS} {c : Callee} {args : L
   cases c with
   | lib f => exact absurd rfl (hn f)
   | ext e =>
+      cases ht : e.threadFn with
+      | some f =>
+          obtain ⟨r, w', hcall, -, -, -, ho⟩ := callee_thread (cfg := cfg) h ht hA hvs
+          rw [hcall] at hc; cases hc
+          exact ho
+      | none =>
       cases hv : e.vendor
-      · obtain ⟨ha, hsc, -, -, -⟩ := callee_ext h hv
+      · obtain ⟨ha, hsc, -, -, -⟩ := callee_ext h hv ht
         have hA1 := hA.obsCall (.ext e) vs
         obtain ⟨bits, hb⟩ := bits_exist (descAll_of hA1 hvs) hsc
         exact (Contracts.lib_step ha hc hb).obs

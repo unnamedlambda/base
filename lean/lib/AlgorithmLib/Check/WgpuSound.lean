@@ -31,9 +31,10 @@ structure CuKeptBut (ks : List Held) (w w' : World) : Prop where
   held : ∀ (k : Held) x, k ∉ ks → k.live w x = true → k.live w' x = true
   blk : ∀ x n, Contracts.Blk w x n → Contracts.Blk w' x n
   obs : w'.obs = w.obs
+  lent : w'.mem.lent = w.mem.lent
 
 theorem CuKept.but {w w' : World} (h : CuKept w w') (ks : List Held) : CuKeptBut ks w w' :=
-  ⟨h.sizes, fun k x _ hl => h.held k x hl, h.blk, h.obs⟩
+  ⟨h.sizes, fun k x _ hl => h.held k x hl, h.blk, h.obs, h.lent⟩
 
 -- ---------------------------------------------------------------------------
 -- Reading the typestate
@@ -326,6 +327,7 @@ theorem wgKept {w : World} {s' : WgState} {Ti : List Nat} {TK K : List WgObj} {g
     | _ => exact hl
   blk _ _ hb := hb
   obs := rfl
+  lent := rfl
 
 /-- Losing the device keeps the rest of the world. -/
 theorem wgKept_lose {w : World} (d : WgData) (f : WgpuFn) :
@@ -337,6 +339,7 @@ theorem wgKept_lose {w : World} (d : WgData) (f : WgpuFn) :
     | _ => exact hl
   blk _ _ hb := hb
   obs := rfl
+  lent := rfl
 
 /-- The count `wgBump` says holds after a step that makes one object. -/
 theorem wgBump_holds {S : TState} {w w' : World} (hS : S.holds w)
@@ -367,7 +370,7 @@ theorem holds_lose {x : Fact} {w : World} (hx : x.holds w) (hn : ∀ m, x ≠ .n
   | _ => exact holds_wg hx (fun _ _ => ⟨nofun, nofun⟩) rfl
 
 theorem wgKept_same (f : WgpuFn) (w : World) : CuKeptBut ((wgKills f).map .wg) w w :=
-  ⟨fun _ _ => rfl, fun _ _ _ h => h, fun _ _ h => h, rfl⟩
+  ⟨fun _ _ => rfl, fun _ _ _ h => h, fun _ _ h => h, rfl, rfl⟩
 
 /-- The one live object of kind `k` once one is added to a state with none. -/
 theorem isOne_push {s : WgState} {d : WgData} {k : WgObj} (hn : s.NoneOf k) (hk : d.kind = k) :
@@ -1622,8 +1625,8 @@ theorem row_queueWriteBuffer {q bf off src n : AV} (hS : S.holds w) (hl : w.wg.l
     simp only [Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hc1, hm⟩ := or_not_false hc
-    obtain ⟨r, o, hd, hp, hs, hn⟩ := memB_spec hS hx2 hx3 hm
-    obtain ⟨bytes, hbytes⟩ := Option.isSome_iff_exists.mp (Contracts.copyOut_isSome hd hp hs hn)
+    obtain ⟨r, o, hd, hp, hs, hn, hlo⟩ := memB_spec hS hx2 hx3 hm
+    obtain ⟨bytes, hbytes⟩ := Option.isSome_iff_exists.mp (Contracts.copyOut_isSome hd hp hs hn hlo)
     have hc' := hc1
     simp only [Bool.or_eq_true, not_or, bne_iff_ne, ne_eq, Decidable.not_not, decide_eq_true_eq, Nat.not_lt]
       at hc'
@@ -1659,14 +1662,14 @@ theorem row_bufferRead {dv bf off dst n : AV} (hS : S.holds w) (hl : w.wg.lost =
     simp only [Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hc1, hm⟩ := or_not_false hc
-    obtain ⟨r, o, hd, hp, hs, hn⟩ := memB_spec hS hx2 hx3 hm
+    obtain ⟨r, o, hd, hp, hs, hn, hlo⟩ := memB_spec hS hx2 hx3 hm
     have hc' := hc1
     simp only [Bool.or_eq_true, not_or, bne_iff_ne, ne_eq, Decidable.not_not, decide_eq_true_eq, Nat.not_lt,
       beq_iff_eq] at hc'
     have hz0 : (ByteArray.mk (Array.replicate x3.toNat 0)).size = x3.toNat := by simp [ByteArray.size]
     obtain ⟨m0, hm0⟩ := Option.isSome_iff_exists.mp
       (Contracts.copyIn_isSome (ByteArray.mk (Array.replicate x3.toNat 0)) hd hp (by rw [hz0]; exact hs)
-        (by rw [hz0]; exact hn))
+        (by rw [hz0]; exact hn) (by rw [hz0]; exact hlo))
     have hdec : wgDecode .bufferRead [x, y, x1, x2, x3] w = some (.read bi x1.toNat x3.toNat x2) := by
       simp only [wgDecode, wgDRead, hg, hgd, Option.bind_eq_bind, Option.bind_some]
       have h0 : x3 ≠ 0 := by intro e; subst e; simp at hnl; omega
@@ -1678,7 +1681,7 @@ theorem row_bufferRead {dv bf off dst n : AV} (hS : S.holds w) (hl : w.wg.lost =
       omega
     obtain ⟨m, hm'⟩ := Option.isSome_iff_exists.mp
       (Contracts.copyIn_isSome ((w.wg.bytes bi).extract x1.toNat (x1.toNat + x3.toNat)) hd hp (by rw [hsz]; exact hs)
-        (by rw [hsz]; exact hn))
+        (by rw [hsz]; exact hn) (by rw [hsz]; exact hlo))
     have hcall : wgpuCall .bufferRead [x, y, x1, x2, x3] w = some (some (ofInt .i32 0), { w with mem := m }) := by
       simp [wgpuCall, hl, hdec, wgEffect, hgd, hm']
     obtain ⟨hS', hk⟩ := afterCopy_sound hS hm' (ao := dst.bits) (fun _ e => (known_bits hx2 e).symm) (by rw [hsz]; omega)
@@ -1807,7 +1810,7 @@ theorem row_surfacePresent {t : AV} (hS : S.holds w) (hl : w.wg.lost = false) (h
         · exact noneOf_free hone2
       exact fun y hy => holds_shown (hW y hy) _
     · have hk := wgKept hst (f := .surfacePresent) (by simp [wgKills])
-      exact ⟨hk.sizes, fun k y hk' hl => by have := hk.held k y hk' hl; cases k <;> exact this, hk.blk, hk.obs⟩
+      exact ⟨hk.sizes, fun k y hk' hl => by have := hk.held k y hk' hl; cases k <;> exact this, hk.blk, hk.obs, hk.lent⟩
   · cases h
 
 end

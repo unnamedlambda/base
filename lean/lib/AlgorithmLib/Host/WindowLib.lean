@@ -9,7 +9,7 @@ import all Init.Data.List.Sort.Basic
 # The window library, called directly
 
 What each `WindowFn` does: the engine's seven functions over winit
-(`base/src/ffi/window.rs`). As with wgpu, a call is decoded — its window one
+(`base/src/builtin/window.rs`). As with wgpu, a call is decoded — its window one
 the program opened and has not closed, its out-parameter with room — and
 then carried out, always answering (`wlDecode`, `wlEffect`).
 

@@ -864,13 +864,13 @@ theorem block_run (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
     (hok : okOf I O (okLZ4 I) f (compressorBodyWStmt inStride lenOff hashLog)
       (startWS numBlocks inStride outStride hashLog cta inP G))
     (hI : ∀ a, I a → w.mem.load a 1 = some (G.getD a.toNat 0).toUInt64)
-    (hO : ∀ a, O a → Writable w.mem a 1) (hnan : w.mem.nan = hw.nan) :
+    (hO : ∀ a, O a → Writable w.mem a 1) (hnan : w.mem.nan = hw.nan) (hlent0 : w.mem.lent = []) :
     ∃ u, BlockRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) cta 32
         [.sc .i64 inP, .sc .i64 outA] hw w u ∧
       (∀ a, NotArena a → u.mem.load a 1 = replay ((List.range 32).flatMap fun t =>
         lanePart t (gstOf f (compressorBodyWStmt inStride lenOff hashLog)
           (startWS numBlocks inStride outStride hashLog cta inP G))) a (w.mem.load a 1)) ∧
-      (∀ a, NotArena a → Writable w.mem a 1 → Writable u.mem a 1) ∧ u.mem.nan = hw.nan := by
+      (∀ a, NotArena a → Writable w.mem a 1 → Writable u.mem a 1) ∧ u.mem.nan = hw.nan ∧ u.mem.lent = [] := by
   let s := compressorS numBlocks inStride outStride lenOff hashLog
   let ws0 := blockWS inP outA G
   let S := 2 ^ hashLog * 2
@@ -916,13 +916,13 @@ theorem block_run (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
     (∀ a, NotArena a → Writable w.mem a 1 → Writable W.mem a 1) ∧
     (∀ a, NotArena a → W.mem.load a 1 =
       replay ((List.range t).flatMap fun t' => lanePart t' (gstOf f body W0)) a (w.mem.load a 1)) ∧
-    W.mem.nan = hw.nan
+    W.mem.nan = hw.nan ∧ W.mem.lent = []
   have hthr : ∀ t, t < 32 → ∀ W, Inv t W → ∃ li', laneI (xc t W) s (LI.init (Vw W)) = some li' ∧ Inv (t + 1) li'.w ∧
       collCalls li'.w W.obs.length = (LaneWarp.trace hw cta (fun _ _ => 0) jLeaf 0 s ws0).map (callOne cta (laneOf t)) ∧
       sharedStores li'.w W.obs.length =
         tagE cta (addrOf .arena 0) (laneOf t) 0 (LaneWarp.trace hw cta (fun _ _ => 0) shEvLeaf 0 s ws0) := by
     intro t ht W hW
-    obtain ⟨hWI, hWw, hWm, hWn⟩ := hW
+    obtain ⟨hWI, hWw, hWm, hWn, hWl⟩ := hW
     have hlt : (laneOf t).val = t := Nat.mod_eq_of_lt ht
     have hpre : LanePre hw cta (fun _ _ => 0) S (fun _ _ _ => False) (fun _ a => I a) (fun _ _ => False)
         (fun _ a n => n = 1 ∧ O a) (laneOf t) (xc t W) 0 s ws0 true (LI.init (Vw W)) [] := by
@@ -935,7 +935,7 @@ theorem block_run (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
       · refine ⟨fun _ => rfl, fun _ => rfl, fun _ _ h => h.elim, fun a ha => ?_, fun _ _ h => h.elim,
           fun a n hn => ?_, by show (Array.replicate S (0 : UInt8)).size = S; simp, fun _ => hA0, hWn, Nat.le_refl _, fun _ => rfl,
           ⟨fun _ _ => show (0 : UInt64).toNat < 2 ^ 32 by decide, fun _ _ => show (0 : UInt64).toNat < 2 ^ 32 by decide,
-            fun _ => show (0 : UInt64).toNat < 2 ^ 32 by decide⟩⟩
+            fun _ => show (0 : UInt64).toNat < 2 ^ 32 by decide⟩, hWl⟩
         · show ({ W.mem with arena := A0 } : Mem).load a 1 = _
           rw [load_set_arena (hIna a ha), hWI a ha]; rfl
         · obtain ⟨rfl, ha⟩ := hn
@@ -956,7 +956,7 @@ theorem block_run (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
     have hbytes : stores1 L'.reverse = lanePart t (gstOf f body W0) := by
       rw [← byteSt_storesOf hL'2, hst]
       exact (hBytes (laneOf t)).trans (by rw [hlt])
-    refine ⟨li', hl, ⟨fun a ha => ?_, fun a ha hwr => ?_, fun a ha => ?_, hrel.nan⟩, ?_, ?_⟩
+    refine ⟨li', hl, ⟨fun a ha => ?_, fun a ha hwr => ?_, fun a ha => ?_, hrel.nan, hrel.lent⟩, ?_, ?_⟩
     · rw [hmem a (hIna a ha), hbytes]
       show replay _ a (({ W.mem with arena := A0 } : Mem).load a 1) = _
       rw [load_set_arena (hIna a ha), hWI a ha]
@@ -978,7 +978,7 @@ theorem block_run (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
     induction t with
     | zero =>
       intro _
-      refine ⟨fun a ha => ?_, fun a ha hwr => writable_arena hwr ha A0, fun a ha => ?_, hnan⟩
+      refine ⟨fun a ha => ?_, fun a ha hwr => writable_arena hwr ha A0, fun a ha => ?_, hnan, hlent0⟩
       · show ({ w.mem with arena := A0 } : Mem).load a 1 = _
         rw [load_set_arena (hIna a ha)]; exact hI a ha
       · show ({ w.mem with arena := A0 } : Mem).load a 1 = _
@@ -1029,7 +1029,7 @@ theorem block_run (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
   have hIN := hInv 32 (Nat.le_refl _)
   refine ⟨{ Ws 32 with mem := { (Ws 32).mem with arena := w.mem.arena } },
     ⟨S0, T, Ws 32, c, st, _, hfold, hans, fun t ht => ?_, rfl⟩, fun a ha => ?_,
-    fun a ha hwr => writable_arena (hIN.2.1 a ha hwr) ha _, hIN.2.2.2⟩
+    fun a ha hwr => writable_arena (hIN.2.1 a ha hwr) ha _, hIN.2.2.2.1, hIN.2.2.2.2⟩
   · simp only [List.getD_eq_getElem?_getD, List.getElem?_map]
     rw [List.getElem?_range ht]
     rfl

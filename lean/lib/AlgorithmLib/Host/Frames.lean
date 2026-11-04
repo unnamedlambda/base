@@ -85,6 +85,7 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   -- other functions write none.
   | .base .fileReadToPtr => .at 2 4
   | .base .stdinReadline => .at 0 1
+  | .base .threadJoin => .anywhere
   | .base _ => .none
   -- The serial library writes a port's name and what a read takes; the USB
   -- library what a transfer brings back from the device.

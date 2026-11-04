@@ -50,6 +50,7 @@ def LibCall (L : Locals) (f : LibFn) (vs : List V) (w : World) (Q : World → Pr
     written, outside the heap, at most the bytes from `lo` up to `hi`. -/
 structure LibStep (w w' : World) (lo hi : Nat) : Prop where
   rooms : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r
+  lent : w'.mem.lent = w.mem.lent
   idle : w'.mem.busy.isEmpty = true
   cell : ∀ c v, cellOk c = true → hi ≤ c.toNat ∨ c.toNat + 8 ≤ lo → w.mem.load c 8 = some v →
     w'.mem.load c 8 = some v
@@ -58,11 +59,12 @@ structure LibStep (w w' : World) (lo hi : Nat) : Prop where
 /-- A step that wrote inside a run wrote inside any run around it. -/
 theorem LibStep.mono {w w' : World} {lo hi lo' hi' : Nat} (h : LibStep w w' lo hi) (hlo : lo' ≤ lo)
     (hhi : hi ≤ hi') : LibStep w w' lo' hi' :=
-  ⟨h.rooms, h.idle, fun c v hc hm => h.cell c v hc (by omega), h.calls⟩
+  ⟨h.rooms, h.lent, h.idle, fun c v hc hm => h.cell c v hc (by omega), h.calls⟩
 
 /-- **Room for `k` bytes at `p`, outside pinned memory.** -/
 def NPRoom (w : World) (p : UInt64) (k : Nat) : Prop :=
-  ∃ r off, decodeAddr p = some (r, off) ∧ r ≠ .pinned ∧ off + k ≤ w.mem.sizes r ∧ off + k ≤ 2 ^ 36
+  ∃ r off, decodeAddr p = some (r, off) ∧ r ≠ .pinned ∧ off + k ≤ w.mem.sizes r ∧ off + k ≤ 2 ^ 36 ∧
+    w.mem.LentOk r off k
 
 /-- **The hash table's functions meet their statements.** -/
 structure HtOk (L : Locals) : Prop where

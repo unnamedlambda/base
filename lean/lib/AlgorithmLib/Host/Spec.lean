@@ -251,7 +251,7 @@ theorem asyncCopy_region {w : World} {p : Nat} {ha : UInt64} {n : Nat} {wr : Boo
     {rs ws : List Nat} {k : Race → Option (Dev × Mem)} {ret : Option V} {w' : World}
     (h : asyncCopy w p ha n wr rs ws k = some (ret, w')) :
     ∃ r d m, k r = some (d, m) ∧ (∀ reg, w'.mem.region reg = m.region reg) ∧
-      w'.mem.pinnedLive = m.pinnedLive ∧
+      w'.mem.pinnedLive = m.pinnedLive ∧ w'.mem.lent = m.lent ∧
       ∀ b ∈ w.mem.busy, b ∈ w'.mem.busy := by
   unfold asyncCopy at h
   split at h
@@ -260,7 +260,7 @@ theorem asyncCopy_region {w : World} {p : Nat} {ha : UInt64} {n : Nat} {wr : Boo
     obtain ⟨⟨d, m⟩, hk, h⟩ := Option.bind_eq_some_iff.mp h
     simp only [Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨-, rfl⟩ := h
-    refine ⟨r, d, m, hk, fun reg => by cases reg <;> rfl, rfl, ?_⟩
+    refine ⟨r, d, m, hk, fun reg => by cases reg <;> rfl, rfl, rfl, ?_⟩
     intro b hb
     dsimp only
     split

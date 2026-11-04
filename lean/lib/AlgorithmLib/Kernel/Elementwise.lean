@@ -170,6 +170,18 @@ theorem foldl_eff_nan : ∀ (l : List Nat) (m : Mem), (l.foldl (fun m j => E.eff
   | [], _ => rfl
   | j :: js, m => by rw [List.foldl_cons, foldl_eff_nan js, eff_nan]
 
+theorem eff_lent (j : Nat) (m : Mem) : (E.eff j m).lent = m.lent := by
+  unfold eff put
+  split
+  · cases h : m.store (E.out j) 4 (E.val j) with
+    | none => rfl
+    | some m' => exact Mem.store_lent h
+  · rfl
+
+theorem foldl_eff_lent : ∀ (l : List Nat) (m : Mem), (l.foldl (fun m j => E.eff j m) m).lent = m.lent
+  | [], _ => rfl
+  | j :: js, m => by rw [List.foldl_cons, foldl_eff_lent js, eff_lent]
+
 theorem eff_keep {N : Nat} (hA : E.Apart N) {i j : Nat} (hi : i < N) (hj : j < N) (hne : j ≠ i) {m : Mem}
     (h : E.Pre m i) : E.Pre (E.eff j m) i := by
   intro hai
@@ -218,7 +230,7 @@ def Threads (E : Elem) : Prop :=
     every thread's precondition holds and shared memory is zeroed, a block
     that finishes leaves its threads' effects, in order. -/
 def Blocks (E : Elem) : Prop :=
-  ∀ b, b < grid → ∀ (w w' : World), w.mem.arena = ByteArray.empty → w.mem.nan = gpuNaN →
+  ∀ b, b < grid → ∀ (w w' : World), w.mem.arena = ByteArray.empty → w.mem.nan = gpuNaN → w.mem.lent = [] →
     (∀ t, t < bd → E.Pre w.mem (b * bd + t)) → BlockRuns k b bd params Hw.rounded w w' →
     w'.mem = (List.range bd).foldl (fun m t => E.eff (b * bd + t) m) w.mem
 
@@ -321,19 +333,20 @@ theorem launch_blocks (hA : E.Apart (grid * bd)) (hblk : Blocks k params grid bd
   have hG : ∀ b m, G b m = ((List.range bd).map (b * bd + ·)).foldl (fun m j => E.eff j m) m := by
     intro b m; simp only [G, List.foldl_map]
   have hmem := blocksRun_mem (k' := k) (bd' := bd) (params' := params) (hw := Hw.rounded)
-    (fun b m => b < grid ∧ m.arena = ByteArray.empty ∧ m.nan = gpuNaN ∧ ∀ t, t < bd → E.Pre m (b * bd + t))
+    (fun b m => b < grid ∧ m.arena = ByteArray.empty ∧ m.nan = gpuNaN ∧ m.lent = [] ∧
+      ∀ t, t < bd → E.Pre m (b * bd + t))
     F
     (fun b s s' hP h => by
-      rw [hblk b hP.1 _ _ hP.2.1 hP.2.2.1 hP.2.2.2 h]
+      rw [hblk b hP.1 _ _ hP.2.1 hP.2.2.1 hP.2.2.2.1 hP.2.2.2.2 h]
       simp only [F, G, if_pos hP.1])
     (fun b b' m hne hP => by
-      obtain ⟨hb', har, hnn, hpj⟩ := hP
+      obtain ⟨hb', har, hnn, hll, hpj⟩ := hP
       by_cases hb : b < grid
       · simp only [F, if_pos hb]
         have hl : ∀ j ∈ (List.range bd).map (b * bd + ·), j < grid * bd := fun j hj => by
           obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hj; exact lt_grid hb (List.mem_range.mp ht)
         refine ⟨hb', by rw [hG, foldl_eff_arena hA _ _ hl]; exact har, by rw [hG, foldl_eff_nan]; exact hnn,
-          fun t' ht' => ?_⟩
+          by rw [hG, foldl_eff_lent]; exact hll, fun t' ht' => ?_⟩
         rw [hG]
         refine foldl_eff_keep hA (lt_grid hb' ht') _ _ ?_ hl (hpj t' ht')
         intro hm
@@ -344,9 +357,9 @@ theorem launch_blocks (hA : E.Apart (grid * bd)) (hblk : Blocks k params grid bd
           rw [Nat.succ_mul] at this; omega
         · have : (b' + 1) * bd ≤ b * bd := Nat.mul_le_mul_right _ h
           rw [Nat.succ_mul] at this; omega
-      · simp only [F, if_neg hb]; exact ⟨hb', har, hnn, hpj⟩)
+      · simp only [F, if_neg hb]; exact ⟨hb', har, hnn, hll, hpj⟩)
     grid _ w'
-    (fun b hb => ⟨List.mem_range.mp hb, har0, rfl, fun t ht => hpre _ (lt_grid (List.mem_range.mp hb) ht)⟩) hfold
+    (fun b hb => ⟨List.mem_range.mp hb, har0, rfl, rfl, fun t ht => hpre _ (lt_grid (List.mem_range.mp hb) ht)⟩) hfold
   obtain ⟨i, o, hd⟩ := hA.buf j hj ha
   refine (load_bufs (m₁ := ({ kmem bufs with bufs := w'.mem.bufs } : Mem)) (m₂ := w'.mem) (n := 4) hd rfl).trans ?_
   rw [hmem]
@@ -371,7 +384,7 @@ theorem launch_spec (hsm : k.smem = 0) (hA : E.Apart (grid * bd)) (hth : Threads
     (hval : ∀ j, j < grid * bd → E.active j → (E.val j).toNat < 2 ^ 32)
     (hr : LaunchRuns k grid bd params bufs bufs') :
     ∀ j, j < grid * bd → E.active j → ({ kmem bufs with bufs := bufs' } : Mem).load (E.out j) 4 = some (E.val j) :=
-  launch_blocks hA (fun _ hb w _ harena hnan hpre hr => block_mem hA hth hb (by rw [harena, hsm]; rfl) hnan hpre hr)
+  launch_blocks hA (fun _ hb w _ harena hnan _ hpre hr => block_mem hA hth hb (by rw [harena, hsm]; rfl) hnan hpre hr)
     bufs bufs' hpre hval hr
 
 end Launch

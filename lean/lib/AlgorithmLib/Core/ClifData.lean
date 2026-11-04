@@ -217,7 +217,7 @@ def WgObj.cname : WgObj → String
   | .errorScope => "ErrorScope"
 
 /-- wgpu, through the engine's shims over the `wgpu` crate
-    (`base/src/ffi/wgpu.rs`): the objects a compute dispatch and a present to
+    (`base/src/builtin/wgpu.rs`): the objects a compute dispatch and a present to
     a window need, each made by one call whose descriptor is its arguments.
     What a call reads from program memory is a run of words or of bytes at an
     address and a length it is handed; what it writes is the bytes a buffer
@@ -256,7 +256,7 @@ theorem WgpuFn.mem_all (f : WgpuFn) : f ∈ WgpuFn.all := by
   case release o => cases o <;> simp [WgpuFn.all, WgObj.all]
   all_goals simp [WgpuFn.all]
 
-/-- The engine's window library (`base/src/ffi/window.rs`, over winit): the
+/-- The engine's window library (`base/src/builtin/window.rs`, over winit): the
     thread's event loop, windows, their events as 32-byte records, and their
     size in pixels. A wgpu surface is made from a window's handle. Where it
     answers `bool` the result is an `i8`. -/
@@ -268,7 +268,7 @@ def WindowFn.all : List WindowFn := [.init, .open, .close, .pump, .poll, .pixels
 
 theorem WindowFn.mem_all (f : WindowFn) : f ∈ WindowFn.all := by cases f <;> simp [WindowFn.all]
 
-/-- The engine's CPU library (`base/src/ffi/cpu.rs`): how many logical CPUs
+/-- The engine's CPU library (`base/src/builtin/cpu.rs`): how many logical CPUs
     are online, the physical core and package of each, and pinning the
     calling thread to one or releasing it. Each answers an `int`, `-1` where
     the system does not say or does not grant it. -/
@@ -287,17 +287,24 @@ theorem CpuFn.mem_all (f : CpuFn) : f ∈ CpuFn.all := by cases f <;> simp [CpuF
     32-bit word of memory and waking its waiters; and placing machine code
     where it can run, unmapping it, naming the CPU's architecture and asking
     whether it has a feature; creating a directory, a file's length and
-    setting it, reading a file into memory and writing memory to a file; and
-    reading a line of standard
-    input into memory and writing memory to standard output. -/
+    setting it, reading a file into memory and writing memory to a file;
+    reading a line of standard input into memory and writing memory to
+    standard output; and starting a thread on one of the program's functions
+    and joining it. -/
 inductive BaseFn where
   | clockNow | memLock | memUnlock | memAdviseHuge | threadPriority | memWait | memWake
   | nativeLoad | nativeFree | nativeArch | cpuHas
   | fileCreateDirAll | fileSize | fileSetLen | fileReadToPtr | fileWriteFromPtr | stdinReadline
-  | stdoutWrite
+  | stdoutWrite | threadSpawn | threadJoin
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
-/-- The engine's serial library (`base/src/ffi/serial.rs`, over the
+/-- Starting and joining a thread: the engine functions that change which
+    memory a program's threads own, not only memory. -/
+def BaseFn.thread : BaseFn → Bool
+  | .threadSpawn | .threadJoin => true
+  | _ => false
+
+/-- The engine's serial library (`base/src/builtin/serial.rs`, over the
     `serialport` crate): the ports the system lists and their names, and a
     port opened by name, read, written, asked what is waiting, and closed. -/
 inductive SerialFn where
@@ -308,7 +315,7 @@ def SerialFn.all : List SerialFn := [.count, .name, .open, .close, .read, .write
 
 theorem SerialFn.mem_all (f : SerialFn) : f ∈ SerialFn.all := by cases f <;> simp [SerialFn.all]
 
-/-- The engine's USB library (`base/src/ffi/usb.rs`, over the `nusb`
+/-- The engine's USB library (`base/src/builtin/usb.rs`, over the `nusb`
     crate): the devices the system lists and what each is, a device opened
     by its place, its interfaces claimed and released, and control, bulk and
     interrupt transfers through a claimed interface, each waited for. -/
@@ -430,6 +437,7 @@ def Ext.symbol : Ext → String
     | .fileCreateDirAll => "cl_file_create_dir_all" | .fileSize => "cl_file_size"
     | .fileSetLen => "cl_file_set_len" | .stdoutWrite => "cl_stdout_write"
     | .fileWriteFromPtr => "cl_file_write_from_ptr" | .stdinReadline => "cl_stdin_read_line"
+    | .threadSpawn => "cl_thread_spawn" | .threadJoin => "cl_thread_join"
     | .fileReadToPtr => "cl_file_read_to_ptr"
   | .serial f => "base_serial_" ++ match f with
     | .count => "count" | .name => "name" | .open => "open" | .close => "close"
@@ -553,6 +561,8 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
     | .fileCreateDirAll | .fileSize | .stdoutWrite | .stdinReadline => ([.i64, .i64], some .i64)
     | .fileReadToPtr | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
     | .fileSetLen => ([.i64, .i64, .i64], some .i64)
+    | .threadSpawn => ([.i64, .i64, .i64], some .i64)
+    | .threadJoin => ([.i64], some .i64)
   -- A port, a device, a buffer, a length and a count are `i64`s; an index,
   -- a baud rate, a timeout, an interface, an endpoint and the fields of a
   -- SETUP packet `i32`s.

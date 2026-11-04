@@ -23,13 +23,15 @@ open AlgorithmLib.HProg
 -- ---------------------------------------------------------------------------
 
 /-- The C string at `a`: the bytes up to the first zero, which are UTF-8.
-    One that does not end inside its region, or is not UTF-8, is not a
-    C string, and a call given it is undefined. -/
+    One that does not end inside its region, is not UTF-8, or has bytes the
+    host may not read (a copy in flight writes them, a thread owns them), is
+    not a C string, and a call given it is undefined. -/
 def readCStr (m : Mem) (a : UInt64) : Option String := do
   let (r, off) ← decodeAddr a
   let bs := m.region r
   let n := (List.range (bs.size - off)).find? (fun i => bs.get! (off + i) == 0)
   let n ← n
+  if !m.readable r off (n + 1) then none else
   String.fromUTF8? ((List.range n).map (fun i => bs.get! (off + i))).toByteArray
 
 def copyIn (m : Mem) (a : UInt64) (src : ByteArray) : Option Mem :=

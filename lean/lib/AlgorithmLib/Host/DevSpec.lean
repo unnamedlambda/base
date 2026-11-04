@@ -383,24 +383,25 @@ def arenaMem (A : ByteArray) : Mem := { arena := A, data := ByteArray.empty, out
 
 theorem arena_ne_pinned : (Region.arena != Region.pinned) = true := rfl
 
-theorem load_arena {m : Mem} {A : ByteArray} (hA : m.arena = A)
+theorem load_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) (hL : m.lent = [])
     {a : UInt64} {off : Nat} (hd : decodeAddr a = some (.arena, off)) (n : Nat) :
     m.load a n = (arenaMem A).load a n := by
-  simp only [Mem.load, hd, bind, Option.bind, Mem.region, hA, Mem.readable, arenaMem,
+  simp only [Mem.load, hd, bind, Option.bind, Mem.region, hA, Mem.readable, Mem.lentClear, hL, arenaMem,
     arena_ne_pinned, Bool.true_or, Bool.not_false, Bool.true_and]
 
-theorem readCStr_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) {a : UInt64} {off : Nat}
+theorem readCStr_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) (hL : m.lent = []) {a : UInt64} {off : Nat}
     (hd : decodeAddr a = some (.arena, off)) : readCStr m a = readCStr (arenaMem A) a := by
-  simp only [readCStr, hd, bind, Option.bind, Mem.region, hA, arenaMem]
+  simp only [readCStr, hd, bind, Option.bind, Mem.region, hA, arenaMem, Mem.readable, Mem.lentClear, hL,
+    arena_ne_pinned, Bool.true_or, bne_self_eq_false, Bool.false_or, List.all_nil, Bool.true_and]
 
-theorem readIds_arena {m : Mem} {A : ByteArray} (hA : m.arena = A)
+theorem readIds_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) (hL : m.lent = [])
     {p : UInt64} {off n : Nat} (hd : decodeAddr p = some (.arena, off))
     (hn : off + 4 * n < regionSpan.toNat) : readIds m p n = readIds (arenaMem A) p n := by
   unfold readIds
-  rw [Sem.mapM_congr_mem _ _ _ fun i hi => load_arena hA
+  rw [Sem.mapM_congr_mem _ _ _ fun i hi => load_arena hA hL
     (decodeAddr_add hd (by have := List.mem_range.mp hi; omega)) 4]
 
-theorem copyOut_arena {m : Mem} {A : ByteArray} (hA : m.arena = A)
+theorem copyOut_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) (hL : m.lent = [])
     {a : UInt64} {off n : Nat} (hd : decodeAddr a = some (.arena, off))
     (hn : off + n < regionSpan.toNat) : copyOut m a n = copyOut (arenaMem A) a n := by
   unfold copyOut
@@ -418,15 +419,15 @@ theorem copyOut_arena {m : Mem} {A : ByteArray} (hA : m.arena = A)
   | cons i l ih =>
       intro hl acc
       simp only [List.foldlM_cons]
-      rw [load_arena hA (decodeAddr_add hd (by have := hl i (List.mem_cons_self ..); omega)) 1]
+      rw [load_arena hA hL (decodeAddr_add hd (by have := hl i (List.mem_cons_self ..); omega)) 1]
       cases (arenaMem A).load (a + UInt64.ofNat i) 1 with
       | none => rfl
       | some b => exact ih (fun j hj => hl j (List.mem_cons_of_mem _ hj)) _
 
-theorem store_arena {m : Mem} {A : ByteArray} (hA : m.arena = A)
+theorem store_arena {m : Mem} {A : ByteArray} (hA : m.arena = A) (hL : m.lent = [])
     {a : UInt64} {off : Nat} (hd : decodeAddr a = some (.arena, off)) (n : Nat) (v : UInt64) :
     m.store a n v = ((arenaMem A).store a n v).map (fun m' => { m with arena := m'.arena }) := by
-  simp only [Mem.store, hd, bind, Option.bind, Mem.region, hA, Mem.reachable, arenaMem,
+  simp only [Mem.store, hd, bind, Option.bind, Mem.region, hA, Mem.reachable, Mem.lentClear, hL, arenaMem,
     arena_ne_pinned, Bool.true_or, Bool.not_false, Bool.true_and]
   split
   · rfl
@@ -434,17 +435,16 @@ theorem store_arena {m : Mem} {A : ByteArray} (hA : m.arena = A)
 
 theorem store_isSome_of {m : Mem} {a : UInt64} {r : Region} {off n : Nat} (v : UInt64)
     (hd : decodeAddr a = some (r, off)) (hr : r ≠ .pinned)
-    (hn : off + n ≤ (m.region r).size) : (m.store a n v).isSome = true := by
-  simp only [Mem.store, hd, bind, Option.bind, Mem.reachable]
-  have : (r != Region.pinned) = true := by cases r <;> first | rfl | exact absurd rfl hr
-  simp only [this, Bool.not_false, Bool.true_and, Bool.true_or, Bool.not_true, Bool.or_false]
-  rw [if_neg (by simp; omega)]
+    (hn : off + n ≤ (m.region r).size) (hl : m.LentOk r off n) : (m.store a n v).isSome = true := by
+  simp only [Mem.store, hd, bind, Option.bind]
+  rw [if_neg (by simp [Mem.reachable_of_ne_pinned hr hl]; omega)]
   rfl
 
 /-- **A copy into ordinary memory that fits is not refused.** -/
 theorem copyIn_isSome_of {m : Mem} {a : UInt64} {r : Region} {off : Nat} {src : ByteArray}
     (hd : decodeAddr a = some (r, off)) (hr : r ≠ .pinned)
-    (hn : off + src.size ≤ (m.region r).size) (hs : off + src.size ≤ regionSpan.toNat) :
+    (hn : off + src.size ≤ (m.region r).size) (hs : off + src.size ≤ regionSpan.toNat)
+    (hl : m.LentOk r off src.size) :
     (copyIn m a src).isSome = true := by
   unfold copyIn
   suffices ∀ k, k ≤ src.size → ∃ m', (List.range k).foldlM
@@ -462,7 +462,7 @@ theorem copyIn_isSome_of {m : Mem} {a : UInt64} {r : Region} {off : Nat} {src : 
       simp only [Option.bind_eq_bind, Option.bind_some, List.foldlM_cons, List.foldlM_nil]
       have hd' := decodeAddr_add hd (i := k) (by omega)
       have hsome := store_isSome_of (m := m1) (n := 1) (src.get! k).toUInt64 hd' hr
-        (by rw [← hs1.size r]; omega)
+        (by rw [← hs1.size r]; omega) ((hl.congr hs1.lent.symm).sub (by omega) (by omega))
       obtain ⟨m2, h2⟩ := Option.isSome_iff_exists.mp hsome
       rw [h2]
       obtain ⟨_, _, _, hf2⟩ := store_frame h2
@@ -489,33 +489,33 @@ def arenaCStr (A : ByteArray) (a : UInt64) : Option String := readCStr (arenaMem
 def arenaIds (A : ByteArray) (p : UInt64) (n : Nat) : Option (List Int) := readIds (arenaMem A) p n
 def arenaBytes (A : ByteArray) (a : UInt64) (n : Nat) : Option ByteArray := copyOut (arenaMem A) a n
 
-theorem load_inArena {m : Mem} {a : UInt64} (ha : inArena a = true) (n : Nat) :
+theorem load_inArena {m : Mem} {a : UInt64} (ha : inArena a = true) (hL : m.lent = []) (n : Nat) :
     m.load a n = arenaLoad m.arena a n := by
   obtain ⟨_, hd⟩ := inArena_decode ha
-  exact load_arena rfl hd n
+  exact load_arena rfl hL hd n
 
-theorem store_inArena {m : Mem} {a : UInt64} (ha : inArena a = true)
+theorem store_inArena {m : Mem} {a : UInt64} (ha : inArena a = true) (hL : m.lent = [])
     (n : Nat) (v : UInt64) :
     m.store a n v = (arenaStore m.arena a n v).map (fun A => { m with arena := A }) := by
   obtain ⟨_, hd⟩ := inArena_decode ha
-  rw [store_arena rfl hd, arenaStore, Option.map_map]
+  rw [store_arena rfl hL hd, arenaStore, Option.map_map]
   rfl
 
-theorem readCStrAt_inArena {m : Mem} {a : UInt64} (ha : inArena a = true) :
+theorem readCStrAt_inArena {m : Mem} {a : UInt64} (ha : inArena a = true) (hL : m.lent = []) :
     readCStrAt m a = arenaCStr m.arena a := by
   obtain ⟨_, hd⟩ := inArena_decode ha
-  exact readCStr_arena rfl hd
+  exact readCStr_arena rfl hL hd
 
 /-- Reads within an arena's worth of `p`. -/
-theorem readIds_inArena {m : Mem} {p : UInt64} {n : Nat} {off : Nat}
+theorem readIds_inArena {m : Mem} {p : UInt64} {n : Nat} {off : Nat} (hL : m.lent = [])
     (hd : decodeAddr p = some (.arena, off)) (hn : off + 4 * n < regionSpan.toNat)
     : readIds m p n = arenaIds m.arena p n :=
-  readIds_arena rfl hd hn
+  readIds_arena rfl hL hd hn
 
-theorem readBytes_inArena {m : Mem} {a : UInt64} {off n : Nat}
+theorem readBytes_inArena {m : Mem} {a : UInt64} {off n : Nat} (hL : m.lent = [])
     (hd : decodeAddr a = some (.arena, off)) (hn : off + n < regionSpan.toNat)
     : readBytes m a n = arenaBytes m.arena a n :=
-  copyOut_arena rfl hd hn
+  copyOut_arena rfl hL hd hn
 
 -- ---------------------------------------------------------------------------
 -- What the calls leave

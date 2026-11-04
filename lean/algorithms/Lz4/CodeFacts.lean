@@ -346,16 +346,16 @@ theorem lanePart_copyTr (l : Nat) (g : Array UInt8) (d s : UInt64) (n : Nat) :
 /-- A store leaves every byte that could be stored storable. -/
 theorem writable_after_store {m m' : Mem} {a b : UInt64} {n : Nat} {v : UInt64} (h : m.store b n v = some m')
     (hw : Writable m a 1) : Writable m' a 1 := by
-  obtain ⟨r, off, hd, hsz, hr⟩ := hw
+  obtain ⟨r, off, hd, hsz, hr, hl⟩ := hw
   obtain ⟨r', off', -, hf⟩ := store_frame h
-  exact ⟨r, off, hd, by rw [← hf.same.size r]; exact hsz, hr⟩
+  exact ⟨r, off, hd, by rw [← hf.same.size r]; exact hsz, hr, hl.congr (Mem.store_lent h)⟩
 
 /-- Replacing shared memory leaves every other byte that could be stored
     storable. -/
 theorem writable_arena {m : Mem} {a : UInt64} (hw : Writable m a 1) (ha : NotArena a) (b : ByteArray) :
     Writable { m with arena := b } a 1 := by
-  obtain ⟨r, off, hd, hsz, hr⟩ := hw
-  refine ⟨r, off, hd, ?_, hr⟩
+  obtain ⟨r, off, hd, hsz, hr, hl⟩ := hw
+  refine ⟨r, off, hd, ?_, hr, hl⟩
   cases r with
   | arena => exact absurd hd (ha off)
   | _ => exact hsz

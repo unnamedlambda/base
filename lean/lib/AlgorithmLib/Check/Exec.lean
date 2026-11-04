@@ -250,7 +250,9 @@ def lessRange (A : AS) (x y : R) (e : Nat) : AS :=
         let A2 := A1.setAV y (offAV gx { ny with lo := max ny.lo (nx.lo + step) })
         match ny.fit with
         | some (r, s, d) =>
-            if 0 < nx.lo + step then A2.addFact (.room r ((nx.lo + step) * s + d)) else A2
+            if 0 < nx.lo + step then
+              if r != .arena || arenaFree A2.facts then A2.addFact (.room r ((nx.lo + step) * s + d)) else A2
+            else A2
         | none => A2
       else A
   | _, _ => A
@@ -657,6 +659,93 @@ def wordsOf (A : AS) : Callee → List R → Option (List ArgPat)
       some [scalarPat A pa, scalarPat A pb]
   | _, _ => some []
 
+-- ---------------------------------------------------------------------------
+-- Threads
+-- ---------------------------------------------------------------------------
+
+/-- The thread call a function is, if it is one. -/
+def _root_.AlgorithmLib.IR.Ext.threadFn : Ext → Option BaseFn
+  | .base f => if f.thread then some f else none
+  | _ => none
+
+theorem _root_.AlgorithmLib.IR.Ext.threadFn_vendor {e : Ext} (h : e.vendor = true) : e.threadFn = none := by
+  cases e <;> first | rfl | simp [Ext.vendor] at h
+
+theorem _root_.AlgorithmLib.IR.Ext.threadFn_aside {e : Ext} (h : e.aside = true) : e.threadFn = none := by
+  cases e <;> first | rfl | (rename_i f; cases f <;> simp_all [Ext.aside, Ext.threadFn, BaseFn.thread])
+
+/-- The typestate's threads: started, the arena's size, running, the spans
+    starts own, and whether the system makes threads. -/
+def threadsOf (S : TState) :
+    Option (Nat × Nat × List (Nat × Nat × UInt64 × Nat × Nat) × List (Nat × UInt64 × Nat × Nat) × Bool) :=
+  S.findSome? fun | .threads n sz live lends g => some (n, sz, live, lends, g) | _ => none
+
+/-- `len` bytes at `off` clear of every running thread's span. -/
+def spanFree (live : List (Nat × Nat × UInt64 × Nat × Nat)) (off len : Nat) : Bool :=
+  live.all fun t => off + len ≤ t.2.2.2.1 || t.2.2.2.1 + t.2.2.2.2 ≤ off
+
+/-- What starting a thread that owns the arena bytes `[off, off + len)`, at
+    addresses `[lo, hi)`, leaves of a fact: none that says the arena is wholly
+    the program's or that those bytes are, nor any reading them. -/
+def spawnKeeps (lo hi off len : Nat) : Fact → Bool
+  | .threads .. | .htAt .. | .cstr _ | .cstrIn .. | .text .. | .wgText .. => false
+  | .room r _ => r != .arena
+  | .owns o l => off + len ≤ o || o + l ≤ off
+  | x => rangeKeeps lo hi x
+
+/-- What joining a thread, which hands its bytes `[lo, hi)` back as it left
+    them, leaves of a fact: none reading them. -/
+def joinKeeps (lo hi : Nat) : Fact → Bool
+  | .threads .. | .htAt .. | .cstr _ | .cstrIn .. | .text .. | .wgText .. => false
+  | x => rangeKeeps lo hi x
+
+/-- **Starting a thread**: on a function and word known, which a start the
+    typestate names owns a span of, clear of every running thread's, where the
+    system makes threads. The answer is the new thread's handle. -/
+def AS.spawnRule (A : AS) (args : List R) : Option (AS × AV) :=
+  match args with
+  | [f, a, st] =>
+    match (A.get f).bits, (A.get a).bits, threadsOf A.facts with
+    | some x, some y, some (n, sz, live, lends, true) =>
+      if fnBase ≤ x && (A.get st).scTy.isSome then
+        match lends.find? (fun l => l.1 == (x - fnBase).toNat && l.2.1 == y) with
+        | some (_, _, off, len) =>
+          if 0 < len && off + len ≤ sz && spanFree live off len && n < 2 ^ 48 then
+            let lo := (regionBase .arena).toNat + off
+            let kf := spawnKeeps lo (lo + len) off len
+            some (A.withFactsK
+              (.threads (n + 1) sz ((n, (x - fnBase).toNat, y, off, len) :: live) lends true :: A.facts.filter kf) kf,
+              .known (.sc .i64 (threadHandle n)))
+          else none
+        | none => none
+      else none
+    | _, _, _ => none
+  | _ => none
+
+/-- **Joining a thread**: of a handle known, of a thread running. Its bytes
+    come back as it left them, which the typestate knows nothing of; once no
+    thread runs, the arena is the program's again. -/
+def AS.joinRule (A : AS) (args : List R) : Option (AS × AV) :=
+  match args with
+  | [h] =>
+    match (A.get h).bits, threadsOf A.facts with
+    | some x, some (n, sz, live, lends, g) =>
+      match threadOf x with
+      | some k =>
+        match live.find? (·.1 == k) with
+        | some (_, _, _, off, len) =>
+          if off + len ≤ sz then
+            let lo := (regionBase .arena).toNat + off
+            let kf := joinKeeps lo (lo + len)
+            let live' := live.filter (·.1 != k)
+            let S := .threads n sz live' lends g :: A.facts.filter kf
+            some (A.withFactsK (if live'.isEmpty then .room .arena sz :: S else S) kf, .sc .i64)
+          else none
+        | none => none
+      | none => none
+    | _, _ => none
+  | _ => none
+
 /-- **The call rule.** The state after a call the checker accepts, its answer
     not yet appended, and what it answers: a function of a library linked into
     the program by `AS.libCall`, where `lb` says library calls are read; a library function the typestate follows by what
@@ -667,6 +756,16 @@ def AS.callee (A : AS) (lb : Bool) (c : Callee) (args : List R) : Except String 
   | .lib f =>
       if lb then A.libCall f args else .error s!"call {f.cname}: a library's, and library calls are not read"
   | .ext e =>
+    match e.threadFn with
+    | some .threadSpawn =>
+      match A.spawnRule args with
+      | some r => .ok r
+      | none => .error s!"threadSpawn {args}: not a start the typestate names, clear of every running thread's"
+    | some _ =>
+      match A.joinRule args with
+      | some r => .ok r
+      | none => .error s!"threadJoin {args}: not a running thread's handle"
+    | none =>
       let as := args.map A.get
       if e.vendor then
         if A.facts.contains (.part .idle true) &&

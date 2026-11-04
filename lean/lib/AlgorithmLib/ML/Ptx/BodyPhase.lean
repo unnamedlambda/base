@@ -303,7 +303,7 @@ theorem pass_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
       StoresL (cta * nw + o / 32) (imOf rd) ⟨o % 32, Nat.mod_lt _ (by decide)⟩ 0 (ps.getD p .skip) b j →
       t ≠ o → p < q ∧ o < t ∧ o / 32 = t / 32)
     (hfine : Fine (emitGo (fnBody (params nbuf) (Body.body nbuf s nw)) ⟨(params nbuf).length, 0, [], [], [], none⟩).2)
-    (w : World) (hrd : RdOk nbuf w.mem rd) (hnan : w.mem.nan = hw.nan)
+    (w : World) (hrd : RdOk nbuf w.mem rd) (hnan : w.mem.nan = hw.nan) (hlent0 : w.mem.lent = [])
     (hfits : ∀ wi, wi < nw → fits rd (cta * nw + wi) 0 s = true)
     (hRd : ∀ q wi l b j, wi < nw → A q (cta * nw + wi) l b j → rd b j = none)
     (hsz : ∀ q wi l b j, q < ps.length → wi < nw → A q (cta * nw + wi) l b j → 4 * j + 4 ≤ (w.mem.bufs b).size)
@@ -432,6 +432,7 @@ theorem pass_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
       obtain ⟨_, h1, h2, h3, _⟩ := hrunq t (by omega) hI K (Nat.le_refl _)
       rw [(hthr t (by omega) hI).1]
       exact ⟨hI.1.trans ((memSame_rm h1 A0)), h2, h3⟩
+  have hLt : ∀ t, t ≤ N → (Ws t).mem.lent = [] := fun t ht => (hInv t ht).1.lent.symm.trans hlent0
   have hS : ∀ t q, t < N → q < K → laneI (x t) (ph q) (tps t q) = some (tps t (q + 1)) ∧
       Shape nbuf (vc t) rd (ln t) 0 (ph q) (tps t q) (tps t (q + 1)) := fun t q ht hq =>
     hstep t ht (hInv t (by omega)) q hq
@@ -665,18 +666,20 @@ theorem pass_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
       have wr : ∀ a n, WSq q wi l a n → Writable (tps (32 * wi + l.val) q).w.mem a n := by
         rintro a n ⟨rfl, b, j, hAe, rfl⟩
         have hv := hA q _ l b j hAe
-        refine ⟨.buf ⟨b, hv.2.1⟩, 4 * j, bufW_decode hv, ?_, by intro h; cases h⟩
+        refine ⟨.buf ⟨b, hv.2.1⟩, 4 * j, bufW_decode hv, ?_, (by intro h; cases h),
+          Mem.lentOk_ne (r := .buf ⟨b, hv.2.1⟩) (by intro h; cases h) _ _⟩
         have := hsz' _ ((hInv _ (by omega)).1.trans hR'.1) _ q b j ht hq (by rw [hvcl, hlnl]; exact hAe)
         simpa [Mem.region] using this
       cases q with
       | zero =>
         have hasz : A0.size = smem := by simp [A0, ByteArray.size]
         exact ⟨fun _ => rfl, fun _ => rfl, fm, fun _ h => h.elim, im, wr, hasz, (fun h => by cases h),
-          (hInv _ (by omega)).2.2, Nat.le_refl _, fun b => bufPs_get nbuf b, w32_ws0 nbuf m0⟩
+          (hInv _ (by omega)).2.2, Nat.le_refl _, fun b => bufPs_get nbuf b, w32_ws0 nbuf m0,
+          hR'.1.lent.symm.trans (hLt _ (by omega))⟩
       | succ q' =>
         obtain ⟨cl, hr⟩ := (ih q' (by omega) (by omega) wi hwi l).1
         refine ⟨hr.reg, hr.f, ?_, fun _ h => h.elim, ?_, ?_, hr.asz, (fun h => by cases h), hr.nan, hr.start, hr.ptr,
-          hr.w32⟩
+          hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
         · exact fm
         · exact im
         · exact wr
@@ -708,7 +711,7 @@ theorem pass_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
           exact okW_of hw nbuf (cta * nw + wi) smem (A q (cta * nw + wi)) rd (WSq q wi) (fun l b j h => hA _ _ l b j h)
             (fun l b j h => hRd q wi l b j hwi h) (fun l b j h => ⟨rfl, b, j, h, rfl⟩) hrd (ph q) 0 hfq.1 hfq.2 _ _
         · have hr := hrel0 l
-          exact ⟨hr.reg, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr, hr.w32⟩
+          exact ⟨hr.reg, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan, hr.start, hr.ptr, hr.w32, by first | exact hr.lent | exact (Mem.store_lent (by assumption)).trans hr.lent | exact (Contracts.lanes_lent _ _ (fun _ _ _ h => Mem.store_lent h) (by assumption)).trans hr.lent⟩
         · show List.drop (collCalls (tps (32 * wi + l.val) q).w (Ws (32 * wi + l.val)).obs.length).length
             (List.take (cnt wi q) (ans (32 * wi + l.val)) ++ _) = _
           rw [hc0 l, List.drop_left' (by simp; exact Nat.min_eq_left (hlenL l)), List.append_nil]
@@ -814,7 +817,7 @@ theorem block_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
       StoresL (cta * nw + o / 32) (imOf rd) ⟨o % 32, Nat.mod_lt _ (by decide)⟩ 0 (ps.getD p .skip) b j →
       t ≠ o → p < q ∧ o < t ∧ o / 32 = t / 32)
     (hfine : Fine (emitGo (fnBody (params nbuf) (Body.body nbuf s nw)) ⟨(params nbuf).length, 0, [], [], [], none⟩).2)
-    (w w' : World) (hrd : RdOk nbuf w.mem rd) (hnan : w.mem.nan = hw.nan)
+    (w w' : World) (hrd : RdOk nbuf w.mem rd) (hnan : w.mem.nan = hw.nan) (hlent0 : w.mem.lent = [])
     (hfits : ∀ wi, wi < nw → fits rd (cta * nw + wi) 0 s = true)
     (hRd : ∀ q wi l b j, wi < nw → A q (cta * nw + wi) l b j → rd b j = none)
     (hsz : ∀ q wi l b j, q < ps.length → wi < nw → A q (cta * nw + wi) l b j → 4 * j + 4 ≤ (w.mem.bufs b).size)
@@ -835,7 +838,7 @@ theorem block_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
       (ByteArray.mk (Array.replicate smem 0)) t = .ok (ans t) := fun t ht => by
     have := answers_at hans ht; rwa [hset t ht] at this
   obtain ⟨hInv, _, h1, h2⟩ := pass_phases hw hw32 name nbuf smem s ps hsp nw hnw hnw31 cta hcta hN A rd hacc hA hone
-    hlate hfine w hrd hnan hfits hRd hsz m0 hin ans (fun t ht => answersOf_words (hA' t ht)) Ws hW0
+    hlate hfine w hrd hnan hlent0 hfits hRd hsz m0 hin ans (fun t ht => answersOf_words (hA' t ht)) Ws hW0
     (fun t ht _ _ _ => ⟨steps, (hWs t ht).1⟩) calls (fun t ht => (hWs t ht).2)
     (fun t ht => Or.inl (calls_le_ans (hA' t ht)))
     (fun q wi j hq hwi hj hall => law_bfly hw (cta * nw + wi) (imOf rd) smem (fun l => ans (32 * wi + l.val)) wi
@@ -920,8 +923,8 @@ theorem launch_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32)
       intro _ Wc h
       cases h
       have hld : ∀ a n, ({ arena := .empty, data := .empty, out := .empty, bufs, nan := hw.nan } : Mem).load a n =
-          (kmem bufs).load a n := Mem.load_congr (fun r => by cases r <;> rfl) rfl rfl
-      refine ⟨⟨fun r => by cases r <;> rfl, rfl, rfl⟩, fun _ _ _ _ _ h => absurd h (by omega), fun _ _ _ _ => hld _ _,
+          (kmem bufs).load a n := Mem.load_congr (fun r => by cases r <;> rfl) rfl rfl rfl
+      refine ⟨⟨fun r => by cases r <;> rfl, rfl, rfl, rfl⟩, fun _ _ _ _ _ h => absurd h (by omega), fun _ _ _ _ => hld _ _,
         fun b j n h => ?_, rfl⟩
       obtain ⟨h1, h2⟩ := hrd b j n h
       exact ⟨h1, by simp only [rdM] at h2 ⊢; rw [hld]; exact h2⟩
@@ -958,7 +961,7 @@ theorem launch_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32)
           · exfalso
             exact hdisj (c * nw + t / 32) (c * nw + o' / 32) (ln t) (ln o') q b j (hvt t ht) (hvt o' ho)
               (by omega) hq hAt (hsto _ _ b j p hp hs))
-        hfine Wp Wc hI4 hI5 (fun wi hwi => hfits _ (by omega)) (fun q wi l b j hwi h => hRd q _ l b j (by omega) h)
+        hfine Wp Wc hI4 hI5 hI1.lent.symm (fun wi hwi => hfits _ (by omega)) (fun q wi l b j hwi h => hRd q _ l b j (by omega) h)
         (fun q wi l b j hq hwi h => by
           have := hI1.size (.buf ⟨b, (hA q _ l b j h).2.1⟩)
           simp only [Mem.region] at this

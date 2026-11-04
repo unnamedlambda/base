@@ -516,7 +516,8 @@ theorem phase_filter (all : List (Nat × UInt64 × Nat × UInt64)) (b : Nat) (cu
       · rw [if_pos hx, ih]; simp [hx]
       · rw [if_neg hx, ih]; simp [hx]
 
-theorem store_arena2 (m : Mem) {s : Nat} (hs : s < 2 ^ 36) (hsz : s + 2 ≤ m.arena.size) (v : UInt64) :
+theorem store_arena2 (m : Mem) {s : Nat} (hs : s < 2 ^ 36) (hsz : s + 2 ≤ m.arena.size) (hL : m.lent = [])
+    (v : UInt64) :
     ∃ m', m.store (addrOf .arena 0 + UInt64.ofNat s) 2 v = some m' ∧
       m'.arena.data = (m.arena.data.setIfInBounds s ((v &&& 0xff).toUInt8)).setIfInBounds (s + 1)
         (((v >>> 8) &&& 0xff).toUInt8) ∧ m'.arena.size = m.arena.size := by
@@ -527,7 +528,7 @@ theorem store_arena2 (m : Mem) {s : Nat} (hs : s < 2 ^ 36) (hsz : s + 2 ≤ m.ar
     b.set! (s + i) (((v >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8)) m.arena), ?_, ?_, ?_⟩
   · unfold Mem.store
     rw [hd]
-    simp only [bind, Option.bind, Mem.region, Mem.reachable]
+    simp only [bind, Option.bind, Mem.region, Mem.reachable, Mem.lentClear, hL]
     rw [if_neg (by simp; omega)]
   · simp only [Mem.setRegion]
     rw [show List.range 2 = [0, 1] from rfl]
@@ -574,9 +575,9 @@ theorem applyF_mask (f : Nat → UInt8) (o : Nat) (v : UInt64) : applyF f (o, v 
 
 /-- **A two-byte shared store writes the write's bytes.** -/
 theorem store_bytesOf (m : Mem) {S o : Nat} (f : Nat → UInt8) (hS : S ≤ 2 ^ 36) (ho : o + 2 ≤ S)
-    (ha : m.arena = bytesOf S f) (v : UInt64) :
+    (ha : m.arena = bytesOf S f) (hL : m.lent = []) (v : UInt64) :
     ∃ m', m.store (addrOf .arena 0 + UInt64.ofNat o) 2 v = some m' ∧ m'.arena = bytesOf S (applyF f (o, v)) := by
-  obtain ⟨m', hm, hd, _⟩ := store_arena2 m (s := o) (by omega) (by rw [ha, bytesOf_size]; exact ho) v
+  obtain ⟨m', hm, hd, _⟩ := store_arena2 m (s := o) (by omega) (by rw [ha, bytesOf_size]; exact ho) hL v
   refine ⟨m', hm, byteArray_ext ?_⟩
   rw [hd, ha]
   simp only [bytesOf]
@@ -598,15 +599,15 @@ theorem store_bytesOf (m : Mem) {S o : Nat} (f : Nat → UInt8) (hS : S ≤ 2 ^ 
 
 /-- **Two-byte shared stores write their writes.** -/
 theorem stores_bytesOf {S : Nat} (hS : S ≤ 2 ^ 36) (b : Nat) : ∀ (W : List (Nat × UInt64)) (c : Mem) (f : Nat → UInt8),
-    c.arena = bytesOf S f → (∀ w ∈ W, w.1 + 2 ≤ S) →
+    c.arena = bytesOf S f → c.lent = [] → (∀ w ∈ W, w.1 + 2 ≤ S) →
     ((W.map fun w => (b, addrOf .arena 0 + UInt64.ofNat w.1, 2, w.2 &&& 0xffff)).foldl
       (fun c x => (c.store x.2.1 x.2.2.1 x.2.2.2).getD c) c).arena = bytesOf S (W.foldl applyF f)
-  | [], c, f, h, _ => h
-  | w :: W, c, f, h, hW => by
-      obtain ⟨m', hm, ha⟩ := store_bytesOf c f hS (hW w List.mem_cons_self) h (w.2 &&& 0xffff)
+  | [], c, f, h, _, _ => h
+  | w :: W, c, f, h, hL, hW => by
+      obtain ⟨m', hm, ha⟩ := store_bytesOf c f hS (hW w List.mem_cons_self) h hL (w.2 &&& 0xffff)
       simp only [List.map_cons, List.foldl_cons, hm, Option.getD_some]
       rw [applyF_mask] at ha
-      exact stores_bytesOf hS b W m' _ ha (fun x hx => hW x (List.mem_cons_of_mem _ hx))
+      exact stores_bytesOf hS b W m' _ ha ((Mem.store_lent hm).trans hL) (fun x hx => hW x (List.mem_cons_of_mem _ hx))
 
 theorem wrT_map (cta : Nat) (l : Lane) (b : Nat) (e : ShEv) :
     wrT cta (addrOf .arena 0) l b e = (wrF cta l e).map fun w => (b, addrOf .arena 0 + UInt64.ofNat w.1, 2, w.2 &&& 0xffff) := by
@@ -621,6 +622,11 @@ theorem range_lanes {β : Type} (G : Lane → List β) :
     (List.range 32).flatMap (fun t => G (laneOf t)) = (List.finRange 32).flatMap G := by
   have : (List.range 32).map laneOf = List.finRange 32 := by decide
   rw [← this, List.flatMap_map]
+
+theorem snapMem_lent (all : List (Nat × UInt64 × Nat × UInt64)) (smem0 : ByteArray) :
+    ∀ n, (snapMem all smem0 n).lent = []
+  | 0 => rfl
+  | n + 1 => by simp only [snapMem]; rw [Kernel.phase_lent]; exact snapMem_lent all smem0 n
 
 /-- **A block's shared memory after its first phases**: its threads' stores,
     epoch by epoch, thread by thread. -/
@@ -640,7 +646,7 @@ theorem snapMem_fun (cta S : Nat) (hS : S ≤ 2 ^ 36) (EV : List ShEv) (m0 : Nat
         rw [tagE_filter, List.map_flatMap]
         exact flatMap_congr' fun e _ => wrT_map cta (laneOf t) n e
       simp only [snapMem]
-      rw [phase_filter, hall, stores_bytesOf hS n _ _ _ (snapMem_fun cta S hS EV m0 hin n) ?_, List.range_succ,
+      rw [phase_filter, hall, stores_bytesOf hS n _ _ _ (snapMem_fun cta S hS EV m0 hin n) (snapMem_lent _ _ n) ?_, List.range_succ,
         List.flatMap_append, List.foldl_append]
       · simp
       · intro w hw

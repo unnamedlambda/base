@@ -53,6 +53,7 @@ structure CuKept (w w' : World) : Prop where
   held : ∀ (k : Contracts.Held) x, k.live w x = true → k.live w' x = true
   blk : ∀ x n, Contracts.Blk w x n → Contracts.Blk w' x n
   obs : w'.obs = w.obs
+  lent : w'.mem.lent = w.mem.lent
 
 /-- Every allocation live in `d` is live in `d'`. -/
 def LiveKept (d d' : Dev) : Prop :=
@@ -84,7 +85,7 @@ theorem LiveKept.push (d : Dev) (b : Option ByteArray) : LiveKept d { d with buf
 
 /-- A step that changes only the device keeps the rest. -/
 theorem CuKept.dev (w : World) (d : Dev) : CuKept w { w with dev := d } :=
-  ⟨fun _ _ => rfl, fun k _ h => by cases k <;> exact h, fun _ _ h => h.same rfl (Nat.le_refl _) rfl, rfl⟩
+  ⟨fun _ _ => rfl, fun k _ h => by cases k <;> exact h, fun _ _ h => h.same rfl (Nat.le_refl _) rfl, rfl, rfl⟩
 
 /-- What a driver row leaves: the driver's answer and world, the typestate
     the row computes holding there, the answer it says, and the rest kept. -/
@@ -137,9 +138,9 @@ theorem afterStore_world {S : TState} {w : World} {a v : UInt64} {ao : Option UI
     (Contracts.afterStore ao (some v) 8 S).holds { w with mem := m } ∧ CuKept w { w with mem := m } := by
   have hsz : m.sizes = w.mem.sizes := Contracts.store_sizes_eq hm
   refine ⟨Contracts.afterStore_sound hS (fun p => ?_) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩
-    hsz (fun _ => hm) ha (fun _ e => by cases e; rfl) (by decide), fun r _ => by rw [hsz], fun k _ h => by
+    hsz (Mem.store_lent hm) ⟨rfl, rfl, rfl⟩ (fun _ => hm) ha (fun _ e => by cases e; rfl) (by decide), fun r _ => by rw [hsz], fun k _ h => by
       cases k <;> exact h, fun _ _ h => h.same rfl (Nat.le_of_eq (congrFun hsz .pinned).symm)
-        (Contracts.store_live hm), rfl⟩
+        (Contracts.store_live hm), rfl, Mem.store_lent hm⟩
   cases p <;> first
     | rfl
     | (show m.busy.isEmpty = w.mem.busy.isEmpty; rw [Contracts.store_busy hm])
@@ -200,7 +201,7 @@ theorem holds_push {x : Fact} {w : World} (b : Option ByteArray) (hx : ∀ n, x 
 
 theorem CuKept.trans {w w' w'' : World} (h : CuKept w w') (h' : CuKept w' w'') : CuKept w w'' :=
   ⟨fun r hr => (h'.sizes r hr).trans (h.sizes r hr), fun k x hl => h'.held k x (h.held k x hl),
-    fun x n hb => h'.blk x n (h.blk x n hb), h'.obs.trans h.obs⟩
+    fun x n hb => h'.blk x n (h.blk x n hb), h'.obs.trans h.obs, h'.lent.trans h.lent⟩
 
 /-- A fact a filter on its constructor kept is not of that constructor. -/
 theorem not_retained {y : Fact} (h : (match y with | .retained _ => false | _ => true) = true) :
@@ -653,17 +654,19 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
   have hsz : m.sizes = w.mem.sizes := Contracts.copyIn_sizes_eq h
   cases x with
   | part p b => exact (copyIn_parts h p).trans hx0
-  | room r k => show k ≤ m.sizes r; rw [hsz]; exact hx0
+  | room r k => exact ⟨by rw [hsz]; exact hx0.1, fun ha => by rw [Contracts.copyIn_lent h]; exact hx0.2 ha⟩
   | held k a => cases k <;> exact hx0
   | opened k a => cases k <;> exact hx0
   | cstr _ => simp [Contracts.storeKeeps] at hk
   | htAt _ _ _ => simp at hht
-  | roomArg r x => show x.toNat ≤ m.sizes r ∧ _; rw [hsz]; exact hx0
+  | roomArg r x =>
+      exact ⟨by rw [hsz]; exact hx0.1, hx0.2.1, hx0.2.2⟩
   | pinnedUsed n => show m.sizes .pinned ≤ n; rw [hsz]; exact hx0
   | cstrIn c k =>
       simp only [Contracts.storeKeeps, decide_eq_true_eq] at hk
       have hw := hx0.2.1
-      refine Contracts.cstrIn_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      refine Contracts.cstrIn_kept hx0 (fun rg _ => congrFun hsz rg) (Contracts.copyIn_lent h)
+        fun i hi => Unchanged.of_eq ?_
       refine copyIn_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -676,6 +679,7 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
       simp only [Contracts.storeKeeps, decide_eq_true_eq] at hk
       have hw := hx0.1.2.1
       refine Contracts.text_kept hx0 (fun rg _ => congrFun hsz rg) (fun i hi => Unchanged.of_eq ?_) rfl
+        (Contracts.copyIn_lent h)
       refine copyIn_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -689,7 +693,8 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
         Bool.not_eq_true'] at hk
       obtain ⟨hc, hmiss⟩ := hk
       obtain ⟨rg, off, hd, hpin, hb⟩ := Contracts.cellOk_spec hc
-      refine Contracts.load_kept hd hpin hb hx0 (congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      refine Contracts.load_kept hd hpin hb hx0 (congrFun hsz rg) (Contracts.copyIn_lent h)
+        fun i hi => Unchanged.of_eq ?_
       refine copyIn_other h _ fun j hj e => ?_
       have := within_of hn ⟨j, hj, e⟩
       rw [hmiss i hi] at this; cases this
@@ -697,7 +702,8 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
   | wgText c k _ =>
       simp only [Contracts.storeKeeps, decide_eq_true_eq] at hk
       have hw := hx0.1
-      refine Contracts.wgText_kept hx0 (fun rg _ => congrFun hsz rg) rfl fun i hi => Unchanged.of_eq ?_
+      refine Contracts.wgText_kept hx0 (fun rg _ => congrFun hsz rg) rfl (Contracts.copyIn_lent h)
+        fun i hi => Unchanged.of_eq ?_
       refine copyIn_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -706,6 +712,8 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
       rcases hk with h1 | ⟨h1, h2⟩
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
+  | threads _ _ _ _ _ => exact Contracts.threads_kept hx0 ⟨rfl, rfl, rfl⟩ (congrFun hsz .arena) (Contracts.copyIn_lent h)
+  | owns _ _ => exact Contracts.owns_kept hx0 (congrFun hsz .arena) (Contracts.copyIn_lent h)
   | _ => exact hx0
 
 /-- What `afterCopy` leaves holds after the copy. -/
@@ -714,13 +722,15 @@ theorem afterCopy_sound {S : TState} {w : World} {ao : Option UInt64} {a : UInt6
     (afterCopy ao src.size S).holds { w with mem := m } ∧ CuKept w { w with mem := m } := by
   have hsz : m.sizes = w.mem.sizes := Contracts.copyIn_sizes_eq h
   refine ⟨?_, fun r _ => by rw [hsz], fun k _ h => by cases k <;> exact h,
-    fun _ _ hb => hb.same rfl (Nat.le_of_eq (congrFun hsz .pinned).symm) (copyIn_meta h).1, rfl⟩
+    fun _ _ hb => hb.same rfl (Nat.le_of_eq (congrFun hsz .pinned).symm) (copyIn_meta h).1, rfl,
+    Contracts.copyIn_lent h⟩
   cases ao with
   | some x =>
       obtain rfl := ha x rfl
       exact copyKeeps_sound hS h hn
   | none =>
       exact Contracts.nonCell_kept hS (copyIn_parts h) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz
+        (Contracts.copyIn_lent h) ⟨rfl, rfl, rfl⟩
 
 theorem allocBase_spec {S : TState} {p : UInt64} {id : Nat} (h : allocBase S p = some id) :
     devPtrOf p = some (id, 0) ∧ ∃ sz, Fact.alloc id sz ∈ S := by
@@ -2278,9 +2288,10 @@ theorem row_memGetInfo {S S' : TState} {w : World} {Γ : Env} {pf pt : AV} {bits
     obtain rfl := ArgBits.nil_inv hb
     obtain ⟨m1, h1⟩ := Option.isSome_iff_exists.mp (memN_slot8 hS hx hm1 w.memInfo.1)
     obtain ⟨hst1, hk1⟩ := afterStore_world (ao := pf.bits) hS h1 (fun z hz => (known_bits hx hz).symm)
-    obtain ⟨r, off, hdec, hp, hs, -⟩ := memN_spec hS hy hm2
+    obtain ⟨r, off, hdec, hp, hs, -, hlo⟩ := memN_spec hS hy hm2
     have hs' : off + 8 ≤ m1.sizes r := by rw [Contracts.store_sizes_eq h1]; exact hs
-    obtain ⟨m2, h2⟩ := Option.isSome_iff_exists.mp (Contracts.store_isSome hdec hp hs' w.memInfo.2)
+    obtain ⟨m2, h2⟩ := Option.isSome_iff_exists.mp
+      (Contracts.store_isSome hdec hp hs' (hlo.congr (Mem.store_lent h1)) w.memInfo.2)
     obtain ⟨hst2, hk2⟩ := afterStore_world (w := { w with mem := m1 }) (ao := pt.bits) (afterStore_forget hst1) h2
       (fun z hz => (known_bits hy hz).symm)
     refine ⟨hhas, some (ofInt .i32 cuSuccess), { w with mem := m2 }, ?_, afterStore_forget hst2,

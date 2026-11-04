@@ -37,7 +37,7 @@ def maxX : Int := imageWidth - 1
 def minY : Int := 0
 def maxY : Int := imageHeight - 1
 
--- Event kinds + key ids (mirror base/src/ffi/window.rs) ----------------------
+-- Event kinds + key ids (mirror base/src/builtin/window.rs) ----------------------
 def evClose   : Int := 1
 def evKeyDown : Int := 3
 def evKeyUp   : Int := 4

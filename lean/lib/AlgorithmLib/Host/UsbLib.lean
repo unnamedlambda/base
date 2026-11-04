@@ -9,7 +9,7 @@ import all Init.Data.List.Sort.Basic
 # The USB library, called directly
 
 What each `UsbFn` does: the engine's nine functions over the `nusb` crate
-(`base/src/ffi/usb.rs`). The devices the system lists are the world's
+(`base/src/builtin/usb.rs`). The devices the system lists are the world's
 `usbDevices`, each with what identifies it, whether this process may open
 it, which interfaces it lets be claimed and the packet size of each
 endpoint; what a device answers a transfer is its `usbReply`, `none` for a

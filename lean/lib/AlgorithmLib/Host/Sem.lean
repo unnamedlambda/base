@@ -243,10 +243,11 @@ def rmwNew (k : AtomicRmw) (t : ClifTy) (old x : UInt64) : UInt64 :=
 /-- What an atomic instruction does.
 
     Its sequential reading, which is exact for every run the model admits: a
-    spawned worker runs at its spawn and the spawner may touch no memory until
-    the join, so no two accesses the model admits are concurrent. A program
-    whose answer depends on how atomics from concurrently running threads
-    interleave is outside what this states.
+    running thread owns its span of the arena, which no other may read or
+    write until the join (`Mem.lent`), so no two accesses the model admits
+    touch the same bytes at once. A program whose answer depends on how
+    atomics from concurrently running threads interleave is outside what this
+    states.
 
     The address must be naturally aligned: a misaligned atomic faults on
     AArch64, so a portable program has none. -/
@@ -290,6 +291,47 @@ def strlenAt (m : Mem) (a : UInt64) : Option Nat := do
     (`Lib.builtin`); another as the machine has it. -/
 def World.has (w : World) (l : Lib) : Bool := l.builtin || w.present l
 
+-- thread.rs — `pthread_create` and `pthread_join` through `std::thread`. A
+-- thread runs the program's function `u0:i`, at `fnBase + i`, on one word, and
+-- owns the arena bytes the world's `lend` names for that function and word,
+-- which must lie in the arena clear of every running thread's: until it is
+-- joined, no other thread may read or write them. A start `lend` names none for
+-- is undefined. The system may make no thread (`grants "thread"`); then the
+-- answer is `0` and nothing starts. The stack's size is the system's to honour.
+-- A join of a running thread's handle answers what its function answered and
+-- hands its bytes back as the thread left them (`threadOut`); joining anything
+-- else is undefined.
+
+/-- `bs` cut or padded with zeros to `n` bytes. -/
+def fitBytes (n : Nat) (bs : ByteArray) : ByteArray :=
+  (bs.extract 0 n) ++ ByteArray.mk (Array.replicate (n - bs.size) 0)
+
+def ffiThreadSpawn (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match bits with
+  | [f, arg, _] =>
+      if f < fnBase then none else
+      match w.lend (f - fnBase).toNat arg with
+      | none => none
+      | some (off, len) =>
+          if off + len > w.mem.arena.size || !w.mem.lentClear off len || w.threads.size ≥ 2 ^ 48 then none
+          else if !w.grants "thread" then some (some (.sc .i64 0), w)
+          else some (some (.sc .i64 (threadHandle w.threads.size)),
+            { w with threads := w.threads.push (some ⟨(f - fnBase).toNat, arg, off, len⟩),
+                     mem := { w.mem with lent := (off, len) :: w.mem.lent } })
+  | _ => none
+
+def ffiThreadJoin (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match bits with
+  | [h] => do
+      let n ← threadOf h
+      let t ← (w.threads[n]?).join
+      let (after, r) := w.threadOut t (w.mem.arena.extract t.off (t.off + t.len))
+      some (some (.sc .i64 r),
+        { w with threads := w.threads.set! n none,
+                 mem := { w.mem with arena := (fitBytes t.len after).copySlice 0 w.mem.arena t.off t.len,
+                                     lent := w.mem.lent.erase (t.off, t.len) } })
+  | _ => none
+
 /-- **What the engine's own functions do**, on their arguments' bits. -/
 def baseCall (f : BaseFn) (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match f with
@@ -311,7 +353,8 @@ def baseCall (f : BaseFn) (bits : List UInt64) (w : World) : Option (Option V ×
   | .fileReadToPtr => ffiFileReadToPtr bits w
   | .fileWriteFromPtr => ffiFileWriteFromPtr bits w
   | .stdinReadline => ffiStdinReadline bits w
-  -- Stated where programs meet them, as the thread library's spawn and join.
+  | .threadSpawn => ffiThreadSpawn bits w
+  | .threadJoin => ffiThreadJoin bits w
 
 /-- **What the C library's functions do**, on their arguments' bits.
     `memcpy` between overlapping ranges is undefined, so it is not answered. -/

@@ -43,7 +43,7 @@ theorem roomOf_le {S : TState} {w : World} (hS : S.holds w) (r : Region) : roomO
       | room r' n =>
           dsimp only
           split
-          · rename_i e; subst e; exact Nat.max_le.mpr ⟨hm, hf⟩
+          · rename_i e; subst e; exact Nat.max_le.mpr ⟨hm, hf.1⟩
           · exact hm
       | _ => exact hm
 
@@ -196,7 +196,7 @@ def proveFuel : Nat := 14
     bytes no further than its size, nor its span. -/
 def memIn (A : AS) (a : R) (len : Lin) (g : Region) : Bool :=
   let b : Int := (regionBase g).toNat
-  decide (g ≠ .pinned) && A.ctx.prove proveFuel (len.scale (-1)) &&
+  (decide (g ≠ .arena) || arenaFree A.facts) && decide (g ≠ .pinned) && A.ctx.prove proveFuel (len.scale (-1)) &&
     A.ctx.prove proveFuel ((Lin.atom (.slot a)).add (len.add (((Lin.atom (.size g)).scale (-1)).add (Lin.const (-b))))) &&
     A.ctx.prove proveFuel (((Lin.atom (.slot a)).scale (-1)).add (Lin.const b)) &&
     A.ctx.prove proveFuel ((Lin.atom (.slot a)).add (len.add (Lin.const (-b - 2 ^ 36)))) &&
@@ -214,7 +214,12 @@ theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : 
     (hm : memIn A a len g = true) {t : ClifTy} {x : UInt64} (hx : Γ[a]? = some (.sc t x)) :
     Fits w.mem x (len.eval Γ w).toNat := by
   simp only [memIn, Bool.and_eq_true, decide_eq_true_eq] at hm
-  obtain ⟨⟨⟨⟨⟨hg, h0⟩, h1⟩, h2⟩, h3⟩, h4⟩ := hm
+  obtain ⟨⟨⟨⟨⟨⟨ha, hg⟩, h0⟩, h1⟩, h2⟩, h3⟩, h4⟩ := hm
+  have hlo : ∀ off k, w.mem.LentOk g off k := by
+    intro off k
+    rcases Bool.or_eq_true_iff.mp ha with ha | ha
+    · exact Mem.lentOk_ne (of_decide_eq_true ha) _ _
+    · exact arenaFree_spec h.2.2 ha _ _ _
   have hC := AS.ctx_sound h
   have e0 := Ctx.prove_sound hC h0
   have e1 := Ctx.prove_sound hC h1
@@ -232,7 +237,7 @@ theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : 
     apply UInt64.toNat_inj.mp
     rw [addr_toNat g (Nat.le_of_lt hspan), hoff]
   subst hxe
-  exact ⟨g, off, ptr_decode (Nat.le_refl _) hspan, hg, by omega, by omega⟩
+  exact ⟨g, off, ptr_decode (Nat.le_refl _) hspan, hg, by omega, by omega, hlo _ _⟩
 
 theorem memRel_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : R} {k : Nat}
     (hm : memRel A a k = true) {t : ClifTy} {x : UInt64} (hx : Γ[a]? = some (.sc t x)) : Fits w.mem x k := by

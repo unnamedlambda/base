@@ -406,6 +406,7 @@ theorem cleanup_spec (cfg : Cfg) (w : World) (slot s : UInt64) (r : Region) (off
       (((f1.outside _).trans (f2.outside _)).trans (f3.outside _)).trans (f4.outside _)⟩
   · intro Γ' w' hext ⟨hsz, hO⟩
     obtain ⟨m, hm⟩ := store_room (x := c64 0) hd hr (by rw [hsz]; exact hroom)
+      ((Mem.lentOk_of_readable (load_some hd hl).2.1).congr hO.lent)
     have hW := wrote_stored hm
     refine wp_storeI64 (by slot) (by slot) hm ?_
     refine ⟨?_, (hO.mono fun _ _ _ => trivial).trans hW.outsideBut⟩
@@ -1395,7 +1396,8 @@ set_option maxHeartbeats 1600000 in
     its arrays and its index, or null where the context or an array could not
     be allocated, and outside the heap changes the slot alone. -/
 theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Nat) (hc : Calm w)
-    (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hroom : off + 8 ≤ (w.mem.region r).size) :
+    (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hroom : off + 8 ≤ (w.mem.region r).size)
+    (hlo : w.mem.LentOk r off 8) :
     Does cfg [.sc .i64 slot] w init [.i64] (fun w' =>
       ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ ∃ L, Tab w' s {} L ∧ Idx w' L []) ∧
         Outside w w' (Misses slot)) := by
@@ -1636,7 +1638,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
   · intro nJ Γ' jv vs w' hle hvs ⟨hslot, x, hx, hop, hO, hq⟩
     have hj := join1 hvs hx
     subst hj
-    obtain ⟨m, hm⟩ := store_room (x := x) hd hr (by rw [hop]; exact hroom)
+    obtain ⟨m, hm⟩ := store_room (x := x) hd hr (by rw [hop]; exact hroom) (hlo.congr hO.lent)
     refine wp_storeI64 (AlgorithmLib.Proof.bindAt_last _ _ _ hle) (get_bindAt hle hslot) hm ?_
     refine ⟨x, load_store8 hm, hq.imp id fun ⟨L, ht, hi⟩ => ⟨L, ?_, ?_⟩,
       (hO.mono fun _ _ _ => trivial).trans (wrote_stored hm).outsideBut⟩
@@ -1646,10 +1648,10 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
 /-- `htInit` neither misuses a call nor faults. -/
 theorem init_sound (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Nat) (hc : Calm w)
     (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned) (hroom : off + 8 ≤ (w.mem.region r).size)
-    (m : String) :
+    (hlo : w.mem.LentOk r off 8) (m : String) :
     Sem.run cfg [.sc .i64 slot] w (emit init [.i64]) ≠ .misuse m ∧
     Sem.run cfg [.sc .i64 slot] w (emit init [.i64]) ≠ .fault m :=
-  (init_spec cfg w slot r off hc hd hr hroom).sound m
+  (init_spec cfg w slot r off hc hd hr hroom hlo).sound m
 
 -- ---------------------------------------------------------------------------
 -- The arena
@@ -1683,6 +1685,7 @@ structure Appended (w w' : World) (s : UInt64) (L L' : Lay) (bs : List UInt8) : 
   apos : 0 < L'.acap
   pre : ∀ j cs, j + cs.length ≤ L.used → Bytes w (L.ar + UInt64.ofNat j) cs → Bytes w' (L'.ar + UInt64.ofNat j) cs
   new : Bytes w' (L'.ar + UInt64.ofNat L.used) bs
+  lent : w'.mem.lent = w.mem.lent
   which : (L'.ar = L.ar ∧ L'.acap = L.acap) ∨ Past w L'.ar
   off : ∀ q n, InW w q n → Off L.ar L.acap q n → Off L'.ar L'.acap q n
   inw : ∀ q n, InW w q n → InW w' q n
@@ -1695,7 +1698,7 @@ theorem Tab.grown {w w' : World} {s : UInt64} {T : Ht} {L : Lay} (h : Tab w s T 
     blk := fun y k _ hb => g.blk y k hb, whole := fun y k _ hb => g.whole y k hb, size := g.size
     far := g.fld h.far, fused := g.fld h.fused, facap := g.fld h.facap, wa := g.whole _ _ h.wa, le := h.room.2
     apos := h.pos.2.2, pre := fun _ _ _ hb => g.bytes _ _ hb, new := Or.inl rfl, which := Or.inl ⟨rfl, rfl⟩
-    off := fun _ _ _ ho => ho, inw := fun _ _ hi => InW.grows g hi, psize := g.psize }
+    off := fun _ _ _ ho => ho, inw := fun _ _ hi => InW.grows g hi, psize := g.psize, lent := g.lent }
 
 /-- The arena moved to a fresh block: its bytes copied, the old block freed,
     the header's fields set. -/
@@ -1733,7 +1736,8 @@ theorem Tab.regrown {w w1 w2 w3 : World} {s na : UInt64} {T : Ht} {L : Lay} {N :
     which := Or.inr f.past
     off := fun q n hi _ => Past.off f.past hi _
     inw := M.inw
-    psize := M.psize }
+    psize := M.psize
+    lent := M.lent }
   intro j cs hj hb
   by_cases hc0 : cs = []
   · exact Or.inl hc0
@@ -1790,7 +1794,8 @@ theorem Appended.fill {w w1 w2 : World} {s : UInt64} {T : Ht} {L L1 : Lay} {bs :
     which := A.which
     off := A.off
     inw := fun _ _ hi => InW.wrote W3 (InW.wrote W (A.inw _ _ hi))
-    psize := Nat.le_trans A.psize (Nat.le_of_eq ((W.same.size .pinned).trans (W3.same.size .pinned))) }
+    psize := Nat.le_trans A.psize (Nat.le_of_eq ((W.same.size .pinned).trans (W3.same.size .pinned)))
+    lent := W3.stays.lent.trans (W.stays.lent.trans A.lent) }
   · exact (A.keeps.trans (W.keeps _ fun q n hn hp => Off.wrote ba1 hroom (A.off q n hp.1 hp.2.1))).trans
       (W3.keeps _ fun q n hn hp => Off.sub bs2 hp.2.2 (by decide) (by decide) (by decide) (by decide))
   · exact fun c => (W.stays.calm (A.calm c)).stored hm
@@ -2376,10 +2381,11 @@ structure Kept (w w' : World) (s : UInt64) (L L' : Lay) : Prop where
   inw : ∀ q n, InW w q n → InW w' q n
   psize : (w.mem.region .pinned).size ≤ (w'.mem.region .pinned).size
   fresh : ∀ b ∈ blocks s L', b ∈ blocks s L ∨ Past w b.1
+  lent : w'.mem.lent = w.mem.lent
 
 theorem Kept.refl (w : World) (s : UInt64) (L : Lay) : Kept w w s L L :=
   ⟨Keeps.refl _ _, fun _ _ _ h => h, fun _ _ _ h => h, fun _ _ => rfl, fun _ _ h => h, Nat.le_refl _,
-    fun _ h => Or.inl h⟩
+    fun _ h => Or.inl h, rfl⟩
 
 /-- What was clear of the table is clear of the table that is left. -/
 theorem Kept.clear {w w' : World} {s : UInt64} {L L' : Lay} (K : Kept w w' s L L') {q : UInt64} {n : Nat}
@@ -2394,7 +2400,7 @@ theorem Kept.trans {w w' w'' : World} {s : UInt64} {L L' L'' : Lay} (K1 : Kept w
     fun y k hy hb => K2.blk y k (hne y k hy hb) (K1.blk y k hy hb),
     fun y k hy hb => K2.whole y k (hne y k hy hb.blk) (K1.whole y k hy hb),
     fun r hr => (K2.size r hr).trans (K1.size r hr), fun q n hi => K2.inw q n (K1.inw q n hi),
-    Nat.le_trans K1.psize K2.psize, fun b hb => ?_⟩
+    Nat.le_trans K1.psize K2.psize, fun b hb => ?_, K2.lent.trans K1.lent⟩
   rcases K2.fresh b hb with h | h
   · exact K1.fresh b h
   · exact Or.inr (h.mono K1.psize)
@@ -2404,7 +2410,7 @@ theorem Kept.wrote {w w' : World} {s y : UInt64} {L : Lay} {k j m : Nat} (hb : (
     (hy : Blk w y k) (W : Wrote w w' (y + UInt64.ofNat j) m) (hj : j + m ≤ k) : Kept w w' s L L :=
   ⟨W.keeps _ fun _ _ _ hp => Off.wrote hy hj (hp.2 y k hb), fun _ _ _ h => W.stays.blk _ _ h,
     fun _ _ _ h => W.whole h, W.stays.size, fun _ _ hi => InW.wrote W hi, Nat.le_of_eq (W.same.size .pinned),
-    fun _ h => Or.inl h⟩
+    fun _ h => Or.inl h, W.stays.lent⟩
 
 /-- One of the table's blocks moved. -/
 theorem Moved.kept {w w' : World} {s old : UInt64} {L L' : Lay} {a c oc : Nat} (hs : Blk w s SIZE)
@@ -2412,7 +2418,7 @@ theorem Moved.kept {w w' : World} {s old : UInt64} {L L' : Lay} {a c oc : Nat} (
     (hfr : ∀ b ∈ blocks s L', b ∈ blocks s L ∨ Past w b.1) : Kept w w' s L L' :=
   ⟨M.keeps.mono fun q n hp => ⟨hp.1, hp.2 old oc hold, Off.part hs (hp.2 s SIZE (by simp [blocks])) hac ha⟩,
     fun y k hy hb => M.blk y k (hy _ hold) hb, fun y k hy hb => M.whole y k (hy _ hold) hb, M.size, M.inw,
-    M.psize, hfr⟩
+    M.psize, hfr, M.lent⟩
 
 /-- The arena appended to. -/
 theorem Appended.kept {w w' : World} {s : UInt64} {T : Ht} {L L' : Lay} {bs : List UInt8} (h : Tab w s T L)
@@ -2421,7 +2427,7 @@ theorem Appended.kept {w w' : World} {s : UInt64} {T : Ht} {L L' : Lay} {bs : Li
   refine ⟨A.keeps.mono fun q n hp => ⟨hp.1, hp.2 _ _ har,
       Off.part h.rep.blk (hp.2 s SIZE (by simp [blocks])) (by decide) (by decide)⟩,
     fun y k hy hb => A.blk y k (hy _ har) hb, fun y k hy hb => A.whole y k (hy _ har) hb, A.size, A.inw, A.psize,
-    fun b hb => ?_⟩
+    fun b hb => ?_, A.lent⟩
   simp only [blocks, List.mem_cons, List.not_mem_nil, or_false, A.e, A.ecap, A.ix, A.icap] at hb ⊢
   rcases hb with rfl | rfl | rfl | rfl
   · exact Or.inl (Or.inl rfl)
@@ -2434,7 +2440,7 @@ theorem Appended.kept {w w' : World} {s : UInt64} {T : Ht} {L L' : Lay} {bs : Li
 /-- The frame names the table's blocks alone. -/
 theorem Kept.lay {w w' : World} {s : UInt64} {L L' L'' : Lay} (K : Kept w w' s L L')
     (hb : blocks s L'' = blocks s L') : Kept w w' s L L'' :=
-  ⟨K.keeps, K.blk, K.whole, K.size, K.inw, K.psize, fun b hb' => K.fresh b (hb ▸ hb')⟩
+  ⟨K.keeps, K.blk, K.whole, K.size, K.inw, K.psize, fun b hb' => K.fresh b (hb ▸ hb'), K.lent⟩
 
 /-- The index is the index at every layout with the same index block. -/
 theorem Idx.lay {w : World} {L L' : Lay} {ks : List (List UInt8)} (hI : Idx w L ks) (hix : L'.ix = L.ix)
@@ -3840,11 +3846,11 @@ variable {fns : Nat → Option Fn} {env : FnEnv} {steps i : Nat}
     statements above say, at every call depth. -/
 theorem init_calls (hf : fns i = some (implFn [.i64] (.void init))) (w : World) (slot : UInt64) (r : Region)
     (off : Nat) (hc : Calm w) (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
-    (hroom : off + 8 ≤ (w.mem.region r).size) (k : Nat) :
+    (hroom : off + 8 ≤ (w.mem.region r).size) (hlo : w.mem.LentOk r off 8) (k : Nat) :
     CallsD (termLocals fns env steps k) i [.sc .i64 slot] w (fun w' =>
       ∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ ∃ L, Tab w' s {} L ∧ Idx w' L []) ∧
         Outside w w' (Misses slot)) :=
-  Does.calls hf (fun cfg => init_spec cfg w slot r off hc hd hr hroom) k
+  Does.calls hf (fun cfg => init_spec cfg w slot r off hc hd hr hroom hlo) k
 
 theorem count_calls (hf : fns i = some (implFn [.i64] (.status count))) (w : World) (s : UInt64) (T : Ht)
     (h : Rep w s T) (k : Nat) :
@@ -4175,7 +4181,8 @@ theorem HtAt.owned {w : World} {slot s : UInt64} {T : Ht} (h : HtAt w slot s T) 
 /-- What a change to the table keeps, a program keeps of its own memory. -/
 theorem Kept.outside {w w' : World} {s : UInt64} {L L' : Lay} (K : Kept w w' s L L') (hc : Calm w') :
     Outside w w' fun _ _ => True :=
-  ⟨K.keeps.mono fun _ _ hp => ⟨hp.1, fun _ _ _ r off _ hq _ => Or.inl (hp.2.1 r off hq)⟩, fun _ => hc, K.size⟩
+  ⟨K.keeps.mono fun _ _ hp => ⟨hp.1, fun _ _ _ r off _ hq _ => Or.inl (hp.2.1 r off hq)⟩, fun _ => hc, K.size,
+    K.lent⟩
 
 theorem SetQ.outside {w w' : World} {s : UInt64} {T : Ht} {L : Lay} {kb vb : List UInt8}
     (h : SetQ w s T L kb vb w') : Outside w w' fun _ _ => True := by
@@ -4309,10 +4316,10 @@ theorem getEntry_at (hf : fns i = some (implFn [.i64, .i32, .i64, .i64] (.status
 
 theorem init_at (hf : fns i = some (implFn [.i64] (.void init))) (w : World) (slot : UInt64) (r : Region)
     (off : Nat) (hc : Calm w) (hd : decodeAddr slot = some (r, off)) (hr : r ≠ .pinned)
-    (hroom : off + 8 ≤ (w.mem.region r).size) (k : Nat) :
+    (hroom : off + 8 ≤ (w.mem.region r).size) (hlo : w.mem.LentOk r off 8) (k : Nat) :
     CallsD (termLocals fns env steps k) i [.sc .i64 slot] w (fun w' =>
       (∃ s, w'.mem.load slot 8 = some s ∧ (s = 0 ∨ HtAt w' slot s {})) ∧ Outside w w' (Misses slot)) :=
-  (init_calls hf w slot r off hc hd hr hroom k).mono fun _ hq => ⟨HtAt.of_init hd hr hq, hq.choose_spec.2.2⟩
+  (init_calls hf w slot r off hc hd hr hroom hlo k).mono fun _ hq => ⟨HtAt.of_init hd hr hq, hq.choose_spec.2.2⟩
 
 theorem cleanup_at (hf : fns i = some (implFn [.i64] (.void cleanup))) {w : World} {slot s : UInt64} {T : Ht}
     (h : HtAt w slot s T) (k : Nat) :
