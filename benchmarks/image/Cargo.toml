@@ -1,0 +1,29 @@
+[package]
+name = "image-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Its own workspace, so the tree's gate does not build the image crates.
+[workspace]
+
+[dependencies]
+base = { path = "../../base" }
+image = { version = "=0.25.10", default-features = false }
+fast_image_resize = "=6.1.0"
+# Google's libyuv, built from source; and pic-scale, Rust SIMD.
+yuv-sys = "=0.3.15"
+pic-scale = { version = "=0.7.12", default-features = false, features = ["sse", "avx"] }
+# FFmpeg built from source with its NASM paths; avcodec only because the
+# crate's version check reads it.
+ffmpeg-sys-next = { version = "=9.0.1", default-features = false, features = ["avcodec", "swscale", "build"] }
+# The CUDA side of the NPP pipeline: streams, pinned memory, async copies.
+cudarc = { version = "=0.19.10", default-features = false, features = ["std", "driver", "cuda-version-from-build-system", "fallback-dynamic-loading"] }
+
+# zimg and libvips are the system's (libzimg-dev, libvips-dev), reached
+# through src/shim.c.
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+debug = false

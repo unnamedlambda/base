@@ -1,6 +1,8 @@
 module
 public import Bench.CpuAsm
 meta import Bench.CpuAsm
+public import Bench.ImageAsm
+meta import Bench.ImageAsm
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -95,7 +97,8 @@ def vexArithNames : List String :=
   ["vaddss", "vaddsd", "vaddps", "vaddpd", "vsubss", "vsubsd", "vsubps", "vsubpd",
    "vmulss", "vmulsd", "vmulps", "vmulpd", "vdivss", "vdivsd", "vdivps", "vdivpd",
    "vandps", "vandpd", "vorps", "vorpd", "vxorps", "vxorpd", "vpand", "vpor", "vpxor",
-   "vpaddd", "vpaddq", "vpsubd", "vpsubq"]
+   "vpaddd", "vpaddq", "vpsubd", "vpsubq", "vpaddw", "vpsubw", "vpmullw", "vpmaddwd",
+   "vpackuswb", "vpackssdw", "vpunpcklwd", "vpunpckhwd"]
 
 def vexMoveNames : List String :=
   ["vmovups", "vmovupd", "vmovaps", "vmovapd", "vmovdqu", "vmovdqa", "vmovss", "vmovsd"]
@@ -131,6 +134,30 @@ def vectorCases : List Case := Id.run do
           one (vbroadcastss d (dword a)) :: one (vmovntdq (Mem.mk size a) d) ::
           one (vmovntps (Mem.mk size a) d) :: out
         if wide then out := one (vbroadcastsd d (qword a)) :: out
+  for mn in ["vpshufb", "vpmaddubsw", "vpmulhrsw"] do
+    for wide in [false, true] do
+      let regs := if wide then ys vpick else xs vpick
+      for d in regs do
+        for s1 in regs do
+          for s2 in regs do out := one (.ins mn [.v d, .v s1, .v s2]) :: out
+          for a in someAddrs do
+            out := one (.ins mn [.v d, .v s1, .m ⟨if wide then 32 else 16, a⟩]) :: out
+  for mn in ["vpsrlw", "vpsraw", "vpsllw", "vpsrld", "vpsrad", "vpslld"] do
+    for wide in [false, true] do
+      let regs := if wide then ys vpick else xs vpick
+      for d in regs do
+        for s in regs do
+          for x in imm8 do out := one (.ins mn [.v d, .v s, .i x]) :: out
+  for a in allAddrs do out := one (prefetcht0 (byte a)) :: out
+  for d in ys vpick do
+    for s in xs vpick do out := one (vpmovzxbw d s) :: out
+    for a in someAddrs do out := one (vpmovzxbw d (xmmword a)) :: out
+  for d in xs vpick do
+    for s in xs vpick do out := one (vpmovzxbw d s) :: out
+    for a in someAddrs do out := one (vpmovzxbw d (qword a)) :: out
+  for d in ys vpick do
+    for s in ys vpick do out := one (vpermq d s 0xd8) :: out
+    for a in someAddrs do out := one (vpermq d (ymmword a) 0x4e) :: out
   for s in ys vpick do
     for d in xs vpick do out := one (vextractf128 d s 0x1) :: out
     for a in someAddrs do out := one (vextractf128 (xmmword a) s 0x0) :: out
@@ -179,7 +206,9 @@ def alignCases : List Case := Id.run do
   return out.reverse
 
 def shippedCases : List Case :=
-  [("CpuBenchAsm.poly", CpuBenchAsm.poly), ("CpuBenchAsm.stream", CpuBenchAsm.stream)]
+  [("CpuBenchAsm.poly", CpuBenchAsm.poly), ("CpuBenchAsm.stream", CpuBenchAsm.stream),
+   ("ImageAsm.rowpair", ImageAsm.rowpair), ("ImageAsm.boxrow", ImageAsm.boxrow),
+   ("ImageAsm.lzh", ImageAsm.lzh), ("ImageAsm.lzv", ImageAsm.lzv)]
 
 /-- Bodies `assemble` must refuse, and why. -/
 def refused : List (String × Body) :=

@@ -110,6 +110,8 @@ lean_exe gensharedsumalgorithm where
   root := `Main.Demo.SharedSum
 lean_exe gencpubenchalgorithm where
   root := `Main.Bench.Cpu
+lean_exe genimagebench where
+  root := `Main.Bench.Image
 lean_exe gensystembench where
   root := `Main.Bench.System
 lean_exe genleanevalalgorithm where

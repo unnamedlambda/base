@@ -304,6 +304,26 @@ def vpaddd (a b c : Opd) : Item := .ins "vpaddd" [a, b, c]
 def vpaddq (a b c : Opd) : Item := .ins "vpaddq" [a, b, c]
 def vpsubd (a b c : Opd) : Item := .ins "vpsubd" [a, b, c]
 def vpsubq (a b c : Opd) : Item := .ins "vpsubq" [a, b, c]
+def vpaddw (a b c : Opd) : Item := .ins "vpaddw" [a, b, c]
+def vpsubw (a b c : Opd) : Item := .ins "vpsubw" [a, b, c]
+def vpmullw (a b c : Opd) : Item := .ins "vpmullw" [a, b, c]
+def vpmaddwd (a b c : Opd) : Item := .ins "vpmaddwd" [a, b, c]
+def vpackuswb (a b c : Opd) : Item := .ins "vpackuswb" [a, b, c]
+def vpackssdw (a b c : Opd) : Item := .ins "vpackssdw" [a, b, c]
+def vpshufb (a b c : Opd) : Item := .ins "vpshufb" [a, b, c]
+def vpmaddubsw (a b c : Opd) : Item := .ins "vpmaddubsw" [a, b, c]
+def vpmulhrsw (a b c : Opd) : Item := .ins "vpmulhrsw" [a, b, c]
+def vpsrlw (a b c : Opd) : Item := .ins "vpsrlw" [a, b, c]
+def vpsraw (a b c : Opd) : Item := .ins "vpsraw" [a, b, c]
+def vpsllw (a b c : Opd) : Item := .ins "vpsllw" [a, b, c]
+def vpermq (a b c : Opd) : Item := .ins "vpermq" [a, b, c]
+def vpunpcklwd (a b c : Opd) : Item := .ins "vpunpcklwd" [a, b, c]
+def vpunpckhwd (a b c : Opd) : Item := .ins "vpunpckhwd" [a, b, c]
+def vpsrad (a b c : Opd) : Item := .ins "vpsrad" [a, b, c]
+def vpsrld (a b c : Opd) : Item := .ins "vpsrld" [a, b, c]
+def vpslld (a b c : Opd) : Item := .ins "vpslld" [a, b, c]
+def vpmovzxbw (a b : Opd) : Item := .ins "vpmovzxbw" [a, b]
+def prefetcht0 (a : Opd) : Item := .ins "prefetcht0" [a]
 def vshufps (a b c d : Opd) : Item := .ins "vshufps" [a, b, c, d]
 def vshufpd (a b c d : Opd) : Item := .ins "vshufpd" [a, b, c, d]
 def vpshufd (a b c : Opd) : Item := .ins "vpshufd" [a, b, c]
@@ -510,6 +530,23 @@ def vexArith : String → Option (Nat × UInt8 × Bool)
   | "vpxor" => some (1, 0xEF, true)
   | "vpaddd" => some (1, 0xFE, true) | "vpaddq" => some (1, 0xD4, true)
   | "vpsubd" => some (1, 0xFA, true) | "vpsubq" => some (1, 0xFB, true)
+  | "vpaddw" => some (1, 0xFD, true) | "vpsubw" => some (1, 0xF9, true)
+  | "vpmullw" => some (1, 0xD5, true) | "vpmaddwd" => some (1, 0xF5, true)
+  | "vpackuswb" => some (1, 0x67, true) | "vpackssdw" => some (1, 0x6B, true)
+  | "vpunpcklwd" => some (1, 0x61, true) | "vpunpckhwd" => some (1, 0x69, true)
+  | _ => none
+
+/-- The opcode of the three-operand packed integer instructions in the `0F38`
+    map, all `66`-prefixed. -/
+def vex38Arith : String → Option UInt8
+  | "vpshufb" => some 0x00 | "vpmaddubsw" => some 0x04 | "vpmulhrsw" => some 0x0B
+  | _ => none
+
+/-- The opcode and `/digit` of the word and doubleword shifts by an immediate
+    (`66 0F 71` and `66 0F 72`), which name their destination in VEX.vvvv. -/
+def vexShiftW : String → Option (UInt8 × Nat)
+  | "vpsrlw" => some (0x71, 2) | "vpsraw" => some (0x71, 4) | "vpsllw" => some (0x71, 6)
+  | "vpsrld" => some (0x72, 2) | "vpsrad" => some (0x72, 4) | "vpslld" => some (0x72, 6)
   | _ => none
 
 /-- `(pp, load opcode, store opcode)` of the moves between a vector register and
@@ -577,6 +614,21 @@ def encode (mn : String) (ops : List Opd) : Except String Enc := do
       if !packed && (d.ymm || s1.ymm || s2ymm) then throw "a scalar operation on a ymm register"
       sized (if packed then (if d.ymm then 32 else 16) else if pp == 3 then 8 else 4) s2
       return vex pp 1 false (packed && d.ymm) opc d.n s1.n (← rmOf d.n s2)
+    | _ => throw "unsupported operands"
+  if let some opc := vex38Arith mn then
+    match ops with
+    | [.v d, .v s1, s2] =>
+      let s2ymm := match s2 with | .v v => v.ymm | _ => d.ymm
+      if d.ymm != s1.ymm || s2ymm != d.ymm then throw "operand widths differ"
+      sized (if d.ymm then 32 else 16) s2
+      return vex 1 2 false d.ymm opc d.n s1.n (← rmOf d.n s2)
+    | _ => throw "unsupported operands"
+  if let some (opc, digit) := vexShiftW mn then
+    match ops with
+    | [.v d, .v s, .i x] =>
+      if d.ymm != s.ymm then throw "operand widths differ"
+      unless 0 ≤ x && x < 256 do throw s!"shift count {x} is not a byte"
+      return vex 1 1 false d.ymm opc digit d.n (rmVReg digit s) (leInt 1 x)
     | _ => throw "unsupported operands"
   if let some (pp, ld, st, packed) := vexMove mn then
     match ops with
@@ -650,6 +702,18 @@ def encode (mn : String) (ops : List Opd) : Except String Enc := do
     | _ => throw "unsupported operands"
     sized 16 d
     return vex 1 3 false true 0x19 s.n 0 (← rmOf s.n d) (leInt 1 x)
+  | "vpmovzxbw", [.v d, s] =>
+    if let .v v := s then if v.ymm then throw "vpmovzxbw reads an xmm register"
+    sized (if d.ymm then 16 else 8) s
+    return vex 1 2 false d.ymm 0x30 d.n 0 (← rmOf d.n s)
+  | "prefetcht0", [.m m] =>
+    sized 1 (.m m)
+    return legacy false [0x0F, 0x18] 1 (← rmMem 1 m.addr)
+  | "vpermq", [.v d, s, .i x] =>
+    if !d.ymm then throw "vpermq writes a ymm register"
+    if let .v v := s then if !v.ymm then throw "operand widths differ"
+    sized 32 s
+    return vex 1 3 true true 0x00 d.n 0 (← rmOf d.n s) (leInt 1 x)
   | "vbroadcastss", [.v d, .m m] =>
     sized 4 (.m m)
     return vex 1 2 false d.ymm 0x18 d.n 0 (← rmMem d.n m.addr)
