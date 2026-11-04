@@ -105,8 +105,11 @@ def loadCode (n : Nat) : AlgorithmLib.Prog.Prog V L Unit := do
         let result ← load64 (← iaddImm base (a.bufSlot 1))
         Drv.bindVals base (a.blockOff 0) (a.blockOff 0 + a.arrOff) (ptrs.push result).toList
 
-/-- Upload the inputs, which lie back to back from the caller's data pointer:
-    only when `N` is one `main` kept and the caller handed over all of them. -/
+/-- Upload the inputs, which lie back to back from the caller's data pointer,
+    and wait until they are on the device: only when `N` is one `main` kept and
+    the caller handed over all of them. A copy from pageable memory returns once
+    the bytes are staged, so without the wait the copy's tail would run into
+    the next call. -/
 def prepCode (n : Nat) : AlgorithmLib.Prog.Prog V L Unit := do
   let a := app n
   let base ← basePtr
@@ -115,6 +118,7 @@ def prepCode (n : Nat) : AlgorithmLib.Prog.Prog V L Unit := do
     let bytes ← imul len (← iconst64 (4 * n))
     Prog.when .ule bytes (← dataLen) do
       let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (a.bufSlot 0)), ← dataPtr, bytes]
+      Drv.sync
 
 /-- Where `N` is one `main` kept, run the kernel over the blocks covering it
     and wait for it; then download as many bytes of the result as the
