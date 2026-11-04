@@ -1516,6 +1516,20 @@ theorem and_mask32 {x : UInt64} (h : x.toNat < 2 ^ 32) : x &&& 0xffffffff = x :=
   show x.toNat &&& (2 ^ 32 - 1) = x.toNat
   rw [Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt h]
 
+/-- A word below `2^32` is its own f32 cut. -/
+theorem and_f32_lt (x : UInt64) (h : x.toNat < 2 ^ 32) : x &&& widthMask .f32 = x := and_mask32 h
+
+/-- A word whose f32 cut is itself is below `2^32`. -/
+theorem lt32_of_norm {x : UInt64} (h : x &&& widthMask .f32 = x) : x.toNat < 2 ^ 32 := by
+  rw [← h, UInt64.toNat_and]; exact Nat.lt_of_le_of_lt Nat.and_le_right (by simp [widthMask])
+
+/-- A word no more than one is a flag. -/
+theorem flag_cases (x : UInt64) (h : x ≤ 1) : x = 0 ∨ x = 1 := by
+  have : x.toNat ≤ 1 := UInt64.le_iff_toNat_le.mp h
+  rcases (by omega : x.toNat = 0 ∨ x.toNat = 1) with h0 | h1
+  · left; exact UInt64.toNat_inj.mp h0
+  · right; exact UInt64.toNat_inj.mp h1
+
 /-- An f32 result, a NaN as the platform leaves it, is a 32-bit word. -/
 theorem nanFix_lt (nan : ClifTy → UInt64 → UInt64) {x : UInt64} (hx : x.toNat < 2 ^ 32) :
     (nanFix nan .f32 x).toNat < 2 ^ 32 := by

@@ -25,10 +25,13 @@ LIB_BELOW = {
     "Host": {"Core", "Vocab"},
     "Surface": {"Core", "Vocab", "Host.Term"},
     "LZ4": {"Core", "Vocab"},
-    # ML reads the launches a checked program makes (`ML.Launch.AppTrace`), so
-    # it sits above the checker, and writes its warp statements as kernel
-    # bodies (`ML.Ptx.Body`), so above the kernels.
-    "ML": {"Core", "Vocab", "Host", "Surface", "Check", "Kernel", "Proof"},
+    # ML writes its warp statements as kernel bodies (`ML.Ptx.Body`), so it
+    # sits above the kernels.
+    "ML": {"Core", "Vocab", "Host", "Surface", "Kernel", "Proof"},
+    # What a checked host program running a model leaves: the launches it
+    # makes (`MLHost.AppTrace`) and the tape's words in device memory
+    # (`MLHost.TapeRun`), so above both ML and the checker.
+    "MLHost": {"Core", "Vocab", "Host", "Surface", "Check", "Kernel", "Proof", "ML"},
     # What is proved about programs the surface builds: combinator lemmas and
     # their instances.
     "Proof": {"Core", "Vocab", "Host", "Surface"},

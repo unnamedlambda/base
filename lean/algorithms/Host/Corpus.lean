@@ -701,45 +701,45 @@ def htOut : Nat := 0xB0
 def casesHt : List (Case V L) := Id.run do
   let put : Nat → List Nat → Prog V L Unit := fun off bs => do
     for (b, i) in bs.zipIdx do
-      istore8 (← iconst64 (Int.ofNat b)) (← absAddr (← basePtr) (off + i))
-  let ctx : Prog V L (V .i64) := do load64 (← absAddr (← basePtr) htCtxSlot)
+      istore8 (← iconst64 (Int.ofNat b)) (← iaddImm (← basePtr) (off + i))
+  let ctx : Prog V L (V .i64) := do load64 (← iaddImm (← basePtr) htCtxSlot)
   let mut cs : List (Case V L) := []
   -- `init` writes the context where the slot says; the first `create` is the
   -- one that matters, since `0` is the table every accessor reads.
   cs := cs ++ [⟨"ht/create", do
-    callLibVoid .htInit %[← absAddr (← basePtr) htCtxSlot]
+    callLibVoid .htInit %[← iaddImm (← basePtr) htCtxSlot]
     callLib .htCreate %[← ctx]⟩]
   -- key "ab" and an eight-byte value, then a lookup that reports its length
   cs := cs ++ [⟨"ht/lookupLen", do
     put htKeyA [0x61, 0x62]
-    storeI64 (← iconst64 0x1122334455667788) (← absAddr (← basePtr) htVal)
+    storeI64 (← iconst64 0x1122334455667788) (← iaddImm (← basePtr) htVal)
     callLibVoid .htInsert
-      %[← ctx, ← absAddr (← basePtr) htKeyA, ← iconst32 2, ← absAddr (← basePtr) htVal, ← iconst32 8]
-    callLib .htLookup %[← ctx, ← absAddr (← basePtr) htKeyA, ← iconst32 2, ← absAddr (← basePtr) htOut]⟩]
-  cs := cs ++ [⟨"ht/lookupValue", do load64 (← absAddr (← basePtr) htOut)⟩]
+      %[← ctx, ← iaddImm (← basePtr) htKeyA, ← iconst32 2, ← iaddImm (← basePtr) htVal, ← iconst32 8]
+    callLib .htLookup %[← ctx, ← iaddImm (← basePtr) htKeyA, ← iconst32 2, ← iaddImm (← basePtr) htOut]⟩]
+  cs := cs ++ [⟨"ht/lookupValue", do load64 (← iaddImm (← basePtr) htOut)⟩]
   -- exactly one entry, so this index is the only one there is
   cs := cs ++ [⟨"ht/getEntryKeyLen", do
     callLib .htGetEntry
-      %[← ctx, ← iconst32 0, ← absAddr (← basePtr) htOut, ← absAddr (← basePtr) (htOut + 8)]⟩]
+      %[← ctx, ← iconst32 0, ← iaddImm (← basePtr) htOut, ← iaddImm (← basePtr) (htOut + 8)]⟩]
   cs := cs ++ [⟨"ht/count1", do callLib .htCount %[← ctx]⟩]
   -- a key nothing inserted, which is the sentinel arm
   cs := cs ++ [⟨"ht/lookupMissing", do
     put htKeyB [0x63, 0x64]
-    callLib .htLookup %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← absAddr (← basePtr) htOut]⟩]
+    callLib .htLookup %[← ctx, ← iaddImm (← basePtr) htKeyB, ← iconst32 2, ← iaddImm (← basePtr) htOut]⟩]
   -- increment creates on the first call and accumulates after, including
   -- downwards
   cs := cs ++ [⟨"ht/incrementNew", do
-    callLib .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 10]⟩]
+    callLib .htIncrement %[← ctx, ← iaddImm (← basePtr) htKeyB, ← iconst32 2, ← iconst64 10]⟩]
   cs := cs ++ [⟨"ht/incrementAgain", do
-    callLib .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 5]⟩]
+    callLib .htIncrement %[← ctx, ← iaddImm (← basePtr) htKeyB, ← iconst32 2, ← iconst64 5]⟩]
   cs := cs ++ [⟨"ht/incrementDown", do
-    callLib .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 (-7)]⟩]
+    callLib .htIncrement %[← ctx, ← iaddImm (← basePtr) htKeyB, ← iconst32 2, ← iconst64 (-7)]⟩]
   cs := cs ++ [⟨"ht/count2", do callLib .htCount %[← ctx]⟩]
   -- and the counter reads back as the eight bytes increment stores
   cs := cs ++ [⟨"ht/incrementStored", do
     let _ ← callLib .htLookup
-      %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← absAddr (← basePtr) htOut]
-    load64 (← absAddr (← basePtr) htOut)⟩]
+      %[← ctx, ← iaddImm (← basePtr) htKeyB, ← iconst32 2, ← iaddImm (← basePtr) htOut]
+    load64 (← iaddImm (← basePtr) htOut)⟩]
   return cs
 
 /-- An arena slot nothing writes, read as a zero the compiler cannot see: an
@@ -749,7 +749,7 @@ def opaqueSlot : Nat := 0xF0
 def loadsSlot : Nat := 0xE0
 
 def zeroAt (ty : ClifTy) : Prog V L (V ty) := do
-  let a ← absAddr (← basePtr) opaqueSlot
+  let a ← iaddImm (← basePtr) opaqueSlot
   match ty with
   | .i8 => load_i8 a | .i16 => load_i16 a | .i32 => load32 a | .i64 => load64 a
   | t => load { ty := t } a rfl
@@ -877,7 +877,7 @@ def casesFloatFam : List (Case V L) := Id.run do
 def casesLoads : List (Case V L) := Id.run do
   let mut cs : List (Case V L) := []
   cs := cs ++ [⟨"loads/put", do
-    storeI64 (← opq .i64 (-0x7f7e7d7c7b7a7979)) (← absAddr (← basePtr) loadsSlot)
+    storeI64 (← opq .i64 (-0x7f7e7d7c7b7a7979)) (← iaddImm (← basePtr) loadsSlot)
     iconst64 0⟩]
   let kinds : List (String × { k : LoadKind // k.admits .i64 = true }) :=
     [("uload16", ⟨.uload16, by decide⟩), ("sload16", ⟨.sload16, by decide⟩),
@@ -886,7 +886,7 @@ def casesLoads : List (Case V L) := Id.run do
   for (kn, k) in kinds do
     for off in [0, 1, 3] do
       cs := cs ++ [⟨s!"{kn}/{off}", do
-        load { kind := k.1, ty := .i64 } (← absAddr (← basePtr) (loadsSlot + off)) k.2⟩]
+        load { kind := k.1, ty := .i64 } (← iaddImm (← basePtr) (loadsSlot + off)) k.2⟩]
   -- every width change, and the narrow stores built from them
   for (x : Int) in [-1, 0x1234, -0x1234, 0x7f, 0x80, 0x12345678] do
     cs := cs ++ [⟨s!"ireduce.i8/{x}", do ireduce .i8 (← opq .i64 x)⟩,
@@ -896,13 +896,13 @@ def casesLoads : List (Case V L) := Id.run do
                  ⟨s!"sextend.i64/{x}", do sextend .i64 (← opq .i8 x)⟩,
                  ⟨s!"uextend.i64/{x}", do uextend .i64 (← opq .i16 x)⟩]
   cs := cs ++ [⟨"istore16+32", do
-    let p ← absAddr (← basePtr) loadsSlot
+    let p ← iaddImm (← basePtr) loadsSlot
     storeI64 (← iconst64 0) p
     istore16 (← opq .i64 (-0x0123456789abcdef)) p
-    istore32 (← opq .i64 0x7eadbeef) (← absAddr (← basePtr) (loadsSlot + 4))
+    istore32 (← opq .i64 0x7eadbeef) (← iaddImm (← basePtr) (loadsSlot + 4))
     load64 p⟩]
   cs := cs ++ [⟨"uload16.i32/2", do
-    load { kind := .uload16, ty := .i32 } (← absAddr (← basePtr) (loadsSlot + 2))⟩]
+    load { kind := .uload16, ty := .i32 } (← iaddImm (← basePtr) (loadsSlot + 2))⟩]
   return cs
 
 def atomicSlot : Nat := 0xC0
@@ -911,7 +911,7 @@ def atomicSlot : Nat := 0xC0
     and leaves its result, which the next case reads back; a compare-exchange
     that matches and one that does not. -/
 def atomicsAt (tn : String) (t : ClifTy) (ht : t.isInt = true) : List (Case V L) := Id.run do
-  let p : Prog V L (V .i64) := do absAddr (← basePtr) atomicSlot
+  let p : Prog V L (V .i64) := do iaddImm (← basePtr) atomicSlot
   let mut cs : List (Case V L) := []
   cs := cs ++ [⟨s!"atomic.{tn}/store", do
     atomicStore (← opq t (-0x5a5a5a5a5a5a5a5b) ht) (← p)
@@ -939,7 +939,7 @@ def extSlot : Nat := 0x100
     overlapping ranges, a fill and a length, each read back, and a heap
     allocation used and released. -/
 def casesExt : List (Case V L) := Id.run do
-  let at_ (off : Nat) : Prog V L (V .i64) := do absAddr (← basePtr) (extSlot + off)
+  let at_ (off : Nat) : Prog V L (V .i64) := do iaddImm (← basePtr) (extSlot + off)
   let mut cs : List (Case V L) := []
   cs := cs ++ [⟨"libc/present", do libPresent .c⟩]
   cs := cs ++ [⟨"memcpy/ret", do
@@ -988,17 +988,17 @@ def casesOs : List (Case V L) :=
     wait and wake answers nothing, so a case answers `1` once it returned. -/
 def casesSync : List (Case V L) :=
   [⟨"sync/changed", do
-    let p ← absAddr (← basePtr) 0x40
-    storeW .i32 (← iconst32 5) p
+    let p ← iaddImm (← basePtr) 0x40
+    store (← iconst32 5) p
     memWait p (← iconst32 4) (← iconst64 (-1))
     iconst32 1⟩,
    ⟨"sync/timeout", do
-    let p ← absAddr (← basePtr) 0x40
-    storeW .i32 (← iconst32 5) p
+    let p ← iaddImm (← basePtr) 0x40
+    store (← iconst32 5) p
     memWait p (← iconst32 5) (← iconst64 1000000)
     iconst32 1⟩,
    ⟨"sync/wake-nobody", do
-    memWake (← absAddr (← basePtr) 0x40) (← iconst32 (-1))
+    memWake (← iaddImm (← basePtr) 0x40) (← iconst32 (-1))
     iconst32 1⟩,
    ⟨"sync/clock", do
     let a ← clockNow
@@ -1123,10 +1123,10 @@ def viaTerm : Except String (List Sem.Obs × ByteArray) := do
     library is part of every process, so it is never absent. -/
 def absentCases : List (Case V L) :=
   [⟨"cuInit", do ext (.cuda .init) %[← iconst32 0]⟩,
-   ⟨"cuMemAlloc", do ext (.cuda .memAlloc) %[← absAddr (← basePtr) extSlot, ← iconst64 64]⟩,
+   ⟨"cuMemAlloc", do ext (.cuda .memAlloc) %[← iaddImm (← basePtr) extSlot, ← iconst64 64]⟩,
    ⟨"cuda/present", do libPresent .cuda⟩,
    -- what the allocation would have written is still zero
-   ⟨"untouched", do load64 (← absAddr (← basePtr) extSlot)⟩]
+   ⟨"untouched", do load64 (← iaddImm (← basePtr) extSlot)⟩]
 
 def absentBody : Prog V L Unit := do
   let outPtr ← outPtr

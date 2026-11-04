@@ -1,8 +1,8 @@
 module
 public import Vit.Units
 meta import Vit.Units
-public import AlgorithmLib.ML.Model.UnitWords
-meta import AlgorithmLib.ML.Model.UnitWords
+public import AlgorithmLib.MLHost.UnitWords
+meta import AlgorithmLib.MLHost.UnitWords
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

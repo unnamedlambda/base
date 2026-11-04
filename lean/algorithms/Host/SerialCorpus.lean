@@ -62,7 +62,7 @@ def body : Prog V L Unit := do
   let nz (k : Nat) (v : V .i64) : Prog V L Unit := do put k (← ireduce32 (← uextend64 (← icmp .ne v z)))
   let n ← ser .count %[]
   put 0 (← ireduce32 (← uextend64 (← icmp .sge n (← iconst32 0))))
-  let name ← absAddr base A_NAME
+  let name ← iaddImm base A_NAME
   put64 1 (← ser .name %[n, name, ← iconst64 16])
   put64 2 (← ser .name %[← iconst32 (-1), name, ← iconst64 16])
   nz 3 (← ser .open %[path, ← iconst32 0, ← iconst32 100])
@@ -71,7 +71,7 @@ def body : Prog V L Unit := do
   nz 5 p
   nz 6 (← ser .open %[path, ← iconst32 115200, ← iconst32 200])
   put64 7 (← ser .pending %[p])
-  let buf ← absAddr base A_BUF
+  let buf ← iaddImm base A_BUF
   put64 8 (← ser .read %[p, buf, ← iconst64 3])
   storeI32 (← load32 buf) (← iadd out (← iconst64 (4 * 9)))
   let buf2 ← iaddImm buf 8
@@ -79,7 +79,7 @@ def body : Prog V L Unit := do
   storeI32 (← load32 buf2) (← iadd out (← iconst64 (4 * 11)))
   put64 12 (← ser .read %[p, buf, ← iconst64 16])
   put64 13 (← ser .read %[p, buf, ← iconst64 (-1)])
-  put64 14 (← ser .write %[p, ← absAddr base A_PING, ← iconst64 4])
+  put64 14 (← ser .write %[p, ← iaddImm base A_PING, ← iconst64 4])
   put64 15 (← ser .write %[p, buf, ← iconst64 (-1)])
   put64 16 (← ser .pending %[p])
   ser .close %[p]

@@ -187,7 +187,7 @@ set_option maxRecDepth 8000 in
 def body : Prog V L Unit := do
   let base ← basePtr
   let out ← outPtr
-  let at_ (off : Nat) : Prog V L (V .i64) := absAddr base off
+  let at_ (off : Nat) : Prog V L (V .i64) := iaddImm base off
   let slot (off : Nat) : Prog V L (V .i64) := do load64 (← at_ off)
   let codes : List (Prog V L (V .i32)) :=
     [ do cu .init %[← iconst32 0]

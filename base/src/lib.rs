@@ -158,16 +158,11 @@ impl Driver {
         &self,
         name: &str,
     ) -> Result<impl Fn(&[u8], &mut [u8]) -> i64 + Copy + Send + Sync + '_, Error> {
-        let f = self.export(name).ok_or_else(|| Error::NoSuchFunction(name.to_owned()))?;
+        let f = self.exports.get(name).copied().ok_or_else(|| Error::NoSuchFunction(name.to_owned()))?;
         Ok(move |input: &[u8], output: &mut [u8]| {
             // SAFETY: loading verified the signature, the code lives as long as
             // the borrowed driver, and the rest the caller of `function` vouched.
             unsafe { f(input.as_ptr(), input.len(), output.as_mut_ptr(), output.len()) }
         })
-    }
-
-    /// The function named `name`, as the C function it is.
-    pub(crate) fn export(&self, name: &str) -> Option<BaseFunction> {
-        self.exports.get(name).copied()
     }
 }

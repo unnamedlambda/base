@@ -230,21 +230,21 @@ def runAll (ps : List (Prog V L Unit)) : Prog V L Unit := ps.forM id
 def unrolled (base : V .i64) (offs : List Nat) : Prog V L (V .i64) := do
   let mut acc ← iconst64 0
   for o in offs do
-    let a ← absAddr base (Int.ofNat o)
+    let a ← iaddImm base (Int.ofNat o)
     let v ← load64 a
     acc ← iadd acc v
   pure acc
 
 /-- The stdlib's monadic combinators, over programs. -/
 def sumLoaded (base : V .i64) (offs : List Nat) : Prog V L (V .i64) := do
-  let vs ← offs.mapM (fun o => do load64 (← absAddr base (Int.ofNat o)))
+  let vs ← offs.mapM (fun o => do load64 (← iaddImm base (Int.ofNat o)))
   vs.foldlM (fun a v => iadd a v) (← iconst64 0)
 
 /-- Generation-time list processing chosen by the caller's data, then emitted. -/
 def zipped (base : V .i64) (offs : List Nat) (keep : List Bool) :
     Prog V L (V .i64) := do
   let sel := (offs.zip keep).filterMap (fun (o, k) => if k then some o else none)
-  let vs ← sel.mapM (fun o => do load64 (← absAddr base (Int.ofNat o)))
+  let vs ← sel.mapM (fun o => do load64 (← iaddImm base (Int.ofNat o)))
   vs.foldlM (fun a v => iadd a v) (← iconst64 0)
 
 /-- `Option` and `Except` around emission rather than inside it: a library that
@@ -253,7 +253,7 @@ def zipped (base : V .i64) (offs : List Nat) (keep : List Bool) :
 def maybeLoad (o : Option Nat) (base : V .i64) : Prog V L (V .i64) :=
   match o with
   | none => iconst64 0
-  | some k => do load64 (← absAddr base (Int.ofNat k))
+  | some k => do load64 (← iaddImm base (Int.ofNat k))
 
 def checkedCfg (n : Nat) : Except String (Prog V L Unit) :=
   if n % 16 == 0 then .ok (do let _ ← iconst64 (Int.ofNat n); pure ())
@@ -284,13 +284,13 @@ def breakWhenZero (lbl : L [ClifTy.i64] [ClifTy.i64]) (v exitVal : V .i64) :
 
 def usesLabel : Prog V L Unit := do
   let ptr ← basePtr
-  let n ← load64 (← absAddr ptr 0x18)
+  let n ← load64 (← iaddImm ptr 0x18)
   let r ← wloop1L (← iconst64 0)
     (head := fun lbl i => do
       breakWhenZero lbl i i
       return (exitIfSGe i n, %[i], ()))
     (body := fun _ i _ => do return %[← iaddImm i 1])
-  store r.head (← absAddr ptr 0x28)
+  store r.head (← iaddImm ptr 0x28)
 
 /-- A loop whose *number* of carried values the caller computed. -/
 def wideLoop (k : Nat) : Prog V L Unit := do
@@ -303,13 +303,13 @@ def wideLoop (k : Nat) : Prog V L Unit := do
     (body := fun vs _ => do
       let stepped ← vs.uniformToList.mapM (fun v => do iaddImm v 1)
       return Vals.ofFn (n := k) (fun i => stepped[i.val]?.getD z))
-  store (← iconst64 (Int.ofNat k)) (← absAddr ptr 0x28)
+  store (← iconst64 (Int.ofNat k)) (← iaddImm ptr 0x28)
 
 /-- Artifact, hand the caller a handle, teardown — at whatever result type the
     caller's fragment has. -/
 def withBase {α : Type} (k : V .i64 → Prog V L α) : Prog V L α := do
   let ptr ← basePtr
-  let r ← k (← load64 (← absAddr ptr 0x18))
+  let r ← k (← load64 (← iaddImm ptr 0x18))
   storeAt ptr 0x30 (← iconst64 1)
   pure r
 
@@ -383,7 +383,7 @@ abbrev R (V : ClifTy → Type) (L : List ClifTy → List ClifTy → Type) :=
 def field (i : Nat) : R V L (V .i64) := do
   let c ← read
   let ptr ← liftM (basePtr : Prog V L _)
-  let a ← liftM (absAddr ptr (Int.ofNat (c.base + i * c.stride)) : Prog V L _)
+  let a ← liftM (iaddImm ptr (Int.ofNat (c.base + i * c.stride)) : Prog V L _)
   liftM (load64 a : Prog V L _)
 
 abbrev S (V : ClifTy → Type) (L : List ClifTy → List ClifTy → Type) :=
@@ -410,10 +410,10 @@ def mkGet (base : V .i64) : V .i64 → Prog V L (V .i64) :=
     line. -/
 def usesClosure : Prog V L Unit := do
   let ptr ← basePtr
-  let base ← load64 (← absAddr ptr 0x18)
+  let base ← load64 (← iaddImm ptr 0x18)
   let get := mkGet (L := L) base
   store (← iadd (← get (← iconst64 0)) (← get (← iconst64 8)))
-    (← absAddr ptr 0x28)
+    (← iaddImm ptr 0x28)
 
 /-
   **Not available: an emitter returned through a bind.** `Prog V L : Type →
@@ -442,7 +442,7 @@ def usesClosure : Prog V L Unit := do
 
 def composed : Prog V L Unit := do
   let ptr ← basePtr
-  let out ← load64 (← absAddr ptr 0x28)
+  let out ← load64 (← iaddImm ptr 0x28)
   let e : E := .add (.lit 3) (.shl (.lit 5) 2)
   let a ← applyN 3 (fun x => iaddImm x 1) (← e.emit)
   let b ← unrolled ptr [0x18, 0x20]

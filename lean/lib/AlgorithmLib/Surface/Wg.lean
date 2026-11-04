@@ -122,9 +122,6 @@ def stateEnd (a : App) : Nat := if a.blit.isSome then a.winBase + 0x70 else a.wi
 /-- Each pipeline with its index. -/
 def indexed (a : App) : List (Nat × PSpec) := (List.range a.pipes.length).zip a.pipes
 
-/-- A handle kept at `off`. -/
-def at_ (base : V .i64) (off : Nat) : Prog V L (V .i64) := do load64 (← iaddImm base off)
-
 /-- **Bring wgpu up**: an instance, its adapter, a device and its queue; each
     buffer with its staging buffer; each pipeline, its layouts and its bind
     group. The shader modules and pipeline layouts are released once their
@@ -155,7 +152,7 @@ def setup (a : App) (base : V .i64) : Prog V L Unit := do
     storeI64 pipe (← iaddImm base (a.PIPE j))
     for ((bi, _), k) in p.binds.zip (List.range p.binds.length) do
       storeI64 (← iconst64 k) (← iaddImm base (a.bgEnts j + 16 * k))
-      storeI64 (← at_ base (a.bufSlot bi)) (← iaddImm base (a.bgEnts j + 16 * k + 8))
+      storeI64 (← loadAt base (a.bufSlot bi)) (← iaddImm base (a.bgEnts j + 16 * k + 8))
     let bg ← ext (.wgpu .deviceCreateBindGroup) %[dev, bgl, ← iaddImm base (a.bgEnts j), ← iconst64 p.binds.length]
     storeI64 bg (← iaddImm base (a.BG j))
     let _ ← ext (.wgpu (.release .shaderModule)) %[sh]
@@ -164,44 +161,44 @@ def setup (a : App) (base : V .i64) : Prog V L Unit := do
 /-- Record a dispatch of pipeline `j` over `gx × gy × gz` workgroups and
     submit it. -/
 def dispatch (a : App) (base : V .i64) (j : Nat) (gx gy gz : V .i32) : Prog V L Unit := do
-  let enc ← ext (.wgpu .deviceCreateCommandEncoder) %[← at_ base a.DEVICE]
+  let enc ← ext (.wgpu .deviceCreateCommandEncoder) %[← loadAt base a.DEVICE]
   let pass ← ext (.wgpu .encoderBeginComputePass) %[enc]
-  let _ ← ext (.wgpu .computePassSetPipeline) %[pass, ← at_ base (a.PIPE j)]
-  let _ ← ext (.wgpu .computePassSetBindGroup) %[pass, ← iconst32 0, ← at_ base (a.BG j)]
+  let _ ← ext (.wgpu .computePassSetPipeline) %[pass, ← loadAt base (a.PIPE j)]
+  let _ ← ext (.wgpu .computePassSetBindGroup) %[pass, ← iconst32 0, ← loadAt base (a.BG j)]
   let _ ← ext (.wgpu .computePassDispatch) %[pass, gx, gy, gz]
   let _ ← ext (.wgpu .computePassEnd) %[pass]
   let cb ← ext (.wgpu .encoderFinish) %[enc]
-  let _ ← ext (.wgpu .queueSubmit) %[← at_ base a.QUEUE, cb]
+  let _ ← ext (.wgpu .queueSubmit) %[← loadAt base a.QUEUE, cb]
 
 /-- `bytes` bytes from `src` into buffer `i`, landing before any later
     submit. -/
 def upload (a : App) (base : V .i64) (i : Nat) (src bytes : V .i64) : Prog V L Unit := do
-  let _ ← ext (.wgpu .queueWriteBuffer) %[← at_ base a.QUEUE, ← at_ base (a.bufSlot i), ← iconst64 0, src, bytes]
+  let _ ← ext (.wgpu .queueWriteBuffer) %[← loadAt base a.QUEUE, ← loadAt base (a.bufSlot i), ← iconst64 0, src, bytes]
 
 /-- The first `bytes` bytes of buffer `i` to `dst`, through its staging
     buffer, once every earlier submit has run. -/
 def download (a : App) (base : V .i64) (i : Nat) (dst bytes : V .i64) : Prog V L Unit := do
   let z ← iconst64 0
-  let enc ← ext (.wgpu .deviceCreateCommandEncoder) %[← at_ base a.DEVICE]
-  let _ ← ext (.wgpu .encoderCopyBufferToBuffer) %[enc, ← at_ base (a.bufSlot i), z, ← at_ base (a.stageSlot i), z,
+  let enc ← ext (.wgpu .deviceCreateCommandEncoder) %[← loadAt base a.DEVICE]
+  let _ ← ext (.wgpu .encoderCopyBufferToBuffer) %[enc, ← loadAt base (a.bufSlot i), z, ← loadAt base (a.stageSlot i), z,
     bytes]
   let cb ← ext (.wgpu .encoderFinish) %[enc]
-  let _ ← ext (.wgpu .queueSubmit) %[← at_ base a.QUEUE, cb]
-  let _ ← ext (.wgpu .bufferRead) %[← at_ base a.DEVICE, ← at_ base (a.stageSlot i), z, dst, bytes]
+  let _ ← ext (.wgpu .queueSubmit) %[← loadAt base a.QUEUE, cb]
+  let _ ← ext (.wgpu .bufferRead) %[← loadAt base a.DEVICE, ← loadAt base (a.stageSlot i), z, dst, bytes]
 
 /-- Release everything `setup` made. -/
 def cleanup (a : App) (base : V .i64) : Prog V L Unit := do
   for (j, _) in a.indexed do
-    let _ ← ext (.wgpu (.release .bindGroup)) %[← at_ base (a.BG j)]
-    let _ ← ext (.wgpu (.release .computePipeline)) %[← at_ base (a.PIPE j)]
-    let _ ← ext (.wgpu (.release .bindGroupLayout)) %[← at_ base (a.BGL j)]
+    let _ ← ext (.wgpu (.release .bindGroup)) %[← loadAt base (a.BG j)]
+    let _ ← ext (.wgpu (.release .computePipeline)) %[← loadAt base (a.PIPE j)]
+    let _ ← ext (.wgpu (.release .bindGroupLayout)) %[← loadAt base (a.BGL j)]
   for (_, i) in a.bufs.zip (List.range a.bufs.length) do
-    let _ ← ext (.wgpu (.release .buffer)) %[← at_ base (a.bufSlot i)]
-    let _ ← ext (.wgpu (.release .buffer)) %[← at_ base (a.stageSlot i)]
-  let _ ← ext (.wgpu (.release .queue)) %[← at_ base a.QUEUE]
-  let _ ← ext (.wgpu (.release .device)) %[← at_ base a.DEVICE]
-  let _ ← ext (.wgpu (.release .adapter)) %[← at_ base a.ADAPTER]
-  let _ ← ext (.wgpu (.release .instance)) %[← at_ base a.INST]
+    let _ ← ext (.wgpu (.release .buffer)) %[← loadAt base (a.bufSlot i)]
+    let _ ← ext (.wgpu (.release .buffer)) %[← loadAt base (a.stageSlot i)]
+  let _ ← ext (.wgpu (.release .queue)) %[← loadAt base a.QUEUE]
+  let _ ← ext (.wgpu (.release .device)) %[← loadAt base a.DEVICE]
+  let _ ← ext (.wgpu (.release .adapter)) %[← loadAt base a.ADAPTER]
+  let _ ← ext (.wgpu (.release .instance)) %[← loadAt base a.INST]
 
 -- ---------------------------------------------------------------------------
 -- A window
@@ -224,8 +221,8 @@ def withWindow (a : App) (base : V .i64) (wd ht : Nat) (body : V .i64 → Prog V
     when .ne up (← iconst .i8 0) (do
       let win ← ext (.window .open) %[← iaddImm base b.titleOff, ← iconst32 wd, ← iconst32 ht]
       when .ne win z (do
-        let dev ← at_ base a.DEVICE
-        let surf ← ext (.wgpu .instanceCreateSurface) %[← at_ base a.INST, win]
+        let dev ← loadAt base a.DEVICE
+        let surf ← ext (.wgpu .instanceCreateSurface) %[← loadAt base a.INST, win]
         storeI64 surf (← iaddImm base a.SURF)
         let _ ← ext (.wgpu .surfaceConfigure) %[surf, dev, ← iconst32 FORMAT, ← iconst32 wd, ← iconst32 ht]
         storeI32 (← iconst32 wd) (← iaddImm base a.PW)
@@ -239,14 +236,14 @@ def withWindow (a : App) (base : V .i64) (wd ht : Nat) (body : V .i64 → Prog V
         let bgl ← ext (.wgpu .renderPipelineGetBindGroupLayout) %[rp, ← iconst32 0]
         storeI64 bgl (← iaddImm base a.RBGL)
         storeI64 z (← iaddImm base a.RBGENT)
-        storeI64 (← at_ base (a.bufSlot b.buf)) (← iaddImm base (a.RBGENT + 8))
+        storeI64 (← loadAt base (a.bufSlot b.buf)) (← iaddImm base (a.RBGENT + 8))
         let bg ← ext (.wgpu .deviceCreateBindGroup) %[dev, bgl, ← iaddImm base a.RBGENT, ← iconst64 1]
         storeI64 bg (← iaddImm base a.RBG)
         body win
-        let _ ← ext (.wgpu (.release .bindGroup)) %[← at_ base a.RBG]
-        let _ ← ext (.wgpu (.release .renderPipeline)) %[← at_ base a.RPIPE]
-        let _ ← ext (.wgpu (.release .bindGroupLayout)) %[← at_ base a.RBGL]
-        let _ ← ext (.wgpu (.release .surface)) %[← at_ base a.SURF]
+        let _ ← ext (.wgpu (.release .bindGroup)) %[← loadAt base a.RBG]
+        let _ ← ext (.wgpu (.release .renderPipeline)) %[← loadAt base a.RPIPE]
+        let _ ← ext (.wgpu (.release .bindGroupLayout)) %[← loadAt base a.RBGL]
+        let _ ← ext (.wgpu (.release .surface)) %[← loadAt base a.SURF]
         let _ ← ext (.window .close) %[win]))
 
 /-- The engine's id for a key's USB HID usage: `0` for a key it does not name. -/
@@ -315,19 +312,19 @@ def present (a : App) (base win : V .i64) : Prog V L Unit := do
   when .ugt pw z32 (when .ult pw big (when .ugt ph z32 (when .ult ph big (do
     let changed ← bor (← icmp .ne pw (← load32 (← iaddImm base a.PW))) (← icmp .ne ph (← load32 (← iaddImm base a.PH)))
     when .ne changed (← iconst .i8 0) (do
-      let _ ← ext (.wgpu .surfaceConfigure) %[← at_ base a.SURF, ← at_ base a.DEVICE, ← iconst32 FORMAT, pw, ph]
+      let _ ← ext (.wgpu .surfaceConfigure) %[← loadAt base a.SURF, ← loadAt base a.DEVICE, ← iconst32 FORMAT, pw, ph]
       storeI32 pw (← iaddImm base a.PW)
       storeI32 ph (← iaddImm base a.PH))))))
-  let tex ← ext (.wgpu .surfaceGetCurrentTexture) %[← at_ base a.SURF]
+  let tex ← ext (.wgpu .surfaceGetCurrentTexture) %[← loadAt base a.SURF]
   let view ← ext (.wgpu .textureCreateView) %[tex]
-  let enc ← ext (.wgpu .deviceCreateCommandEncoder) %[← at_ base a.DEVICE]
+  let enc ← ext (.wgpu .deviceCreateCommandEncoder) %[← loadAt base a.DEVICE]
   let pass ← ext (.wgpu .encoderBeginRenderPass) %[enc, view, ← iconst32 1]
-  let _ ← ext (.wgpu .renderPassSetPipeline) %[pass, ← at_ base a.RPIPE]
-  let _ ← ext (.wgpu .renderPassSetBindGroup) %[pass, z32, ← at_ base a.RBG]
+  let _ ← ext (.wgpu .renderPassSetPipeline) %[pass, ← loadAt base a.RPIPE]
+  let _ ← ext (.wgpu .renderPassSetBindGroup) %[pass, z32, ← loadAt base a.RBG]
   let _ ← ext (.wgpu .renderPassDraw) %[pass, ← iconst32 3, ← iconst32 1, z32, z32]
   let _ ← ext (.wgpu .renderPassEnd) %[pass]
   let cb ← ext (.wgpu .encoderFinish) %[enc]
-  let _ ← ext (.wgpu .queueSubmit) %[← at_ base a.QUEUE, cb]
+  let _ ← ext (.wgpu .queueSubmit) %[← loadAt base a.QUEUE, cb]
   let _ ← ext (.wgpu (.release .textureView)) %[view]
   let _ ← ext (.wgpu .surfacePresent) %[tex]
 

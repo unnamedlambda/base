@@ -1,6 +1,8 @@
 module
 public import AlgorithmLib.ML.Math.Tape
 meta import AlgorithmLib.ML.Math.Tape
+public import AlgorithmLib.Core.Word
+meta import AlgorithmLib.Core.Word
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -251,17 +253,6 @@ theorem adjSem_spec : ∀ {n : Nat} (t : Tele Γ n) (out : Expr (Γ + n)) (env :
     which is exactly the induction step.  Getting these two orders to line up is
     what lets the whole proof avoid reassociation. -/
 
-theorem foldl_congr_mem {α β : Type} (f g : β → α → β) : ∀ (l : List α) (init : β),
-    (∀ b a, a ∈ l → f b a = g b a) → l.foldl f init = l.foldl g init := by
-  intro l
-  induction l with
-  | nil => intro init _; rfl
-  | cons a l ih =>
-      intro init h
-      show l.foldl f (f init a) = l.foldl g (g init a)
-      rw [h init a (List.Mem.head _)]
-      exact ih (g init a) (fun b x hx => h b x (List.Mem.tail _ hx))
-
 theorem foldl_const {α β : Type} (f : β → α → β) : ∀ (l : List α) (init : β),
     (∀ b a, a ∈ l → f b a = b) → l.foldl f init = init := by
   intro l
@@ -380,7 +371,7 @@ theorem adjSem_fold : ∀ {n : Nat} (t : Tele Γ n) (b : Expr (Γ + n)) (env : F
                 (Nat.lt_irrefl (Γ + n)), hRHS]
         rw [hhead, adjSem_cons_lt t e b env q hq, ih (Expr.letE e b) env ⟨q.val, hq⟩]
         refine foldl_congr_mem _ _ _ _ ?_
-        intro acc i hi
+        intro i hi acc
         have hin : i < n := mem_revIdx hi
         have hw : denote ((Tele.cons t e).env env)
               (sderiv ((Tele.cons t e).getW ⟨i, Nat.lt_succ_of_lt hin⟩) q)

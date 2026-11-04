@@ -111,21 +111,15 @@ def wgBump (S : TState) : TState :=
 /-- What a step that changes nothing the typestate keeps of wgpu leaves. -/
 def wgSame (S : TState) : TState := S.filter (wgKeeps [] [] [] (some 0))
 
-/-- The `n` entries of an array at `a`, each read off the typestate's cells
-    by `f` from its address. -/
-def wgCells {α : Type} (a n : UInt64) (stride : Nat) (f : UInt64 → Option α) : Option (List α) :=
-  if n.toNat > WG_MAX then none
-  else (List.range n.toNat).mapM fun k => f (a + UInt64.ofNat (stride * k))
-
 /-- A bind group layout's entries, as the typestate's cells hold them. -/
 def wgBglEntries (S : TState) (ents n : UInt64) : Option (List (Nat × Bool)) :=
-  wgCells ents n 8 fun a => do
+  wgArray ents n 8 fun a => do
     let e ← cellOf S a
     some (e.toUInt32.toNat, (e >>> 32).toUInt32 != 0)
 
 /-- A pipeline layout's groups, as the typestate's cells name layouts. -/
 def wgGroups (S : TState) (arr n : UInt64) : Option (List (List (Nat × Bool))) :=
-  wgCells arr n 8 fun a => do
+  wgArray arr n 8 fun a => do
     let h ← cellOf S a
     match wgoAt S h .bindGroupLayout with
     | some (_, .bgl (some es)) => some es
@@ -133,7 +127,7 @@ def wgGroups (S : TState) (arr n : UInt64) : Option (List (List (Nat × Bool))) 
 
 /-- A bind group's entries, as the typestate's cells name storage buffers. -/
 def wgBgEntries (S : TState) (ents n : UInt64) : Option (List (Nat × Nat)) :=
-  wgCells ents n 16 fun e => do
+  wgArray ents n 16 fun e => do
     let b ← cellOf S e
     let bh ← cellOf S (e + 8)
     match wgoAt S bh .buffer with

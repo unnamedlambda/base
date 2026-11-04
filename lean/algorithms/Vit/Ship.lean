@@ -47,7 +47,10 @@ def vBodies : List (Nat × String × Prog.Body) :=
   , (12, "captureStep", vCaptureAt VFWD_N VSTEP_N VGRAPH_STEP VEXEC_STEP)
   , (13, "replayStep",  vReplayAt VEXEC_STEP 1) ]
 
-def vClifIR : Except String (List FuncData) := Prog.program (.ok noopFunction ::
+set_option compiler.extract_closed false in
+/-- The program's CLIF, compiled when the generator asks for it rather than
+    when the library loads: every module importing the ViT would pay for it. -/
+def vClifIR (_ : Unit) : Except String (List FuncData) := Prog.program (.ok noopFunction ::
   vBodies.map (fun (i, name, body) => Prog.entry name (Prog.compileProg i body)))
 
 /-- Where each input's gradient landed, one `u32` per input, `0` for the
@@ -128,9 +131,10 @@ def report : IO Unit := do
   for (nm, d) in [("forward", Vit.vDagFwd), ("step", Vit.vDagStep)] do
     IO.println s!"[vit] {nm} schedule: {d.nev} events, {(d.ewait.toList.map List.length).foldl (· + ·) 0} waits"
 
+set_option compiler.extract_closed false in
 def Vit.Ship.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  let clif ← Prog.orDie Vit.vClifIR
+  let clif ← Prog.orDie (Vit.vClifIR ())
   emitArtifacts outDir (Vit.artifacts clif)
   report
 

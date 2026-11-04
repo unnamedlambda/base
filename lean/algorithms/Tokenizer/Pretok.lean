@@ -176,7 +176,7 @@ def utf8DecodeM (c : TokenizerCommon.TokMem) (p : PretokMem) : Prog V L Unit := 
   -- one past the end, so a chunk's byte range is always cpByte[j] .. cpByte[j+n]
   let kEnd := ex.head
   storeI32 (← ireduce32 n) (← iadd bytePtr (← ishlImm kEnd 2))
-  storeI64 kEnd (← absAddr ptr p.cpCount)
+  storeI64 kEnd (← iaddImm ptr p.cpCount)
 
 /-- ASCII lowering, which is all the contraction table needs. -/
 def lowerAscii (cp : V .i64) : Prog V L (V .i64) := do
@@ -473,7 +473,7 @@ def initRangeM (c : TokenizerCommon.TokMem) (b0 b1 : V .i64) : Prog V L Unit := 
     let byt ← uload8_64 (← iadd textBase (← iadd b0 i))
     let initTok ← load32 (← iadd byteInit (← ishlImm byt 2))
     storeI32 initTok (← iadd tokBuf (← ishlImm i 2))
-  storeI64 len (← absAddr ptr c.tokenCount)
+  storeI64 len (← iaddImm ptr c.tokenCount)
 
 /-- **The whole of tokenisation: split, then merge inside each chunk.**
 
@@ -536,6 +536,6 @@ def tokenizeTextM (c : TokenizerCommon.TokMem) (p : PretokMem) : Prog V L Unit :
         let tk ← load32 (← iadd tokBuf (← ishlImm j 2))
         storeI32 tk (← iadd outPtr (← ishlImm (← iadd nOut j) 2))
       return %[← iadd i n, ← iadd nOut got])
-  storeI64 (ex.head) (← absAddr ptr p.outCount)
+  storeI64 (ex.head) (← iaddImm ptr p.outCount)
 
 end PretokCommon

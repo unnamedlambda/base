@@ -26,9 +26,6 @@ namespace AlgorithmLib.Drv.App
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 open AlgorithmLib.HProg.Contracts (Fact TState)
 
-/-- The arena address `off` bytes in. -/
-abbrev at_ (off : Nat) : UInt64 := regionBase .arena + UInt64.ofNat off
-
 /-- The eight bytes from the layout's `ONE`: the single-precision `1` cuBLAS
     reads as `α`, then the `0` it reads as `β` at `ZERO`. -/
 def scalarsCell : UInt64 := 0x3f800000
@@ -41,13 +38,13 @@ def sizes (k : KSpec) : List Nat := k.args.map fun _ => 8
 def loadTS (a : App) (ptxs : List String := []) : TState :=
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0, .ngraphs 0, .nexecs 0, .room .arena a.memSize,
-   .text (at_ a.NAME) (some "main") 5 []] ++
-  (if a.blas then [.part (.has .cublas) true, .nblas 0, .cell (at_ a.ONE) scalarsCell] else []) ++
+   .text (arenaAt a.NAME) (some "main") 5 []] ++
+  (if a.blas then [.part (.has .cublas) true, .nblas 0, .cell (arenaAt a.ONE) scalarsCell] else []) ++
   (a.indexed.filterMap fun (j, _) =>
-    if a.entry j == "main" then none else some (.text (at_ (a.nameOff j)) (some (a.entry j)) 32 [])) ++
+    if a.entry j == "main" then none else some (.text (arenaAt (a.nameOff j)) (some (a.entry j)) 32 [])) ++
   a.indexed.filterMap fun (j, k) =>
     if a.modOwner j == j then
-      some (.text (at_ k.ptxOff) ptxs[j]? k.ptxLen
+      some (.text (arenaAt k.ptxOff) ptxs[j]? k.ptxLen
         (a.indexed.filterMap fun (j', k') => if a.modOwner j' == j then some (a.entry j', sizes k', k'.writes) else none))
     else none
 
@@ -56,14 +53,14 @@ def loadTS (a : App) (ptxs : List String := []) : TState :=
 def runTSWith (a : App) (szs : List Nat) : TState :=
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .devSeq, .oracles, .room .arena a.memSize] ++
-  (if a.blas then [.part (.has .cublas) true, .blasOn 0 0, .cell (at_ a.BLAS) (drvHandle kBlas 0),
-    .cell (at_ a.ONE) scalarsCell] else []) ++
+  (if a.blas then [.part (.has .cublas) true, .blasOn 0 0, .cell (arenaAt a.BLAS) (drvHandle kBlas 0),
+    .cell (arenaAt a.ONE) scalarsCell] else []) ++
   szs.zipIdx.flatMap (fun (n, i) =>
-    [.alloc i n, .cell (at_ (a.bufSlot i)) (devPtr i)]) ++
-  (a.indexed.flatMap fun (j, k) => [.fn j (sizes k) k.writes, .cell (at_ (a.fnSlot j)) (drvHandle kFunc j)]) ++
+    [.alloc i n, .cell (arenaAt (a.bufSlot i)) (devPtr i)]) ++
+  (a.indexed.flatMap fun (j, k) => [.fn j (sizes k) k.writes, .cell (arenaAt (a.fnSlot j)) (drvHandle kFunc j)]) ++
   ((List.range a.blocks.length).zip a.blocks).flatMap fun (b, args) =>
     ((List.range args.length).zip args).flatMap fun (p, i) =>
-      [.cell (at_ (a.blockOff b + 8 * p)) (devPtr i), .cell (at_ (a.blockOff b + a.arrOff + 8 * p)) (at_ (a.blockOff b + 8 * p))]
+      [.cell (arenaAt (a.blockOff b + 8 * p)) (devPtr i), .cell (arenaAt (a.blockOff b + a.arrOff + 8 * p)) (arenaAt (a.blockOff b + 8 * p))]
 
 /-- What the other entry points start from: what `main` leaves, its
     allocations of the sizes `bufs` gives. -/

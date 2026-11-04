@@ -12,12 +12,16 @@ package algorithmLib where
 The modules are compiled to native code (`precompileModules`), so that what a
 claim decides by evaluation runs at native speed. A module of another package
 loads a precompiled library whole, and so rebuilds whenever any module of that
-library changes. The library is therefore split where its imports split: the
-base everything stands on, and the two developments on it, LZ4 and ML, which do
-not import each other. An ML edit rebuilds what imports ML, not what imports
-only the base or LZ4. Each library's roots differ from its name, so Lake loads
-it as a plain shared library, each imported module initialized by itself,
-rather than as a plugin initialized through one module named after it. -/
+library changes and waits for all of it to build. The library is therefore
+split where its imports split: the base everything stands on; the checker on
+it; the two developments on the base, LZ4 and ML, which do not import each
+other; and what ties ML's models to checked host programs, on ML and the
+checker. An ML edit rebuilds what imports ML, not what imports only the base or
+LZ4, and a generator, which imports only the base and a development, builds
+while the checker's soundness proofs do. Each library's roots differ from its
+name, so Lake loads it as a plain shared library, each imported module
+initialized by itself, rather than as a plugin initialized through one module
+named after it. -/
 
 /-- Everything, by its root module `AlgorithmLib`, which nothing imports. -/
 @[default_target]
@@ -31,8 +35,16 @@ lean_lib AlgorithmBase where
   roots := #[`AlgorithmLib.Gen]
   globs := #[.submodules `AlgorithmLib.Core, .submodules `AlgorithmLib.Vocab,
     .submodules `AlgorithmLib.Host, .submodules `AlgorithmLib.Surface,
-    .submodules `AlgorithmLib.Proof, .submodules `AlgorithmLib.Check,
+    .submodules `AlgorithmLib.Proof,
     .submodules `AlgorithmLib.Kernel, .one `AlgorithmLib.Gen]
+  precompileModules := true
+
+/-- The checker, proven sound over the base: its own library, so what imports
+    only the base (every generator) builds while the soundness proofs do. -/
+@[default_target]
+lean_lib AlgorithmCheck where
+  roots := #[`AlgorithmLib.Check.Entry]
+  globs := #[.submodules `AlgorithmLib.Check]
   precompileModules := true
 
 /-- What is proved of the compilers themselves: that a kernel body's PTX does
@@ -56,6 +68,15 @@ lean_lib AlgorithmLZ4 where
 lean_lib AlgorithmML where
   roots := #[`AlgorithmLib.ML]
   globs := #[.andSubmodules `AlgorithmLib.ML]
+  precompileModules := true
+
+/-- What a checked host program running an ML model leaves: its launches and
+    the tape's words in device memory. Above both the ML development and the
+    checker, so neither waits for the other. -/
+@[default_target]
+lean_lib AlgorithmMLHost where
+  roots := #[`AlgorithmLib.MLHost.TapeRun]
+  globs := #[.submodules `AlgorithmLib.MLHost]
   precompileModules := true
 
 /-! # Artifacts

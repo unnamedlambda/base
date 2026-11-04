@@ -1,8 +1,8 @@
 module
-public import AlgorithmLib.ML.Model.UnitWords
-meta import AlgorithmLib.ML.Model.UnitWords
-public import AlgorithmLib.ML.Launch.AppDag
-meta import AlgorithmLib.ML.Launch.AppDag
+public import AlgorithmLib.MLHost.UnitWords
+meta import AlgorithmLib.MLHost.UnitWords
+public import AlgorithmLib.MLHost.AppDag
+meta import AlgorithmLib.MLHost.AppDag
 public import AlgorithmLib.Check.Entry
 meta import AlgorithmLib.Check.Entry
 public import AlgorithmLib.Check.DrvState
@@ -95,7 +95,7 @@ theorem runTS_ready {a : Drv.App} {extra : TState} {w : World} (h : TState.holds
     | some _ => rw [hc] at this; cases this
   · refine hm (.alloc i (a.bufs.getD i 0)) ?_
     have hz : Fact.alloc i (a.bufs.getD i 0) ∈ a.bufs.zipIdx.flatMap (fun (n, i) =>
-        [Fact.alloc i n, Fact.cell (Drv.App.at_ (a.bufSlot i)) (devPtr i)]) :=
+        [Fact.alloc i n, Fact.cell (arenaAt (a.bufSlot i)) (devPtr i)]) :=
       List.mem_flatMap.mpr ⟨_, by simpa using mem_zipIdx_getD a.bufs 0 i hi, by simp⟩
     simp only [Drv.App.runTS, Drv.App.runTSWith, List.mem_append]
     exact Or.inl (Or.inl (Or.inr hz))

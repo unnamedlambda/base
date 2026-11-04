@@ -4,6 +4,8 @@ public import AlgorithmLib.Core.Cbor
 meta import AlgorithmLib.Core.Cbor
 public import AlgorithmLib.Core.Enum
 meta import AlgorithmLib.Core.Enum
+public import AlgorithmLib.Core.Word
+meta import AlgorithmLib.Core.Word
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -733,6 +735,9 @@ def slot : Intr → Nat
 
 def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx,
   .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox]
+
+/-- An intrinsic is the one of `all` at its slot. -/
+theorem find_slot (c : Intr) : all.find? (·.slot == c.slot) = some c := by cases c <;> rfl
 
 end Intr
 

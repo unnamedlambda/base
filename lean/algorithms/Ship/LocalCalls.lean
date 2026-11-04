@@ -37,7 +37,7 @@ theorem wrap_no_misuse (cfg : Cfg) (dl ol : UInt64)
 def leaf : Body := do
   let p ← basePtr
   let v ← iconst64 7
-  storeI64 v (← absAddr p 8)
+  storeI64 v (← iaddImm p 8)
 
 theorem leaf_fine : Fine (emitGo (fnBody ptrParams (leaf : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩

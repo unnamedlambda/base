@@ -1,4 +1,6 @@
 module
+public import AlgorithmLib.Core.Word
+meta import AlgorithmLib.Core.Word
 public import AlgorithmLib.LZ4.ByteLayer
 meta import AlgorithmLib.LZ4.ByteLayer
 public import AlgorithmLib.LZ4.EmitContent
@@ -808,25 +810,14 @@ theorem wLoad4_putBytesU_lt (g : Array UInt8) (base : UInt64) (xs : List UInt8) 
 -- (Generic over the two arrays — `putBytesU` invariance is the special case below.)
 -- Generic: two step functions agreeing on every list element give equal `foldl`.
 -- (Kept opaque in the big step lambda — never unfolds `wHash`, so no deep recursion.)
-theorem foldl_step_congr {α β : Type} (f₁ f₂ : β → α → β) :
-    ∀ (l : List α) (acc : β), (∀ b a, a ∈ l → f₁ b a = f₂ b a) →
-      l.foldl f₁ acc = l.foldl f₂ acc := by
-  intro l
-  induction l with
-  | nil => intro acc _; rfl
-  | cons hd tl ih =>
-      intro acc h
-      simp only [List.foldl_cons]
-      rw [h acc hd (by simp)]
-      exact ih _ (fun b a ha => h b a (by simp [ha]))
 
 theorem tableInsert_hash_congr (g₁ g₂ sm : Array UInt8) (hashLog searchLim ib sp upto : Nat)
     (hagree : ∀ pos, pos < ib + searchLim → wHash g₁ hashLog pos = wHash g₂ hashLog pos) :
     tableInsert sm g₁ hashLog 0 searchLim ib sp upto
       = tableInsert sm g₂ hashLog 0 searchLim ib sp upto := by
   unfold tableInsert
-  apply foldl_step_congr
-  intro acc k _
+  apply foldl_congr_mem
+  intro k _ acc
   by_cases hc : k ≤ upto ∧ sp + k < searchLim
   · rw [if_pos hc, if_pos hc, hagree (ib + (sp + k)) (by omega)]
   · rw [if_neg hc, if_neg hc]

@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Launch.AppRun
-meta import AlgorithmLib.ML.Launch.AppRun
+public import AlgorithmLib.MLHost.AppRun
+meta import AlgorithmLib.MLHost.AppRun
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -352,7 +352,7 @@ theorem launchRec_captured {a : Drv.App} {j : Nat} {k : Drv.KSpec} {s : UInt64} 
   simp only [Option.some.injEq] at hd0
   subst hd0
   -- the parameter values read are the ones the record names
-  have hlw : launchWords w1.dev w1.mem (drvHandle kFunc j) (Drv.App.at_ (a.paramsOff j)) = some args := by
+  have hlw : launchWords w1.dev w1.mem (drvHandle kFunc j) (arenaAt (a.paramsOff j)) = some args := by
     simp only [launchWords, handleOf_drvHandle (by decide : kFunc < 2 ^ 8) hj, Option.bind_eq_bind,
       Option.bind_some]
     have h2' : w1.dev.funcs[j]? = some (mi, entry) := h2
@@ -364,7 +364,7 @@ theorem launchRec_captured {a : Drv.App} {j : Nat} {k : Drv.KSpec} {s : UInt64} 
   obtain ⟨v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, rfl⟩ := eq_of_length_eleven vs hl
   obtain ⟨hv0, -, -, -, -, -, -, -, -, hv9, -⟩ := h11
   have hv0' : asBits v0 = some (drvHandle kFunc j) := hv0
-  have hv9' : asBits v9 = some (Drv.App.at_ (a.paramsOff j)) := hv9
+  have hv9' : asBits v9 = some (arenaAt (a.paramsOff j)) := hv9
   have hcw' : callWords w1 (.ext (.cuda .launchKernel)) [v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10]
       = args.map (V.sc .i64) := by
     show (match asBits v0, asBits v9 with

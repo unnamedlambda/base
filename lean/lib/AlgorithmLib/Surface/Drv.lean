@@ -91,15 +91,6 @@ def bindVals (base : V .i64) (argOff paramsOff : Nat) (vals : List (V .i64)) : P
     storeI64 v cell
     storeI64 cell (← iaddImm base (paramsOff + 8 * i))
 
-/-- Write a parameter block from the pointers kept at arena offsets `addrs`:
-    each into its cell from `argOff`, and each cell's address into the array
-    from `paramsOff` the launch reads. -/
-def bindFrom (base : V .i64) (argOff paramsOff : Nat) (addrs : List Nat) : Prog V L Unit := do
-  for (a, i) in addrs.zip (List.range addrs.length) do
-    let cell ← iaddImm base (argOff + 8 * i)
-    storeI64 (← load64 (← iaddImm base a)) cell
-    storeI64 cell (← iaddImm base (paramsOff + 8 * i))
-
 /-- Launch a kernel whose parameters are written, on `stream`. -/
 def launch (base : V .i64) (k : Kern) (stream : V .i64) : Prog V L Unit := do
   let (gx, gy, gz) := k.grid

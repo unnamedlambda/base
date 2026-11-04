@@ -3,7 +3,7 @@ import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
 import Warp.MlpCifar
 import Warp.MlpCifarBodies
-import AlgorithmLib.ML.Model.TapeRun
+import AlgorithmLib.MLHost.TapeRun
 
 /-!
 # The mixture-of-experts dispatch neither misuses a call nor faults
@@ -51,7 +51,7 @@ def moved : List Nat :=
     the cells it moves. -/
 def runState (d o : Nat) : Contracts.TState :=
   (MlpCifar.mApp.runTS.filter fun
-      | .cell a _ => !(moved.any fun off => a == Drv.App.at_ off)
+      | .cell a _ => !(moved.any fun off => a == arenaAt off)
       | _ => true) ++ [.room .data d, .room .out o]
 
 abbrev Run (d o : Nat) : World → Prop := Contracts.TState.holds (runState d o)

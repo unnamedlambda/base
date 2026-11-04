@@ -59,16 +59,14 @@ def ApproxFrom (hw : Hw) (cfg : Cfg) : Prop :=
   ∀ (c : Intr) (ty : ClifTy) (x : UInt64) (w : World), c.isColl = false →
     cfg.locals c.slot [.sc ty x] w = .ok (some (.sc .f32 (hw.approx c x)), w)
 
-theorem find_slot (c : Intr) : Intr.all.find? (·.slot == c.slot) = some c := by cases c <;> rfl
-
 /-- A thread's locals answer its collectives from its answers. -/
 theorem answersFrom_thread (ans : List Answer) (start : Nat) (hw : Hw) :
     AnswersFrom ans start { env := [], locals := threadLocals ans start hw } := by
   constructor
   · intro c vs w1 hc hb
-    simp [threadLocals, find_slot, hc, hb]
+    simp [threadLocals, Intr.find_slot, hc, hb]
   · intro vs w1 w2 r hl
-    simp only [threadLocals, find_slot, Intr.isColl, if_true] at hl
+    simp only [threadLocals, Intr.find_slot, Intr.isColl, if_true] at hl
     split at hl
     · rename_i b hb
       simp only [Except.ok.injEq, Prod.mk.injEq] at hl
@@ -76,13 +74,13 @@ theorem answersFrom_thread (ans : List Answer) (start : Nat) (hw : Hw) :
       exact ⟨rfl, b, rfl, hb⟩
     · cases hl
   · intro vs w1 b hb
-    simp [threadLocals, find_slot, Intr.isColl, hb]
+    simp [threadLocals, Intr.find_slot, Intr.isColl, hb]
 
 /-- A thread's locals answer an approximating intrinsic as the hardware does. -/
 theorem approxFrom_thread (ans : List Answer) (start : Nat) (hw : Hw) :
     ApproxFrom hw { env := [], locals := threadLocals ans start hw } := by
   intro c ty x w1 hc
-  simp [threadLocals, find_slot, hc]
+  simp [threadLocals, Intr.find_slot, hc]
 
 /-- A thread that finishes at two fuels finishes in the same world. -/
 theorem thread_det {code : Code} {ans : List Answer} {args : List V} {w u1 u2 : World} {hw : Hw}

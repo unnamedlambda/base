@@ -201,16 +201,6 @@ theorem denote_renZ (f : Buf → Buf) (hf : BufInj f) : ∀ (ss : List (StageSpe
     rw [e] at this
     exact this
 
-theorem foldl_congr_mem {α β : Type} (f g : α → β → α) : ∀ (l : List β) (a : α),
-    (∀ x ∈ l, ∀ a, f a x = g a x) → l.foldl f a = l.foldl g a := by
-  intro l
-  induction l with
-  | nil => intro _ _; rfl
-  | cons x xs ih =>
-    intro a h
-    simp only [List.foldl_cons, h x List.mem_cons_self a]
-    exact ih _ (fun y hy => h y (List.mem_cons_of_mem _ hy))
-
 /-- A sequence of statements, run, is its parts run one after another. -/
 theorem run_foldl_seq (cta : Nat) : ∀ (E : List EWStmt) (acc : EWStmt) (w : WSt R),
     ((E.foldl (fun a e => EWStmt.seq a e) acc).run w cta 0)

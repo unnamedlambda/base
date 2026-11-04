@@ -763,6 +763,17 @@ def Par.keepWorld (P : Par) (k : Fact → Bool) : Par :=
            allocs := P.allocs.filter (fun a => k (.alloc a.1 0)),
            ctxs := P.ctxs.filter (fun c => k (.cell c.2 0)) }
 
+/-- `Par.keepWorld`, computed without copying what it keeps whole. -/
+def Par.keepWorldFast (P : Par) (k : Fact → Bool) : Par :=
+  { P with cells := Contracts.filterKeep (fun c => k (.cell c.1 0)) P.cells,
+           bufs := Contracts.filterKeep (fun b => k (.devBuf b.1 0)) P.bufs,
+           allocs := Contracts.filterKeep (fun a => k (.alloc a.1 0)) P.allocs,
+           ctxs := Contracts.filterKeep (fun c => k (.cell c.2 0)) P.ctxs }
+
+@[csimp] theorem Par.keepWorld_eq_fast : @Par.keepWorld = @Par.keepWorldFast := by
+  funext P k
+  simp [Par.keepWorld, Par.keepWorldFast, Contracts.filterKeep_eq]
+
 /-- What the record keeps holds in a world where what `k` keeps does. -/
 theorem Par.At.keepWorld {P : Par} {vals : List UInt64} {Γ : Env} {w w' : World} (h : P.At vals Γ w)
     {k : Fact → Bool} (hc : ∀ a v, k (.cell a v) = k (.cell a 0)) (hb : ∀ b n, k (.devBuf b n) = k (.devBuf b 0))

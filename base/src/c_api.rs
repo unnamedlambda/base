@@ -74,7 +74,7 @@ pub unsafe extern "C" fn base_driver_function(
     name_len: usize,
 ) -> Option<BaseFunction> {
     let name = std::str::from_utf8(slice_in(name, name_len)?).ok()?;
-    driver.as_ref()?.export(name)
+    driver.as_ref()?.exports.get(name).copied()
 }
 
 /// The arena and its size, at an address fixed until [`base_driver_free`]; null

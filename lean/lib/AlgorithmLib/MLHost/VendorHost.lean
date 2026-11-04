@@ -1,8 +1,8 @@
 module
 public import AlgorithmLib.ML.Model.Vendor
 meta import AlgorithmLib.ML.Model.Vendor
-public import AlgorithmLib.ML.Launch.AppRun
-meta import AlgorithmLib.ML.Launch.AppRun
+public import AlgorithmLib.MLHost.AppRun
+meta import AlgorithmLib.MLHost.AppRun
 public import AlgorithmLib.ML.Launch.BodyHost
 meta import AlgorithmLib.ML.Launch.BodyHost
 import all Init.Data.Repr

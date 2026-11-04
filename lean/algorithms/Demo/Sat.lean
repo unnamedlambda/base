@@ -485,17 +485,17 @@ def mainCode : Prog V L Unit := do
   let c99 ← iconst64 99
   let c112 ← iconst64 112
 
-  let assignBase ← absAddr ptr assign_off
+  let assignBase ← iaddImm ptr assign_off
   let cnfOffV ← iconst64 cnf_off
   let dbOffV ← iconst64 db_off
   let clIdxOffV ← iconst64 clauseIndex_off
   let trailOffV ← iconst64 trail_off
   let outOffV ← iconst64 out_off
   let decStackV ← iconst64 decStack_off
-  let numVarsAddr ← absAddr ptr numVars_off
-  let numClausesAddr ← absAddr ptr numClauses_off
-  let clauseCountAddr ← absAddr ptr clauseCount_off
-  let resultFlagAddr ← absAddr ptr resultFlag_off
+  let numVarsAddr ← iaddImm ptr numVars_off
+  let numClausesAddr ← iaddImm ptr numClauses_off
+  let clauseCountAddr ← iaddImm ptr clauseCount_off
+  let resultFlagAddr ← iaddImm ptr resultFlag_off
 
   let read ← readInputFile ptr cnf_off maxCnfFileSize
   -- a read that failed (-1) parses nothing

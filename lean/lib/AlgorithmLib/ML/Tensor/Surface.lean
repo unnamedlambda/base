@@ -332,9 +332,6 @@ def Expr.isVar {Γ : Nat} (e : Expr Γ) (i : Fin Γ) : Bool :=
   | .var j => j == i
   | _      => false
 
-/-- `a + b`, the cotangent accumulator. -/
-def addSpec : Expr 2 := .add (.var ⟨0, by decide⟩) (.var ⟨1, by decide⟩)
-
 /-- Which buffer holds `∂L/∂b`, per forward buffer `b`. -/
 abbrev CoT := List (Ref × Ref)
 
@@ -350,7 +347,7 @@ def CoT.get (m : CoT) (r : Ref) : Option Ref :=
 def CoT.accum (m : CoT) (r d : Ref) (fresh grid : Nat) : List TOp × CoT × Nat :=
   match m.get r with
   | none      => ([], (r, d) :: m, fresh)
-  | some prev => ([.ew2 addSpec prev d fresh grid], (r, fresh) :: m, fresh + 1)
+  | some prev => ([.ew2 addW2 prev d fresh grid], (r, fresh) :: m, fresh + 1)
 
 /-- **The backward operations of one forward operation.**
 

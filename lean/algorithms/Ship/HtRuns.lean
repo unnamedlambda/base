@@ -75,13 +75,13 @@ def fns : Nat → Option Fn
 -- arena: slot 0, key 16, value 32..96, out 128..192, kout 256, vout 320, results from 512
 def driver (n : Nat) (api : Api V L) : Prog V L Unit := do
   let base ← basePtr
-  let slot ← absAddr base 0
-  let key ← absAddr base 16
-  let val ← absAddr base 32
-  let out ← absAddr base 128
-  let kout ← absAddr base 256
-  let vout ← absAddr base 320
-  let res ← absAddr base 512
+  let slot ← iaddImm base 0
+  let key ← iaddImm base 16
+  let val ← iaddImm base 32
+  let out ← iaddImm base 128
+  let kout ← iaddImm base 256
+  let vout ← iaddImm base 320
+  let res ← iaddImm base 512
   let k8 ← iconst32 8
   let mix ← iconst64 31
   let mul ← iconst64 0x9E3779B97F4A7C15

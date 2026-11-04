@@ -123,6 +123,33 @@ inductive Fact where
   | wgText (a : UInt64) (n : Nat) (shader : Bool)
   deriving Repr, DecidableEq
 
+/-- A hash of a fact from its constructor and leading numbers, cheap to
+    compute; equal facts hash alike, which is all a hash set asks of it. -/
+def Fact.hashKey : Fact → UInt64
+  | .cell a v => mixHash 1 (mixHash a v)
+  | .held _ a => mixHash 2 a
+  | .opened _ a => mixHash 3 a
+  | .htAt a n _ => mixHash 4 (mixHash a (hash n))
+  | .cstr a => mixHash 5 a
+  | .cstrIn a n => mixHash 6 (mixHash a (hash n))
+  | .roomArg _ x => mixHash 7 x
+  | .devBuf a n => mixHash 8 (mixHash a n)
+  | .room _ n => mixHash 9 (hash n)
+  | .alloc i n => mixHash 10 (mixHash (hash i) (hash n))
+  | .text a _ n _ => mixHash 11 (mixHash a (hash n))
+  | .mod i _ => mixHash 12 (hash i)
+  | .fn i _ _ => mixHash 13 (hash i)
+  | .modText i _ => mixHash 14 (hash i)
+  | .fnText i _ _ => mixHash 15 (hash i)
+  | .blasOn i s => mixHash 16 (mixHash (hash i) s)
+  | .evLive e => mixHash 17 (hash e)
+  | .graph i => mixHash 18 (hash i)
+  | .exec i => mixHash 19 (hash i)
+  | .wgText a n _ => mixHash 20 (mixHash a (hash n))
+  | _ => 0
+
+instance : Hashable Fact := ⟨Fact.hashKey⟩
+
 /-- A kernel launch whose allocations are live, or a vendor routine whose
     inputs are live and whose output is its last input. -/
 abbrev OpLive (d : Dev) (op : DevOp) : Prop :=
@@ -251,6 +278,10 @@ theorem Fact.holds_wg {x : Fact} (hx : x.isWg = true) {w w' : World} (h : w'.wg 
 /-- **A typestate**: facts about the world, all of which hold. -/
 abbrev TState := List Fact
 
+/-- The arena address `off` bytes in: where a program in a standard layout keeps
+    what a typestate's cells name. -/
+abbrev _root_.AlgorithmLib.arenaAt (off : Nat) : UInt64 := regionBase .arena + UInt64.ofNat off
+
 def TState.holds (S : TState) (w : World) : Prop := ∀ x ∈ S, x.holds w
 
 theorem TState.holds_cons {x : Fact} {S : TState} {w : World} (h : x.holds w) (hS : S.holds w) :
@@ -278,12 +309,43 @@ theorem cellOk_spec {a : UInt64} (h : cellOk a = true) :
     exact ⟨r, off, hd, h.1, h.2⟩
   · cases h
 
-/-- `cellOk`, computed: the cell's first byte decodes into a region other
-    than the pinned one, with its eight bytes inside the region's span. -/
+/-- `cellOk`, computed in 64-bit words: the address's region number (its
+    bits above 36) names a region other than the pinned one, and its eight
+    bytes lie inside the region's span. -/
 def cellOkFast (a : UInt64) : Bool :=
-  match decodeAddr a with
-  | some (r, off) => decide (r ≠ .pinned) && decide (off + 8 ≤ 0x1000000000)
-  | none => false
+  let q := a >>> 36
+  (q == 1 || q == 2 || q == 3 || (6 ≤ q && q < 268435455)) && (a &&& 0xFFFFFFFFF) ≤ 0xFFFFFFFF8
+
+theorem ofIdx_cell (q m : Nat) :
+    (match (Region.ofIdx q).map (fun r => (r, m)) with
+      | some (r, off) => decide (r ≠ .pinned) && decide (off + 8 ≤ 0x1000000000)
+      | none => false) =
+    ((q == 1 || q == 2 || q == 3 || (decide (6 ≤ q) && decide (q < 268435455))) &&
+      decide (m ≤ 0xFFFFFFFF8)) := by
+  match q with
+  | 0 | 1 | 2 | 3 | 4 | 5 => simp [Region.ofIdx]; try omega
+  | n + 6 =>
+    by_cases h : n < 268435449
+    · simp [Region.ofIdx, h]; omega
+    · simp [Region.ofIdx, h]; omega
+
+/-- `cellOkFast` by the region and offset the address decodes to. -/
+theorem cellOkFast_dec (a : UInt64) : cellOkFast a =
+    (match decodeAddr a with
+      | some (r, off) => decide (r ≠ .pinned) && decide (off + 8 ≤ 0x1000000000)
+      | none => false) := by
+  have hq : (a >>> 36).toNat = a.toNat / 2 ^ 36 := by
+    rw [UInt64.toNat_shiftRight]; simp [Nat.shiftRight_eq_div_pow]
+  have hm : (a &&& 0xFFFFFFFFF).toNat = a.toNat % 2 ^ 36 := by
+    rw [UInt64.toNat_and]; exact Nat.and_two_pow_sub_one_eq_mod _ 36
+  have hd : decodeAddr a = (Region.ofIdx (a.toNat / 2 ^ 36)).map fun r => (r, a.toNat % 2 ^ 36) := by
+    unfold decodeAddr; rw [UInt64.toNat_div, UInt64.toNat_mod]; rfl
+  have hb : ∀ x y : UInt64, (x == y) = (x.toNat == y.toNat) := by
+    intro x y; rw [Bool.eq_iff_iff]; simp [UInt64.toNat_inj]
+  rw [hd, ofIdx_cell]
+  unfold cellOkFast
+  simp only [hb, UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt, hq, hm]
+  simp
 
 theorem decodeAddr_add {a : UInt64} {r : Region} {off i : Nat} (hd : decodeAddr a = some (r, off))
     (hi : off + i < 0x1000000000) : decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := by
@@ -320,12 +382,12 @@ theorem decodeAddr_add {a : UInt64} {r : Region} {off i : Nat} (hd : decodeAddr 
       have hs : regionSpan.toNat = 0x1000000000 := rfl
       rw [← this, UInt64.toNat_mod, hs]; omega
     symm
-    simp only [cellOkFast, hd, hp, ne_eq, not_false_eq_true, decide_true, Bool.true_and, decide_eq_true_eq]
+    simp only [cellOkFast_dec, hd, hp, ne_eq, not_false_eq_true, decide_true, Bool.true_and, decide_eq_true_eq]
     omega
   | false =>
     symm
     unfold cellOk at hc
-    unfold cellOkFast
+    rw [cellOkFast_dec]
     split at hc
     · rename_i r off hd
       try rw [hd]
@@ -994,6 +1056,30 @@ def afterStore (a v : Option UInt64) (n : Nat) (S : TState) : TState :=
       match v with
       | some v => if n == 8 && cellOk a then .cell a v :: k else k
       | none => k
+
+/-- `l.filter p`, the list itself where `p` keeps all of it: no copy of a
+    long list a step leaves alone. -/
+def filterKeep {α} (p : α → Bool) (l : List α) : List α := if l.all p then l else l.filter p
+
+theorem filterKeep_eq {α} (p : α → Bool) (l : List α) : filterKeep p l = l.filter p := by
+  unfold filterKeep
+  split
+  · rename_i h; exact (List.filter_eq_self.mpr (by simpa using h)).symm
+  · rfl
+
+/-- `afterStore`, computed without copying what the store keeps whole. -/
+def afterStoreFast (a v : Option UInt64) (n : Nat) (S : TState) : TState :=
+  match a with
+  | none => filterKeep (!·.isCell) S
+  | some a =>
+      let k := filterKeep (storeKeeps a n) S
+      match v with
+      | some v => if n == 8 && cellOk a then .cell a v :: k else k
+      | none => k
+
+@[csimp] theorem afterStore_eq_fast : @afterStore = @afterStoreFast := by
+  funext a v n S
+  cases a <;> cases v <;> simp [afterStore, afterStoreFast, filterKeep_eq]
 
 /-- A step that keeps every part, every region's size and every handle
     held keeps every fact but the cells. -/

@@ -64,27 +64,27 @@ def code : Prog V L Unit := do
     (head := fun _ si => return (contIfULt si inLim, %[si], ()))
     (body := fun l si _ => do
       let ch ← uload8_64 (← iadd dataPtr si)
-      istore8 ch (← iadd (← absAddr (← basePtr) INPUT_PATH_OFF) si)
+      istore8 ch (← iadd (← iaddImm (← basePtr) INPUT_PATH_OFF) si)
       when .eq ch zeroI (brk l %[← iaddImm si 1])
       return %[← iaddImm si 1])
-  istore8 zeroI (← iadd (← absAddr (← basePtr) INPUT_PATH_OFF) inEnd.head)
+  istore8 zeroI (← iadd (← iaddImm (← basePtr) INPUT_PATH_OFF) inEnd.head)
   let outSrc ← iadd dataPtr inEnd.head
   let outLim ← umin (← isub dl inEnd.head) (← iconst64 (PATH_MAX_OUT - 1))
   let outEnd ← wloop1L zeroI
     (head := fun _ di => return (contIfULt di outLim, %[di], ()))
     (body := fun l di _ => do
       let ch ← uload8_64 (← iadd outSrc di)
-      istore8 ch (← iadd (← absAddr (← basePtr) OUTPUT_PATH_OFF) di)
+      istore8 ch (← iadd (← iaddImm (← basePtr) OUTPUT_PATH_OFF) di)
       when .eq ch zeroI (brk l %[di])
       return %[← iaddImm di 1])
-  istore8 zeroI (← iadd (← absAddr (← basePtr) OUTPUT_PATH_OFF) outEnd.head)
+  istore8 zeroI (← iadd (← iaddImm (← basePtr) OUTPUT_PATH_OFF) outEnd.head)
   -- read the file, then derive the element count and the histogram bounds
   -- at most the data region
   let fileSize ← ext fnRead
-    %[← absAddr (← basePtr) INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← absAddr (← basePtr) DATA_OFF, zeroI,
+    %[← iaddImm (← basePtr) INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← iaddImm (← basePtr) DATA_OFF, zeroI,
      ← iconst64 MAX_DATA_BYTES]
   let n ← ushr fileSize (← iconst64 2)
-  let histPtr ← absAddr (← basePtr) HIST_OFF
+  let histPtr ← iaddImm (← basePtr) HIST_OFF
   let histEnd ← iadd histPtr (← iconst64 HIST_BYTES)
   -- zero the histogram, eight words per iteration; the region is a fixed
   -- size, so the loop always runs and is tested at the bottom
@@ -98,7 +98,7 @@ def code : Prog V L Unit := do
       return (hp', %[hp']))
     (guardIdx := none)
   -- scan bounds
-  let dataPtr2 ← absAddr (← basePtr) DATA_OFF
+  let dataPtr2 ← iaddImm (← basePtr) DATA_OFF
   let dataEnd ← iadd dataPtr2 (← ishl n (← iconst64 2))
   let n4 ← band n (← iconst64 (-4))
   let dataEnd4 ← iadd dataPtr2 (← ishl n4 (← iconst64 2))
@@ -126,10 +126,10 @@ def code : Prog V L Unit := do
       bump histPtr (← iconst64 1) dp 0
       return %[← iaddImm dp 4])
   -- write the histogram out, in place of what the file held
-  let outPath ← absAddr (← basePtr) OUTPUT_PATH_OFF
+  let outPath ← iaddImm (← basePtr) OUTPUT_PATH_OFF
   let outCap ← iconst64 PATH_MAX_OUT
   let _ ← ext fnEmpty %[outPath, outCap, zeroI]
-  let _ ← ext fnWrite %[outPath, outCap, ← absAddr (← basePtr) HIST_OFF, zeroI, ← iconst64 HIST_BYTES]
+  let _ ← ext fnWrite %[outPath, outCap, ← iaddImm (← basePtr) HIST_OFF, zeroI, ← iconst64 HIST_BYTES]
   return ()
 
 
@@ -240,9 +240,9 @@ def code : Prog V L Unit := do
     (head := fun si => return (contIfULt si lim, %[], ()))
     (body := fun si _ => do
       let ch ← uload8_64 (← iadd dataPtr si)
-      istore8 ch (← iadd (← absAddr (← basePtr) 0x200) si)
+      istore8 ch (← iadd (← iaddImm (← basePtr) 0x200) si)
       return %[← iadd si (← iconst64 1)])
-  istore8 zeroI (← iadd (← absAddr (← basePtr) 0x200) lim)
+  istore8 zeroI (← iadd (← iaddImm (← basePtr) 0x200) lim)
   let three ← iconst64 3
   let four ← iconst64 4
   let one ← iconst64 1
@@ -256,16 +256,16 @@ def code : Prog V L Unit := do
           return %[← iadd j one, ← iadd a t])
       return %[← iadd i one, inner.head])
   let acc := outer.head
-  store acc (← absAddr (← basePtr) 0x400)
+  store acc (← iaddImm (← basePtr) 0x400)
   -- branch on the total; `acc < 100`, so the then-arm's export reaches the join
   let branched ← ifte .ult acc (← iconst64 100)
     (thn := do pure %[← iadd acc (← iconst64 1000)])
     (els := pure %[acc])
-  store (branched.head) (← absAddr (← basePtr) 0x408)
-  let outPath ← absAddr (← basePtr) 0x200
+  store (branched.head) (← iaddImm (← basePtr) 0x408)
+  let outPath ← iaddImm (← basePtr) 0x200
   let outCap ← iconst64 0x200
   let _ ← ext Hist.fnEmpty %[outPath, outCap, zeroI]
-  let _ ← ext Hist.fnWrite %[outPath, outCap, ← absAddr (← basePtr) 0x400, zeroI, ← iconst64 16]
+  let _ ← ext Hist.fnWrite %[outPath, outCap, ← iaddImm (← basePtr) 0x400, zeroI, ← iconst64 16]
   return ()
 
 
@@ -303,7 +303,7 @@ def code : Prog V L Unit := do
       let ch ← uload8_64 (← iadd dataPtr i)
       when .eq ch zero (brk scan %[i])
       return %[← iadd i one])
-  store (stopped.head) (← absAddr (← basePtr) 0x400)
+  store (stopped.head) (← iaddImm (← basePtr) 0x400)
   -- both arms leave, so the inner loop's body ends without a back edge, and the
   -- deeper `brk` names the outer loop from inside the inner one
   let picked ← wloop2L zero zero
@@ -317,7 +317,7 @@ def code : Prog V L Unit := do
             (els := do brk innerLbl %[j])
           return %[j])
       return %[← iadd i one, ← iadd acc inner.head])
-  store (picked.head) (← absAddr (← basePtr) 0x408)
+  store (picked.head) (← iaddImm (← basePtr) 0x408)
   return ()
 
 

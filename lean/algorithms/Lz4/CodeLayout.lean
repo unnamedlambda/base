@@ -112,9 +112,9 @@ theorem lenHeader_keeps (lenOff f : Nat) (S : WState) {a : Nat}
 /-- The length header reads back as the cursor, below `2 ^ 32`. -/
 theorem lenHeader_reads (lenOff f : Nat) (S : WState) (hov : (S.regs "outBase").toNat + lenOff + 4 < 2 ^ 64)
     (hsz : (S.regs "outBase").toNat + lenOff + 4 ≤ S.gmem.size) :
-    readU32LE ((wseq (lenHeader lenOff)).eval f S).gmem ((S.regs "outBase").toNat + lenOff) = (S.regs "op").toNat % 2 ^ 32 := by
+    wLoad4 ((wseq (lenHeader lenOff)).eval f S).gmem ((S.regs "outBase").toNat + lenOff) = (S.regs "op").toNat % 2 ^ 32 := by
   rw [lenHeader_eval lenOff f S hov]
-  simp only [readU32LE, Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds, Array.size_setIfInBounds]
+  simp only [wLoad4, Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds, Array.size_setIfInBounds]
   simp only [Nat.add_left_cancel_iff, show ((S.regs "outBase").toNat + lenOff + 3 < S.gmem.size) = True by simp; omega,
     show ((S.regs "outBase").toNat + lenOff + 2 < S.gmem.size) = True by simp; omega,
     show ((S.regs "outBase").toNat + lenOff + 1 < S.gmem.size) = True by simp; omega,
@@ -426,7 +426,7 @@ theorem decode_of_denotes {numBlocks inStride outStride lenOff hashLog : Nat} (h
     rw [hdev lenOff (by omega), e1, e2, e3]
     have := lenHeader_reads lenOff F P (by rw [hob2, houtN c hc, base0_toNat]; omega)
       (by rw [hob2, houtN c hc, hPsz]; omega)
-    simp only [readU32LE] at this
+    simp only [wLoad4] at this
     rw [this, hop2, UInt64.toNat_ofNat_of_lt' (show _ < 2 ^ 64 by omega)]
     omega
   -- the device's input bytes are the model's

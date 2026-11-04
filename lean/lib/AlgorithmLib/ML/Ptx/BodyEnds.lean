@@ -164,9 +164,6 @@ theorem jOf_bfly (hw : Hw) (nbuf cta nw : Nat) (rd : Buf → Nat → Option Nat)
   | ballot | shflIdx | barrier => exact hQ.elim
   | _ => simp [jLeaf] at hm
 
-theorem lane_of (wi : Nat) (l : Lane) : (32 * wi + l.val) / 32 = wi ∧ (32 * wi + l.val) % 32 = l.val := by
-  have : l.val < 32 := l.isLt; constructor <;> omega
-
 /-- **A warp statement's block runs, in phases**: a block of `nw` warps of the
     statement's kernel, as `block_phases` asks of it, has a run (`BlockRuns`):
     its threads, answered with the warp machine's answers for their lanes,
@@ -239,7 +236,7 @@ theorem block_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
         (trace hw (cta * nw + wi) (imOf rd) (ansLeaf (cta * nw + wi) smem l) 0 (ps.getD q .skip)
           (wpsOf hw (cta * nw + wi) (imOf rd) ps (ws0P nbuf w.mem) q))[j]? := by
     intro q wi j hq hwi hj l
-    obtain ⟨e1, e2⟩ := lane_of wi l
+    obtain ⟨e1, e2⟩ := lane_div wi l
     have hT : T (32 * wi + l.val) = (jOf hw nbuf cta nw rd ps w.mem wi).map (ansOne (cta * nw + wi) smem l) := by
       simp only [T, tapeOf, e1]
       congr 2; exact Fin.ext e2
@@ -298,7 +295,7 @@ theorem block_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
       have hPN : 32 * (t / 32) + P.val < N := by have : P.val < 32 := P.isLt; omega
       refine ⟨[.sc .i32 (ws.regs sr P).bits, .sc .i32 (s32 (UInt32.ofNat m'))], ?_, ?_⟩
       · rw [hpt, hct _ hPN, List.getElem?_map]
-        obtain ⟨e1, e2⟩ := lane_of (t / 32) P
+        obtain ⟨e1, e2⟩ := lane_div (t / 32) P
         have hP : (⟨(32 * (t / 32) + P.val) % 32, Nat.mod_lt _ (by decide)⟩ : Lane) = P := Fin.ext e2
         rw [e1, he]
         simp only [Option.map_some, callOne, callLeaf, List.headD_cons, hP]

@@ -21,20 +21,17 @@ namespace AlgorithmLib.Wg.App
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 open AlgorithmLib.HProg.Contracts (Fact TState)
 
-/-- The arena address `off` bytes in. -/
-abbrev addr (off : Nat) : UInt64 := regionBase .arena + UInt64.ofNat off
-
 /-- What a program starts from. -/
 def loadTS (a : App) : TState :=
   [.part .gpuAdapter true, .part .idle true, .room .arena a.memSize, .nwg 0,
    .wg1 .commandEncoder none, .wg1 .computePass none, .wg1 .commandBuffer none,
-   .wgText (addr a.NAME) 4 false] ++
-  (a.pipes.map fun p => .wgText (addr p.shaderOff) p.shaderLen true) ++
+   .wgText (arenaAt a.NAME) 4 false] ++
+  (a.pipes.map fun p => .wgText (arenaAt p.shaderOff) p.shaderLen true) ++
   match a.blit with
   | none => []
   | some b =>
       [.wg1 .texture none, .wg1 .textureView none, .wg1 .renderPass none,
-       .wgText (addr a.VS) 7 false, .wgText (addr a.FS) 7 false, .wgText (addr b.shaderOff) b.shaderLen true,
-       .cstrIn (addr b.titleOff) b.titleCap]
+       .wgText (arenaAt a.VS) 7 false, .wgText (arenaAt a.FS) 7 false, .wgText (arenaAt b.shaderOff) b.shaderLen true,
+       .cstrIn (arenaAt b.titleOff) b.titleCap]
 
 end AlgorithmLib.Wg.App

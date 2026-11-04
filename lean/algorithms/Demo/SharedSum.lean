@@ -110,8 +110,8 @@ structure Ring (V : ClifTy → Type) where
 
 def ring : Prog V L (Ring V) := do
   let base ← basePtr
-  pure { lk := ← absAddr base LOCK_AT, head := ← absAddr base HEAD_AT,
-         tail := ← absAddr base TAIL_AT, slots := ← absAddr base SLOTS_AT }
+  pure { lk := ← iaddImm base LOCK_AT, head := ← iaddImm base HEAD_AT,
+         tail := ← iaddImm base TAIL_AT, slots := ← iaddImm base SLOTS_AT }
 
 /-- Where item `n` lives. -/
 def slotOf (r : Ring V) (n : V .i32) : Prog V L (V .i64) := do
@@ -184,23 +184,23 @@ def addCode : Prog V L (V .i64) := do
   let base ← basePtr
   let data ← dataPtr
   let len ← dataLen
-  let hist ← absAddr base HIST_AT
+  let hist ← iaddImm base HIST_AT
   let one ← iconst64 1
   let sum ← forLoopAcc len (← iconst64 0) fun i acc => do
     let b ← uload8_64 (← iadd data i)
     let _ ← atomicRmw .add (← iadd hist (← ishlImm b 3)) one
     iadd acc b
-  let before ← atomicRmw .add (← absAddr base TOTAL_AT) sum
-  let _ ← atomicRmw .add (← absAddr base CALLS_AT) one
+  let before ← atomicRmw .add (← iaddImm base TOTAL_AT) sum
+  let _ ← atomicRmw .add (← iaddImm base CALLS_AT) one
   when .ule (← iconst64 8) (← outLen) do
     storeAt (← outPtr) 0 before
   pure sum
 
 def totalCode : Prog V L (V .i64) := do
-  atomicLoad .i64 (← absAddr (← basePtr) TOTAL_AT)
+  atomicLoad .i64 (← iaddImm (← basePtr) TOTAL_AT)
 
 def callsCode : Prog V L (V .i64) := do
-  atomicLoad .i64 (← absAddr (← basePtr) CALLS_AT)
+  atomicLoad .i64 (← iaddImm (← basePtr) CALLS_AT)
 
 def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction,

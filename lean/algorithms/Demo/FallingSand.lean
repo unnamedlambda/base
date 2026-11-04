@@ -371,7 +371,7 @@ def pollAndProcess (ptr win : V .i64) : Prog V L Unit := do
   processEvents ptr
 
 def putParam (ptr : V .i64) (idx : Nat) (v : V .i64) : Prog V L Unit := do
-  storeUnaligned (← ireduce32 v) (← absAddr ptr (f.paramsMem.offset + idx * 4))
+  storeUnaligned (← ireduce32 v) (← iaddImm ptr (f.paramsMem.offset + idx * 4))
 
 -- Fill the params staging region for a given parity, then it's uploaded.
 def writeParams (ptr parity : V .i64) : Prog V L Unit := do
@@ -391,10 +391,10 @@ def clearGrid (ptr : V .i64) : Prog V L Unit := do
     store z (← iadd base (← imul i four)))
 
 def setCell (ptr : V .i64) (cx cy val : Nat) : Prog V L Unit := do
-  storeUnaligned (← iconst32 val) (← absAddr ptr (f.gridInit.offset + (cy * gw + cx) * 4))
+  storeUnaligned (← iconst32 val) (← iaddImm ptr (f.gridInit.offset + (cy * gw + cx) * 4))
 
 def readOut (ptr : V .i64) (cx cy : Nat) : Prog V L (V .i64) := do
-  uload32_64 (← absAddr ptr (f.gridOut.offset + (cy * gw + cx) * 4))
+  uload32_64 (← iaddImm ptr (f.gridOut.offset + (cy * gw + cx) * 4))
 
 /-- Answer one result row in the caller's out buffer: pass (1/0), actual and
     expected, eight bytes each. A buffer too short for the row is left alone,

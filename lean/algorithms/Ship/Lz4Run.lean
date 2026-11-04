@@ -1,5 +1,5 @@
-import AlgorithmLib.ML.Model.TapeRun
-import AlgorithmLib.ML.Launch.AppGraph
+import AlgorithmLib.MLHost.TapeRun
+import AlgorithmLib.MLHost.AppGraph
 import Ship.Lz4Comp
 import Lz4.HostLaunch
 import AlgorithmLib.Proof.LibSpec

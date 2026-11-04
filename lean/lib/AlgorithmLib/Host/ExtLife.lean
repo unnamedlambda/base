@@ -1370,4 +1370,10 @@ theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
     ExtContracts.ExtPre e bits w :=
   extNeeds_pre hn (fun p hp => hS _ (hh p hp)) (fun q hq => roomAt_spec hS (List.all_eq_true.mp hr q hq)) strs
 
+/-- A library call the typestate follows keeps every lifecycle part. -/
+theorem LibStep.parts {e : Ext} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (st : LibStep e bits w r w') (p : Part) : p.get w' = p.get w := by
+  cases p <;> simp only [Part.get, st.dev, st.display, st.cudaDevice,
+    st.gpuAdapter, st.mem.2.2, World.has, st.present]
+
 end AlgorithmLib.HProg.Contracts

@@ -1,8 +1,8 @@
 import AlgorithmLib.Check.Entry
 import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
-import AlgorithmLib.ML.Launch.AppTrace
-import AlgorithmLib.ML.Launch.AppRun
+import AlgorithmLib.MLHost.AppTrace
+import AlgorithmLib.MLHost.AppRun
 import Vit.Algorithm
 import Ship.VitState
 import Ship.VitDag

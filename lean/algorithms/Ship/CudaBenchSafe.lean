@@ -40,7 +40,7 @@ abbrev CudaSoftmaxPersistLoad (dl ol : UInt64) : World → Prop := Contracts.TSt
 
 abbrev CudaSoftmaxPersistRun (dl ol n nb : UInt64) : World → Prop := Contracts.TState.holds
   (CudaSoftmaxPersist.app.runTSWith [(n * 4).toNat, (n * 4).toNat, 8, (nb * 8).toNat, 8] ++
-    [.cell (Drv.App.at_ CudaSoftmaxPersist.N_OFF) n, .cell (Drv.App.at_ CudaSoftmaxPersist.NB_OFF) nb,
+    [.cell (arenaAt CudaSoftmaxPersist.N_OFF) n, .cell (arenaAt CudaSoftmaxPersist.NB_OFF) nb,
      .roomArg .data dl, .roomArg .out ol])
 
 ship_entry CudaSoftmaxPersist_load : CudaSoftmaxPersist.loadCode under CudaSoftmaxPersistLoad dataLen outLen
@@ -117,7 +117,7 @@ abbrev CudaGemvPersistLoad (dl ol : UInt64) : World → Prop := Contracts.TState
 
 abbrev CudaGemvPersistRun (dl ol m n : UInt64) : World → Prop := Contracts.TState.holds
   (CudaGemvPersist.app.runTSWith [(m * n * 4).toNat, (n * 4).toNat, (m * 4).toNat] ++
-    [.cell (Drv.App.at_ CudaGemvPersist.M_OFF) m, .cell (Drv.App.at_ CudaGemvPersist.N_OFF) n,
+    [.cell (arenaAt CudaGemvPersist.M_OFF) m, .cell (arenaAt CudaGemvPersist.N_OFF) n,
      .roomArg .data dl, .roomArg .out ol])
 
 set_option maxRecDepth 200000 in
@@ -189,7 +189,7 @@ abbrev CudaRmsNormPersistLoad (dl ol : UInt64) : World → Prop := Contracts.TSt
 
 abbrev CudaRmsNormPersistRun (dl ol n : UInt64) : World → Prop := Contracts.TState.holds
   (CudaRmsNormPersist.app.runTSWith [(n * 8 + 8).toNat, (n * 4).toNat] ++
-    [.cell (Drv.App.at_ CudaRmsNormPersist.N_OFF) n, .roomArg .data dl, .roomArg .out ol])
+    [.cell (arenaAt CudaRmsNormPersist.N_OFF) n, .roomArg .data dl, .roomArg .out ol])
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
@@ -256,7 +256,7 @@ abbrev CudaDecodeAttentionLoad (dl ol : UInt64) : World → Prop := Contracts.TS
 open CudaDecodeAttention in
 abbrev CudaDecodeAttentionRun (dl ol s : UInt64) : World → Prop := Contracts.TState.holds
   (app.runTSWith [D_MODEL_BYTES, (s * 7168).toNat, (s * 56).toNat, (s * 56).toNat, D_MODEL_BYTES, 8] ++
-    [.cell (Drv.App.at_ SEQ_LEN_OFF) s, .roomArg .data dl, .roomArg .out ol])
+    [.cell (arenaAt SEQ_LEN_OFF) s, .roomArg .data dl, .roomArg .out ol])
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in

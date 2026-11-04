@@ -2,7 +2,7 @@ import AlgorithmLib.Check.Entry
 import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
 import Warp.MlpCifarBodies
-import AlgorithmLib.ML.Launch.AppTrace
+import AlgorithmLib.MLHost.AppTrace
 
 /-!
 # The Qwen block's runs neither misuse a call nor fault, and leave its tape

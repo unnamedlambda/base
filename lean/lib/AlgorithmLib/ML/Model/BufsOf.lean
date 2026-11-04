@@ -35,7 +35,7 @@ theorem warpRoundE_bufsOf (m : Nat) : (warpRoundE m).bufsOf = [] := by
   simp [warpRoundE, EWStmt.bufsOf]
 
 theorem warpReduceE_bufsOf (acc tmp : Nat) : (warpReduceE acc tmp).bufsOf = [] := by
-  simp [warpReduceE, bflyRoundE, EWStmt.bufsOf]
+  simp [warpReduceE, bflyRoundOp, EWStmt.bufsOf]
 
 /-- **The strided reduction names its two operands and its output.** -/
 theorem dotStrided_bufsOf (bA bB out : Buf) (ixA ixB oi : IdxE) (K : Nat)
@@ -114,7 +114,7 @@ theorem softmaxCE_bufsOf (logits bias oneHot out : Buf) (biasIx : IdxE)
     (hb : biasIx.bufsOf = []) :
     (softmaxCE logits bias oneHot out biasIx).bufsOf ⊆ [logits, bias, oneHot, out] := by
   simp [softmaxCE, smBody, smPre, smMid, smPost, seqAll, warpReduceMaxE,
-        warpMaxRoundE, warpReduceSumE, warpRoundE, bflyRoundE, elemIx,
+        warpMaxRoundE, warpReduceSumE, warpRoundE, bflyRoundOp, elemIx,
         EWStmt.bufsOf, IdxE.bufsOf, hb]
 
 /-- **Compiled expression code touches no memory.**  Register arithmetic and

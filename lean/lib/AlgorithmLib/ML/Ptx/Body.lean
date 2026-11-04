@@ -1,8 +1,8 @@
 module
 public import AlgorithmLib.ML.Machine.WarpEmit
 meta import AlgorithmLib.ML.Machine.WarpEmit
-public import AlgorithmLib.Kernel.Ptx
-meta import AlgorithmLib.Kernel.Ptx
+public import AlgorithmLib.Kernel.Block
+meta import AlgorithmLib.Kernel.Block
 public import AlgorithmLib.Surface.Prog
 meta import AlgorithmLib.Surface.Prog
 public import AlgorithmLib.ML.Num.Bits
@@ -40,13 +40,11 @@ jumps to the loop's head, with no join (`Tail`, `goRound`).
 namespace AlgorithmLib.ML.Body
 
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog AlgorithmLib.ML AlgorithmLib.Kernel AlgorithmLib.HProg.Sem
+open AlgorithmLib.Kernel.Block (shflBfly barrier ex2Approx c32)
 
 section
 variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 
-def shfl : LocalRef [.i32, .i32] (some .i32) := { callee := .intr .shflBfly }
-def bar : LocalRef [] none := { callee := .intr .barrier }
-def ex2 : LocalRef [.f32] (some .f32) := { callee := .intr .ex2Approx }
 def ballotR : LocalRef [.i8] (some .i32) := { callee := .intr .ballot }
 def shflIdxR : LocalRef [.i32, .i32] (some .i32) := { callee := .intr .shflIdx }
 
@@ -83,8 +81,6 @@ def setW (r : Regs V) (n : Nat) (x : V .i64) (x32 : V .i32) : Regs V :=
   { r with v := (n, x) :: r.v, w := (n, x32) :: r.w.filter (·.1 != n) }
 def setP (r : Regs V) (n : Nat) (x : V .i8) : Regs V := { r with p := (n, x) :: r.p }
 
-def c32 (k : Nat) : Prog V L (V .i32) := iconst32 (Int.ofNat k)
-
 /-- Element `ix` of the buffer at `base`. -/
 def at4 (base : V .i64) (ix : V .i32) : Prog V L (V .i64) := do
   iadd base (← ishlImm (← uextend64 ix) 2)
@@ -113,10 +109,10 @@ def fexp (c : Ctx V) (r : Regs V) : WFExp → Prog V L (V .f32)
   | .rsqrt a => do
       let s ← sqrt (← fexp c r a)
       fdiv (← fconst .f32 oneBits) s
-  | .ex2 a => do callLocal ex2 %[← fexp c r a]
+  | .ex2 a => do callLocal ex2Approx %[← fexp c r a]
   | .exp a => do
       let x ← fexp c r a
-      callLocal ex2 %[← fmul x (← fconst .f32 log2eBits)]
+      callLocal ex2Approx %[← fmul x (← fconst .f32 log2eBits)]
   | .maxW a b => do
       let x ← fexp c r a
       let y ← fexp c r b
@@ -377,7 +373,7 @@ structure Tail (V : ClifTy → Type) (L : List ClifTy → List ClifTy → Type) 
 def leaf (c : Ctx V) : Regs V → EWStmt → Prog V L (Regs V)
   | r, .setR n e => do pure (set r n (← fexp c r e))
   | r, .shflXor d s m => do
-      let o ← callLocal shfl %[← bitcast .i32 (get c r s), ← c32 m]
+      let o ← callLocal shflBfly %[← bitcast .i32 (get c r s), ← c32 m]
       pure (set r d (← bitcast .f32 o))
   | r, .loadIdx d b ix => do pure (set r d (← loadF32 (← at4 (buf c b) (← idx c ix))))
   | r, .loadV4 d0 d1 d2 d3 b ix => do
@@ -398,7 +394,7 @@ def leaf (c : Ctx V) : Regs V → EWStmt → Prog V L (Regs V)
       pure r
   | r, .ldSm d ix => do pure (set r d (← loadF32 (← at4 c.sm (← idx c ix))))
   | r, .barrier => do
-      callLocalVoid bar %[]
+      callLocalVoid barrier %[]
       pure r
   | r, .cvtIF d ix => do pure (set r d (← fcvtFromUint .f32 (← idx c ix)))
   | r, .setI d e => do

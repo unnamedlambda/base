@@ -364,13 +364,6 @@ the laws have nothing to answer. -/
 
 section Quiet
 
-theorem foldl_congr_mem {α β : Type} (f g : α → β → α) : ∀ (l : List β) (a : α),
-    (∀ x ∈ l, ∀ a, f a x = g a x) → l.foldl f a = l.foldl g a
-  | [], _, _ => rfl
-  | x :: xs, a, h => by
-    simp only [List.foldl_cons]
-    rw [h x List.mem_cons_self, foldl_congr_mem f g xs _ (fun y hy => h y (List.mem_cons_of_mem _ hy))]
-
 theorem mapM_congr_mem {α β : Type} (f g : α → Except String β) : ∀ (l : List α),
     (∀ x ∈ l, f x = g x) → l.mapM f = l.mapM g
   | [], _ => rfl

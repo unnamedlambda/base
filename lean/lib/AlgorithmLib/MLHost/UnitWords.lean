@@ -3,8 +3,8 @@ public import AlgorithmLib.ML.Kernel.BodyRuns
 meta import AlgorithmLib.ML.Kernel.BodyRuns
 public import AlgorithmLib.ML.Model.GroupLink
 meta import AlgorithmLib.ML.Model.GroupLink
-public import AlgorithmLib.ML.Model.VendorHost
-meta import AlgorithmLib.ML.Model.VendorHost
+public import AlgorithmLib.MLHost.VendorHost
+meta import AlgorithmLib.MLHost.VendorHost
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -447,14 +447,6 @@ theorem unit_fold_local {ops : List TOp} (hU : L.UnitOk ops) (hw : Hw) (m m' : B
   · simp only [M, M', htab g hg]
     exact hag g hg j hj
 
-theorem foldl_congr_mem {α β : Type} {f g : α → β → α} :
-    ∀ (l : List β) (a : α), (∀ b ∈ l, ∀ x, f x b = g x b) → l.foldl f a = l.foldl g a
-  | [], _, _ => rfl
-  | b :: l, a, h => by
-      simp only [List.foldl_cons]
-      rw [h b List.mem_cons_self a]
-      exact foldl_congr_mem l _ fun b' hb' => h b' (List.mem_cons_of_mem _ hb')
-
 /-- Operations that keep the frame leave every buffer none of them writes. -/
 theorem foldl_frame_out {R : Type} {S : TOp → (Buf → Nat → R) → Buf → Nat → R} {batch : Nat}
     (hS : TOp.Frame batch S) (g : Buf) :
@@ -485,7 +477,7 @@ theorem unit_step_kernel {ops : List TOp} (hU : L.UnitOk ops) (hB : L.bytes.all 
     (hag : L.Agree mem M) :
     L.Agree ((launchStep K l (unitBufs L.batch ops)).run mem) (ops.foldl (fun M op => TOp.denV hw op M) M) := by
   have hnd : (unitBufs L.batch ops).Nodup := DrvLaunch.nodup_eraseDups _
-  rw [foldl_congr_mem (g := fun M op => @TOp.den F32 (F32.ops hw) _ op M) _ M fun op hop x => by
+  rw [foldl_congr_mem (f := _) (g := fun M op => @TOp.den F32 (F32.ops hw) _ op M) _ M fun op hop x => by
     simp only [TOp.denV, gemmShape_none (hU.own op hop)]]
   intro g j hj
   have hj32 : j < 2 ^ 32 := by have := bytes_le hB g; omega

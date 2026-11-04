@@ -316,7 +316,7 @@ def writeParams (ptr : V .i64) (frame : V .i64) : Prog V L Unit := do
   fldStore32At ptr f.params 20 (← ireduce32 (← fldLoad ptr f.camZ)) (by decide)
 
 def writeEvent (ptr : V .i64) (slot : Nat) (kind keyCode : Int) : Prog V L Unit := do
-  let base ← absAddr ptr (f.events.offset + slot * 32)
+  let base ← iaddImm ptr (f.events.offset + slot * 32)
   storeUnaligned (← iconst64 kind) base
   storeUnaligned (← iconst64 keyCode) (← iaddImm base 8)
 
@@ -410,8 +410,8 @@ def testRenderScene : Prog V L Unit := do
   dispatchScene ptr
   app.download ptr 0 (← iaddImm ptr f.pixels.offset) (← iconst64 pixelBytes)
   app.cleanup ptr
-  let skyB ← uload8_64 (← absAddr ptr (f.pixels.offset + skyByteOff))
-  let groundB ← uload8_64 (← absAddr ptr (f.pixels.offset + groundByteOff))
+  let skyB ← uload8_64 (← iaddImm ptr (f.pixels.offset + skyByteOff))
+  let groundB ← uload8_64 (← iaddImm ptr (f.pixels.offset + groundByteOff))
   let thresh ← iadd groundB (← iconst64 20)
   writeOutput (← sextend64 (← icmp .ugt skyB thresh)) groundB skyB
 

@@ -92,9 +92,6 @@ section Laws
 variable {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
   {cta S wi k : Nat} {i : Nat} {ws : WSt F32}
 
-theorem lane_div (wi : Nat) (l : Lane) : (32 * wi + l.val) / 32 = wi ∧ (32 * wi + l.val) % 32 = l.val := by
-  have : l.val < 32 := l.isLt; constructor <;> omega
-
 /-- **The laws answer a ballot the mask of the lanes' flags.** -/
 theorem lawAt_ballot {d : Nat} {p : IExp} (l : Lane)
     (hall : ∀ l' : Lane, (calls (32 * wi + l'.val))[k]? = some (callOne cta l' (i, .ballot d p, ws))) :

@@ -1,6 +1,8 @@
 module
 public import AlgorithmLib.LZ4.EmitContent
+public import AlgorithmLib.LZ4.ByteLayer
 meta import AlgorithmLib.LZ4.EmitContent
+meta import AlgorithmLib.LZ4.ByteLayer
 public import AlgorithmLib.LZ4.EncodeLen
 meta import AlgorithmLib.LZ4.EncodeLen
 public import AlgorithmLib.LZ4.Ptx
@@ -146,12 +148,6 @@ theorem extInv_of_foundMovs (endCap : Nat) (inStride : Nat) (fuel : Nat) (ws : W
         .mov "ml" (.imm 4), .setp .ge "extC" "ml" (.imm 0) ]).eval fuel ws).regs "p0"
         = ws.regs "p0" := by simp [wseq, WStmt.eval, WState.setReg, WArg.eval, SCmp.run]
     rw [hp0', hml4, show ((UInt64.ofNat 4)).toNat = 4 from by decide]; exact hp4
-
-/-- The extend loop's body statement (coop extend step; `ml += adv`; `extC := adv==32`). -/
-def extBodyStmt (inStride endCap : Nat) : WStmt :=
-  wseq [ .coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap,
-         .bin .add "ml" "ml" (.reg "adv"),
-         .setp .eq "extC" "adv" (.imm 32) ]
 
 /-- The extend body preserves `extInv` (only `adv`/`ml`/`extC` change; `ml += leadingGood`
     keeps `p0 + ml ≤ endCap` by `leadingGood_pos_le`).  Extracted from
@@ -335,12 +331,6 @@ theorem extLoop_halts (inStride endCap : Nat) (hendCap : endCap = inStride - 5)
           trivial
       · rw [if_neg hb]; trivial
 
-/-- The LSIC length-extension loop's body (`n`-register form): store a `255` byte,
-    subtract 255 from `n`, recompute the guard `lsicC := n ≥ 255`. -/
-def lsicBodyStmt (n : String) : WStmt :=
-  wseq [ .mov "c255" (.imm 255), wStoreByte "c255", .bin .sub n n (.imm 255),
-         .setp .ge "lsicC" n (.imm 255) ]
-
 /-- The LSIC loop terminates: while it continues (`lsicC == 1`, and the guard
     invariant `lsicC=1 → n ≥ 255` holds), `n` drops by 255 each iteration, so any
     `fuel` with `n.toNat < 255 * fuel` suffices.  The guard invariant is preserved
@@ -350,7 +340,7 @@ theorem lsicLoop_halts (n : String) (hnc : n ≠ "c255") (hnop : n ≠ "op")
     ∀ (fuel : Nat) (ws : WState),
       (ws.regs "lsicC" = 1 → 255 ≤ (ws.regs n).toNat) →
       (ws.regs n).toNat < 255 * fuel →
-      WhileHalts "lsicC" (lsicBodyStmt n) fuel ws := by
+      WhileHalts "lsicC" (EmitContent.lsicBody n) fuel ws := by
   intro fuel
   induction fuel with
   | zero => intro ws _ hmeas; omega
@@ -363,23 +353,23 @@ theorem lsicLoop_halts (n : String) (hnc : n ≠ "c255") (hnop : n ≠ "op")
           have := hb; rw [beq_iff_eq] at this; exact this
         have hbig : 255 ≤ (ws.regs n).toNat := hguard hlsic1
         -- eval readout: `n' = n - 255` (UInt64).
-        have hnReg : ((lsicBodyStmt n).eval fuel ws).regs n
+        have hnReg : ((EmitContent.lsicBody n).eval fuel ws).regs n
             = ws.regs n - UInt64.ofNat 255 := by
-          simp [lsicBodyStmt, wseq, WStmt.eval, wStoreByte, WState.setReg, WState.stgByte,
+          simp [EmitContent.lsicBody, wseq, WStmt.eval, wStoreByte, WState.setReg, WState.stgByte,
             WOp.run, SCmp.run, WArg.eval, hnl, hnc, hnop, hnsb, Ne.symm hnl, Ne.symm hnsb]
-        have hnN : (((lsicBodyStmt n).eval fuel ws).regs n).toNat
+        have hnN : (((EmitContent.lsicBody n).eval fuel ws).regs n).toNat
             = (ws.regs n).toNat - 255 := by
           rw [hnReg, UInt64.toNat_sub, show ((UInt64.ofNat 255).toNat) = 255 from by decide]
           rw [show 2 ^ 64 - 255 + (ws.regs n).toNat = 2 ^ 64 + ((ws.regs n).toNat - 255) from by
             omega, Nat.add_mod_left, Nat.mod_eq_of_lt (by have := (ws.regs n).toNat_lt; omega)]
         -- new lsicC = (n' ≥ 255) as 1/0.
-        have hlsicVal : ((lsicBodyStmt n).eval fuel ws).regs "lsicC"
+        have hlsicVal : ((EmitContent.lsicBody n).eval fuel ws).regs "lsicC"
             = (if (UInt64.ofNat 255) ≤ (ws.regs n - UInt64.ofNat 255) then 1 else 0) := by
-          simp [lsicBodyStmt, wseq, WStmt.eval, wStoreByte, WState.setReg, WState.stgByte,
+          simp [EmitContent.lsicBody, wseq, WStmt.eval, wStoreByte, WState.setReg, WState.stgByte,
             WOp.run, SCmp.run, WArg.eval, hnl, hnc, hnop, hnsb, Ne.symm hnl, Ne.symm hnsb]
         -- guard invariant preserved: `lsicC=1 → n' ≥ 255`.
-        have hguard' : ((lsicBodyStmt n).eval fuel ws).regs "lsicC" = 1 →
-            255 ≤ (((lsicBodyStmt n).eval fuel ws).regs n).toNat := by
+        have hguard' : ((EmitContent.lsicBody n).eval fuel ws).regs "lsicC" = 1 →
+            255 ≤ (((EmitContent.lsicBody n).eval fuel ws).regs n).toNat := by
           intro hg1
           rw [hnN]
           rw [hlsicVal] at hg1
@@ -391,7 +381,7 @@ theorem lsicLoop_halts (n : String) (hnc : n ≠ "c255") (hnop : n ≠ "op")
               at hge
             omega
           · rw [if_neg hge] at hg1; exact absurd hg1 (by decide)
-        apply ih ((lsicBodyStmt n).eval fuel ws) hguard'
+        apply ih ((EmitContent.lsicBody n).eval fuel ws) hguard'
         rw [hnN]; omega
       · rw [if_neg hb]; trivial
 
@@ -399,15 +389,15 @@ theorem lsicLoop_halts (n : String) (hnc : n ≠ "c255") (hnop : n ≠ "op")
     other register is preserved. -/
 theorem lsicBody_frame (n r : String)
     (h1 : r ≠ "c255") (h2 : r ≠ "sbAddr") (h3 : r ≠ "op") (h4 : r ≠ n) (h5 : r ≠ "lsicC")
-    (fuel : Nat) (ws : WState) : ((lsicBodyStmt n).eval fuel ws).regs r = ws.regs r := by
-  simp [lsicBodyStmt, wseq, WStmt.eval, wStoreByte, WState.setReg, WState.stgByte, WOp.run,
+    (fuel : Nat) (ws : WState) : ((EmitContent.lsicBody n).eval fuel ws).regs r = ws.regs r := by
+  simp [EmitContent.lsicBody, wseq, WStmt.eval, wStoreByte, WState.setReg, WState.stgByte, WOp.run,
     SCmp.run, WArg.eval, h1, h2, h3, h4, h5]
 
 /-- The LSIC `uwhile` preserves every register outside `{c255,sbAddr,op,n,lsicC}`. -/
 theorem lsicUwhile_frame (n r : String)
     (h1 : r ≠ "c255") (h2 : r ≠ "sbAddr") (h3 : r ≠ "op") (h4 : r ≠ n) (h5 : r ≠ "lsicC") :
     ∀ (fuel : Nat) (ws : WState),
-      ((WStmt.uwhile "lsicC" (lsicBodyStmt n)).eval fuel ws).regs r = ws.regs r := by
+      ((WStmt.uwhile "lsicC" (EmitContent.lsicBody n)).eval fuel ws).regs r = ws.regs r := by
   intro fuel
   induction fuel with
   | zero => intro ws; simp [WStmt.eval]
@@ -422,7 +412,7 @@ theorem wEmitLSIC_frame (n r : String)
     (h1 : r ≠ "lsicC") (h2 : r ≠ "c255") (h3 : r ≠ "sbAddr") (h4 : r ≠ "op") (h5 : r ≠ n)
     (fuel : Nat) (ws : WState) : ((wEmitLSIC n).eval fuel ws).regs r = ws.regs r := by
   have hw : wEmitLSIC n = (WStmt.setp SCmp.ge "lsicC" n (WArg.imm 255)).seq
-      ((WStmt.uwhile "lsicC" (lsicBodyStmt n)).seq (wStoreByte n)) := by
+      ((WStmt.uwhile "lsicC" (EmitContent.lsicBody n)).seq (wStoreByte n)) := by
     rw [wEmitLSIC]; rfl
   have e1 : ∀ st : WState, ((wStoreByte n).eval fuel st).regs r = st.regs r := fun st => by
     simp [wStoreByte, wseq, WStmt.eval, WState.setReg, WState.stgByte, WOp.run, WArg.eval, h3, h4]

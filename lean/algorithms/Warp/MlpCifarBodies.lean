@@ -1,5 +1,5 @@
 import AlgorithmLib.ML.Kernel.BodyCheck
-import AlgorithmLib.ML.Model.TapeRun
+import AlgorithmLib.MLHost.TapeRun
 import Warp.MlpCifar
 /-!
   # The tapes' kernels, launched

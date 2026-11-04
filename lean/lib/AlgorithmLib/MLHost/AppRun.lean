@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Launch.AppTrace
-meta import AlgorithmLib.ML.Launch.AppTrace
+public import AlgorithmLib.MLHost.AppTrace
+meta import AlgorithmLib.MLHost.AppTrace
 public import AlgorithmLib.Check.DevRun
 meta import AlgorithmLib.Check.DevRun
 import all Init.Data.Repr
@@ -114,8 +114,8 @@ theorem launchRec_done {a : Drv.App} {j : Nat} {k : Drv.KSpec} (hk : a.kernels[j
   obtain ⟨v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, rfl⟩ := eq_of_length_eleven vs hl
   obtain ⟨hv0, -, -, -, -, -, -, -, -, hv9, -⟩ := h11
   have hv0' : asBits v0 = some (drvHandle kFunc j) := hv0
-  have hv9' : asBits v9 = some (Drv.App.at_ (a.paramsOff j)) := hv9
-  have hlw' : launchWords w1.dev w1.mem (drvHandle kFunc j) (Drv.App.at_ (a.paramsOff j)) = some args := hlw
+  have hv9' : asBits v9 = some (arenaAt (a.paramsOff j)) := hv9
+  have hlw' : launchWords w1.dev w1.mem (drvHandle kFunc j) (arenaAt (a.paramsOff j)) = some args := hlw
   have hcw' : callWords w1 (.ext (.cuda .launchKernel)) [v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10]
       = args.map (V.sc .i64) := by
     show (match asBits v0, asBits v9 with

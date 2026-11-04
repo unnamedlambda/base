@@ -514,7 +514,7 @@ def gpuInit : Prog V L Unit := do
       | [], _ => pure ()
       | st :: rest, k => do
         let rc ← st
-        storeW .i32 rc (← iaddImm out (4 * k))
+        store rc (← iaddImm out (4 * k))
         when .eq rc z32 (go rest (k + 1))
     go steps 0
 
@@ -542,8 +542,8 @@ def gpuBox : Prog V L Unit := do
       let p ← iadd input (← ishlImm i 4)
       let rc ← launchBox (← load64 p) (← load64 (← iaddImm p 8)) stream
       iadd acc (← select (← icmp .ne rc z32) (← iconst32 1) z32)
-    storeW .i32 fails out
-    storeW .i32 (← ext (.cuda .streamSynchronize) %[stream]) (← iaddImm out 4)
+    store fails out
+    store (← ext (.cuda .streamSynchronize) %[stream]) (← iaddImm out 4)
 
 /-- Frames in page-locked host memory, through the device and back: the input
     is two host outputs, then the host address of each frame. Frame `i` goes on
@@ -571,10 +571,10 @@ def gpuPipe : Prog V L Unit := do
         let c ← ext (.cuda .memcpyDtoHAsync) %[host, dout, ← iconst64 (frameBytes (SRC_W / 2) (SRC_H / 2)), stream]
         let bad ← bor (← bor (← icmp .ne a z32) (← icmp .ne b z32)) (← icmp .ne c z32)
         iadd acc (← select bad (← iconst32 1) z32)
-      storeW .i32 fails out
+      store fails out
       for k in [0, 1] do
         let rc ← ext (.cuda .streamSynchronize) %[← load64 (← iaddImm base (G_STREAM + 8 * k))]
-        storeW .i32 rc (← iaddImm out (4 + 4 * k))
+        store rc (← iaddImm out (4 + 4 * k))
 
 -- ---------------------------------------------------------------------------
 -- The 2x2 average on the CPU

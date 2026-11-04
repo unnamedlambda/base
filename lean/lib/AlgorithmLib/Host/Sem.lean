@@ -152,6 +152,16 @@ theorem Extends.get {Γ Γ' : Env} (h : Extends Γ Γ') {i : Nat} {v : V} (hi : 
     · rw [Array.getElem?_eq_none hs] at hi; cases hi
   rw [h.2 i hs, hi]
 
+/-- An environment that extends another reads every list of its slots alike. -/
+theorem mapM_ext {Γ Γ' : Env} (he : Extends Γ Γ') : ∀ {rs : List Nat} {vs : List V},
+    rs.mapM (fun r => Γ[r]?) = some vs → rs.mapM (fun r => Γ'[r]?) = some vs
+  | [], _, h => h
+  | r :: rs, vs, h => by
+      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h ⊢
+      obtain ⟨v, hv, vs', hvs', rfl⟩ := h
+      exact ⟨v, he.get hv, vs', mapM_ext he hvs', rfl⟩
+
 theorem Extends.push (Γ : Env) (v : V) : Extends Γ (Γ.push v) :=
   ⟨by simp, fun i hi => by rw [Array.getElem?_push, if_neg (by omega)]⟩
 

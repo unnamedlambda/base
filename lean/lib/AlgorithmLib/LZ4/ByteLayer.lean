@@ -9,7 +9,7 @@ namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4Plan AlgorithmLib.LZ4 AlgorithmLib.LZ4WarpFind AlgorithmLib.LZ4WarpSched
 
 /-- The inner extend `uwhile` body of `compressorBodyWStmt`. -/
-def innerExtBody (inStride endCap : Nat) : WStmt := wseq
+def extBodyStmt (inStride endCap : Nat) : WStmt := wseq
   [ .coopExtendStep "adv" "p0" "cand0" "ml" inStride endCap,
     .bin .add "ml" "ml" (.reg "adv"),
     .setp .eq "extC" "adv" (.imm 32) ]
@@ -46,12 +46,12 @@ theorem inner_extend (inStride endCap ib : Nat) (g : Array UInt8) (pv cv : UInt6
       (st.regs "inBase").toNat = ib →
       st.regs "p0" = pv → st.regs "cand0" = cv →
       st.regs "extC" = 1 → st.regs "ml" = UInt64.ofNat m →
-      ((WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval F st).regs "ml"
+      ((WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval F st).regs "ml"
         = UInt64.ofNat (extendChunk (gmemInpAt g ib inStride) pv.toNat cv.toNat endCap F m)
       ∧ (∀ r, r ≠ "adv" → r ≠ "ml" → r ≠ "extC" →
-          ((WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval F st).regs r = st.regs r)
-      ∧ ((WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval F st).gmem = st.gmem
-      ∧ ((WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval F st).smem = st.smem := by
+          ((WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval F st).regs r = st.regs r)
+      ∧ ((WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval F st).gmem = st.gmem
+      ∧ ((WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval F st).smem = st.smem := by
   intro F
   induction F with
   | zero =>
@@ -67,20 +67,20 @@ theorem inner_extend (inStride endCap ib : Nat) (g : Array UInt8) (pv cv : UInt6
       have hmb : (UInt64.ofNat m).toNat = m :=
         UInt64.toNat_ofNat_of_lt' (show m < 18446744073709551616 by omega)
       -- one iteration: extC = 1, so the body runs
-      have hrun : (WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval (n+1) st
-          = (WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval n
-              ((innerExtBody inStride endCap).eval n st) := by
+      have hrun : (WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval (n+1) st
+          = (WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval n
+              ((extBodyStmt inStride endCap).eval n st) := by
         simp [WStmt.eval, hextC]
       -- abbreviate the leading-good count `lg` (no Mathlib `set`)
       obtain ⟨lg, hlgdef⟩ :
           ∃ lg, leadingGood (gmemInpAt g ib inStride) pv.toNat cv.toNat endCap m 32 = lg := ⟨_, rfl⟩
       have hlgle : lg ≤ 32 := by rw [← hlgdef]; exact leadingGood_le _ _ _ _ _ 32
       -- the body: adv := leadingGood …, ml := m + adv, extC := (adv == 32)
-      have hbody : (innerExtBody inStride endCap).eval n st
+      have hbody : (extBodyStmt inStride endCap).eval n st
           = (((st.setReg "adv" (UInt64.ofNat lg)).setReg "ml"
               (UInt64.ofNat m + UInt64.ofNat lg)).setReg "extC"
               (if UInt64.ofNat lg == (32 : UInt64) then 1 else 0)) := by
-        simp only [innerExtBody, wseq, WStmt.eval, evalCoopExtendStep, WState.setReg,
+        simp only [extBodyStmt, wseq, WStmt.eval, evalCoopExtendStep, WState.setReg,
           WOp.run, WArg.eval, SCmp.run, hg, hib, hp, hc, hml, hmb, hlgdef]
         rfl
       rw [hrun, hbody]
@@ -162,8 +162,8 @@ theorem inner_extend (inStride endCap ib : Nat) (g : Array UInt8) (pv cv : UInt6
             show (32 : UInt64).toNat = 32 from by decide] at hcontra
           omega
         have hextC0 : st'.regs "extC" = 0 := by rw [e_extC, hbfalse]; rfl
-        have hstop : (WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval n st' = st' :=
-          uwhile_stop "extC" (innerExtBody inStride endCap) st' (by rw [hextC0]; rfl) n
+        have hstop : (WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval n st' = st' :=
+          uwhile_stop "extC" (extBodyStmt inStride endCap) st' (by rw [hextC0]; rfl) n
         have hchunk : extendChunk (gmemInpAt g ib inStride) pv.toNat cv.toNat endCap (n+1) m
             = m + lg := by
           show (if leadingGood (gmemInpAt g ib inStride) pv.toNat cv.toNat endCap m 32 = 32
@@ -185,7 +185,7 @@ theorem inner_extend_extendFrom (inStride endCap ib : Nat) (g : Array UInt8) (pv
     (hg : st.gmem = g) (hib : (st.regs "inBase").toNat = ib)
     (hp : st.regs "p0" = pv) (hc : st.regs "cand0" = cv)
     (hextC : st.regs "extC" = 1) (hml : st.regs "ml" = UInt64.ofNat m) :
-    ((WStmt.uwhile "extC" (innerExtBody inStride endCap)).eval F st).regs "ml"
+    ((WStmt.uwhile "extC" (extBodyStmt inStride endCap)).eval F st).regs "ml"
       = UInt64.ofNat (extendFrom (gmemInpAt g ib inStride) pv.toNat cv.toNat endCap fuelF m) := by
   rw [(inner_extend inStride endCap ib g pv cv hstride hendCap F m st hm hg hib hp hc hextC hml).1,
       extendChunk_eq_extendFrom (gmemInpAt g ib inStride) pv.toNat cv.toNat endCap F fuelF m

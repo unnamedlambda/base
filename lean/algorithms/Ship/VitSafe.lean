@@ -38,7 +38,7 @@ theorem seedIx : Vit.VSEED = 977 := by native_decide
 abbrev Run (i s d o : Nat) : World → Prop := Contracts.TState.holds
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .devSeq, .oracles, .room .arena 931252, .room .data d, .room .out o,
-   .alloc i 102400, .cell (Drv.App.at_ s) (devPtr i)]
+   .alloc i 102400, .cell (arenaAt s) (devPtr i)]
 
 def fetchCode : Prog Slot Lvl Unit := Vit.vFetchFn Vit.VOUT (Vit.SQ * Vit.NC * 4)
 theorem fetch_eq : fetchCode = (do

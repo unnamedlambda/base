@@ -80,11 +80,11 @@ def flag64 (cc : ICmpCond) (a b : V .i64) : Prog V L (V .i32) := do
 /-- A compute pipeline of the `len` bytes of WGSL at `src`, over the
     one-binding layout. -/
 def pipeline (base dev bgl : V .i64) (src len : Nat) : Prog V L (V .i64 × V .i64 × V .i64) := do
-  let module ← wg .deviceCreateShaderModule %[dev, ← absAddr base src, ← iconst64 len]
-  let slot ← absAddr base A_SLOT
+  let module ← wg .deviceCreateShaderModule %[dev, ← iaddImm base src, ← iconst64 len]
+  let slot ← iaddImm base A_SLOT
   storeI64 bgl slot
   let pl ← wg .deviceCreatePipelineLayout %[dev, slot, ← iconst64 1]
-  let pipe ← wg .deviceCreateComputePipeline %[dev, pl, module, ← absAddr base A_MAIN, ← iconst64 4]
+  let pipe ← wg .deviceCreateComputePipeline %[dev, pl, module, ← iaddImm base A_MAIN, ← iconst64 4]
   pure (module, pl, pipe)
 
 set_option maxRecDepth 8000 in
@@ -105,16 +105,16 @@ def body : Prog V L Unit := do
   let b ← wg .deviceCreateBuffer %[dev, ← iconst64 (128 + 8 + 4), size]
   let st ← wg .deviceCreateBuffer %[dev, ← iconst64 (1 + 8), size]
   put 3 (← flag64 .ne b z)
-  let _ ← wg .queueWriteBuffer %[q, b, z, ← absAddr base A_IN, size]
+  let _ ← wg .queueWriteBuffer %[q, b, z, ← iaddImm base A_IN, size]
   -- the layout: binding 0, a storage buffer written
-  let be ← absAddr base A_BGLE
+  let be ← iaddImm base A_BGLE
   storeI64 z be
   let bgl ← wg .deviceCreateBindGroupLayout %[dev, be, ← iconst64 1]
   let scope ← wg .devicePushErrorScope %[dev]
   let (module, pl, pipe) ← pipeline base dev bgl A_SRC SRC.utf8ByteSize
   put 4 (← wg .errorScopePop %[scope])
   -- the bind group: the whole buffer at binding 0
-  let ge ← absAddr base A_BGE
+  let ge ← iaddImm base A_BGE
   storeI64 z ge
   storeI64 b (← iaddImm ge 8)
   let bg ← wg .deviceCreateBindGroup %[dev, bgl, ge, ← iconst64 1]

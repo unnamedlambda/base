@@ -133,18 +133,14 @@ def batchBodyE (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (B K : Nat) : EWS
   .seq (seqN B (fun s => .setR (BACC + s) (.lit (NumOps.ofNat 0))))
        (.forN K (batchTripE bA bB ixA ixB B))
 
-/-- One butterfly round on an explicit accumulator/temporary pair. -/
-def bflyRoundE (acc tmp mask : Nat) (op : WFExp) : EWStmt :=
-  .seq (.shflXor tmp acc mask) (.setR acc op)
-
 /-- The five-round sum reduction, on an explicit pair.  `warpRoundE` is this at
     the fixed pair `(0, 1)`; a batched kernel needs one per accumulator. -/
 def warpReduceE (acc tmp : Nat) : EWStmt :=
-  .seq (bflyRoundE acc tmp 16 (.add (.reg acc) (.reg tmp)))
-    (.seq (bflyRoundE acc tmp 8 (.add (.reg acc) (.reg tmp)))
-      (.seq (bflyRoundE acc tmp 4 (.add (.reg acc) (.reg tmp)))
-        (.seq (bflyRoundE acc tmp 2 (.add (.reg acc) (.reg tmp)))
-              (bflyRoundE acc tmp 1 (.add (.reg acc) (.reg tmp))))))
+  .seq (bflyRoundOp acc tmp 16 (.add (.reg acc) (.reg tmp)))
+    (.seq (bflyRoundOp acc tmp 8 (.add (.reg acc) (.reg tmp)))
+      (.seq (bflyRoundOp acc tmp 4 (.add (.reg acc) (.reg tmp)))
+        (.seq (bflyRoundOp acc tmp 2 (.add (.reg acc) (.reg tmp)))
+              (bflyRoundOp acc tmp 1 (.add (.reg acc) (.reg tmp))))))
 
 /-- One sample's epilogue: reduce its accumulator, store it. -/
 def epCopyE (out : Buf) (oi : Nat → IdxE) (s : Nat) : EWStmt :=

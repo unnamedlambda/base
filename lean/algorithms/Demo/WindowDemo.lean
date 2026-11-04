@@ -260,7 +260,7 @@ def writeParams (ptr : V .i64) (frame : V .i64) : Prog V L Unit := do
 
 /-- Write a synthetic input event into event `slot` (for tests). -/
 def writeEvent (ptr : V .i64) (slot : Nat) (kind keyCode : Int) : Prog V L Unit := do
-  let base ← absAddr ptr (f.events.offset + slot * 32)
+  let base ← iaddImm ptr (f.events.offset + slot * 32)
   storeUnaligned (← iconst64 kind) base
   storeUnaligned (← iconst64 keyCode) (← iaddImm base 8)
 
@@ -359,7 +359,7 @@ def testRenderPixel : Prog V L Unit := do
   app.download ptr 0 (← iaddImm ptr f.pixels.offset) (← iconst64 pixelBytes)
   app.cleanup ptr
   -- red byte of pixel (100,100): (y*width + x)*4
-  let red ← uload8_64 (← absAddr ptr (f.pixels.offset + (100 * imageWidth + 100) * 4))
+  let red ← uload8_64 (← iaddImm ptr (f.pixels.offset + (100 * imageWidth + 100) * 4))
   writeOutput (← sextend64 (← icmp .uge red (← iconst64 250))) red (← iconst64 252)
 
 

@@ -80,7 +80,7 @@ def warpCalls (g : Lz4Ship.WP) (org : Nat) : Tr :=
     (.seq
       (.rep Lz4Ship.rLaunches (.lit [⟨.ext (.cuda .launchKernel),
         [.is (drvHandle kFunc 0), .is (UInt64.ofNat g.gridX), .is 1, .is 1, .is (UInt64.ofNat Lz4Ship.wBlockDim),
-         .is 1, .is 1, .is 0, .is 0, .is (Drv.App.at_ ((Lz4Ship.lzAppAt g org).paramsOff 0)), .is 0,
+         .is 1, .is 1, .is 0, .is 0, .is (arenaAt ((Lz4Ship.lzAppAt g org).paramsOff 0)), .is 0,
          .is (devPtr 0), .is (devPtr 0)]⟩]))
       (.alt (.lit [⟨.ext (.cuda .memcpyDtoH),
           [.is (regionBase .out), .is (devPtr 0 + UInt64.ofNat g.outOff), .is (UInt64.ofNat g.totOut)]⟩])

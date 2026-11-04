@@ -1,6 +1,6 @@
 import Ship.VitCalls
 import Vit.Host
-import AlgorithmLib.ML.Model.TapeRun
+import AlgorithmLib.MLHost.TapeRun
 
 /-!
 # The words the ViT's forward leaves are the tape's

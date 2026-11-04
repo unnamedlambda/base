@@ -1,8 +1,6 @@
 module
 public import AlgorithmLib.Host.Blocks
 meta import AlgorithmLib.Host.Blocks
-public import AlgorithmLib.Core.Compiler
-meta import AlgorithmLib.Core.Compiler
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -4031,20 +4029,5 @@ theorem compileSoundE_of_ok (idx : Nat) (env : FnEnv) (params : List ClifTy) (c 
   obtain ⟨steps, h⟩ := compile_sound idx env params c none _ args w obs w'
     (by rw [retOk_none]; exact hsc) hlen hrun
   exact ⟨steps, by rw [hrun, h]⟩
-
-/-- **The host compiler, with `compile_sound` as its theorem.**
-
-    `compileBody` is what every generator ships; `scopeOk` is its door; and a
-    successful run of the term is matched by a run of the blocks that observes
-    the same thing and leaves the same world. -/
-def hostCompiler (idx : Nat) (env : FnEnv) (params : List ClifTy) (status : Option R) :
-    AlgorithmLib.Compiler Code FuncData where
-  compile c := compileBody idx c env params status
-  Pre c := retOk params c status = true
-  Refines c f := ∀ (cfg : Sem.Cfg) (args : List V) (w : World) (obs : List Sem.Obs) (w' : World),
-    params.length = args.length → Sem.run cfg args w c = .ok obs w' →
-    ∃ steps, Blocks.run cfg.locals f args w steps = .ok obs w'
-  sound c h cfg args w obs w' hl hr :=
-    compile_sound idx env params c status cfg args w obs w' h hl hr
 
 end AlgorithmLib.HProg

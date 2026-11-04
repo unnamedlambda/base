@@ -23,13 +23,13 @@ open Contracts (Fact TState)
     instantiated ones made. -/
 def Pool (graphs execs : Nat) : TState :=
   [.ngraphs graphs, .nexecs execs, .streams (List.replicate (Vit.VNSTRM + 1) true), .events Vit.VNEVENT,
-   .nblas (Vit.VNSTRM + 1), .cell (Drv.App.at_ Vit.VSTREAM_OFF) (drvHandle kStream 0), .readyAll hostParty] ++
+   .nblas (Vit.VNSTRM + 1), .cell (arenaAt Vit.VSTREAM_OFF) (drvHandle kStream 0), .readyAll hostParty] ++
   (List.range Vit.VNSTRM).flatMap (fun s =>
-    [.cell (Drv.App.at_ (Vit.vPoolOff s)) (drvHandle kStream (s + 1)),
-     .cell (Drv.App.at_ (Vit.vHandleOff s)) (drvHandle kBlas (s + 1)),
+    [.cell (arenaAt (Vit.vPoolOff s)) (drvHandle kStream (s + 1)),
+     .cell (arenaAt (Vit.vHandleOff s)) (drvHandle kBlas (s + 1)),
      .blasOn (s + 1) (drvHandle kStream (s + 1))]) ++
   (List.range Vit.VNEVENT).flatMap (fun e =>
-    [.evLive e, .cell (Drv.App.at_ (Vit.vEventOff e)) (drvHandle kEvent e)])
+    [.evLive e, .cell (arenaAt (Vit.vEventOff e)) (drvHandle kEvent e)])
 
 /-- The kernels' text, each kernel's in order, as the image places it. -/
 def ptxs : List String := Vit.vKernUnits.map fun k => Vit.vPtx.getD (Vit.vSlotIx k) ""
@@ -58,6 +58,6 @@ abbrev Load : World → Prop :=
 /-- What `capture` leaves: the forward's graph instantiated, its handle in
     its slot. -/
 abbrev Replay : World → Prop :=
-  TState.holds (after 1 1 ++ [.exec 0, .cell (Drv.App.at_ Vit.VEXEC_FWD) (drvHandle kExec 0)])
+  TState.holds (after 1 1 ++ [.exec 0, .cell (arenaAt Vit.VEXEC_FWD) (drvHandle kExec 0)])
 
 end VitState

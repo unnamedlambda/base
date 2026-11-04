@@ -392,4 +392,21 @@ def launchOn (e : Entry) (smem grid blockDim : Nat) (params : List V) (bufs : Na
     (hw : Hw := Hw.rounded) : Except String (Nat → ByteArray) :=
   Kernel.launchOn (runner e hw 100000000) smem grid blockDim params bufs hw.nan
 
+/-- A word cut to a width is below `2` to that width. -/
+theorem mask_lt (t : Ty) (x : UInt64) : (mask t.width x).toNat < 2 ^ t.width := by
+  cases t <;> simp only [Ty.width]
+  all_goals first
+    | (simp only [mask, show (64 : Nat) ≥ 64 from by decide, if_true]; exact x.toNat_lt)
+    | (simp only [mask]
+       rw [if_neg (by decide), UInt64.toNat_and]
+       first
+       | rw [show ((1 : UInt64) <<< UInt64.ofNat 1 - 1).toNat = 2 ^ 1 - 1 from rfl]
+       | rw [show ((1 : UInt64) <<< UInt64.ofNat 8 - 1).toNat = 2 ^ 8 - 1 from rfl]
+       | rw [show ((1 : UInt64) <<< UInt64.ofNat 16 - 1).toNat = 2 ^ 16 - 1 from rfl]
+       | rw [show ((1 : UInt64) <<< UInt64.ofNat 32 - 1).toNat = 2 ^ 32 - 1 from rfl]
+       rw [Nat.and_two_pow_sub_one_eq_mod]
+       exact Nat.mod_lt _ (by decide))
+
+theorem mask32_toNat_lt (x : UInt64) : (mask 32 x).toNat < 2 ^ 32 := mask_lt .b32 x
+
 end AlgorithmLib.PtxRun

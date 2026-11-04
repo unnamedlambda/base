@@ -34,10 +34,6 @@ open AlgorithmLib.HProg.Sem
 def EndsC (cfg : Cfg) (P : Env → World → Prop) (c : Code) (C : List V → World → Prop) : Prop :=
   ∀ Γ w, P Γ w → ∃ k vs w', runCode k cfg Γ w c = .cont 0 vs w' ∧ C vs w'
 
-theorem runCode_fin_mono {k k' : Nat} (hk : k ≤ k') {cfg : Cfg} {Γ : Env} {w : World} {c : Code}
-    {r : CodeRes} (h : runCode k cfg Γ w c = r) (hr : r.fin) : runCode k' cfg Γ w c = r :=
-  (monoAt k).2.2.2 cfg Γ w c r h hr k' hk
-
 /-- A code that ends, then one that jumps: the two jump. -/
 theorem runCode_append_cont {cfg : Cfg} {G : Code} {d : Nat} {vs : List V} {w2 : World} :
     ∀ (F : Code) (k k2 : Nat) (Γ Γ1 : Env) (w w1 : World),
@@ -49,7 +45,7 @@ theorem runCode_append_cont {cfg : Cfg} {G : Code} {d : Nat} {vs : List V} {w2 :
       | succ k =>
           simp only [runCode, CodeRes.ok.injEq] at h1
           obtain ⟨rfl, rfl⟩ := h1
-          exact runCode_fin_mono (by omega) h2 rfl
+          exact Sem.runCode_mono (by omega) h2 rfl
   | p :: ps, k, k2, Γ, Γ1, w, w1, h1, h2 => by
       cases k with
       | zero => simp [runCode] at h1
@@ -111,7 +107,7 @@ theorem iterEC {cfg : Cfg} {Γ : Env} {l : Loop} {pre body : List Piece} {n0 ab 
       obtain ⟨k3, Γ', w', hi, hQ⟩ := ih next w2 (by omega) hP'
       refine ⟨max k (max k2 k3) + 1, Γ', w', ?_, hQ⟩
       simp only [iter, runCode_ok_mono (show k ≤ max k (max k2 k3) by omega) hpre, hflag, hx',
-        Bool.false_eq_true, if_false, runCode_fin_mono (show k2 ≤ max k (max k2 k3) by omega) hb rfl]
+        Bool.false_eq_true, if_false, Sem.runCode_mono (show k2 ≤ max k (max k2 k3) by omega) hb rfl]
       exact iter_mono (show k3 ≤ max k (max k2 k3) by omega) hi rfl
 
 /-- **A top-tested loop whose body goes round, by invariant and measure.** -/

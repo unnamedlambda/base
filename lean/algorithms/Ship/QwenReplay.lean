@@ -2,8 +2,8 @@ import AlgorithmLib.Check.Entry
 import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
 import Warp.MlpCifar
-import AlgorithmLib.ML.Launch.AppTrace
-import AlgorithmLib.ML.Model.TapeRun
+import AlgorithmLib.MLHost.AppTrace
+import AlgorithmLib.MLHost.TapeRun
 import Ship.QwenLoad
 import Ship.QwenRun
 
@@ -33,8 +33,8 @@ namespace QwenReplaySafe
 abbrev Replay : World → Prop := Contracts.TState.holds
   [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .oracles, .room .arena MlpCifar.qApp.memSize, .streams [true],
-   .cell (Drv.App.at_ MlpCifar.QSTREAM_OFF) (drvHandle kStream 0),
-   .exec 0, .cell (Drv.App.at_ MlpCifar.QEXEC_OFF) (drvHandle kExec 0), .readyAll hostParty]
+   .cell (arenaAt MlpCifar.QSTREAM_OFF) (drvHandle kStream 0),
+   .exec 0, .cell (arenaAt MlpCifar.QEXEC_OFF) (drvHandle kExec 0), .readyAll hostParty]
 
 ship_entry replay1 : MlpCifar.qReplayFn 1 under Replay
 
@@ -62,8 +62,8 @@ set_option maxHeartbeats 4000000 in
 theorem capture_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : QwenLoadSafe.Capture w)
     {obs : List Obs} {w' : World}
     (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.qCaptureFn : Prog Slot Lvl Unit)) = .ok obs w') :
-    (Check.Tr.lit (ML.captureRecs MlpCifar.qApp QwenRunSafe.steps (Drv.App.at_ MlpCifar.QSTREAM_OFF)
-      (Drv.App.at_ MlpCifar.QGRAPH_OFF) (Drv.App.at_ MlpCifar.QEXEC_OFF))).Covers w obs ∧ Check.DevPath w w' := by
+    (Check.Tr.lit (ML.captureRecs MlpCifar.qApp QwenRunSafe.steps (arenaAt MlpCifar.QSTREAM_OFF)
+      (arenaAt MlpCifar.QGRAPH_OFF) (arenaAt MlpCifar.QEXEC_OFF))).Covers w obs ∧ Check.DevPath w w' := by
   check_calls
 
 set_option maxRecDepth 200000 in

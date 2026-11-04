@@ -39,19 +39,11 @@ open AlgorithmLib.IR
 -- whole pattern; the wrappers differ only in which slot and which callee.
 -- ---------------------------------------------------------------------------
 
-/-- The address of the slot holding a subsystem's context pointer. -/
-def ctxSlotPtr (ptr : V .i64) (slotOffset : Nat) : Prog V L (V .i64) :=
-  absAddr ptr slotOffset
-
-/-- The context pointer itself. -/
-def ctxPtr (ptr : V .i64) (slotOffset : Nat) : Prog V L (V .i64) := do
-  load64 (← ctxSlotPtr ptr slotOffset)
-
 /-- `init` takes the *slot* --- it writes the context there. Every subsystem's
     `init` and `cleanup` has this one signature, which the index states. -/
 def initAt (f : LibFn) (hp : f.params = [ClifTy.i64] := by rfl)
     (ptr : V .i64) (slotOffset : Nat) : Prog V L Unit := do
-  callLibVoid f (hp ▸ %[← ctxSlotPtr ptr slotOffset])
+  callLibVoid f (hp ▸ %[← iaddImm ptr slotOffset])
 
 -- ---------------------------------------------------------------------------
 -- Hash table
@@ -63,7 +55,7 @@ def initAt (f : LibFn) (hp : f.params = [ClifTy.i64] := by rfl)
 -- ---------------------------------------------------------------------------
 
 def htCtxPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.ht) :
-    Prog V L (V .i64) := ctxPtr ptr slotOffset
+    Prog V L (V .i64) := loadAt ptr slotOffset
 
 def htInit (ptr : V .i64) (slotOffset : Nat := ContextSlots.ht) : Prog V L Unit :=
   initAt .htInit rfl ptr slotOffset
@@ -183,7 +175,7 @@ def fldOffset {t} (f : Layout.Fld t) : Prog V L (V .i64) := iconst64 f.offset
 
 /-- A field's address: `base + offset`. -/
 def fldAddr {t} (base : V .i64) (f : Layout.Fld t) : Prog V L (V .i64) :=
-  absAddr base f.offset
+  iaddImm base f.offset
 
 /-- How a scalar field is read and written, chosen per field type rather than by
     a match, so `.bytes n` has no instance and cannot be passed.
@@ -218,11 +210,11 @@ def fldLoad {t} (base : V .i64) (f : Layout.Fld t) [inst : IsScalarV V L t] :
 
 def fldStore32At {n ty} (base : V .i64) (f : Layout.Fld (.bytes n)) (i : Nat)
     (val : V ty) (_h : i + 4 ≤ n := by omega) : Prog V L Unit := do
-  storeUnaligned val (← absAddr base (f.offset + i))
+  storeUnaligned val (← iaddImm base (f.offset + i))
 
 def fldLoad32At {n} (base : V .i64) (f : Layout.Fld (.bytes n)) (i : Nat)
     (_h : i + 4 ≤ n := by omega) : Prog V L (V .i64) := do
-  uload32_64 (← absAddr base (f.offset + i))
+  uload32_64 (← iaddImm base (f.offset + i))
 
 /-- Read a file using typed field handles for the filename and data regions,
     as far as `room` holds: by default the whole data field. -/

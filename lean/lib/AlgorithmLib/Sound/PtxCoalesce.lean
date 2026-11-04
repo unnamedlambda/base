@@ -574,22 +574,6 @@ theorem stepV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren
 
 theorem width_le (t : Ty) : t.width ≤ 64 := by cases t <;> decide
 
-theorem mask_lt (t : Ty) (x : UInt64) : (mask t.width x).toNat < 2 ^ t.width := by
-  cases t <;> simp only [Ty.width]
-  all_goals first
-    | (simp only [mask, show (64 : Nat) ≥ 64 from by decide, if_true]; exact x.toNat_lt)
-    | (simp only [mask]
-       rw [if_neg (by decide), UInt64.toNat_and]
-       first
-       | rw [show ((1 : UInt64) <<< UInt64.ofNat 1 - 1).toNat = 2 ^ 1 - 1 from rfl]
-       | rw [show ((1 : UInt64) <<< UInt64.ofNat 8 - 1).toNat = 2 ^ 8 - 1 from rfl]
-       | rw [show ((1 : UInt64) <<< UInt64.ofNat 16 - 1).toNat = 2 ^ 16 - 1 from rfl]
-       | rw [show ((1 : UInt64) <<< UInt64.ofNat 32 - 1).toNat = 2 ^ 32 - 1 from rfl]
-       rw [Nat.and_two_pow_sub_one_eq_mod]
-       exact Nat.mod_lt _ (by decide))
-
-theorem mask32_lt' (x : UInt64) : (mask 32 x).toNat < 2 ^ 32 := mask_lt .b32 x
-
 theorem canon_lt (x : UInt64) (h : x.toNat < 2 ^ 32) : (canon x).toNat < 2 ^ 32 := by
   unfold canon; split
   · decide
@@ -622,11 +606,11 @@ theorem binF_lt (o : BinOp) (x y v : UInt64) (hx : x.toNat < 2 ^ 32) (hy : y.toN
          · exact hx
          · exact lt_of_mem (pickExtreme_mem _ _ x y) hx hy)
 
-theorem ofIntW_lt (t : Ty) (i : Int) : (ofIntW t.width i).toNat < 2 ^ t.width := mask_lt t _
+theorem ofIntW_lt (t : Ty) (i : Int) : (ofIntW t.width i).toNat < 2 ^ t.width := PtxRun.mask_lt t _
 
 theorem shr_lt (t : Ty) (x y : UInt64) : (mask t.width x >>> y).toNat < 2 ^ t.width := by
   rw [UInt64.toNat_shiftRight]
-  exact Nat.lt_of_le_of_lt (Nat.shiftRight_le _ _) (mask_lt t x)
+  exact Nat.lt_of_le_of_lt (Nat.shiftRight_le _ _) (PtxRun.mask_lt t x)
 
 theorem binI_lt (o : BinOp) (t : Ty) (x y v : UInt64) (ho : o ≠ .mulWide) (h : binI o t x y = .ok v) :
     v.toNat < 2 ^ t.width := by
@@ -636,7 +620,7 @@ theorem binI_lt (o : BinOp) (t : Ty) (x y v : UInt64) (ho : o ≠ .mulWide) (h :
       simp only [binI] at h; cases h
       split
       · simp; exact Nat.two_pow_pos _
-      · exact mask_lt t _
+      · exact PtxRun.mask_lt t _
   | shr =>
       simp only [binI] at h
       split at h <;> cases h
@@ -651,14 +635,10 @@ theorem binI_lt (o : BinOp) (t : Ty) (x y v : UInt64) (ho : o ≠ .mulWide) (h :
       · cases h; exact ofIntW_lt t _
   | min | max =>
       simp only [binI] at h; cases h
-      split <;> exact mask_lt t _
+      split <;> exact PtxRun.mask_lt t _
   | _ =>
-      simp only [binI] at h <;> (try cases h) <;> first | exact mask_lt t _ | exact ofIntW_lt t _
+      simp only [binI] at h <;> (try cases h) <;> first | exact PtxRun.mask_lt t _ | exact ofIntW_lt t _
 
-
-theorem and_f32_toNat (y : UInt64) (h : y &&& widthMask .f32 = y) : y.toNat < 2 ^ 32 := by
-  rw [← h, UInt64.toNat_and, show (widthMask ClifTy.f32).toNat = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
-  exact Nat.mod_lt _ (by decide)
 
 theorem un_lt (o : UnOp) (hw : Hw) (hap : ∀ k x, hw.approx k x &&& widthMask .f32 = hw.approx k x)
     (x v : UInt64) (ho : (o == .neg || o == .abs || o == .sqrt || o == .ex2Approx || o == .lg2Approx ||
@@ -666,11 +646,11 @@ theorem un_lt (o : UnOp) (hw : Hw) (hap : ∀ k x, hw.approx k x &&& widthMask .
     (h : AlgorithmLib.PtxRun.un o hw .f32 x = .ok v) : v.toNat < 2 ^ 32 := by
   cases o <;> simp at ho <;>
     simp only [AlgorithmLib.PtxRun.un] at h <;> (try simp only [show (Ty.f32 == Ty.f32) = true from rfl, if_true] at h) <;> cases h
-  · exact canon_lt _ (mask32_lt' _)
+  · exact canon_lt _ (PtxRun.mask32_toNat_lt _)
   · rw [UInt64.toNat_and]
     exact Nat.lt_of_le_of_lt Nat.and_le_right (by decide)
   · exact canon_lt _ (ofF32_lt _)
-  all_goals exact and_f32_toNat _ (hap _ _)
+  all_goals exact lt32_of_norm (hap _ _)
 
 theorem lt64 (v : UInt64) : v.toNat < 2 ^ 64 := v.toNat_lt
 
@@ -696,7 +676,7 @@ theorem cvt_lt (r : Option Rnd) (dt st : Ty) (x v : UInt64) (h : cvt r dt st x =
 
 theorem fma32_lt (x y z : UInt64) :
     (canon (fmaLane ClifTy.f32 (mask 32 x) (mask 32 y) (mask 32 z))).toNat < 2 ^ 32 :=
-  canon_lt _ (fmaLane32_lt _ _ _ (mask32_lt' x) (mask32_lt' y) (mask32_lt' z))
+  canon_lt _ (fmaLane32_lt _ _ _ (PtxRun.mask32_toNat_lt x) (PtxRun.mask32_toNat_lt y) (PtxRun.mask32_toNat_lt z))
 
 -- Split a step's hypothesis `h` on one read, closing the failing branch.
 set_option hygiene false in
@@ -715,13 +695,13 @@ theorem stepV_bound (c : Ctx) (hap : ∀ k x, c.hw.approx k x &&& widthMask .f32
   | mov t d0 a =>
       simp only [stepV] at h
       peel opndV c regs a as v1
-      cases h; exact mask_lt t _
+      cases h; exact PtxRun.mask_lt t _
   | selp t d0 a b p =>
       simp only [stepV] at h
       peel opndV c regs p as v2
       peel opndV c regs a as v3
       peel opndV c regs b as v4
-      cases h; exact mask_lt t _
+      cases h; exact PtxRun.mask_lt t _
   | fma r t d0 a b e =>
       cases r with
       | none =>
@@ -729,7 +709,7 @@ theorem stepV_bound (c : Ctx) (hap : ∀ k x, c.hw.approx k x &&& widthMask .f32
           peel opndV c regs a as v5
           peel opndV c regs b as v6
           peel opndV c regs e as v7
-          cases h; exact mask_lt t _
+          cases h; exact PtxRun.mask_lt t _
       | some rr =>
           simp only [stepV] at h
           by_cases ht : (t != Ty.f32) = true
@@ -753,7 +733,7 @@ theorem stepV_bound (c : Ctx) (hap : ∀ k x, c.hw.approx k x &&& widthMask .f32
       · rw [if_pos htf]; rw [if_pos htf] at hb
         by_cases h32 : (t == .f32) = true
         · rw [if_pos h32]; rw [if_neg (by simpa using h32)] at hb
-          exact binF_lt o _ _ _ (mask32_lt' x) (mask32_lt' y) hb
+          exact binF_lt o _ _ _ (PtxRun.mask32_toNat_lt x) (PtxRun.mask32_toNat_lt y) hb
         · rw [if_neg h32]; exact lt64 _
       · rw [if_neg htf]; rw [if_neg htf] at hb
         by_cases hmw : (o == .mulWide) = true
@@ -802,12 +782,12 @@ theorem stepV_bound (c : Ctx) (hap : ∀ k x, c.hw.approx k x &&& widthMask .f32
         peel opndV c regs a as v18
         peel opndV c regs b as v19
         repeat' (first | (split at h) | (cases h; done))
-        all_goals (cases h; exact mask32_lt' _)
+        all_goals (cases h; exact PtxRun.mask32_toNat_lt _)
   | vote d0 p k =>
       simp only [stepV] at h
       peel opndV c regs p as v20
       repeat' (first | (split at h) | (cases h; done))
-      all_goals (cases h; exact mask32_lt' _)
+      all_goals (cases h; exact PtxRun.mask32_toNat_lt _)
   | _ => exact Nat.lt_of_lt_of_le (UInt64.toNat_lt _) (by simp [Instr.resWidth])
 
 

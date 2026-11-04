@@ -33,7 +33,7 @@ theorem add_body (hw : Kernel.Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 3
   have hin : ∀ i, twoIn i < 2 := fun i => by unfold twoIn; split <;> decide
   have e : g * 1 * 32 = g * 32 := by rw [Nat.mul_one]
   intro j hj
-  exact BodyMap.mapKernel_body addSpec twoIn 0 "addEW" 2 1 g (by decide) (by decide) hw hw32 hin (by decide)
+  exact BodyMap.mapKernel_body addW2 twoIn 0 "addEW" 2 1 g (by decide) (by decide) hw hw32 hin (by decide)
     (by decide) (by rw [e]; exact hg) ⟨by decide +kernel, by decide +kernel⟩ bufs bufs'
     (fun i => by rw [e]; exact hsz _ (hin i)) (by rw [e]; exact hsz 0 (by decide)) hr j (by rw [e]; exact hj)
 

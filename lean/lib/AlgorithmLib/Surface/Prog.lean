@@ -978,11 +978,8 @@ def loadI8x16 (a : V .i64) : Prog V L (V .i8x16) :=
 
 /-- Stores, typed from the value. No store states an alignment. -/
 def store {ty} (v : V ty) (a : V .i64) : Prog V L Unit := .store v a (.ret ())
-/-- Stores exactly `ty` bytes; the value must already carry that width, which
-    is now the type rather than a check on the emitted term. -/
-def storeW (ty : ClifTy) (v : V ty) (a : V .i64) : Prog V L Unit := .store v a (.ret ())
-def storeI32 (v : V .i32) (a : V .i64) : Prog V L Unit := storeW .i32 v a
-def storeI64 (v : V .i64) (a : V .i64) : Prog V L Unit := storeW .i64 v a
+def storeI32 (v : V .i32) (a : V .i64) : Prog V L Unit := store v a
+def storeI64 (v : V .i64) (a : V .i64) : Prog V L Unit := store v a
 def storeUnaligned {ty} (v : V ty) (a : V .i64) : Prog V L Unit :=
   .storeUnaligned v a (.ret ())
 def istore8 {ty} (v : V ty) (a : V .i64) (h : ty.isInt = true := by decide) :
@@ -991,10 +988,10 @@ def istore8 {ty} (v : V ty) (a : V .i64) (h : ty.isInt = true := by decide) :
     at the narrow type, which Cranelift emits as one narrow store. -/
 def istore16 {ty} (v : V ty) (a : V .i64)
     (h : IExt.reduce.admits ty .i16 = true := by decide) : Prog V L Unit := do
-  storeW .i16 (← ireduce .i16 v h) a
+  store (← ireduce .i16 v h) a
 def istore32 {ty} (v : V ty) (a : V .i64)
     (h : IExt.reduce.admits ty .i32 = true := by decide) : Prog V L Unit := do
-  storeW .i32 (← ireduce .i32 v h) a
+  store (← ireduce .i32 v h) a
 
 /-- Call an entry point. The signature says what it takes and whether it binds
     a result, so a generator cannot pass the wrong list or read a result that
@@ -1043,16 +1040,16 @@ def pmin (ty : ClifTy) (a b : V ty) (h : ty.isFloatVec = true := by decide) :
     Prog V L (V ty) := do
   bitselect (← bitcast ty (← fcmp .lt a b (floatVec_isFloat h)) (cmpTy_width h)) a b
 
-/-- The address of `base + off`, the shape every fixed-offset access takes. -/
-def absAddr (base : V .i64) (off : Int) : Prog V L (V .i64) := do
-  iadd base (← iconst64 off)
-
 /-- An `i64` immediate and the operation that consumes it. -/
 def iaddImm (a : V .i64) (imm : Int) : Prog V L (V .i64) := do iadd a (← iconst64 imm)
 
+/-- The eight bytes at `base + offset`. -/
+def loadAt (base : V .i64) (offset : Nat) : Prog V L (V .i64) := do
+  load64 (← iaddImm base offset)
+
 /-- Store at `base + offset`, under default memory flags. -/
 def storeAt {ty} (base : V .i64) (offset : Nat) (val : V ty) : Prog V L Unit := do
-  storeUnaligned val (← absAddr base offset)
+  storeUnaligned val (← iaddImm base offset)
 /-- Shift by a constant. The amount is an `i64` whatever the value's width is,
     which is what CLIF's shifts take. -/
 def ishlImm {ta} (a : V ta) (imm : Int) (h : ta.isInt = true := by decide) :

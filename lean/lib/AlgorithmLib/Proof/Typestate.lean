@@ -743,15 +743,6 @@ theorem tyV_sc_ex {e : Option V} {T : ClifTy} (hl : T.lanes = none) (h : ∃ v, 
 
 end VecTy
 
-theorem mapM_ext {Γ' : Env} (he : Extends Γ Γ') : ∀ {rs : List Nat} {vs : List V},
-    rs.mapM (fun r => Γ[r]?) = some vs → rs.mapM (fun r => Γ'[r]?) = some vs
-  | [], _, h => h
-  | r :: rs, vs, h => by
-      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
-        Option.some.injEq] at h ⊢
-      obtain ⟨v, hv, vs', hvs', rfl⟩ := h
-      exact ⟨v, he.get hv, vs', mapM_ext he hvs', rfl⟩
-
 section LoopN
 
 /-- A comparison that answers a scalar compared two integers of one type, and
@@ -893,9 +884,6 @@ theorem toNat_and_lowMask {x m : UInt64} (k : Nat) (hk : k < 64) (hm : m.toNat =
     apply UInt64.toNat_inj.mp
     rw [hm, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by have := Nat.one_le_two_pow (n := k); omega)]
   subst this; exact toNat_and_mask hk
-
-theorem toNat_and_le_left (a b : UInt64) : (a &&& b).toNat ≤ a.toNat := by
-  rw [UInt64.toNat_and]; exact Nat.and_le_left
 
 theorem toNat_and_le_right (a b : UInt64) : (a &&& b).toNat ≤ b.toNat := by
   rw [UInt64.toNat_and]; exact Nat.and_le_right

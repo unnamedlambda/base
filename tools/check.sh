@@ -124,6 +124,15 @@ layers() {
   python3 "$ROOT/tools/layers.py"
 }
 
+# Each concept is defined once: no two theorems of the library state the same
+# proposition and no two definitions have the same body (`tools/Dups.lean`).
+one_definition() {
+  cd "$ROOT/lean"
+  { (cd lib && find AlgorithmLib -name '*.lean' | sed 's|\.lean$||; s|/|.|g' | sort | sed 's/^/import /')
+    cat "$ROOT/tools/Dups.lean"; } > "$ROOT/target/dups_check.lean"
+  "${GUARD[@]}" lake env lean "$ROOT/target/dups_check.lean"
+}
+
 # `AlgorithmLib.X86` must encode as GNU `as` does. The encoder is pure Lean, so
 # one kind of host checks it for all; elsewhere the step is skipped.
 x86_vs_as() {
@@ -250,6 +259,7 @@ cpp_host() {
 step "lean build"          lean_build
 step "no sorry"            no_sorry
 step "layers"              layers
+step "one definition"      one_definition
 step "x86 against as"      x86_vs_as
 step "artifacts reproduce" artifacts_reproduce
 step "rust check"          rust_check

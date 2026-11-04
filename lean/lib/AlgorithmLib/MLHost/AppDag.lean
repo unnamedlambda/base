@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Launch.AppGraph
-meta import AlgorithmLib.ML.Launch.AppGraph
+public import AlgorithmLib.MLHost.AppGraph
+meta import AlgorithmLib.MLHost.AppGraph
 @[expose] public section
 
 /-!

@@ -454,11 +454,11 @@ def mainCode : Prog V L Unit := do
   let frameSize ← iconst64 24
   let space ← iconst64 32
   let newline ← iconst64 10
-  let srcAddr ← absAddr ptr SOURCE_BUF
-  let identAddr ← absAddr ptr IDENT_BUF
-  let htValAddr ← absAddr ptr HT_VAL_BUF
-  let outBufAddr ← absAddr ptr OUTPUT_BUF
-  let stackAddr ← absAddr ptr STACK_BASE
+  let srcAddr ← iaddImm ptr SOURCE_BUF
+  let identAddr ← iaddImm ptr IDENT_BUF
+  let htValAddr ← iaddImm ptr HT_VAL_BUF
+  let outBufAddr ← iaddImm ptr OUTPUT_BUF
+  let stackAddr ← iaddImm ptr STACK_BASE
 
   -- one byte short of the buffer: its last byte stays zero, the text's end
   let _ ← readInputFile ptr SOURCE_BUF (SOURCE_BUF_SZ - 1)
@@ -481,11 +481,11 @@ def mainCode : Prog V L Unit := do
       (head := fun _ i => return (contIfULt i outLim, %[i], ()))
       (body := fun l i _ => do
         let ch ← uload8_64 (← iadd outSrc i)
-        istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH) i)
+        istore8 ch (← iadd (← iaddImm ptr OUTPUT_PATH) i)
         when .eq ch zero (brk l %[i])
         return %[← iaddImm i 1])
-    istore8 zero (← iadd (← absAddr ptr OUTPUT_PATH) outEnd.head)
-  let htSlotPtr ← absAddr ptr AlgorithmLib.ContextSlots.ht
+    istore8 zero (← iadd (← iaddImm ptr OUTPUT_PATH) outEnd.head)
+  let htSlotPtr ← iaddImm ptr AlgorithmLib.ContextSlots.ht
   callLibVoid fnHtInit %[htSlotPtr]
   let ctx ← load64 htSlotPtr
   let _ ← callLib fnHtCreate %[ctx]

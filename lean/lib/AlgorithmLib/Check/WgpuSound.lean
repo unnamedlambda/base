@@ -452,10 +452,10 @@ theorem mapM_of {α β : Type} {f g : α → Option β} :
       obtain ⟨y, hy, ys, hys, rfl⟩ := h
       exact ⟨y, hfg x y hy, ys, mapM_of hys hfg, rfl⟩
 
-theorem wgCells_array {α : Type} {a n : UInt64} {stride : Nat} {f g : UInt64 → Option α} {r : List α}
-    (h : wgCells a n stride f = some r) (hfg : ∀ x y, f x = some y → g x = some y) :
+theorem wgArray_mono {α : Type} {a n : UInt64} {stride : Nat} {f g : UInt64 → Option α} {r : List α}
+    (h : wgArray a n stride f = some r) (hfg : ∀ x y, f x = some y → g x = some y) :
     wgArray a n stride g = some r := by
-  unfold wgCells at h; unfold wgArray
+  unfold wgArray at h; unfold wgArray
   split at h
   · cases h
   · rw [if_neg (by assumption)]; exact mapM_of h (fun _ y hy => hfg _ y hy)
@@ -566,7 +566,7 @@ theorem row_deviceCreateBindGroupLayout {a ents n : AV} (hS : S.holds w) (hl : w
   obtain rfl := known_bits hy hea
   obtain rfl := known_bits hz hk
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
-  have harr := wgCells_array (g := wgBglEntry w.mem) hes (fun a v hv => by
+  have harr := wgArray_mono (g := wgBglEntry w.mem) hes (fun a v hv => by
     simp only [wgBglEntry, Option.bind_eq_bind, Option.bind_eq_some_iff] at hv ⊢
     obtain ⟨e, he, hv⟩ := hv
     exact ⟨e, cellOf_load hS he, hv⟩)
@@ -588,7 +588,7 @@ theorem row_deviceCreatePipelineLayout {a arr n : AV} (hS : S.holds w) (hl : w.w
   obtain rfl := known_bits hy hea
   obtain rfl := known_bits hz hk
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
-  have harr := wgCells_array (g := wgGroupAt w.wg w.mem) hgs (fun a v hv => by
+  have harr := wgArray_mono (g := wgGroupAt w.wg w.mem) hgs (fun a v hv => by
     simp only [wgGroupAt, Option.bind_eq_bind, Option.bind_eq_some_iff] at hv ⊢
     obtain ⟨h, hh, hv⟩ := hv
     split at hv
@@ -699,7 +699,7 @@ theorem row_deviceCreateBindGroup {a lh ents n : AV} (hS : S.holds w) (hl : w.wg
   obtain rfl := known_bits hu hk
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
   obtain ⟨dl, hgl, -, hfl, hkl⟩ := wgoArg_holds hS hl hy hL
-  have harr := wgCells_array (g := wgBgEntry w.wg w.mem) hes (fun _ _ hv => bgEntry_of hS hl hv)
+  have harr := wgArray_mono (g := wgBgEntry w.wg w.mem) hes (fun _ _ hv => bgEntry_of hS hl hv)
   cases l <;> simp only [WgShape.kind, reduceCtorEq] at hkl
   rename_i e
   obtain rfl := fits_eq_bgl hfl

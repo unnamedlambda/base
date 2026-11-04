@@ -732,14 +732,6 @@ theorem getV_setV_ne (vs : Blocks.Vals) (d v : Val) (x : V) (h : v.id ≠ d.id)
   · rfl
   · rw [Array.getElem?_append_left hlt]
 
-/-- Writing value `d` is read back. -/
-theorem getV_setV_self (vs : Blocks.Vals) (d : Val) (x : V) : Blocks.getV (Blocks.setV vs d x) d = some x := by
-  simp only [Blocks.getV, Blocks.setV]
-  rw [Array.set!_eq_setIfInBounds]
-  split
-  · rename_i h; rw [Array.getElem?_setIfInBounds_self_of_lt h]
-  · rw [Array.getElem?_setIfInBounds_self_of_lt (by simp; omega)]
-
 /-- A block's parameters bound to arguments, as `runFrom` binds them. -/
 def bindParams (vs : Blocks.Vals) (ps : List (Val × ClifTy)) (xs : List V) : Blocks.Vals :=
   (ps.zip xs).foldl (fun vs ((v, _), x) => Blocks.setV vs v x) vs
@@ -2805,13 +2797,6 @@ theorem imul_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d
   · intro t x y ht; rcases ht with rfl | rfl | rfl <;> rfl
   · exact cong_mul
 
-/-- A flag is 0 or 1. -/
-theorem flag_cases (x : UInt64) (h : x ≤ 1) : x = 0 ∨ x = 1 := by
-  have : x.toNat ≤ 1 := UInt64.le_iff_toNat_le.mp h
-  rcases (by omega : x.toNat = 0 ∨ x.toNat = 1) with h0 | h1
-  · left; exact UInt64.toNat_inj.mp h0
-  · right; exact UInt64.toNat_inj.mp h1
-
 theorem mask1 (z : UInt64) : (PtxRun.mask 1 z).toNat = z.toNat % 2 ^ 1 := by
   simp only [PtxRun.mask, show ¬ (1 ≥ 64) from by decide, if_false]
   rw [show ((1 : UInt64) <<< UInt64.ofNat 1 - 1) = ((2 ^ 1 - 1 : Nat).toUInt64) from rfl,
@@ -4455,10 +4440,6 @@ theorem runLM_iaddWin_reg (F : Facts) (tag : Nat) (d sa other : Val)
   have hto' : F.tys[other.id]? = some .i64 := by rw [← Std.HashMap.get?_eq_getElem?]; exact hto
   simp [iaddWin, facts?, hl', tyOf, hto', own, o, rw, isWin, hsw, emit, emitL]
 
-theorem mask32_toNat_lt (z : UInt64) : (PtxRun.mask 32 z).toNat < 2 ^ 32 := by
-  rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp), toNat_wm .i32 (by simp)]
-  exact Nat.mod_lt _ (by decide)
-
 theorem mask32_mod (z : UInt64) : (PtxRun.mask 32 z).toNat % 2 ^ 32 = z.toNat % 2 ^ 32 := by
   rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp), toNat_wm .i32 (by simp)]
   simp [ClifTy.width]
@@ -4493,7 +4474,7 @@ theorem iaddWin_run (F : Facts) (tag : Nat) (c : PtxRun.Ctx) (ts : PtxRun.TS) (v
           (by rw [← hraw]; exact opVal_lit c ts l hil) rfl
         simp only [StateT.run] at he
         simp [core, steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
-      · exact ⟨_, by simp [Std.HashMap.get?_eq_getElem?], mask32_toNat_lt _, winOff_add xs xo off xo hwo' rfl⟩
+      · exact ⟨_, by simp [Std.HashMap.get?_eq_getElem?], PtxRun.mask32_toNat_lt _, winOff_add xs xo off xo hwo' rfl⟩
       · intro c' n hn
         have hne : PtxIr.Reg.val c' n ≠ winReg d := by simp [winReg]; omega
         rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hne),
@@ -4532,7 +4513,7 @@ theorem iaddWin_run (F : Facts) (tag : Nat) (c : PtxRun.Ctx) (ts : PtxRun.TS) (v
       · rw [instrsOf_map, steps_append c _ _ ts _ hrun1]
         simp only [StateT.run] at hcv had
         simp [steps, StateT.run, hcv, had, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
-      · exact ⟨off', by simp [Std.HashMap.get?_eq_getElem?], mask32_toNat_lt _,
+      · exact ⟨off', by simp [Std.HashMap.get?_eq_getElem?], PtxRun.mask32_toNat_lt _,
           winOff_add xs xo off _ hwo' (mask32_mod xo)⟩
       · intro c' n hn
         have hne : PtxIr.Reg.val c' n ≠ winReg d := by simp [winReg]; omega
@@ -5477,9 +5458,6 @@ theorem collCalls_push (w : World) (start : Nat) (o : Obs) (h : start ≤ w.obs.
   rw [List.drop_append_of_le_length (by simpa using h), List.filterMap_append]
   cases hc : collOf o <;> simp [hc]
 
-theorem find_slot (c : Intr) : Intr.all.find? (·.slot == c.slot) = some c := by
-  cases c <;> decide
-
 /-- Worlds that each add an observation a launch reads alike, and are the
     same apart from their observations, stay related. -/
 theorem wrel_step (bs ps : Nat) (bw pw bw' pw' : World) (o o' : Obs) (h : WRel bs ps bw pw)
@@ -5515,7 +5493,7 @@ theorem barrier_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat)
   have hle : start0 ≤ s.world.obs.reverse.length := by simpa using hW.2.1
   have hmem : ts.w.mem = s.world.mem := (congrArg World.mem hW.1).symm
   simp only [step1, List.mapM_nil, pure_bind, callOf, obsCall, callWords, List.append_nil, threadLocals,
-    find_slot, Intr.isColl, if_true, collCalls, List.reverse_cons, List.drop_append_of_le_length hle,
+    Intr.find_slot, Intr.isColl, if_true, collCalls, List.reverse_cons, List.drop_append_of_le_length hle,
     List.filterMap_append, collOf, List.filterMap_cons, List.filterMap_nil, List.length_append,
     List.length_singleton, Nat.add_sub_cancel] at hst
   have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
@@ -5609,7 +5587,7 @@ theorem shfl_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
   obtain ⟨x, hx, hxn⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
   have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i32 x), world := { s.world with obs := o :: s.world.obs } } := by
     simp only [step1, List.mapM_cons, List.mapM_nil, hvv, hvm, bind, Option.bind, pure, callOf, obsCall, callWords,
-      List.append_nil, threadLocals, find_slot, hcoll, if_true, hnb, Bool.false_eq_true, if_false] at hst
+      List.append_nil, threadLocals, Intr.find_slot, hcoll, if_true, hnb, Bool.false_eq_true, if_false] at hst
     simp only [collCalls, List.reverse_cons, List.drop_append_of_le_length hle, List.filterMap_append, collOf, hcoll,
       if_true, List.filterMap_cons, List.filterMap_nil, List.length_append, List.length_singleton,
       Nat.add_sub_cancel] at hst
@@ -5702,7 +5680,7 @@ theorem ballot_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.an
   obtain ⟨x, hx, hxn⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
   have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i32 x), world := { s.world with obs := o :: s.world.obs } } := by
     simp only [step1, List.mapM_cons, List.mapM_nil, hvv, bind, Option.bind, pure, callOf, obsCall, callWords,
-      List.append_nil, threadLocals, find_slot, Intr.isColl, if_true] at hst
+      List.append_nil, threadLocals, Intr.find_slot, Intr.isColl, if_true] at hst
     simp only [collCalls, List.reverse_cons, List.drop_append_of_le_length hle, List.filterMap_append, collOf,
       Intr.isColl, if_true, List.filterMap_cons, List.filterMap_nil, List.length_append, List.length_singleton,
       Nat.add_sub_cancel] at hst
@@ -5772,13 +5750,6 @@ structure HwOk (hw : Hw) : Prop where
 
 /-! ### Float arithmetic -/
 
-/-- A word below `2^32` is its own low 32 bits. -/
-theorem and_f32_lt (x : UInt64) (h : x.toNat < 2 ^ 32) : x &&& widthMask .f32 = x := by
-  apply UInt64.toNat_inj.mp
-  rw [UInt64.toNat_and]
-  show x.toNat &&& (2 ^ 32 - 1) = x.toNat
-  rw [Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt h]
-
 /-- **On a GPU, PTX's one NaN is the platform's**: an f32 result `canon`
     leaves is the one the NaN rule leaves. -/
 theorem canon_nanFix {hw : Hw} (hhw : HwOk hw) (r : UInt64) (hr : r.toNat < 2 ^ 32) :
@@ -5795,10 +5766,6 @@ theorem f32_mask (y : UInt64) : f32 (PtxRun.mask 32 y) = f32 y := by
   apply UInt32.toNat_inj.mp
   rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp)]
   simp only [UInt64.toNat_toUInt32, toNat_wm .i32 (by simp), ClifTy.width, Nat.mod_mod]
-
-/-- A word whose f32 cut is itself is below `2^32`. -/
-theorem lt32_of_norm {x : UInt64} (h : x &&& widthMask .f32 = x) : x.toNat < 2 ^ 32 := by
-  rw [← h, UInt64.toNat_and]; exact Nat.lt_of_le_of_lt Nat.and_le_right (by simp [widthMask])
 
 open PtxRun in
 /-- **A float operation on two f32s** meets its obligation, on a GPU: both
@@ -6508,7 +6475,7 @@ theorem approx_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hhw : HwOk c.hw)
   -- the block semantics' step
   let ob : Obs := .call (.intr i) [.sc .f32 xv]
   have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .f32 (c.hw.approx i xv)), world := { s.world with obs := ob :: s.world.obs } } := by
-    simp [step1, hvv, callOf, obsCall, callWords, threadLocals, find_slot, hcoll, Except.toOption] at hst
+    simp [step1, hvv, callOf, obsCall, callWords, threadLocals, Intr.find_slot, hcoll, Except.toOption] at hst
     exact hst.symm
   subst hs1
   -- the lines

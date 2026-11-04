@@ -127,8 +127,9 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
   `lean-artifacts`' build script runs both build the package in `lean/`. Lake
   takes no lock; the `artifacts` target takes one around its own run, but a
   module build from here can still overlap it. Do not run both at once.
-* **Conventions, not coverage.** Every entry point is callable: `ffi f args`
-  takes `Vals V f.params` and returns `ResV V f.result`, both read off `Ffi`,
+* **Conventions, not coverage.** Every library function is callable:
+  `callLib f args` takes `Vals V f.params` and returns `ResV V f.result`, both
+  read off `LibFn`, and `ext e args` reads a C library's signature off `e.sig`,
   so arity and types are the call's type and there is nothing to keep in step.
   `ProgFFI` gives the hash table's functions a wrapper that reads the context
   pointer out of its slot for you.

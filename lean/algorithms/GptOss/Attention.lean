@@ -167,9 +167,9 @@ def rmsKernel : Kernel.Kernel := Body.kernel "rmsNorm" 3 0 rmsKernelEW
     input, so it accumulates in place. -/
 
 def twoIn : Fin 2 → Buf := fun i => if i.val = 0 then 0 else 1
-def addSpec : Expr 2 := .add (.var ⟨0, by decide⟩) (.var ⟨1, by decide⟩)
+def addW2 : Expr 2 := .add (.var ⟨0, by decide⟩) (.var ⟨1, by decide⟩)
 
-def addKernelEW : EWStmt := (mapKernel addSpec twoIn 0).ew
+def addKernelEW : EWStmt := (mapKernel addW2 twoIn 0).ew
 
 /-- The add as the decode launches it, one warp a block. -/
 def addKernel : Kernel.Kernel := Body.kernel "addEW" 2 0 addKernelEW

@@ -510,11 +510,6 @@ theorem ballot_fold_lt (p : Lane → UInt64) : ∀ (L : List Lane) (m : UInt64),
 
 theorem ballot_lt (p : Lane → UInt64) : (ISt.ballot p).toNat < 2 ^ 32 := ballot_fold_lt p _ 0 (by decide)
 
-theorem m32_ofLt {v : UInt64} (h : v.toNat < 2 ^ 32) : v &&& 0xffffffff = v := by
-  apply UInt64.toNat_inj.mp
-  rw [UInt64.toNat_and]
-  rw [show (0xffffffff : UInt64).toNat = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt h]
-
 /-! ## Shared memory -/
 
 /-- An address outside shared memory. -/
@@ -773,7 +768,7 @@ theorem lane_ballot (x : LCtx) (i : Nat) (d : Nat) (p : IExp) (ws : WSt F32) (cl
   have hk := get_of_drop ht
   have hv : ansW x.ans (collCalls li.w x.start).length &&& 0xffffffff =
       ISt.ballot (fun l => p.eval ws.int cta l) := by
-    rw [ansW_val hk, s32_m32, m32_ofLt (ballot_lt _)]
+    rw [ansW_val hk, s32_m32, and_mask32 (ballot_lt _)]
   refine ⟨_, by simp only [laneI, if_pos hr.start]; rfl, ?_, ?_, ?_, ?_⟩
   · refine ⟨fun r => ?_, hr.f, hr.fmem, hr.bmem, hr.imem, hr.wr, hr.asz, hr.sm, hr.nan,
       by simp [obsCall]; have := hr.start; omega, hr.ptr, hr.w32⟩

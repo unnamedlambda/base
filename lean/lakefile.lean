@@ -46,7 +46,15 @@ lean_lib Tokenizer where
 -- ViT: model, schedule, launches and their guards.
 @[default_target]
 lean_lib Vit where
-  globs := #[.submodules `Vit]
+  roots := #[`Vit.Algorithm]
+  globs := #[.one `Vit.Algorithm, .one `Vit.Body, .one `Vit.Dag, .one `Vit.Guards, .one `Vit.Host, .one `Vit.Model, .one `Vit.Ship, .one `Vit.Units, .one `Vit.Weave]
+  precompileModules := true
+
+-- The ViT's slot layout theorem, decided by compiled evaluation: apart from
+-- the precompiled library, where loading it would run the decision again.
+@[default_target]
+lean_lib VitSlot where
+  roots := #[`Vit.Slot]
 
 -- The LZ4 compressor artifact and its proof.
 @[default_target]
@@ -66,10 +74,18 @@ lean_lib Ship where
     `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Libs, `Ship.HtSpec, `Ship.LibCheck, `Ship.MathSpec, `Ship.MathCheck, `Ship.HtRuns, `Ship.HtLinked, `Ship.HtCheck]
   moreLeanArgs := #["--tstack=262144", "-M", "3500"]
 
--- The trust, ship and layout scans. Plain files: they read proof terms.
+-- The scans' machinery, which the generators import to scan themselves: its
+-- own library, so a precompiled library may import it without importing the
+-- scans of the apps built on that library.
+@[default_target]
+lean_lib ScanKit where
+  roots := #[`Scan.Ship]
+  globs := #[.one `Scan.Core, .one `Scan.Layout, .one `Scan.Ship, .one `Scan.MlSurface]
+
+-- The trust, ship and layout scans of each app. Plain files: they read proof terms.
 @[default_target]
 lean_lib Scan where
-  globs := #[.submodules `Scan]
+  globs := #[.one `Scan.GptOss, .one `Scan.GptOssDecode, .one `Scan.GptOssSurface, .one `Scan.Lz4, .one `Scan.Mlp, .one `Scan.Tokenizer, .one `Scan.Utility, .one `Scan.Vit, .one `Scan.Weave]
 
 -- The executables' roots, one line each; built by the executables that use them.
 lean_lib Main where

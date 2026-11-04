@@ -196,9 +196,9 @@ def gBindExperts : Prog V L Unit :=
     for t in List.range PIECES do
       let srcIx ← iaddImm e6 (GSTORE + t)
       let srcOff ← imul srcIx eight
-      let srcAddr ← iadd (← absAddr ptr GBIND_OFF) srcOff
+      let srcAddr ← iadd (← iaddImm ptr GBIND_OFF) srcOff
       let p ← load64 srcAddr
-      storeI64 p (← absAddr ptr (gBindOff (slotBuf j t)))
+      storeI64 p (← iaddImm ptr (gBindOff (slotBuf j t)))
 
 /-- Launch the kernel in slot `i` over `g` blocks of `blk` threads, handed
     the pointers the entries `bs` hold now, so the entries `gBindExperts`
@@ -499,7 +499,7 @@ def aUploadStep : Prog V L Unit :=
 /-- Launch kernel `i` over `g` blocks of `blk` threads, handed the pointers
     the entries `bs` hold. -/
 def aEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
-  Drv.bindFrom ptr ALOCAL_OFF (ALOCAL_OFF + 64) (bs.map aBindOff)
+  Drv.bind ptr ALOCAL_OFF (ALOCAL_OFF + 64) (bs.map aBindOff)
   Drv.launch ptr (aKern i g blk) (← iconst64 0)
 
 def NBLK : Nat := 32 * GptOssKernels.warpsPerCta
@@ -808,7 +808,7 @@ def lUploadStepM : Prog V L Unit := do
 /-- Launch kernel `i` over `g` blocks of `blk` threads, handed the pointers
     the entries `bs` hold. -/
 def lEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
-  Drv.bindFrom ptr LLOCAL_OFF (LLOCAL_OFF + 64) (bs.map lBindOff)
+  Drv.bind ptr LLOCAL_OFF (LLOCAL_OFF + 64) (bs.map lBindOff)
   Drv.launch ptr (lKern i g blk) (← iconst64 0)
 
 def NBLK : Nat := 32 * warpsPerCta
@@ -878,7 +878,7 @@ def lAttnM : Prog V L Unit := do
   -- router's whole row going out and four buffer bindings coming in.
   lEnqueue ptr S_TOP4 1 32 [L_RLOG, L_GATES, L_CHOSEN]
   Drv.sync
-  Drv.download ptr (← absAddr ptr LCHOSEN_OFF) (lBindOff L_CHOSEN) (TOPK * 4)
+  Drv.download ptr (← iaddImm ptr LCHOSEN_OFF) (lBindOff L_CHOSEN) (TOPK * 4)
 
 /-- **Binding the four slots, from ids the device chose.**
 
@@ -891,14 +891,14 @@ def lBindM : Prog V L Unit := do
   let eight ← iconst64 8
   let six ← iconst64 PIECES
   for j in List.range TOPK do
-    let e ← load32 (← absAddr ptr (LCHOSEN_OFF + 4 * j))
+    let e ← load32 (← iaddImm ptr (LCHOSEN_OFF + 4 * j))
     let e64 ← uextend64 e
     let e6 ← imul e64 six
     for t in List.range PIECES do
       let srcIx ← iaddImm e6 (LSTORE + t)
       let srcOff ← imul srcIx eight
-      let srcAddr ← iadd (← absAddr ptr LBIND_OFF) srcOff
-      storeI64 (← load64 srcAddr) (← absAddr ptr (lBindOff (lSlotBuf j t)))
+      let srcAddr ← iadd (← iaddImm ptr LBIND_OFF) srcOff
+      storeI64 (← load64 srcAddr) (← iaddImm ptr (lBindOff (lSlotBuf j t)))
 
 /-- **The mixture, and the second residual.** -/
 def lExpertBinds : List (Nat × Nat × List Nat) :=
@@ -948,12 +948,12 @@ def lFetchM (b n at_ : Nat) : Prog V L Unit := do
 def lMainFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let flag ← load32 (← absAddr ptr LINIT_OFF)
+  let flag ← load32 (← iaddImm ptr LINIT_OFF)
   let zero32 ← iconst32 0
   when .eq flag zero32 (do
     lLoadM
     let one32 ← iconst32 1
-    storeI32 one32 (← absAddr ptr LINIT_OFF))
+    storeI32 one32 (← iaddImm ptr LINIT_OFF))
   lUploadStepM
   lAttnM
   lBindM

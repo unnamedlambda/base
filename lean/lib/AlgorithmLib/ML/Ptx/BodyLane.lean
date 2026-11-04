@@ -284,8 +284,6 @@ theorem Slots.extend {Γ Γ' : Env} (h : Slots c Γ x) (hx : Extends Γ Γ') : S
   ⟨hx.get h.lane, h.lane32, hx.get h.cta, h.cta32, fun b => hx.get (h.buf b), hx.get h.z64,
     hx.get h.sm, hx.get h.i, hx.get h.zf, hx.get h.zi⟩
 
-theorem get_push_last (Γ : Env) (v : V) : (Γ.push v)[Γ.size]? = some v := by simp
-
 /-- **The environment holds the lane's float registers**: each one's word in
     its slot, zero's where none is bound, every word 32 bits. -/
 structure FEnv (c : Body.Ctx Slot) (r : Body.Regs Slot) (f : Nat → F32) (Γ : Env) : Prop where
@@ -344,18 +342,9 @@ theorem FEnv.set {r : Body.Regs Slot} {f : Nat → F32} {Γ : Env} (h : FEnv c r
 /-- Each operation's value, handed on in a slot of an environment keeping `Γ`. -/
 theorem xget {Γ : Env} {w : World} {ty : ClifTy} {v : V} {Q : Slot ty → Env → World → Prop}
     (h : ∀ s Γ', Extends Γ Γ' → Γ'[s]? = some v → Q s Γ' w) : Q Γ.size (Γ.push v) w :=
-  h _ _ (Extends.push _ _) (get_push_last _ _)
+  h _ _ (Extends.push _ _) (get_push_size)
 
 /-! ## Registers and expressions -/
-
-theorem bit01 {x : UInt64} (h : x ≤ 1) : x = 0 ∨ x = 1 := by
-  rcases Nat.lt_or_ge x.toNat 1 with h1 | h1
-  · left; apply UInt64.toNat_inj.mp; simp; omega
-  · right; apply UInt64.toNat_inj.mp; have := UInt64.le_iff_toNat_le.mp h; simp at this ⊢; omega
-
-theorem shl_mod64 (x y : UInt64) : x <<< (y % 64) = x <<< y := by
-  apply UInt64.toNat_inj.mp
-  simp [UInt64.toNat_shiftLeft]
 
 theorem shr_mod64 (x y : UInt64) : x >>> (y % 64) = x >>> y := by
   apply UInt64.toNat_inj.mp
@@ -374,7 +363,7 @@ theorem min_wide (x y : UInt64) :
 
 /-- A bit's predicate is the bit. -/
 theorem boolV_ne0 {x : UInt64} (h : x ≤ 1) : boolV (x != 0) = .sc .i8 x := by
-  rcases bit01 h with h0 | h0 <;> rw [h0] <;> rfl
+  rcases flag_cases _ h with h0 | h0 <;> rw [h0] <;> rfl
 
 /-- A bit, chosen between two constants pushed after it. -/
 theorem eval_sel01 (m : Mem) (Γ0 : Env) (f : Slot .i8) (b : UInt64) (hb : b ≤ 1)
@@ -382,10 +371,10 @@ theorem eval_sel01 (m : Mem) (Γ0 : Env) (f : Slot .i8) (b : UInt64) (hb : b ≤
     evalOp m ((Γ0.push (.sc .i64 (c64 1))).push (.sc .i64 (c64 0)))
       (.select f Γ0.size (Γ0.push (.sc .i64 (c64 1))).size) = some (.sc .i64 b) := by
   have hf' := ((Extends.push Γ0 (.sc .i64 (c64 1))).push_of (.sc .i64 (c64 0))).get hf
-  have h1 := (Extends.push (Γ0.push (.sc .i64 (c64 1))) (.sc .i64 (c64 0))).get (get_push_last Γ0 (.sc .i64 (c64 1)))
-  have h0 := get_push_last (Γ0.push (.sc .i64 (c64 1))) (.sc .i64 (c64 0))
+  have h1 := (Extends.push (Γ0.push (.sc .i64 (c64 1))) (.sc .i64 (c64 0))).get (get_push_size (Γ := Γ0) (v := .sc .i64 (c64 1)))
+  have h0 := get_push_size (Γ := Γ0.push (.sc .i64 (c64 1))) (v := .sc .i64 (c64 0))
   simp only [evalOp, Sem.get, hf', h1, h0]
-  rcases bit01 hb with rfl | rfl <;> rfl
+  rcases flag_cases _ hb with rfl | rfl <;> rfl
 
 /-- A predicate, as a 1 or a 0. -/
 theorem eval_selB (m : Mem) (Γ0 : Env) (f : Slot .i8) (p : Bool) (hf : Γ0[f]? = some (boolV p)) :
@@ -440,7 +429,7 @@ theorem wpE_getI {r : Body.Regs Slot} {reg : Nat → UInt64} {Γ : Env} {w : Wor
     refine wpE_bind (wpE_iconst64 ?_)
     refine wpE_val (v := .sc .i64 (reg n)) ?_ ?_
     · exact eval_sel01 _ Γ1 f _ (hE.bit n hfl) (by rw [hf, boolV_ne0 (hE.bit n hfl)])
-    · exact h _ _ (((hx1.push_of _).push_of _).push_of _) (get_push_last _ _)
+    · exact h _ _ (((hx1.push_of _).push_of _).push_of _) (get_push_size)
   · rw [if_neg hfl]
     cases hl : r.v.lookup n with
     | some v => exact wpE_pure (h v Γ (Extends.refl _) (hE.val n v hl))
@@ -455,7 +444,7 @@ theorem wpE_opOf {Γ : Env} {w : World} (o : IOp) {a b : Slot .i64} {x y : UInt6
     (h : ∀ v Γ', Extends Γ Γ' → Γ'[v]? = some (.sc .i64 (o.run x y)) → Q v Γ' w) :
     wpE cfg (Body.opOf o a b) Q Γ w := by
   cases o <;> unfold Body.opOf <;>
-    refine wpE_val (v := .sc .i64 _) ?_ (h _ _ (Extends.push _ _) (get_push_last _ _)) <;>
+    refine wpE_val (v := .sc .i64 _) ?_ (h _ _ (Extends.push _ _) (get_push_size)) <;>
     simp [Op'.erase, evalOp, Sem.get, ha, hb, IOp.run, norm, ibinOp, and_wide64, ClifTy.isInt, bin,
       shiftBin, zipIntBits, ClifTy.width, shr_mod64, min_wide]
 
@@ -712,7 +701,7 @@ theorem wpE_exp {r : Body.Regs Slot} {reg : Nat → UInt64} {Γ : Env} {w : Worl
           refine wpE_bind (wpE_iconst64 ?_)
           refine wpE_val (v := .sc .i64 ((IExp.cmp k a b).evalL x reg)) ?_ ?_
           · simp only [Op'.erase]; rw [eval_selB _ Γ1 p _ hp]; rfl
-          · exact hQ _ _ (((hx1.push_of _).push_of _).push_of _) (get_push_last _ _)
+          · exact hQ _ _ (((hx1.push_of _).push_of _).push_of _) (get_push_size)
         simp only [Body.iexp]
         by_cases hn : (Body.narrow r a && Body.narrow r b) = true
         · simp only [hn, if_true]
@@ -756,7 +745,7 @@ theorem isBool_bit {r : Body.Regs Slot} {reg : Nat → UInt64} {Γ : Env} (hE : 
       have ha := isBool_bit hE a h.1
       have hb := isBool_bit hE b h.2
       simp only [IExp.evalL, IOp.run]
-      rcases bit01 ha with h1 | h1 <;> rcases bit01 hb with h2 | h2 <;> rw [h1, h2] <;> decide
+      rcases flag_cases _ ha with h1 | h1 <;> rcases flag_cases _ hb with h2 | h2 <;> rw [h1, h2] <;> decide
   | .lit _, h | .lane, h | .cta, h | .ptr _, h | .ctz _, h => by simp [IExp.isBool] at h
   | .bin .add _ _, h | .bin .sub _ _, h | .bin .mul _ _, h | .bin .shl _ _, h | .bin .shr _ _, h
   | .bin .umin _ _, h => by simp [IExp.isBool] at h
@@ -793,21 +782,21 @@ theorem wpE_ne0 {r : Body.Regs Slot} {reg : Nat → UInt64} {Γ Γ0 : Env} {w : 
     wpE cfg (do icmp .ne (← Body.iexp c r e) (← iconst64 0)) Q Γ0 w := by
   refine wpE_bind ((wpE_exp hE hS e).1 hx0 fun v Γ1 hx1 hv => ?_)
   refine wpE_bind (wpE_iconst64 ?_)
-  refine wpE_icmp64 _ ((Extends.push _ _).get hv) (get_push_last _ _) fun p Γ2 hx2 hp =>
+  refine wpE_icmp64 _ ((Extends.push _ _).get hv) (get_push_size) fun p Γ2 hx2 hp =>
     h p Γ2 (hx1.trans ((Extends.push _ _).trans hx2)) ?_
   rw [hp]; rfl
 
 theorem band8 (p q : UInt64) (hp : p ≤ 1) (hq : q ≤ 1) :
     zipIntBits (boolV (p != 0)) (boolV (q != 0)) (fun _ x y => x &&& y) = some (boolV ((p &&& q) != 0)) := by
-  rcases bit01 hp with rfl | rfl <;> rcases bit01 hq with rfl | rfl <;> rfl
+  rcases flag_cases _ hp with rfl | rfl <;> rcases flag_cases _ hq with rfl | rfl <;> rfl
 
 theorem bor8 (p q : UInt64) (hp : p ≤ 1) (hq : q ≤ 1) :
     zipIntBits (boolV (p != 0)) (boolV (q != 0)) (fun _ x y => x ||| y) = some (boolV ((p ||| q) != 0)) := by
-  rcases bit01 hp with rfl | rfl <;> rcases bit01 hq with rfl | rfl <;> rfl
+  rcases flag_cases _ hp with rfl | rfl <;> rcases flag_cases _ hq with rfl | rfl <;> rfl
 
 theorem bxor8 (p q : UInt64) (hp : p ≤ 1) (hq : q ≤ 1) :
     zipIntBits (boolV (p != 0)) (boolV (q != 0)) (fun _ x y => x ^^^ y) = some (boolV ((p ^^^ q) != 0)) := by
-  rcases bit01 hp with rfl | rfl <;> rcases bit01 hq with rfl | rfl <;> rfl
+  rcases flag_cases _ hp with rfl | rfl <;> rcases flag_cases _ hq with rfl | rfl <;> rfl
 
 /-- **An expression's predicate**: whether it is not zero. -/
 theorem wpE_ipred {r : Body.Regs Slot} {reg : Nat → UInt64} {Γ : Env} {w : World}
@@ -1030,22 +1019,6 @@ def carried (st : LI) (ws rv rf : List Nat) : List V :=
   ws.map (fun n => .sc .f32 (st.f n).bits) ++
     (rv.map (fun n => .sc .i64 (st.reg n)) ++ rf.map (fun n => .sc .i8 (st.reg n)))
 
-theorem mapM_extends {Γ Γ' : Env} (hx : Extends Γ Γ') :
-    ∀ {l : List Nat} {xs : List V}, l.mapM (fun r => Γ[r]?) = some xs → l.mapM (fun r => Γ'[r]?) = some xs
-  | [], xs, h => h
-  | r :: l, xs, h => by
-      simp only [List.mapM_cons, bind, Option.bind] at h ⊢
-      cases hr : Γ[r]? with
-      | none => simp [hr] at h
-      | some x =>
-          rw [hr] at h
-          cases hl : l.mapM (fun r => Γ[r]?) with
-          | none => simp [hl] at h
-          | some ys =>
-              simp only [hl] at h
-              have h' : x :: ys = xs := Option.some.inj h
-              simp [hx.get hr, mapM_extends hx hl, h']
-
 theorem appendV_slots {a b : List ClifTy} (u : Vals Slot a) (v : Vals Slot b) :
     (Body.appendV u v).slots = u.slots ++ v.slots := by
   induction u with
@@ -1108,7 +1081,7 @@ theorem wpE_pack {r : Body.Regs Slot} {st : LI} {w : World} {Γ : Env}
   refine wpE_bind (wpE_packV rv hE fun a Γ1 hx1 ha => ?_)
   refine wpE_bind (wpE_packP rf (hE.extend hx1) hf fun b Γ2 hx2 hb => ?_)
   refine wpE_pure (h _ _ (hx1.trans hx2) ?_)
-  have ha' : a.slots.mapM (fun r => Γ2[r]?) = some (rv.map fun n => .sc .i64 (st.reg n)) := mapM_extends hx2 ha
+  have ha' : a.slots.mapM (fun r => Γ2[r]?) = some (rv.map fun n => .sc .i64 (st.reg n)) := Sem.mapM_ext hx2 ha
   simp [appendV_slots, packF_slots, List.mapM_append, ha', hb, carried,
     packF_read (hF.extend (hx1.trans hx2)) ws]
 
@@ -1392,8 +1365,8 @@ theorem wpE_store16 {Γ : Env} {w w' : World} {xS smS aS : Slot .i64} {X S A : U
   have hx2 := (Extends.push Γ (.sc .i64 (S + A))).get hx
   refine wpE_bind (wpE_val (v := .sc .i16 (X &&& 0xffff)) (by
     simp only [Op'.erase, evalOp, Sem.get, hx2]; simp [norm, IExt.admits, ClifTy.isInt, ClifTy.width]; rfl) ?_)
-  have hp := (Extends.push _ (.sc .i16 (X &&& 0xffff))).get (get_push_last Γ (.sc .i64 (S + A)))
-  have hq := get_push_last (Γ.push (.sc .i64 (S + A))) (.sc .i16 (X &&& 0xffff))
+  have hp := (Extends.push _ (.sc .i16 (X &&& 0xffff))).get (get_push_size (Γ := Γ) (v := .sc .i64 (S + A)))
+  have hq := get_push_size (Γ := Γ.push (.sc .i64 (S + A))) (v := .sc .i16 (X &&& 0xffff))
   refine wpE_store (w' := { obsStore w (S + A) 2 (X &&& 0xffff) with mem := m })
     (by simp only [runStmt, Sem.get, hp, hq]; simp [tyBytes, ClifTy.width, hm]) (wpE_ret ?_)
   exact h _ (((Extends.push _ _).push_of _))
@@ -1509,12 +1482,10 @@ theorem wpE_ex2L {hw : Hw} {Γ : Env} {w : World} {a : Slot .f32} {v : UInt64} {
     (hex : ∀ v w, cfg.locals Intr.ex2Approx.slot [.sc .f32 v] w = .ok (some (.sc .f32 (hw.approx .ex2Approx v)), w))
     (ha : Γ[a]? = some (.sc .f32 v))
     (h : Q Γ.size (Γ.push (.sc .f32 (hw.approx .ex2Approx v))) (obsCall w (.intr .ex2Approx) [.sc .f32 v])) :
-    wpE cfg (callLocal Body.ex2 %[a] : Prog Slot Lvl (Slot .f32)) Q Γ w :=
+    wpE cfg (callLocal Kernel.Block.ex2Approx %[a] : Prog Slot Lvl (Slot .f32)) Q Γ w :=
   wpE_callLocal (vs := [.sc .f32 v]) (v := .sc .f32 (hw.approx .ex2Approx v))
     (w' := obsCall w (.intr .ex2Approx) [.sc .f32 v]) rfl (by simp [Vals.slots, ha])
-    (by simp [callOf, Body.ex2, hex, Except.toOption]) (wpE_ret h)
-
-theorem mask32_of {v : UInt64} (h : v.toNat < 2 ^ 32) : v &&& widthMask .f32 = v := and_mask32 h
+    (by simp [callOf, Kernel.Block.ex2Approx, hex, Except.toOption]) (wpE_ret h)
 
 /-- **A float expression's code computes its value at `F32`**: its code ends
     with that value's word, in the world its `2^x` calls make. -/
@@ -1535,8 +1506,8 @@ theorem wpE_fexpL (hw : Hw)
       intro Γ w Q hn _ hQ
       rw [Body.fexp]
       apply wpE_fconst32
-      rw [mask32_of (ofF32_lt v)]
-      exact hQ _ _ (Extends.push _ _) (get_push_last _ _)
+      rw [and_f32_lt _ (ofF32_lt v)]
+      exact hQ _ _ (Extends.push _ _) (get_push_size)
   | add a b iha ihb =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
@@ -1545,7 +1516,7 @@ theorem wpE_fexpL (hw : Hw)
       refine wpE_bind (ihb Γa _ _ hna (fun n => hEa.get (hr n)) fun rb Γb hEb hrb => ?_)
       refine wpE_fadd32 (hEb.get hra) hrb ?_
       rw [fl_nan (by rw [exLog_mem]; exact hna)]
-      exact hQ _ _ ((hEa.trans hEb).push_of _) (get_push_last _ _)
+      exact hQ _ _ ((hEa.trans hEb).push_of _) (get_push_size)
   | mul a b iha ihb =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
@@ -1554,22 +1525,22 @@ theorem wpE_fexpL (hw : Hw)
       refine wpE_bind (ihb Γa _ _ hna (fun n => hEa.get (hr n)) fun rb Γb hEb hrb => ?_)
       refine wpE_fmul32 (hEb.get hra) hrb ?_
       rw [fl_nan (by rw [exLog_mem]; exact hna)]
-      exact hQ _ _ ((hEa.trans hEb).push_of _) (get_push_last _ _)
+      exact hQ _ _ ((hEa.trans hEb).push_of _) (get_push_size)
   | neg a iha =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
       refine wpE_bind (iha Γ w _ hn hr fun ra Γa hEa hra => ?_)
-      exact wpE_fneg32 hra (hQ _ _ (hEa.push_of _) (get_push_last _ _))
+      exact wpE_fneg32 hra (hQ _ _ (hEa.push_of _) (get_push_size))
   | inv a iha =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
       refine wpE_bind (iha Γ w _ hn hr fun ra Γa hEa hra => ?_)
       have hna : (exLog hw f a w).mem.nan = hw.nan := by rw [exLog_mem]; exact hn
       refine wpE_bind (wpE_fconst32 ?_)
-      rw [mask32_of (by decide : oneBits.toNat < 2 ^ 32)]
-      refine wpE_fdiv32 (get_push_last _ _) (get_push hra) ?_
+      rw [and_f32_lt _ (by decide : oneBits.toNat < 2 ^ 32)]
+      refine wpE_fdiv32 (get_push_size) (get_push hra) ?_
       rw [fl_nan hna]
-      exact hQ _ _ ((hEa.push_of _).push_of _) (get_push_last _ _)
+      exact hQ _ _ ((hEa.push_of _).push_of _) (get_push_size)
   | exp a iha =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
@@ -1577,15 +1548,15 @@ theorem wpE_fexpL (hw : Hw)
       have hna : (exLog hw f a w).mem.nan = hw.nan := by rw [exLog_mem]; exact hn
       refine wpE_bind (wpE_fconst32 ?_)
       rw [show log2eBits &&& widthMask .f32 = log2eBits from and_mask32 (ofF32_lt _)]
-      refine wpE_bind (wpE_fmul32 (get_push hra) (get_push_last _ _) ?_)
+      refine wpE_bind (wpE_fmul32 (get_push hra) (get_push_size) ?_)
       rw [fl_nan hna]
-      exact wpE_ex2L hex (get_push_last _ _)
-        (hQ _ _ (((hEa.push_of _).push_of _).push_of _) (get_push_last _ _))
+      exact wpE_ex2L hex (get_push_size)
+        (hQ _ _ (((hEa.push_of _).push_of _).push_of _) (get_push_size))
   | ex2 a iha =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
       refine wpE_bind (iha Γ w _ hn hr fun ra Γa hEa hra => ?_)
-      exact wpE_ex2L hex hra (hQ _ _ (hEa.push_of _) (get_push_last _ _))
+      exact wpE_ex2L hex hra (hQ _ _ (hEa.push_of _) (get_push_size))
   | rsqrt a iha =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
@@ -1594,10 +1565,10 @@ theorem wpE_fexpL (hw : Hw)
       refine wpE_bind (wpE_sqrt32 hra ?_)
       rw [fl_nan hna]
       refine wpE_bind (wpE_fconst32 ?_)
-      rw [mask32_of (by decide : oneBits.toNat < 2 ^ 32)]
-      refine wpE_fdiv32 (get_push_last _ _) (get_push (get_push_last _ _)) ?_
+      rw [and_f32_lt _ (by decide : oneBits.toNat < 2 ^ 32)]
+      refine wpE_fdiv32 (get_push_size) (get_push (get_push_size)) ?_
       rw [fl_nan hna]
-      exact hQ _ _ (((hEa.push_of _).push_of _).push_of _) (get_push_last _ _)
+      exact hQ _ _ (((hEa.push_of _).push_of _).push_of _) (get_push_size)
   | maxW a b iha ihb =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
@@ -1605,10 +1576,10 @@ theorem wpE_fexpL (hw : Hw)
       have hna : (exLog hw f a w).mem.nan = hw.nan := by rw [exLog_mem]; exact hn
       refine wpE_bind (ihb Γa _ _ hna (fun n => hEa.get (hr n)) fun rb Γb hEb hrb => ?_)
       refine wpE_bind (wpE_fcmp32 (hEb.get hra) hrb ?_)
-      refine wpE_selectF32 (get_push_last _ _) (get_push (hEb.get hra)) (get_push hrb) ?_
+      refine wpE_selectF32 (get_push_size) (get_push (hEb.get hra)) (get_push hrb) ?_
       exact hQ _ _ (((hEa.trans hEb).push_of _).push_of _)
         (by show _ = some (V.sc ClifTy.f32 (@NumOps.max F32 (F32.ops hw) _ _).bits); rw [fmax_bits]
-            exact get_push_last _ _)
+            exact get_push_size)
   | geF a b iha ihb =>
       intro Γ w Q hn hr hQ
       simp only [Body.fexp]
@@ -1618,12 +1589,12 @@ theorem wpE_fexpL (hw : Hw)
       refine wpE_bind (wpE_fcmp32 (hEb.get hra) hrb ?_)
       refine wpE_bind (wpE_fconst32 ?_)
       refine wpE_bind (wpE_fconst32 ?_)
-      rw [mask32_of (ofF32_lt _), mask32_of (ofF32_lt _)]
-      refine wpE_selectF32 (get_push (get_push (get_push_last _ _))) (get_push (get_push_last _ _))
-        (get_push_last _ _) ?_
+      rw [and_f32_lt _ (ofF32_lt _), and_f32_lt _ (ofF32_lt _)]
+      refine wpE_selectF32 (get_push (get_push (get_push_size))) (get_push (get_push_size))
+        (get_push_size) ?_
       exact hQ _ _ ((((hEa.trans hEb).push_of _).push_of _).push_of _ |>.push_of _)
         (by show _ = some (V.sc ClifTy.f32 (@NumOps.ifGe F32 (F32.ops hw) _ _ _ _).bits); rw [fifGe_bits]
-            exact get_push_last _ _)
+            exact get_push_size)
 
 theorem s32_toUInt32 {v : UInt64} (h : v < 2 ^ 32) : s32 v.toUInt32 = v := by
   apply UInt64.toNat_inj.mp
@@ -1656,7 +1627,7 @@ theorem idx_opsL (c : Body.Ctx Slot) : ∀ ix : IdxE, OpsOnly (Body.idx c ix : P
   | .loopI => by unfold Body.idx; exact .ret _
   | .ctaId => by unfold Body.idx; exact .ret _
   | .ireg _ => by unfold Body.idx; exact .ret _
-  | .lit n => by unfold Body.idx Body.c32; ops_only
+  | .lit n => by unfold Body.idx Kernel.Block.c32; ops_only
   | .add a b => by
       unfold Body.idx; exact OpsOnly.bind (idx_opsL c a) fun _ => OpsOnly.bind (idx_opsL c b) fun _ => by ops_only
   | .mul a b => by
@@ -1691,7 +1662,7 @@ theorem wp_idxV {d : Nat} {J : Post} :
     split at hj
     · rename_i hn
       obtain rfl := Option.some.inj hj
-      rw [Body.idx, Body.c32]
+      rw [Body.idx, Kernel.Block.c32]
       refine wp_iconst32u (by simp only [Int.ofNat_eq_natCast]; constructor <;> omega) ?_
       exact hQ _ _ (Extends.push _ _) (by simpa using get_push_size)
     · cases hj
@@ -1804,7 +1775,7 @@ theorem code_ldH (d : Nat) (a : IExp) : CodeOk cfg c x (.ldH d a) := by
   simp only [Body.stmt, Body.stmtT, Body.leaf]
   refine wpE_bind ((wpE_exp hE hS a).1 (Extends.refl _) fun va Γ1 hx1 hva => ?_)
   refine wpE_bind (wpE_iadd ((hS.extend hx1).sm) hva ?_)
-  refine wpE_bind (wpE_uload16 (get_push_last _ _) hl fun vs Γ2 hx2 hvs => ?_)
+  refine wpE_bind (wpE_uload16 (get_push_size) hl fun vs Γ2 hx2 hvs => ?_)
   have hx := hx1.trans ((Extends.push _ _).trans hx2)
   exact wpE_pure (hQ _ _ hx
     ((hE.extend hx).setV d (assign_flag hwf (by simp [Body.assigns])) vs v hvs) (FEnv.ofF (hF.extend hx)))
@@ -1852,13 +1823,13 @@ theorem code_ballot (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d :
     simp only [Body.stmt, Body.stmtT, Body.leaf]
     refine wpE_bind (wpE_ipred hE hS p (Extends.refl _) fun pv Γ1 hx1 hp => ?_)
     refine wpE_bind (wpE_coll1 hA (c := .ballot) rfl Body.ballotR rfl hp hs rfl (valAt_words hW _) ?_)
-    refine wpE_bind (wpE_uext32 (get_push_last _ _) fun v Γ2 hx2 hv => ?_)
+    refine wpE_bind (wpE_uext32 (get_push_size) fun v Γ2 hx2 hv => ?_)
     have hx := hx1.trans ((Extends.push _ _).trans hx2)
     have hlt := ansW_lt x.ans (collCalls st.w x.start).length
     refine wpE_pure (hQ _ _ hx ?_ (FEnv.ofF (hF.extend hx)))
     exact (hE.extend hx).setW d (assign_flag hwf (by simp [Body.assigns])) v _
       (ansW x.ans (collCalls st.w x.start).length &&& 0xffffffff) (m32_lt _) (by rw [hv]; rfl)
-      (by rw [hx2.get (get_push_last _ _), m32_of_lt hlt]; rfl)
+      (by rw [hx2.get (get_push_size), m32_of_lt hlt]; rfl)
   · cases hr
 
 theorem code_shflIdx (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d : Nat) (v sr : IExp) :
@@ -1873,13 +1844,13 @@ theorem code_shflIdx (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d 
     refine wpE_bind ((wpE_exp hE hS sr).2 hx1 fun vs Γ2 hx2 hvs => ?_)
     refine wpE_bind (wpE_coll2 hA (c := .shflIdx) rfl Body.shflIdxR rfl (hx2.get hvv) hvs hs rfl
       (valAt_words hW _) ?_)
-    refine wpE_bind (wpE_uext32 (get_push_last _ _) fun o Γ3 hx3 ho => ?_)
+    refine wpE_bind (wpE_uext32 (get_push_size) fun o Γ3 hx3 ho => ?_)
     have hx := hx1.trans (hx2.trans ((Extends.push _ _).trans hx3))
     have hlt := ansW_lt x.ans (collCalls st.w x.start).length
     refine wpE_pure (hQ _ _ hx ?_ (FEnv.ofF (hF.extend hx)))
     exact (hE.extend hx).setW d (assign_flag hwf (by simp [Body.assigns])) o _
       (ansW x.ans (collCalls st.w x.start).length &&& 0xffffffff) (m32_lt _) (by rw [ho]; rfl)
-      (by rw [hx3.get (get_push_last _ _), m32_of_lt hlt]; rfl)
+      (by rw [hx3.get (get_push_size), m32_of_lt hlt]; rfl)
   · cases hr
 
 theorem code_barrier (hA : AnswersFrom x.ans x.start cfg) : CodeOk cfg c x .barrier := by
@@ -1891,7 +1862,7 @@ theorem code_barrier (hA : AnswersFrom x.ans x.start cfg) : CodeOk cfg c x .barr
     · rename_i b hb
       obtain rfl := (Option.some.inj hr).symm
       simp only [Body.stmt, Body.stmtT, Body.leaf]
-      exact wpE_bind (wpE_bar hA Body.bar rfl hs rfl hb (wpE_pure (hQ r Γ (Extends.refl _) hE hF)))
+      exact wpE_bind (wpE_bar hA Kernel.Block.barrier rfl hs rfl hb (wpE_pure (hQ r Γ (Extends.refl _) hE hF)))
     · cases hr
   · cases hr
 
@@ -1923,16 +1894,16 @@ theorem code_shflXor (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d 
     rw [bits32L (hF.w32 sr)] at hss
     refine wpE_bind (wpE_bitcastI32 hss ?_)
     refine wpE_bind (wpE_iconst32u (by simp only [Int.ofNat_eq_natCast]; constructor <;> omega) ?_)
-    refine wpE_bind (wpE_coll2 hA (c := .shflBfly) rfl Body.shfl rfl (get_push (get_push_last _ _))
-      (get_push_last _ _) hs (k := (collCalls st.w x.start).length) rfl (valAt_words hW _) ?_)
-    refine wpE_bind (wpE_bitcastF32 (get_push_last _ _) ?_)
+    refine wpE_bind (wpE_coll2 hA (c := .shflBfly) rfl Kernel.Block.shflBfly rfl (get_push (get_push_size))
+      (get_push_size) hs (k := (collCalls st.w x.start).length) rfl (valAt_words hW _) ?_)
+    refine wpE_bind (wpE_bitcastF32 (get_push_size) ?_)
     have hwe : obsCall st.w (.intr .shflBfly) [.sc .i32 (s32 (st.f sr).bits.toUInt32),
         .sc .i32 (s32 (UInt32.ofNat (Int.ofNat m).toNat))] =
         callW st.w .shflBfly [.sc .i32 (st.f sr).bits, .sc .i32 (s32 (UInt32.ofNat m))] := by
       rw [← bits32L (hF.w32 sr)]; rfl
     rw [hwe]
     exact wpE_pure (hQ _ _ (by extc) (EnvI.ofI (hE.extend (by extc)))
-      ((hF.extend (by extc)).set d (y := ⟨ansW x.ans (collCalls st.w x.start).length⟩) (get_push_last _ _)
+      ((hF.extend (by extc)).set d (y := ⟨ansW x.ans (collCalls st.w x.start).length⟩) (get_push_size)
         (by simpa using UInt64.lt_iff_toNat_lt.mp (ansW_lt x.ans _))))
   · cases hr
 
@@ -1947,7 +1918,7 @@ theorem code_loadIdx (d : Nat) (b : Buf) (ix : IdxE) : CodeOk cfg c x (.loadIdx 
   refine wpE_bind (wpE_at4L ((hS.extend hEi).buf b) hvi fun va Γa hEa hva => ?_)
   refine wpE_bind (wpE_loadF32 hva hv ?_)
   have hx : Extends Γ (Γa.push (.sc .f32 v)) := (hEi.trans hEa).push_of _
-  exact wpE_pure (hQ _ _ hx (EnvI.ofI (hE.extend hx)) ((hF.extend hx).set d (y := ⟨v⟩) (get_push_last _ _) (load4_lt hv)))
+  exact wpE_pure (hQ _ _ hx (EnvI.ofI (hE.extend hx)) ((hF.extend hx).set d (y := ⟨v⟩) (get_push_size) (load4_lt hv)))
 
 theorem code_loadV4 (d0 d1 d2 d3 : Nat) (b : Buf) (ix : IdxE) : CodeOk cfg c x (.loadV4 d0 d1 d2 d3 b ix) := by
   intro r Γ st st' Q _ hE hF hS hr hQ
@@ -1963,11 +1934,11 @@ theorem code_loadV4 (d0 d1 d2 d3 : Nat) (b : Buf) (ix : IdxE) : CodeOk cfg c x (
   refine wpE_bind (wpE_at4L ((hS.extend hEi).buf b) hvi fun va Γa hEa hva => ?_)
   refine wpE_bind (wpE_loadF32 hva h0 ?_)
   refine wpE_bind (wpE_iaddImm (get_push hva) ?_)
-  refine wpE_bind (wpE_loadF32 (get_push_last _ _) h1 ?_)
+  refine wpE_bind (wpE_loadF32 (get_push_size) h1 ?_)
   refine wpE_bind (wpE_iaddImm (get_push (get_push (get_push (get_push hva)))) ?_)
-  refine wpE_bind (wpE_loadF32 (get_push_last _ _) h2 ?_)
+  refine wpE_bind (wpE_loadF32 (get_push_size) h2 ?_)
   refine wpE_bind (wpE_iaddImm (get_push (get_push (get_push (get_push (get_push (get_push (get_push hva))))))) ?_)
-  refine wpE_bind (wpE_loadF32 (get_push_last _ _) h3 ?_)
+  refine wpE_bind (wpE_loadF32 (get_push_size) h3 ?_)
   refine wpE_pure (hQ _ _ (by extc) (EnvI.ofI (hE.extend (by extc))) ?_)
   exact (((((hF.extend (by extc)).set d0 (y := ⟨v0⟩) (by look) (load4_lt h0)).set d1 (y := ⟨v1⟩) (by look)
     (load4_lt h1)).set d2 (y := ⟨v2⟩) (by look) (load4_lt h2)).set d3 (y := ⟨v3⟩) (by look) (load4_lt h3))
@@ -1989,13 +1960,13 @@ theorem code_storeLane (b : Buf) (ix : IdxE) (n : Nat) : CodeOk cfg c x (.storeL
 
 theorem code_storeLane0 (b : Buf) (ix : IdxE) (n : Nat) : CodeOk cfg c x (.storeLane0 b ix n) := by
   intro r Γ st st' Q _ hE hF hS hr hQ
-  simp only [Body.stmt, Body.stmtT, Body.leaf, Body.c32]
+  simp only [Body.stmt, Body.stmtT, Body.leaf, Kernel.Block.c32]
   refine wpE_bind (wpE_iconst32u (by decide) ?_)
   refine wpE_bind ?_
   simp only [when]
   have hl : (Γ.push (V.sc .i32 (s32 (UInt32.ofNat (Int.ofNat 0).toNat))))[c.lane]? =
       some (.sc .i32 (s32 x.lv.toUInt32)) := by rw [s32_toUInt32 hS.lane32]; exact get_push hS.lane
-  refine wpE_bind (wpE_ifteT (Qj := fun _ Γ' u => Extends Γ Γ' ∧ u = st'.w) rfl hl (get_push_last _ _) ?_ ?_
+  refine wpE_bind (wpE_ifteT (Qj := fun _ Γ' u => Extends Γ Γ' ∧ u = st'.w) rfl hl (get_push_size) ?_ ?_
     (fun jv _ _ _ => ⟨[], by cases jv; rfl⟩) ?_)
   · intro hcmp
     rw [cmp32_eq] at hcmp
@@ -2648,7 +2619,7 @@ theorem wpE_loopXL {r : Body.Regs Slot} {Γ : Env} {nS : Slot .i32} {n : Nat} (w
     {Q : Body.Regs Slot → Env → World → Prop}
     (hQ : ∀ r' Γ', Extends Γ Γ' → EnvI c r' (stF n).reg Γ' → FEnv c r' (stF n).f Γ' → Q r' Γ' (stF n).w) :
     wpE cfg (Body.stmtT.loopX c r nS ws rs run) Q Γ (stF 0).w := by
-  simp only [Body.stmtT.loopX, Body.c32]
+  simp only [Body.stmtT.loopX, Kernel.Block.c32]
   have hv0 : ∀ m ∈ Body.vregs c rs, c.fl.contains m = false := fun m hm => vregs_mem hm
   have hf0 : ∀ m ∈ Body.pregs c rs, c.fl.contains m = true := fun m hm => pregs_mem hm
   have hout : ∀ m, m ∉ Body.vregs c rs → m ∉ Body.pregs c rs → m ∉ rs := fun m h1 h2 => not_split h1 h2
@@ -2691,8 +2662,8 @@ theorem wpE_loopXL {r : Body.Regs Slot} {Γ : Env} {nS : Slot .i32} {n : Nat} (w
   refine wpE_bind (wpE_wloopN Inv μ Hd X ?_ ?_ ?_ ?_ ?_ ?_)
   · refine ⟨_, ?_, 0, Nat.zero_le _, rfl, rfl, hE.bit, hF.w32⟩
     have hi0 : Γ0[Γp.size]? = some (V.sc .i32 (s32 (UInt32.ofNat 0))) := by
-      rw [← hΓ0]; exact get_push_last _ _
-    simp only [Vals.slots, List.mapM_cons, hi0, mapM_extends (hx0.trans (Extends.refl _) |> fun _ =>
+      rw [← hΓ0]; exact get_push_size
+    simp only [Vals.slots, List.mapM_cons, hi0, Sem.mapM_ext (hx0.trans (Extends.refl _) |> fun _ =>
       (by rw [← hΓ0]; exact Extends.push _ _ : Extends Γp Γ0)) hinit]
     rfl
   · intro wi cs hinv
@@ -2714,7 +2685,7 @@ theorem wpE_loopXL {r : Body.Regs Slot} {Γ : Env} {nS : Slot .i32} {n : Nat} (w
       (xs := V.sc .i32 (s32 (UInt32.ofNat j)) :: carried (stF j) ws rv rf) (Body.carryTys ws rv rf) 1
       (by simp [carried_length]; omega)
     simp only [List.drop_one, List.tail_cons] at hrd
-    exact mapM_extends (Extends.push _ _) hrd
+    exact Sem.mapM_ext (Extends.push _ _) hrd
   · rintro cs _ a Γ1 wb t f ⟨rfl, rfl, j, hj, rfl, rfl, hbj⟩ _ hev' hexit
     simp only [contIfULt, contIf] at hev' hexit
     rw [hev j _ _ hj] at hev'
@@ -2741,13 +2712,13 @@ theorem wpE_loopXL {r : Body.Regs Slot} {Γ : Env} {nS : Slot .i32} {n : Nat} (w
         hE2.get hS.sm, hci, hE2.get hS.zf, hE2.get hS.zi⟩
     refine wpE_bind (hrun j hjn _ _ Γ2 _ hSl hU.1 hU.2 fun r'' Γ'' hx'' hE'' hF'' => ?_)
     refine wpE_bind (wpE_iconst32u (by decide) ?_)
-    refine wpE_bind (wpE_iadd32 (x := UInt32.ofNat j) (get_push (hx''.get hci)) (get_push_last _ _) ?_)
+    refine wpE_bind (wpE_iadd32 (x := UInt32.ofNat j) (get_push (hx''.get hci)) (get_push_size) ?_)
     refine wpE_bind (wpE_pack (hE''.extend ((Extends.push _ _).push_of _)) (hF''.extend ((Extends.push _ _).push_of _))
       hf0 fun pv Γ3 hx3 hpv => ?_)
     refine wpE_pure ⟨V.sc .i32 (s32 (UInt32.ofNat (j + 1))) :: carried (stF (j + 1)) ws rv rf, ?_,
       ⟨j + 1, by omega, rfl, rfl, hE''.bit, hF''.w32⟩, ?_⟩
     · simp only [Vals.slots, List.mapM_cons]
-      rw [hx3.get (get_push_last _ _), hpv]
+      rw [hx3.get (get_push_size), hpv]
       simp [UInt32.ofNat_add]
     · show n - (s32 (UInt32.ofNat (j + 1))).toNat < n - (s32 (UInt32.ofNat j)).toNat
       rw [s32_ofNat_toNatL (by omega), s32_ofNat_toNatL (by omega)]
@@ -2832,7 +2803,7 @@ theorem wpE_loopL {r : Body.Regs Slot} {Γ : Env} {nS : Slot .i32} {n : Nat} (ws
     {Q : Body.Regs Slot → Env → World → Prop}
     (hQ : ∀ r' Γ', Extends Γ Γ' → EnvI c r' (stF n).reg Γ' → FEnv c r' (stF n).f Γ' → Q r' Γ' (stF n).w) :
     wpE cfg (Body.loop c r nS ws run) Q Γ (stF 0).w := by
-  simp only [Body.loop, Body.c32]
+  simp only [Body.loop, Kernel.Block.c32]
   refine wpE_bind (wpE_iconst32u (by decide) ?_)
   have hnlt : nS < Γ.size := by
     rcases Nat.lt_or_ge nS Γ.size with h | h
@@ -2893,7 +2864,7 @@ theorem wpE_loopL {r : Body.Regs Slot} {Γ : Env} {nS : Slot .i32} {n : Nat} (ws
     exact EnvI.ofI (hE.extend hE2) h1 h2 h3
   refine wpE_bind (wpE_wloopN Inv μ Hd X ?_ ?_ ?_ ?_ ?_ ?_)
   · refine ⟨_, ?_, 0, Nat.zero_le _, rfl, rfl, hF.w32⟩
-    have hi0 : Γ0[Γ.size]? = some (V.sc .i32 (s32 (UInt32.ofNat 0))) := by rw [← hΓ0]; exact get_push_last _ _
+    have hi0 : Γ0[Γ.size]? = some (V.sc .i32 (s32 (UInt32.ofNat 0))) := by rw [← hΓ0]; exact get_push_size
     simp only [Vals.slots, slots_ofFnL, ofFn_getD_mapL, List.mapM_cons]
     rw [hi0, lookups_mapL (hF.extend hx0)]
     rfl
@@ -2943,10 +2914,10 @@ theorem wpE_loopL {r : Body.Regs Slot} {Γ : Env} {nS : Slot .i32} {n : Nat} (ws
     refine wpE_bind (hrun j hjn _ _ Γ2 _ hSl (hbackE j Γ2 _ (by omega) hE2)
       (hbackF j Γ2 _ (by omega) hwj hE2 fun p _ => hcv p) fun r'' Γ'' hx'' hE'' hF'' => ?_)
     refine wpE_bind (wpE_iconst32u (by decide) ?_)
-    refine wpE_bind (wpE_iadd32 (x := UInt32.ofNat j) (get_push (hx''.get hci)) (get_push_last _ _) ?_)
+    refine wpE_bind (wpE_iadd32 (x := UInt32.ofNat j) (get_push (hx''.get hci)) (get_push_size) ?_)
     refine wpE_pure ⟨V.sc .i32 (s32 (UInt32.ofNat (j + 1))) :: vals (j + 1), ?_,
       ⟨j + 1, by omega, rfl, rfl, hF''.w32⟩, ?_⟩
-    · simp only [Vals.slots, slots_ofFnL, ofFn_getD_mapL, List.mapM_cons, get_push_last]
+    · simp only [Vals.slots, slots_ofFnL, ofFn_getD_mapL, List.mapM_cons, get_push_size]
       rw [lookups_mapL (hF''.extend ((Extends.push _ _).push_of _))]
       simp [vals, UInt32.ofNat_add]
     · show n - (s32 (UInt32.ofNat (j + 1))).toNat < n - (s32 (UInt32.ofNat j)).toNat
@@ -3203,7 +3174,7 @@ theorem code_lane : ∀ (s : EWStmt) (c : Body.Ctx Slot) (x : LCtx), LaneOk cfg 
           have hrd := carries_read (Γ := Γp) (n := Γp.size) (xs := carried s1 ws rv rf) (Body.carryTys ws rv rf) 0
             (by simp [carried_length])
           simp only [Nat.add_zero, List.drop_zero] at hrd
-          exact ⟨_, mapM_extends (hxe.push_of _) hrd, rfl, rfl, hF1⟩
+          exact ⟨_, Sem.mapM_ext (hxe.push_of _) hrd, rfl, rfl, hF1⟩
         · rintro lp cs' wi a Γ1 wb t f ⟨hxe, tt, kk, xa, xb, X, Y, s1, rfl, hti, ha, hb, hk, rfl, rfl, rfl, hF1, j,
             hj, hrun⟩ _ hev hcont
           simp only [contIf] at hev hcont
@@ -3281,7 +3252,7 @@ theorem code_lane : ∀ (s : EWStmt) (c : Body.Ctx Slot) (x : LCtx), LaneOk cfg 
               (tripsL f st j) (tripsL f st (j + 1)) Q' hwf (EnvI.fl hE') (FEnv.zf hF') hSl (hsucc j hj)
               fun r'' Γ'' hx hE'' hF'' => hQ' r'' Γ'' hx (EnvI.fl hE'') (FEnv.zf hF'')
           have hend := tripsL_end hr
-          simp only [Body.stmt, Body.stmtT, Body.c32]
+          simp only [Body.stmt, Body.stmtT, Kernel.Block.c32]
           by_cases hs0 : Body.setsI (.forN k body) = []
           · rw [if_pos hs0]
             refine wpE_bind (wpE_iconst32u (by simp only [Int.ofNat_eq_natCast]; constructor <;> omega) ?_)
@@ -3293,7 +3264,7 @@ theorem code_lane : ∀ (s : EWStmt) (c : Body.Ctx Slot) (x : LCtx), LaneOk cfg 
                 rfl
               · have hb : Body.setsI body = [] := by simpa [Body.setsI, hk0] using hs0
                 exact hfrT j hj m (by simp [hb])
-            refine wpE_loopL (Body.written body) _ (tripsL f st) (by simpa using get_push_last _ _) hk
+            refine wpE_loopL (Body.written body) _ (tripsL f st) (by simpa using get_push_size) hk
               (hS.extend (Extends.push _ _)) (hE.extend (Extends.push _ _)) (hF.extend (Extends.push _ _)) hreg
               (fun j hj m hm => hffT j hj m hm) hrun fun r' Γ' hx hE' hF' => ?_
             rw [hend] at hE' hF' ⊢
@@ -3304,7 +3275,7 @@ theorem code_lane : ∀ (s : EWStmt) (c : Body.Ctx Slot) (x : LCtx), LaneOk cfg 
               · simp [Body.setsI, hk0] at hs0
               · simp [Body.setsI, hk0]
             refine wpE_bind (wpE_iconst32u (by simp only [Int.ofNat_eq_natCast]; constructor <;> omega) ?_)
-            refine wpE_loopXL (Body.written body) (Body.setsI body) _ (tripsL f st) (by simpa using get_push_last _ _)
+            refine wpE_loopXL (Body.written body) (Body.setsI body) _ (tripsL f st) (by simpa using get_push_size)
               hk (hS.extend (Extends.push _ _)) (hE.extend (Extends.push _ _)) (hF.extend (Extends.push _ _))
               (fun j hj m hm => hfrT j hj m hm) (fun j hj m hm => hffT j hj m hm) hrun fun r' Γ' hx hE' hF' => ?_
             rw [hend] at hE' hF' ⊢
@@ -3348,9 +3319,9 @@ theorem code_lane : ∀ (s : EWStmt) (c : Body.Ctx Slot) (x : LCtx), LaneOk cfg 
                 fun r'' Γ'' hx hE'' hF'' => hQ' r'' Γ'' hx (EnvI.fl hE'') (FEnv.zf hF'')
             have hend := tripsL_end hr
             have hvlt : v < 2 ^ 32 := UInt64.lt_iff_toNat_lt.mpr (by simpa using load4_lt hv)
-            simp only [Body.stmt, Body.stmtT, Body.c32]
+            simp only [Body.stmt, Body.stmtT, Kernel.Block.c32]
             refine wpE_bind (wpE_iconst32u (by simp only [Int.ofNat_eq_natCast]; constructor <;> omega) ?_)
-            refine wpE_bind (wpE_at4L (j := UInt32.ofNat a) (get_push (hS.buf b)) (by simpa using get_push_last _ _)
+            refine wpE_bind (wpE_at4L (j := UInt32.ofNat a) (get_push (hS.buf b)) (by simpa using get_push_size)
               fun va Γa hEa hva => ?_)
             refine wpE_bind (wpE_loadI32L hva hv ?_)
             have hx : Extends Γ (Γa.push (.sc .i32 v)) := ((Extends.push _ _).trans hEa).push_of _
@@ -3359,7 +3330,7 @@ theorem code_lane : ∀ (s : EWStmt) (c : Body.Ctx Slot) (x : LCtx), LaneOk cfg 
                 apply UInt64.toNat_inj.mp
                 have h' : v.toNat < 2 ^ 32 := lt_of_lt_of_eq (UInt64.lt_iff_toNat_lt.mp hvlt) rfl
                 simp [s32, Nat.mod_eq_of_lt h']]
-              exact get_push_last _ _
+              exact get_push_size
             by_cases hs0 : Body.setsI body = []
             · rw [if_pos hs0]
               have hreg : ∀ j, j ≤ v.toNat → (tripsL f st j).reg = (tripsL f st 0).reg := fun j hj =>
@@ -3441,7 +3412,7 @@ theorem wpE_runI {cfg : Cfg} (nbuf : Nat) (s : EWStmt) (x : LCtx) (hL : LaneOk c
     (hb : ∀ k, k < nbuf → Γa[4 + k]? = some (.sc .i64 (x.ptr k))) (hpz : ∀ k, nbuf ≤ k → x.ptr k = 0)
     (h3 : Γa[sm]? = some (.sc .i64 x.sm)) :
     wpE cfg (ML.Body.run s lane cta (List.range' 4 nbuf) sm) (fun _ _ u => u = li'.w) Γa w := by
-  simp only [ML.Body.run, ML.Body.c32]
+  simp only [ML.Body.run, AlgorithmLib.Kernel.Block.c32]
   refine wpE_bind (wpE_iconst32u (by decide) ?_)
   refine wpE_bind (wpE_fconst32 ?_)
   refine wpE_bind (wpE_iconst32u (by decide) ?_)
@@ -3451,15 +3422,15 @@ theorem wpE_runI {cfg : Cfg} (nbuf : Nat) (s : EWStmt) (x : LCtx) (hL : LaneOk c
       (V.sc .i64 (c64 0))) = G
   have hE : Extends Γa G := by rw [← hG]; exact (((Extends.push _ _).push_of _).push_of _).push_of _
   have hi : G[Γa.size]? = some (.sc .i32 (s32 (UInt32.ofNat x.i))) := by
-    rw [← hG, hi0]; exact get_push (get_push (get_push (get_push_last _ _)))
+    rw [← hG, hi0]; exact get_push (get_push (get_push (get_push_size)))
   have hzf : G[(Γa.push (V.sc .i32 (s32 (UInt32.ofNat (Int.ofNat 0).toNat)))).size]? = some (.sc .f32 0) := by
-    rw [← hG]; exact get_push (get_push (get_push_last _ _))
+    rw [← hG]; exact get_push (get_push (get_push_size))
   have hzi : G[((Γa.push (V.sc .i32 (s32 (UInt32.ofNat (Int.ofNat 0).toNat)))).push
       (V.sc .f32 (0 &&& widthMask .f32))).size]? = some (.sc .i32 0) := by
-    rw [← hG]; exact get_push (get_push_last _ _)
+    rw [← hG]; exact get_push (get_push_size)
   have hz : G[(((Γa.push (V.sc .i32 (s32 (UInt32.ofNat (Int.ofNat 0).toNat)))).push
       (V.sc .f32 (0 &&& widthMask .f32))).push (V.sc .i32 (s32 (UInt32.ofNat (Int.ofNat 0).toNat)))).size]? =
-      some (.sc .i64 0) := by rw [← hG]; exact get_push_last _ _
+      some (.sc .i64 0) := by rw [← hG]; exact get_push_size
   refine wpE_bind ((code_lane s _ x hL).1 {} G (LI.init w) li' _
     (flagRegs_wf s rfl) ?_ ?_ ?_ hrun fun r' Γ' _ _ _ => wpE_pure rfl)
   · exact ⟨fun n v h => by simp at h, fun n v h => by simp at h, fun n v h => by simp at h,
@@ -3557,7 +3528,7 @@ theorem wpE_bodyW {cfg : Cfg} (nbuf : Nat) (s : EWStmt) (W : Nat) (hW : 0 < W) (
     rw [← hΓa]; exact threadArgs_get (by omega)
   have hlt := threadCtx_lt (cta * W + t / 32) (t % 32) ps ans w.obs.length hw
   rw [if_neg hW1]
-  simp only [ML.Body.c32]
+  simp only [AlgorithmLib.Kernel.Block.c32]
   refine wpE_bind (wpE_iconst32u (k := Int.ofNat 31) (by decide) ?_)
   refine wpE_bind (wpE_band32 (x := UInt32.ofNat t) (get_push h1) get_push_size ?_)
   refine wpE_bind (wpE_ushrImm32 (by decide) (get_push (get_push h1)) ?_)

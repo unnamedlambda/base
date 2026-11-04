@@ -556,11 +556,6 @@ theorem bytesOf_ext {S : Nat} {f g : Nat → UInt8} (h : ∀ x, x < S → f x = 
 theorem byteArray_ext {a b : ByteArray} (h : a.data = b.data) : a = b := by
   cases a; cases b; simp_all
 
-theorem u8_lo (v : UInt64) : (v &&& 0xff).toUInt8 = v.toUInt8 := by
-  apply UInt8.toNat_inj.mp
-  simp only [UInt64.toNat_toUInt8, UInt64.toNat_and, show (0xff : UInt64).toNat = 2 ^ 8 - 1 from rfl,
-    Nat.and_two_pow_sub_one_eq_mod, Nat.mod_mod]
-
 theorem u8_mask_lo (v : UInt64) : (v &&& 0xffff).toUInt8 = v.toUInt8 := by
   apply UInt8.toNat_inj.mp
   simp only [UInt64.toNat_toUInt8, UInt64.toNat_and, show (0xffff : UInt64).toNat = 2 ^ 16 - 1 from rfl,
@@ -588,7 +583,7 @@ theorem store_bytesOf (m : Mem) {S o : Nat} (f : Nat → UInt8) (hS : S ≤ 2 ^ 
   apply Array.ext_getElem?
   intro k
   simp only [Array.getElem?_setIfInBounds, Array.getElem?_map, Array.getElem?_range, Array.size_setIfInBounds,
-    Array.size_map, Array.size_range, applyF, u8_lo]
+    Array.size_map, Array.size_range, applyF, and255_toUInt8]
   by_cases hk : k < S
   · simp only [hk, if_true, Option.map_some]
     by_cases e0 : k = o

@@ -20,7 +20,7 @@ from pathlib import Path
 
 # `✔ [12/34] Built Foo.Bar (1.2s)`, and the ⚠/ℹ the linter and cache produce.
 BUILT = re.compile(r"^[^\[]*\[\d+/\d+\] Built ([\w.]+)(?::\S+)? \(([\d.]+)s\)")
-IMPORT = re.compile(r"^import\s+([\w.]+)")
+IMPORT = re.compile(r"^(?:public\s+|meta\s+|private\s+)*import\s+(?:all\s+)?([\w.]+)")
 
 
 def times(log: Path) -> dict[str, float]:

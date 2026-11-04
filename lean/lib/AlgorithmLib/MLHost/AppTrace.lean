@@ -38,7 +38,7 @@ def _root_.AlgorithmLib.Drv.App.launchRec (a : Drv.App) (j : Nat) (s : UInt64 :=
       { callee := .ext (.cuda .launchKernel),
         args := [.is (drvHandle kFunc j), .is (UInt64.ofNat gx), .is (UInt64.ofNat gy), .is (UInt64.ofNat gz),
                  .is (UInt64.ofNat bx), .is (UInt64.ofNat by_), .is (UInt64.ofNat bz), .is 0, .is s,
-                 .is (Drv.App.at_ (a.paramsOff j)), .is 0] ++ k.args.map fun i => .is (devPtr i) }
+                 .is (arenaAt (a.paramsOff j)), .is 0] ++ k.args.map fun i => .is (devPtr i) }
   | none => { callee := .ext (.cuda .launchKernel), args := [] }
 
 /-- **Launching kernels `js` in order, then waiting**: the calls a body that

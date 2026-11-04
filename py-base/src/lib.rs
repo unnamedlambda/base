@@ -92,14 +92,15 @@ impl PyFunction {
 
 #[pymethods]
 impl PyDriver {
-    /// Loads an encoded artifact.
+    /// Loads an encoded artifact: `Driver(artifact)`, as `ctypes.CDLL(path)`
+    /// loads a library.
     #[new]
-    fn new(artifact: &[u8]) -> PyResult<Self> {
+    fn load(artifact: &[u8]) -> PyResult<Self> {
         let mut err = [0u8; 1024];
         let handle = unsafe { c_api::base_driver_load(artifact.as_ptr(), artifact.len(), err.as_mut_ptr(), err.len()) };
         if handle.is_null() {
             let end = err.iter().position(|&b| b == 0).unwrap_or(err.len());
-            return Err(PyValueError::new_err(format!("Driver: {}", String::from_utf8_lossy(&err[..end]))));
+            return Err(PyValueError::new_err(format!("load: {}", String::from_utf8_lossy(&err[..end]))));
         }
         Ok(Self { handle: Handle(handle) })
     }

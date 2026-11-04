@@ -516,7 +516,7 @@ def dKern (i : Nat) : Drv.Kern :=
     The handle's address is a *register*, which is what lets a step choose its
     own kernel without a branch around the launch. -/
 def dEnqueueFn (ptr fnAddr : V .i64) (grid : V .i32) (blk : Nat) (bs : List Nat) : Prog V L Unit := do
-  Drv.bindFrom ptr DLOCAL_OFF (DLOCAL_OFF + 64) (bs.map dBindOff)
+  Drv.bind ptr DLOCAL_OFF (DLOCAL_OFF + 64) (bs.map dBindOff)
   let one ← iconst32 1
   let _ ← ext (.cuda .launchKernel) %[← load64 fnAddr, grid, one, one, ← iconst32 blk, one, one,
     ← iconst32 0, ← iconst64 0, ← iaddImm ptr (DLOCAL_OFF + 64), ← iconst64 0]
@@ -545,15 +545,15 @@ def dInitM : Prog V L Unit := do
     Drv.getFunction ptr (dKern i)
   -- the expert pool: pinned once, and never moved again
   let poolBytes ← iconst64 (NL * NE * ROW_BYTES)
-  let _ ← ext (.cuda .memAllocHost) %[← absAddr ptr DPOOL_OFF, poolBytes]
-  let poolPtr ← load64 (← absAddr ptr DPOOL_OFF)
+  let _ ← ext (.cuda .memAllocHost) %[← iaddImm ptr DPOOL_OFF, poolBytes]
+  let poolPtr ← load64 (← iaddImm ptr DPOOL_OFF)
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
   let _ ← ext (.base .fileReadToPtr) %[pExp, ← iconst64 D_PATH_FIELD, poolPtr, zero64, poolBytes]
   -- a staging buffer, big enough for the widest dense tensor
   let stageBytes ← iconst64 STAGE_BYTES
-  let _ ← ext (.cuda .memAllocHost) %[← absAddr ptr DSTAGE_OFF, stageBytes]
-  let stagePtr ← load64 (← absAddr ptr DSTAGE_OFF)
+  let _ ← ext (.cuda .memAllocHost) %[← iaddImm ptr DSTAGE_OFF, stageBytes]
+  let stagePtr ← load64 (← iaddImm ptr DSTAGE_OFF)
   -- **The context, chosen here and fixed from here on.**
   --
   -- Zero means the default.  Anything else is clamped to the published
@@ -565,9 +565,9 @@ def dInitM : Prog V L Unit := do
   let ctxMax ← iconst64 CAP_MAX
   let ctxC ← ifte .ugt (ctxD.head) ctxMax (pure %[ctxMax]) (pure %[ctxD.head])
   let ctx := ctxC.head
-  storeI32 (← ireduce32 ctx) (← absAddr ptr DCTX_OFF)
+  storeI32 (← ireduce32 ctx) (← iaddImm ptr DCTX_OFF)
   let ctxStride ← imul ctx (← iconst64 HD)
-  storeI64 ctxStride (← absAddr ptr DCTXSTRIDE_OFF)
+  storeI64 ctxStride (← iaddImm ptr DCTXSTRIDE_OFF)
   -- every buffer that is not an expert slot.  The caches are the exception:
   -- their size is the context, and a full layer's is what was just chosen.
   -- The caches hold bf16: two bytes an element, which is the whole point of
@@ -596,11 +596,11 @@ def dInitM : Prog V L Unit := do
       else if i == B_PRB then pure probBf16Bytes
       else if i == B_PART then pure partBytes
       else iconst64 nb
-    let _ ← ext (.cuda .memAlloc) %[← absAddr ptr (dBindOff i), sz]
+    let _ ← ext (.cuda .memAlloc) %[← iaddImm ptr (dBindOff i), sz]
   -- …and as many slots as the card turns out to have room for.  Asked, not
   -- assumed: a hardcoded count is a count that is wrong on the next card.
-  let _ ← ext (.cuda .memGetInfo) %[← absAddr ptr DLOCAL_OFF, ← absAddr ptr (DLOCAL_OFF + 8)]
-  let freeB ← load64 (← absAddr ptr DLOCAL_OFF)
+  let _ ← ext (.cuda .memGetInfo) %[← iaddImm ptr DLOCAL_OFF, ← iaddImm ptr (DLOCAL_OFF + 8)]
+  let freeB ← load64 (← iaddImm ptr DLOCAL_OFF)
   let margin ← iconst64 (256 * 1024 * 1024)
   let usable ← isub freeB margin
   let rowB ← iconst64 ROW_BYTES
@@ -608,7 +608,7 @@ def dInitM : Prog V L Unit := do
   let cap ← iconst64 NSLOT_MAX
   let nslotL ← ifte .ugt want cap (pure %[cap]) (pure %[want])
   let nslot := nslotL.head
-  storeI32 (← ireduce32 nslot) (← absAddr ptr DNSLOT_OFF)
+  storeI32 (← ireduce32 nslot) (← iaddImm ptr DNSLOT_OFF)
   let six ← iconst64 PIECES
   let eight ← iconst64 8
   forLoop nslot fun i => do
@@ -617,7 +617,7 @@ def dInitM : Prog V L Unit := do
       let sz ← iconst64 (pieceBytes.getD t 0)
       let ix ← iaddImm base6 (SLOTSTORE + t)
       let off ← imul ix eight
-      let _ ← ext (.cuda .memAlloc) %[← iadd (← absAddr ptr DBIND_OFF) off, sz]
+      let _ ← ext (.cuda .memAlloc) %[← iadd (← iaddImm ptr DBIND_OFF) off, sz]
   -- the dense weights: read from the file, staged, uploaded, and resident
   let pDen ← iaddImm dataPtr D_PDEN
   for l in List.range NL do
@@ -626,7 +626,7 @@ def dInitM : Prog V L Unit := do
       let fo ← iconst64 (denseOff l k)
       let nb ← iconst64 n
       let _ ← ext (.base .fileReadToPtr) %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
-      let id ← load64 (← absAddr ptr (dBindOff (dStoreBuf l k)))
+      let id ← load64 (← iaddImm ptr (dBindOff (dStoreBuf l k)))
       let _ ← ext (.cuda .memcpyHtoD) %[id, stagePtr, nb]
   -- `lm_head` is 1.08 GiB and the staging buffer is 29.5 MiB, so it goes over
   -- in pieces.  Reading it in one call would write a gigabyte past the end of
@@ -634,7 +634,7 @@ def dInitM : Prog V L Unit := do
   -- expert pool is what sits next to it.
   for (off, n, b) in [(fileFinalNorm, HH * 4, B_FNORM),
                       (fileLmHead, VOCAB * HH * 2, B_LMHEAD)] do
-    let id ← load64 (← absAddr ptr (dBindOff b))
+    let id ← load64 (← iaddImm ptr (dBindOff b))
     let chunks := (n + STAGE_BYTES - 1) / STAGE_BYTES
     for c in List.range chunks do
       let take := min STAGE_BYTES (n - c * STAGE_BYTES)
@@ -650,7 +650,7 @@ def dInitM : Prog V L Unit := do
   -- full published height. So this is two reads, not one, and the order is
   -- the kernel's rather than the file's. See `ROPE_FILE_ROWS`.
   let ropeSlice := ROPE_N * HALF * 4
-  let bRope ← load64 (← absAddr ptr (dBindOff B_ROPE))
+  let bRope ← load64 (← iaddImm ptr (dBindOff B_ROPE))
   for (fo, bo) in [(fileRopeSin, 0), (fileRope, ropeSlice)] do
     let f ← iconst64 fo
     let nb ← iconst64 ropeSlice
@@ -660,23 +660,23 @@ def dInitM : Prog V L Unit := do
   -- the narrow kernel's two counts
   for (b, v) in [(B_NMH, HH / 2), (B_NMQ, (64 * 64) / 2),
                  (B_NMQKV, dQkvOut / 2)] do
-    storeI32 (← iconst32 v) (← absAddr ptr DMETA_OFF)
-    let id ← load64 (← absAddr ptr (dBindOff b))
+    storeI32 (← iconst32 v) (← iaddImm ptr DMETA_OFF)
+    let id ← load64 (← iaddImm ptr (dBindOff b))
     let n4 ← iconst64 4
-    let _ ← ext (.cuda .memcpyHtoD) %[id, (← absAddr ptr DMETA_OFF), n4]
+    let _ ← ext (.cuda .memcpyHtoD) %[id, (← iaddImm ptr DMETA_OFF), n4]
   -- an empty cache: nothing is anywhere
   let minus1 ← iconst32 (-1)
   let four ← iconst64 4
   let nCache ← iconst64 (NL * NE)
   forLoop nCache fun i => do
     let off ← imul i four
-    storeI32 minus1 (← iadd (← absAddr ptr DSLOTOF_OFF) off)
+    storeI32 minus1 (← iadd (← iaddImm ptr DSLOTOF_OFF) off)
   let nMax ← iconst64 NSLOT_MAX
   forLoop nMax fun i => do
     let off ← imul i four
-    storeI32 minus1 (← iadd (← absAddr ptr DRESIDENT_OFF) off)
-  storeI32 (← iconst32 0) (← absAddr ptr DCLOCK_OFF)
-  storeI32 (← iconst32 0) (← absAddr ptr DMISS_OFF)
+    storeI32 minus1 (← iadd (← iaddImm ptr DRESIDENT_OFF) off)
+  storeI32 (← iconst32 0) (← iaddImm ptr DCLOCK_OFF)
+  storeI32 (← iconst32 0) (← iaddImm ptr DMISS_OFF)
 
 /-- Where the loop parks the layer it is on: inside the meta region, past the
     slots the kernels read, so it costs no separate mapping. -/
@@ -696,13 +696,13 @@ def dBindLayerM (layer : V .i32) : Prog V L Unit := do
   let base9 ← imul l64 nine
   for k in List.range 9 do
     let ix ← iaddImm base9 (DSTORE + k)
-    let id ← load64 (← iadd (← absAddr ptr DBIND_OFF) (← imul ix (← iconst64 8)))
-    storeI64 id (← absAddr ptr (dBindOff k))
+    let id ← load64 (← iadd (← iaddImm ptr DBIND_OFF) (← imul ix (← iconst64 8)))
+    storeI64 id (← iaddImm ptr (dBindOff k))
   let base2 ← imul l64 two
   for j in List.range 2 do
     let ix ← iaddImm base2 (KVSTORE + j)
-    let id ← load64 (← iadd (← absAddr ptr DBIND_OFF) (← imul ix (← iconst64 8)))
-    storeI64 id (← absAddr ptr (dBindOff (C_KC + j)))
+    let id ← load64 (← iadd (← iaddImm ptr DBIND_OFF) (← imul ix (← iconst64 8)))
+    storeI64 id (← iaddImm ptr (dBindOff (C_KC + j)))
 
 /-- **A cache lookup, and a miss if it is one.**
 
@@ -719,29 +719,29 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
   let four ← iconst64 4
   let six ← iconst64 PIECES
   let minus1 ← iconst32 (-1)
-  let layer ← load32 (← absAddr ptr (DMETA_OFF + 4 * DLAYER_SLOT))
-  let e ← load32 (← absAddr ptr (DCHOSEN_OFF + 4 * j))
+  let layer ← load32 (← iaddImm ptr (DMETA_OFF + 4 * DLAYER_SLOT))
+  let e ← load32 (← iaddImm ptr (DCHOSEN_OFF + 4 * j))
   let ne64 ← iconst64 NE
   let key ← iadd (← imul (← uextend64 layer) ne64) (← uextend64 e)
-  let slotAddr ← iadd (← absAddr ptr DSLOTOF_OFF) (← imul key four)
+  let slotAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul key four)
   let slot0 ← load32 slotAddr
   let res ← ifte .eq slot0 minus1
     (do
       -- the victim, and the hand moved on
-      let clock ← load32 (← absAddr ptr DCLOCK_OFF)
-      let nslot ← load32 (← absAddr ptr DNSLOT_OFF)
+      let clock ← load32 (← iaddImm ptr DCLOCK_OFF)
+      let nslot ← load32 (← iaddImm ptr DNSLOT_OFF)
       let nxt ← iadd clock (← iconst32 1)
       let wrapped ← ifte .uge nxt nslot (pure %[← iconst32 0]) (pure %[nxt])
-      storeI32 (wrapped.head) (← absAddr ptr DCLOCK_OFF)
+      storeI32 (wrapped.head) (← iaddImm ptr DCLOCK_OFF)
       let v64 ← uextend64 clock
       -- whoever was there is no longer anywhere
-      let resAddr ← iadd (← absAddr ptr DRESIDENT_OFF) (← imul v64 four)
+      let resAddr ← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul v64 four)
       let old ← load32 resAddr
       when .ne old minus1 (do
-        let oldAddr ← iadd (← absAddr ptr DSLOTOF_OFF) (← imul (← uextend64 old) four)
+        let oldAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul (← uextend64 old) four)
         storeI32 minus1 oldAddr)
       -- the transfer: six pieces, pinned host to device
-      let poolPtr ← load64 (← absAddr ptr DPOOL_OFF)
+      let poolPtr ← load64 (← iaddImm ptr DPOOL_OFF)
       let rowBase ← imul key (← iconst64 ROW_BYTES)
       let base6 ← imul v64 six
       for t in List.range PIECES do
@@ -749,12 +749,12 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
         let srcOff ← iaddImm rowBase (pieceOff t)
         let src ← iadd poolPtr srcOff
         let ix ← iaddImm base6 (SLOTSTORE + t)
-        let id ← load64 (← iadd (← absAddr ptr DBIND_OFF) (← imul ix (← iconst64 8)))
+        let id ← load64 (← iadd (← iaddImm ptr DBIND_OFF) (← imul ix (← iconst64 8)))
         let _ ← ext (.cuda .memcpyHtoD) %[id, src, len]
       storeI32 clock slotAddr
       storeI32 (← ireduce32 key) resAddr
-      let m ← load32 (← absAddr ptr DMISS_OFF)
-      storeI32 (← iadd m (← iconst32 1)) (← absAddr ptr DMISS_OFF)
+      let m ← load32 (← iaddImm ptr DMISS_OFF)
+      storeI32 (← iadd m (← iconst32 1)) (← iaddImm ptr DMISS_OFF)
       pure %[clock])
     (pure %[slot0])
   -- whichever it is, the four slots the kernels read now name its pieces
@@ -762,8 +762,8 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
   let sBase ← imul slot six
   for t in List.range PIECES do
     let ix ← iaddImm sBase (SLOTSTORE + t)
-    let id ← load64 (← iadd (← absAddr ptr DBIND_OFF) (← imul ix (← iconst64 8)))
-    storeI64 id (← absAddr ptr (dBindOff (C_SLOT0 + PIECES * j + t)))
+    let id ← load64 (← iadd (← iaddImm ptr DBIND_OFF) (← imul ix (← iconst64 8)))
+    storeI64 id (← iaddImm ptr (dBindOff (C_SLOT0 + PIECES * j + t)))
 
 /-- **The residual stream, mid-layer and end-of-layer, to the caller.**
 
@@ -782,7 +782,7 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
 def dTraceM (layer : V .i32) (half : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let outPtr ← outPtr
-  let bX ← load64 (← absAddr ptr (dBindOff B_X))
+  let bX ← load64 (← iaddImm ptr (dBindOff B_X))
   let row ← iadd (← imul (← uextend64 layer) (← iconst64 2)) (← iconst64 half)
   let dst ← iadd outPtr
     (← iadd (← iconst64 (8 + VOCAB * 4)) (← imul row (← iconst64 (HH * 4))))
@@ -794,10 +794,10 @@ set_option maxRecDepth 8000 in
 def dLayerM (layer : V .i32) : Prog V L Unit := do
   let ptr ← basePtr
   dBindLayerM layer
-  storeI32 layer (← absAddr ptr (DMETA_OFF + 4 * DLAYER_SLOT))
+  storeI32 layer (← iaddImm ptr (DMETA_OFF + 4 * DLAYER_SLOT))
   -- the pristine copies, not `M_SEQ`, which this body is about to overwrite
-  let seqLen ← load32 (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 16)))
-  let seqLenF ← load32 (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 8)))
+  let seqLen ← load32 (← iaddImm ptr (DMETA_OFF + 4 * (M_SEQ + 16)))
+  let seqLenF ← load32 (← iaddImm ptr (DMETA_OFF + 4 * (M_SEQ + 8)))
   let zero32 ← iconst32 0
   let one32 ← iconst32 1
   let h ← load64 (← iaddImm ptr DBLAS_OFF)
@@ -810,7 +810,7 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   let sLen := lenSel.head
   let sLen64 ← uextend64 sLen
   let ctxStrideL ← load { ty := .i64 }
-                     (← absAddr ptr DCTXSTRIDE_OFF)
+                     (← iaddImm ptr DCTXSTRIDE_OFF)
   let capSel ← ifte .eq par zero32
     (pure %[← iconst64 (CAP_SWA * HD)]) (pure %[ctxStrideL])
   let strideKV := capSel.head
@@ -824,18 +824,18 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   -- survived every test up to 128 and would have failed past it.  Two hundred
   -- and fifty-six bytes per layer is what correctness costs here.
   let c32 ← iconst32 32
-  let posNow ← load32 (← absAddr ptr (DMETA_OFF + 4 * M_POS))
+  let posNow ← load32 (← iaddImm ptr (DMETA_OFF + 4 * M_POS))
   let ch ← udiv sLen c32
   let tl ← imul ch c32
-  let ctxNow ← load32 (← absAddr ptr DCTX_OFF)
+  let ctxNow ← load32 (← iaddImm ptr DCTX_OFF)
   let capSlot ← ifte .eq par zero32 (pure %[← iconst32 CAP_SWA]) (pure %[ctxNow])
   let capV := capSlot.head
   let slotNow ← isub posNow (← imul (← udiv posNow capV) capV)
-  storeI32 sLen (← absAddr ptr (DMETA_OFF + 4 * M_SEQ))
-  storeI32 ch (← absAddr ptr (DMETA_OFF + 4 * M_CHUNKS))
-  storeI32 tl (← absAddr ptr (DMETA_OFF + 4 * M_TAIL))
-  storeI32 (← isub sLen tl) (← absAddr ptr (DMETA_OFF + 4 * M_REM))
-  storeI32 slotNow (← absAddr ptr (DMETA_OFF + 4 * M_SLOT))
+  storeI32 sLen (← iaddImm ptr (DMETA_OFF + 4 * M_SEQ))
+  storeI32 ch (← iaddImm ptr (DMETA_OFF + 4 * M_CHUNKS))
+  storeI32 tl (← iaddImm ptr (DMETA_OFF + 4 * M_TAIL))
+  storeI32 (← isub sLen tl) (← iaddImm ptr (DMETA_OFF + 4 * M_REM))
+  storeI32 slotNow (← iaddImm ptr (DMETA_OFF + 4 * M_SLOT))
   -- **How this layer's keys are split, chosen for the length it actually has.**
   --
   -- Aim for `ATT_TILES_MAX` tiles, which is what measured best at depth, but
@@ -850,29 +850,29 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
     (pure %[← iconst32 GptOssKernels.ATT_TILE_MIN]) (pure %[even])
   let tileSz := tooSmall.head
   let nTiles ← udiv (← iadd sLen (← isub tileSz (← iconst32 1))) tileSz
-  storeI32 tileSz (← absAddr ptr (DMETA_OFF + 4 * M_TILESZ))
-  storeI32 nTiles (← absAddr ptr (DMETA_OFF + 4 * M_NTILES))
+  storeI32 tileSz (← iaddImm ptr (DMETA_OFF + 4 * M_TILESZ))
+  storeI32 nTiles (← iaddImm ptr (DMETA_OFF + 4 * M_NTILES))
   -- The depth this layer's cache was allocated at, in the *words* the store
   -- kernel moves: `HDW` of them a head, because the cache is bf16 and two ride
   -- in one word.  The contractions below stride by `HD` elements over the same
   -- bytes, which is the same distance counted the other way.
-  storeI32 (← imul capV (← iconst32 HDW)) (← absAddr ptr (DMETA_OFF + 4 * M_KVSTRIDE))
-  let bMetaL ← load64 (← absAddr ptr (dBindOff B_META))
-  let _ ← ext (.cuda .memcpyHtoD) %[bMetaL, (← absAddr ptr DMETA_OFF), (← iconst64 (64 * 4))]
-  let bKC ← load64 (← absAddr ptr (dBindOff C_KC))
-  let bVC ← load64 (← absAddr ptr (dBindOff C_VC))
-  let bQKV ← load64 (← absAddr ptr (dBindOff B_QKV))
-  let bSC ← load64 (← absAddr ptr (dBindOff B_SC))
-  let bPR ← load64 (← absAddr ptr (dBindOff B_PR))
-  let bATT ← load64 (← absAddr ptr (dBindOff B_ATT))
-  let bXNB ← load64 (← absAddr ptr (dBindOff B_XNB))
-  let bATTB ← load64 (← absAddr ptr (dBindOff B_ATTB))
-  let bQKVW ← load64 (← absAddr ptr (dBindOff W_QKVW))
-  let bOW ← load64 (← absAddr ptr (dBindOff W_OW))
-  let bTMP ← load64 (← absAddr ptr (dBindOff B_TMP))
-  let bRW ← load64 (← absAddr ptr (dBindOff W_RW))
-  let bXM ← load64 (← absAddr ptr (dBindOff B_XM))
-  let bRLOG ← load64 (← absAddr ptr (dBindOff B_RLOG))
+  storeI32 (← imul capV (← iconst32 HDW)) (← iaddImm ptr (DMETA_OFF + 4 * M_KVSTRIDE))
+  let bMetaL ← load64 (← iaddImm ptr (dBindOff B_META))
+  let _ ← ext (.cuda .memcpyHtoD) %[bMetaL, (← iaddImm ptr DMETA_OFF), (← iconst64 (64 * 4))]
+  let bKC ← load64 (← iaddImm ptr (dBindOff C_KC))
+  let bVC ← load64 (← iaddImm ptr (dBindOff C_VC))
+  let bQKV ← load64 (← iaddImm ptr (dBindOff B_QKV))
+  let bSC ← load64 (← iaddImm ptr (dBindOff B_SC))
+  let bPR ← load64 (← iaddImm ptr (dBindOff B_PR))
+  let bATT ← load64 (← iaddImm ptr (dBindOff B_ATT))
+  let bXNB ← load64 (← iaddImm ptr (dBindOff B_XNB))
+  let bATTB ← load64 (← iaddImm ptr (dBindOff B_ATTB))
+  let bQKVW ← load64 (← iaddImm ptr (dBindOff W_QKVW))
+  let bOW ← load64 (← iaddImm ptr (dBindOff W_OW))
+  let bTMP ← load64 (← iaddImm ptr (dBindOff B_TMP))
+  let bRW ← load64 (← iaddImm ptr (dBindOff W_RW))
+  let bXM ← load64 (← iaddImm ptr (dBindOff B_XM))
+  let bRLOG ← load64 (← iaddImm ptr (dBindOff B_RLOG))
   dEnqueue ptr S_RMS 1 32 [B_X, W_ANORM, B_XN]
   dEnqueue ptr S_NARROW ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_XN, B_XNB, B_NMH]
   let mQKV ← iconst32 dQkvOut
@@ -926,9 +926,9 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   dEnqueue ptr S_ADD 1 32 [B_RLOG, W_RB]
   dEnqueue ptr S_TOP4 1 32 [B_RLOG, B_GATES, B_CHOSEN]
   Drv.sync
-  let bCh ← load64 (← absAddr ptr (dBindOff B_CHOSEN))
+  let bCh ← load64 (← iaddImm ptr (dBindOff B_CHOSEN))
   let n16 ← iconst64 (TOPK * 4)
-  let _ ← ext (.cuda .memcpyDtoH) %[(← absAddr ptr DCHOSEN_OFF), bCh, n16]
+  let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm ptr DCHOSEN_OFF), bCh, n16]
   -- the cache, four times, and then the mixture
   for j in List.range TOPK do
     dEnsureM j
@@ -966,7 +966,7 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   -- room — the caller is expected to refuse the turn, and the generation loop
   -- below stops on its own — but it is what makes the failure a stalled reply
   -- rather than a write into whatever was allocated next.
-  let capF ← isub (← load32 (← absAddr ptr DCTX_OFF)) (← iconst32 1)
+  let capF ← isub (← load32 (← iaddImm ptr DCTX_OFF)) (← iconst32 1)
   let posL ← ifte .ugt posIn capF (pure %[capF]) (pure %[posIn])
   let pos := posL.head
   -- **The embedding row, gathered here.**
@@ -976,8 +976,8 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   -- and widened on the device. The alternative that needs no kernel is to hold
   -- all 201088 rows in device memory, which costs 1.08 GiB — a hundred and
   -- eighty expert slots — to save a read of under six kilobytes.
-  let bEmb ← load64 (← absAddr ptr (dBindOff B_EMB))
-  let stagePtrT ← load64 (← absAddr ptr DSTAGE_OFF)
+  let bEmb ← load64 (← iaddImm ptr (dBindOff B_EMB))
+  let stagePtrT ← load64 (← iaddImm ptr DSTAGE_OFF)
   let rowB ← iconst64 (HH * 2)
   let rowOff ← imul (← uextend64 tok) rowB
   let pEmb ← iaddImm dataPtr D_PEMB
@@ -988,32 +988,32 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let one32 ← iconst32 1
   let len ← iadd pos one32
   let c128 ← iconst32 CAP_SWA
-  let cFull ← load32 (← absAddr ptr DCTX_OFF)
+  let cFull ← load32 (← iaddImm ptr DCTX_OFF)
   let swaL ← ifte .ugt len c128 (pure %[c128]) (pure %[len])
   let fullL ← ifte .ugt len cFull (pure %[cFull]) (pure %[len])
   let sL := swaL.head
   let fL := fullL.head
-  storeI32 pos (← absAddr ptr (DMETA_OFF + 4 * M_POS))
-  storeI32 sL (← absAddr ptr (DMETA_OFF + 4 * M_SEQ))
+  storeI32 pos (← iaddImm ptr (DMETA_OFF + 4 * M_POS))
+  storeI32 sL (← iaddImm ptr (DMETA_OFF + 4 * M_SEQ))
   let c32 ← iconst32 32
   let ch ← udiv sL c32
-  storeI32 ch (← absAddr ptr (DMETA_OFF + 4 * M_CHUNKS))
+  storeI32 ch (← iaddImm ptr (DMETA_OFF + 4 * M_CHUNKS))
   let tl ← imul ch c32
-  storeI32 tl (← absAddr ptr (DMETA_OFF + 4 * M_TAIL))
-  storeI32 (← isub sL tl) (← absAddr ptr (DMETA_OFF + 4 * M_REM))
+  storeI32 tl (← iaddImm ptr (DMETA_OFF + 4 * M_TAIL))
+  storeI32 (← isub sL tl) (← iaddImm ptr (DMETA_OFF + 4 * M_REM))
   let slotSwa ← isub pos (← imul (← udiv pos c128) c128)
-  storeI32 slotSwa (← absAddr ptr (DMETA_OFF + 4 * M_SLOT))
-  storeI32 fL (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 8)))
+  storeI32 slotSwa (← iaddImm ptr (DMETA_OFF + 4 * M_SLOT))
+  storeI32 fL (← iaddImm ptr (DMETA_OFF + 4 * (M_SEQ + 8)))
   -- Both lengths again, in slots no layer writes.  `M_SEQ` is what the softmax
   -- reads, so each layer publishes its own length there; that makes the slot
   -- unusable as the *source* of either length, because a full layer would
   -- otherwise hand its length to the next sliding one.  Below the window the
   -- two are equal and the fault is invisible, which is exactly why it needs
   -- somewhere pristine to be read from.
-  storeI32 sL (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 16)))
-  let bMeta ← load64 (← absAddr ptr (dBindOff B_META))
+  storeI32 sL (← iaddImm ptr (DMETA_OFF + 4 * (M_SEQ + 16)))
+  let bMeta ← load64 (← iaddImm ptr (dBindOff B_META))
   let mb ← iconst64 (64 * 4)
-  let _ ← ext (.cuda .memcpyHtoD) %[bMeta, (← absAddr ptr DMETA_OFF), mb]
+  let _ ← ext (.cuda .memcpyHtoD) %[bMeta, (← iaddImm ptr DMETA_OFF), mb]
   -- twenty-four layers, one body
   let nl ← iconst64 NL
   forLoop nl fun l => do
@@ -1021,9 +1021,9 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   -- the head
   dEnqueue ptr S_RMS 1 32 [B_X, B_FNORM, B_XN]
   dEnqueue ptr S_NARROW ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_XN, B_XNB, B_NMH]
-  let bLM ← load64 (← absAddr ptr (dBindOff B_LMHEAD))
-  let bXNB ← load64 (← absAddr ptr (dBindOff B_XNB))
-  let bLog ← load64 (← absAddr ptr (dBindOff B_LOGITS))
+  let bLM ← load64 (← iaddImm ptr (dBindOff B_LMHEAD))
+  let bXNB ← load64 (← iaddImm ptr (dBindOff B_XNB))
+  let bLog ← load64 (← iaddImm ptr (dBindOff B_LOGITS))
   let h ← load64 (← iaddImm ptr DBLAS_OFF)
   let oneF ← iaddImm ptr DONE_OFF
   let zeroF ← iaddImm ptr DZERO_OFF
@@ -1032,10 +1032,10 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let mV ← iconst32 VOCAB
   let kH ← iconst32 HH
   Drv.gemmBf16 h 1 0 mV oo kH oneF bLM bXNB zeroF bLog
-  storeI32 (← iconst32 VOCAB) (← absAddr ptr (DMETA_OFF + 4 * 33))
-  let bNM ← load64 (← absAddr ptr (dBindOff B_NMQ))
+  storeI32 (← iconst32 VOCAB) (← iaddImm ptr (DMETA_OFF + 4 * 33))
+  let bNM ← load64 (← iaddImm ptr (dBindOff B_NMQ))
   let n4 ← iconst64 4
-  let _ ← ext (.cuda .memcpyHtoD) %[bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
+  let _ ← ext (.cuda .memcpyHtoD) %[bNM, (← iaddImm ptr (DMETA_OFF + 4 * 33)), n4]
   -- **Greedy, or a draw from the tempered softmax.**
   --
   -- `1/T` of zero means the caller wants the largest logit, and that goes to
@@ -1048,18 +1048,18 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   -- 1 : 0)` picks the kernel and the launch itself is the same instruction
   -- either way.
   let invT ← load32 (← iaddImm dataPtr D_INVT)
-  storeI32 (← iconst32 VOCAB) (← absAddr ptr (DMETA_OFF + 4 * 34))
+  storeI32 (← iconst32 VOCAB) (← iaddImm ptr (DMETA_OFF + 4 * 34))
   -- the seed advances with the position, so a turn is reproducible from one
   -- number and no two steps draw the same noise
   let seed0 ← load32 (← iaddImm dataPtr D_SEED)
   storeI32 (← iadd seed0 (← imul pos (← iconst32 0x9E3779B1)))
-    (← absAddr ptr (DMETA_OFF + 4 * 35))
-  storeI32 invT (← absAddr ptr (DMETA_OFF + 4 * 36))
+    (← iaddImm ptr (DMETA_OFF + 4 * 35))
+  storeI32 invT (← iaddImm ptr (DMETA_OFF + 4 * 36))
   storeI32 (← load32 (← iaddImm dataPtr D_LNMINP))
-    (← absAddr ptr (DMETA_OFF + 4 * 37))
-  let bSamp ← load64 (← absAddr ptr (dBindOff B_SAMP))
+    (← iaddImm ptr (DMETA_OFF + 4 * 37))
+  let bSamp ← load64 (← iaddImm ptr (dBindOff B_SAMP))
   let n12 ← iconst64 16
-  let _ ← ext (.cuda .memcpyHtoD) %[bSamp, (← absAddr ptr (DMETA_OFF + 4 * 34)), n12]
+  let _ ← ext (.cuda .memcpyHtoD) %[bSamp, (← iaddImm ptr (DMETA_OFF + 4 * 34)), n12]
   let sampling ← ifte .ne invT zz (pure %[oo]) (pure %[zz])
   let headFn ← iadd (← iaddImm ptr (DFN_OFF + 16 * S_ARGMAX + 8))
                     (← imul (← uextend64 (sampling.head))
@@ -1067,11 +1067,11 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   dEnqueueFn ptr headFn (← iconst32 1) 32 [B_LOGITS, B_TOKEN, B_SAMP]
   Drv.sync
   -- back to the narrow count, so the next token's projection is right again
-  storeI32 (← iconst32 ((64 * 64) / 2)) (← absAddr ptr (DMETA_OFF + 4 * 33))
-  let _ ← ext (.cuda .memcpyHtoD) %[bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
+  storeI32 (← iconst32 ((64 * 64) / 2)) (← iaddImm ptr (DMETA_OFF + 4 * 33))
+  let _ ← ext (.cuda .memcpyHtoD) %[bNM, (← iaddImm ptr (DMETA_OFF + 4 * 33)), n4]
   -- the token this step produced, into memory this program owns
-  let bTok ← load64 (← absAddr ptr (dBindOff B_TOKEN))
-  let _ ← ext (.cuda .memcpyDtoH) %[(← absAddr ptr DT_NEXT), bTok, n4]
+  let bTok ← load64 (← iaddImm ptr (dBindOff B_TOKEN))
+  let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm ptr DT_NEXT), bTok, n4]
   -- …and the whole logit row, to a fixed place in the caller's buffer.  Eight
   -- hundred kilobytes is real traffic and it buys the only check that can
   -- localise a fault in the head: a caller can compare against the model's own
@@ -1080,7 +1080,7 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   -- all of them or none.
   let outPtr ← outPtr
   let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm outPtr 8), bLog, (← iconst64 (VOCAB * 4))]
-  load32 (← absAddr ptr DT_NEXT)
+  load32 (← iaddImm ptr DT_NEXT)
 
 
 /-- **A whole chat turn, or one step of one.**
@@ -1096,15 +1096,15 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
 def dMainFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let flag ← load32 (← absAddr ptr DINIT_OFF)
+  let flag ← load32 (← iaddImm ptr DINIT_OFF)
   let zero32 ← iconst32 0
   when .eq flag zero32 (do
     dInitM
     let dp ← dataPtr
-    storeI64 (← iaddImm dp D_PTOK) (← absAddr ptr DT_PATHPTR)
-    storeI64 (← iconst64 D_PATH_FIELD) (← absAddr ptr DT_PATHCAP)
+    storeI64 (← iaddImm dp D_PTOK) (← iaddImm ptr DT_PATHPTR)
+    storeI64 (← iconst64 D_PATH_FIELD) (← iaddImm ptr DT_PATHCAP)
     TokenizerCommon.loadTokenizerM dTokMem
-    storeI32 (← iconst32 1) (← absAddr ptr DINIT_OFF))
+    storeI32 (← iconst32 1) (← iaddImm ptr DINIT_OFF))
   let dataPtr ← dataPtr
   let outPtr ← outPtr
   let mode ← load32 (← iaddImm dataPtr D_MODE)
@@ -1114,7 +1114,7 @@ def dMainFn : Prog V L Unit :=
         let pos ← load32 (← iaddImm dataPtr D_POS)
         let nxt ← dStepM tok pos
         storeI32 nxt outPtr
-        let miss ← load32 (← absAddr ptr DMISS_OFF)
+        let miss ← load32 (← iaddImm ptr DMISS_OFF)
         storeI32 miss (← iaddImm outPtr 4)
         pure %[])
     (do -- a turn: text in, text out
@@ -1125,13 +1125,13 @@ def dMainFn : Prog V L Unit :=
         let src ← iaddImm dataPtr D_TEXT
         forLoop tlen fun i => do
           istore8 (← uload8_64 (← iadd src i)) (← iadd textIn i)
-        storeI64 tlen (← absAddr ptr DT_TEXTLEN)
+        storeI64 tlen (← iaddImm ptr DT_TEXTLEN)
         PretokCommon.tokenizeTextM dTokMem dPretokMem
         -- the prompt, one position at a time.  There is no prefill kernel yet,
         -- so this is the decode path run over the prompt: correct, and bound by
         -- launches rather than by arithmetic.
         let nText ← load { ty := .i64 }
-                      (← absAddr ptr DT_OUTCOUNT)
+                      (← iaddImm ptr DT_OUTCOUNT)
         let nPre ← uload32_64 (← iaddImm dataPtr D_NPRE)
         let nPost ← uload32_64 (← iaddImm dataPtr D_NPOST)
         let preP ← iaddImm dataPtr D_PRE
@@ -1157,7 +1157,7 @@ def dMainFn : Prog V L Unit :=
         let nPrompt ← iadd afterText nPost
         -- …and then the model's own output, until it stops or runs out of room
         let genTok ← iaddImm ptr DT_GENTOK
-        let first ← load32 (← absAddr ptr DT_NEXT)
+        let first ← load32 (← iaddImm ptr DT_NEXT)
         let gEx ← wloopL %[(← iconst64 0), nPrompt, (← uextend64 first)]
           (head := fun _ st => return (contIf .ult (st.head) maxNew, %[st.head], ()))
           (body := fun lbl st _ => do
@@ -1171,23 +1171,23 @@ def dMainFn : Prog V L Unit :=
             -- and stop at the cache, which is the other end of the budget: a
             -- turn is bounded by `maxNew` tokens *and* by the room left in the
             -- key cache, and only one of those is the caller's to set
-            when .uge pos (← uload32_64 (← absAddr ptr DCTX_OFF)) (brk lbl %[g1])
+            when .uge pos (← uload32_64 (← iaddImm ptr DCTX_OFF)) (brk lbl %[g1])
             let nxt ← dStepM cur32 (← ireduce32 pos)
             return %[g1, ← iaddImm pos 1, ← uextend64 nxt])
         let _ ← iconst64 0
         let nGen := gEx.head
-        storeI64 nGen (← absAddr ptr DT_GENCOUNT)
+        storeI64 nGen (← iaddImm ptr DT_GENCOUNT)
         -- back to bytes
         let tokBuf ← iaddImm ptr DT_TOKBUF
         forLoop nGen fun i => do
           storeI32 (← load32 (← iadd genTok (← ishlImm i 2)))
                    (← iadd tokBuf (← ishlImm i 2))
-        storeI64 nGen (← absAddr ptr DT_TOKCOUNT)
+        storeI64 nGen (← iaddImm ptr DT_TOKCOUNT)
         TokenizerCommon.detokenizeM dTokMem
         let nBytes ← load { ty := .i64 }
-                       (← absAddr ptr DT_TEXTLEN)
+                       (← iaddImm ptr DT_TEXTLEN)
         storeI32 (← ireduce32 nBytes) outPtr
-        let miss ← load32 (← absAddr ptr DMISS_OFF)
+        let miss ← load32 (← iaddImm ptr DMISS_OFF)
         storeI32 miss (← iaddImm outPtr 4)
         let textOut ← iaddImm ptr DT_TEXTOUT
         let dst ← iaddImm outPtr D_OUT_TEXT

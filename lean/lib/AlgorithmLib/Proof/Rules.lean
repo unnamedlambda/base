@@ -139,7 +139,7 @@ theorem wp_load64 {a : Slot .i64} {p v : UInt64} {Q : Slot .i64 → Env → Worl
 theorem wp_storeI64 {v a : Slot .i64} {x p : UInt64} {m : Mem} {Q : Unit → Env → World → Prop}
     (hv : Γ[v]? = some (.sc .i64 x)) (ha : Γ[a]? = some (.sc .i64 p)) (hs : w.mem.store p 8 x = some m)
     (h : Q () Γ (stored w p x m)) : wp cfg d J (storeI64 v a) Q Γ w := by
-  simp [storeI64, storeW, wp_store, wp_ret, runStmt, Sem.get, hv, ha, hs, tyBytes, ClifTy.width]
+  simp [storeI64, store, wp_store, wp_ret, runStmt, Sem.get, hv, ha, hs, tyBytes, ClifTy.width]
   exact h
 
 /-- A branch on two slots of an integer type `t`, both arms ending in `Qj`. -/

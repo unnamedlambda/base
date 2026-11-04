@@ -34,7 +34,7 @@ abbrev Load (dl ol : UInt64) : World → Prop := Contracts.TState.holds
 
 abbrev Run (dl ol n : UInt64) : World → Prop := Contracts.TState.holds
   ((ML.Pipeline.app 2).runTSWith [((n * 2 + 255) * 4).toNat, ((n + 255) * 4).toNat] ++
-    [.cell (Drv.App.at_ ML.Pipeline.N_OFF) n, .roomArg .data dl, .roomArg .out ol])
+    [.cell (arenaAt ML.Pipeline.N_OFF) n, .roomArg .data dl, .roomArg .out ol])
 
 ship_entry load : (ML.Pipeline.loadCode 2) under Load dataLen outLen
 

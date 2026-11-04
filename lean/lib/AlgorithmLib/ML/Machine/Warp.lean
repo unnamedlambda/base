@@ -33,6 +33,10 @@ namespace AlgorithmLib.ML
 abbrev W : Nat := 32
 abbrev Lane := Fin W
 
+/-- The thread `32 * wi + l` is lane `l` of warp `wi`. -/
+theorem lane_div (wi : Nat) (l : Lane) : (32 * wi + l.val) / 32 = wi ∧ (32 * wi + l.val) % 32 = l.val := by
+  have : l.val < 32 := l.isLt; constructor <;> omega
+
 /-- Lane `l` paired with lane `l XOR m` — the butterfly partner. -/
 def xorLane (l : Lane) (m : Nat) : Lane :=
   ⟨(l.val ^^^ m) % W, Nat.mod_lt _ (by decide)⟩

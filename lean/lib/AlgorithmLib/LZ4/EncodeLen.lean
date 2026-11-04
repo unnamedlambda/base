@@ -22,20 +22,6 @@ theorem encode_planBlockFrom_nil (inp : List UInt8) (anchor fl : Nat) :
       = encodeFinal ((inp.drop anchor).take fl) := by
   simp only [planBlockFrom, Block.encode, List.flatMap_nil, List.nil_append]
 
-/-- A `ValidStepsFrom` walk consumes exactly `stepsLen steps + fl` bytes from
-    `anchor` to the end of `inp` — the length fact each `take` in
-    `planBlockFrom` needs to not be silently truncated. -/
-theorem ValidStepsFrom_sum (inp : List UInt8) :
-    ∀ (anchor : Nat) (steps : List PlanStep) (fl : Nat),
-      ValidStepsFrom inp anchor steps fl → anchor + stepsLen steps + fl = inp.length
-  | anchor, [], fl, hv => by
-      have h1 : anchor + fl = inp.length := hv.1
-      simp only [stepsLen]; omega
-  | anchor, step :: rest, fl, hv => by
-      obtain ⟨_, hrest⟩ := hv
-      have := ValidStepsFrom_sum inp (anchor + step.litLen + step.mlen) rest fl hrest
-      simp only [stepsLen]; omega
-
 /-- Byte-length of one match sequence's encoding — matches the `op`-advance
     RHS in `eval_wEmitMatchSeq` exactly (`1 + encNib(ll) + ll + 2 + encNib(ml-4)`). -/
 def encSeqLen (s : PlanStep) : Nat :=
@@ -67,13 +53,13 @@ theorem encode_planBlockFrom_length (inp : List UInt8) :
         = (steps.map encSeqLen).sum + encFinalLen fl
   | anchor, [], fl, hv => by
       rw [encode_planBlockFrom_nil, encodeFinal_length]
-      have hsum := ValidStepsFrom_sum inp anchor [] fl hv
+      have hsum := LZ4Plan.ValidStepsFrom_total inp anchor [] fl hv
       simp only [stepsLen] at hsum
       have htake : ((inp.drop anchor).take fl).length = fl := by
         simp only [List.length_take, List.length_drop]; omega
       rw [htake]; simp [encFinalLen]
   | anchor, step :: rest, fl, hv => by
-      have hsum := ValidStepsFrom_sum inp anchor (step :: rest) fl hv
+      have hsum := LZ4Plan.ValidStepsFrom_total inp anchor (step :: rest) fl hv
       simp only [stepsLen] at hsum
       obtain ⟨hstep, hrest⟩ := hv
       rw [encode_planBlockFrom_cons, List.length_append,
@@ -135,7 +121,7 @@ theorem planBlock_encode_tight (inp : List UInt8) (p : Plan) (hv : ValidPlan inp
   have hlen := encode_planBlockFrom_length inp 0 p.steps p.finalLen hv
   have hsum := encodeSum_tight inp 0 p.steps p.finalLen hv
   have hf := encFinalLen_tight p.finalLen
-  have htot := ValidStepsFrom_sum inp 0 p.steps p.finalLen hv
+  have htot := LZ4Plan.ValidStepsFrom_total inp 0 p.steps p.finalLen hv
   simp only [planToBlock]; rw [hlen]; omega
 
 /-- The compressed block always fits the shipped output slot
@@ -183,7 +169,7 @@ theorem encodeSum_le9 (inp : List UInt8) : ∀ (anchor : Nat) (steps : List Plan
     quantity it must bound is what is still to be emitted from there.
 
     Every ingredient was already anchor-parametric (`encode_planBlockFrom_length`,
-    `encodeSum_le9`, `ValidStepsFrom_sum`); this states it at any anchor,
+    `encodeSum_le9`, `LZ4Plan.ValidStepsFrom_total`); this states it at any anchor,
     not only at `0`.  This is the no-overflow side condition for showing the output cursor
     never runs backwards. -/
 theorem planBlockFrom_encode_le9 (inp : List UInt8) (anchor : Nat) (steps : List PlanStep)
@@ -192,7 +178,7 @@ theorem planBlockFrom_encode_le9 (inp : List UInt8) (anchor : Nat) (steps : List
   have hlen := encode_planBlockFrom_length inp anchor steps fl hv
   have hsum := encodeSum_le9 inp anchor steps fl hv
   have hf := encFinalLen_le9 fl
-  have htot := ValidStepsFrom_sum inp anchor steps fl hv
+  have htot := LZ4Plan.ValidStepsFrom_total inp anchor steps fl hv
   rw [hlen]; omega
 
 theorem planBlock_encode_le9 (inp : List UInt8) (p : Plan) (hv : ValidPlan inp p)
@@ -200,7 +186,7 @@ theorem planBlock_encode_le9 (inp : List UInt8) (p : Plan) (hv : ValidPlan inp p
   have hlen := encode_planBlockFrom_length inp 0 p.steps p.finalLen hv
   have hsum := encodeSum_le9 inp 0 p.steps p.finalLen hv
   have hf := encFinalLen_le9 p.finalLen
-  have htot := ValidStepsFrom_sum inp 0 p.steps p.finalLen hv
+  have htot := LZ4Plan.ValidStepsFrom_total inp 0 p.steps p.finalLen hv
   simp only [planToBlock]; rw [hlen]; omega
 
 /-- Every encoded block is non-empty: the final literal run emits its token byte. -/

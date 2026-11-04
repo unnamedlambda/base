@@ -83,7 +83,7 @@ structure TokMem where
   textMaxBytes : Nat
 
 /-- The two address forms are not interchangeable: `iaddImm` folds the offset
-    into one instruction and `absAddr` materialises it as a constant first, so
+    into one instruction and `iaddImm` materialises it as a constant first, so
     they emit different CLIF. Each site below uses the one it has always used,
     which is what lets a program that already ships be rewired onto this
     module without its artifact changing by a byte. -/
@@ -108,11 +108,11 @@ def MERGE_OFF : Nat := 1040
     "should this pair merge, and how strongly" in one probe. -/
 def loadTokenizerM (c : TokMem) : Prog V L Unit := do
   let ptr ← basePtr
-  let pathP ← load64 (← absAddr ptr c.pathPtr)
-  let pathC ← load64 (← absAddr ptr c.pathCap)
+  let pathP ← load64 (← iaddImm ptr c.pathPtr)
+  let pathC ← load64 (← iaddImm ptr c.pathCap)
   let bytes64 ← iconst64 c.fileMaxBytes
-  let _ ← ext (.cuda .memAllocHost) %[← absAddr ptr c.bufPtr, bytes64]
-  let bufP ← load64 (← absAddr ptr c.bufPtr)
+  let _ ← ext (.cuda .memAllocHost) %[← iaddImm ptr c.bufPtr, bytes64]
+  let bufP ← load64 (← iaddImm ptr c.bufPtr)
   let zero64 ← iconst64 0
   let _ ← ext (.base .fileReadToPtr) %[pathP, pathC, bufP, zero64, bytes64]
   callLibVoid .htInit %[ptr]
@@ -152,7 +152,7 @@ def tokenizeInitM (c : TokMem) : Prog V L Unit := do
     let byt ← uload8_64 (← iadd textBase i)
     let initTok ← load32 (← iadd byteInit (← ishlImm byt 2))
     storeI32 initTok (← iadd tokBuf (← ishlImm i 2))
-  storeI64 textLen (← absAddr ptr c.tokenCount)
+  storeI64 textLen (← iaddImm ptr c.tokenCount)
 
 /-- **Merge until nothing merges.**
 
@@ -216,7 +216,7 @@ def tokenizeBpeM (c : TokMem) : Prog V L Unit := do
           storeI32 nextT (← iadd tokBuf sbOff)
           return %[← iaddImm j 1])
       return %[n1])
-  storeI64 (e.head) (← absAddr ptr c.tokenCount)
+  storeI64 (e.head) (← iaddImm ptr c.tokenCount)
 
 /-- **Token ids back to bytes**, by concatenating what each one stands for.
 
@@ -273,6 +273,6 @@ def detokenizeM (c : TokMem) : Prog V L Unit := do
       let byt ← uload8_64 (← iadd srcPtr i)
       istore8 byt (← iadd textOut (← iadd tp i))
     iadd tp take
-  storeI64 finalTp (← absAddr ptr c.textLen)
+  storeI64 finalTp (← iaddImm ptr c.textLen)
 
 end TokenizerCommon

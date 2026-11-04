@@ -105,14 +105,14 @@ def tMainFn : Prog V L Unit :=
   let dataPtr ← dataPtr
   let outPtr ← outPtr
   -- the file is read once, however many strings arrive afterwards
-  let flag ← load32 (← absAddr ptr T_INIT)
+  let flag ← load32 (← iaddImm ptr T_INIT)
   let zero32 ← iconst32 0
   when .eq flag zero32 (do
     Drv.up ptr ContextSlots.cuda
-    storeI64 (← iaddImm dataPtr D_PATH) (← absAddr ptr T_PATH_PTR)
-    storeI64 (← iconst64 (D_TEXT - D_PATH)) (← absAddr ptr T_PATH_CAP)
+    storeI64 (← iaddImm dataPtr D_PATH) (← iaddImm ptr T_PATH_PTR)
+    storeI64 (← iconst64 (D_TEXT - D_PATH)) (← iaddImm ptr T_PATH_CAP)
     TokenizerCommon.loadTokenizerM tokMem
-    storeI32 (← iconst32 1) (← absAddr ptr T_INIT))
+    storeI32 (← iconst32 1) (← iaddImm ptr T_INIT))
   -- the text, into this program's own buffer
   let len ← uload32_64 (← iaddImm dataPtr D_LEN)
   let textBase ← iaddImm ptr T_TEXT_IN
@@ -120,10 +120,10 @@ def tMainFn : Prog V L Unit :=
   forLoop len fun i => do
     let byt ← uload8_64 (← iadd srcBase i)
     istore8 byt (← iadd textBase i)
-  storeI64 len (← absAddr ptr T_TEXT_LEN)
+  storeI64 len (← iaddImm ptr T_TEXT_LEN)
   PretokCommon.tokenizeTextM tokMem pretokMem
   -- and out
-  let n ← load { ty := .i64 } (← absAddr ptr T_OUT_COUNT)
+  let n ← load { ty := .i64 } (← iaddImm ptr T_OUT_COUNT)
   storeI32 (← ireduce32 n) outPtr
   let outTok ← iaddImm ptr T_OUT_TOK
   forLoop n fun i => do

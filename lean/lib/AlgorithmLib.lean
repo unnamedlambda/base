@@ -5,6 +5,8 @@ public import AlgorithmLib.LZ4
 meta import AlgorithmLib.LZ4
 public import AlgorithmLib.ML
 meta import AlgorithmLib.ML
+public import AlgorithmLib.MLHost.TapeRun
+meta import AlgorithmLib.MLHost.TapeRun
 public import AlgorithmLib.Sound.PtxLaunch
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic

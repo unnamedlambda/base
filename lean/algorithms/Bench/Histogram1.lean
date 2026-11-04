@@ -58,26 +58,26 @@ def code : Prog V L Unit := do
     (head := fun _ si => return (contIfULt si inLim, %[si], ()))
     (body := fun l si _ => do
       let ch ← uload8_64 (← iadd dataPtr si)
-      istore8 ch (← iadd (← absAddr ptr INPUT_PATH_OFF) si)
+      istore8 ch (← iadd (← iaddImm ptr INPUT_PATH_OFF) si)
       when .eq ch zero (brk l %[← iaddImm si 1])
       return %[← iaddImm si 1])
-  istore8 zero (← iadd (← absAddr ptr INPUT_PATH_OFF) inEnd.head)
+  istore8 zero (← iadd (← iaddImm ptr INPUT_PATH_OFF) inEnd.head)
   let outSrc ← iadd dataPtr inEnd.head
   let outLim ← umin (← isub dl inEnd.head) (← iconst64 (PATH_MAX_OUT - 1))
   let outEnd ← wloop1L zero
     (head := fun _ di => return (contIfULt di outLim, %[di], ()))
     (body := fun l di _ => do
       let ch ← uload8_64 (← iadd outSrc di)
-      istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di)
+      istore8 ch (← iadd (← iaddImm ptr OUTPUT_PATH_OFF) di)
       when .eq ch zero (brk l %[di])
       return %[← iaddImm di 1])
-  istore8 zero (← iadd (← absAddr ptr OUTPUT_PATH_OFF) outEnd.head)
+  istore8 zero (← iadd (← iaddImm ptr OUTPUT_PATH_OFF) outEnd.head)
 
   -- at most the data region
   let fileSize ← ext fnRead
-    %[← absAddr ptr INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← absAddr ptr DATA_OFF, zero, ← iconst64 MAX_DATA_BYTES]
+    %[← iaddImm ptr INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← iaddImm ptr DATA_OFF, zero, ← iconst64 MAX_DATA_BYTES]
   let n        ← ushrImm fileSize 2    -- n = bytes / 4
-  let histPtr  ← absAddr ptr HIST_OFF
+  let histPtr  ← iaddImm ptr HIST_OFF
   let histEnd  ← iadd histPtr (← iconst64 HIST_BYTES)
 
   -- Zero the histogram, eight words a trip. The region is a fixed size, so the
@@ -93,7 +93,7 @@ def code : Prog V L Unit := do
 
   -- a value past the last bin counts in the bin its low bits name
   let binMask  ← iconst64 (BINS - 1)
-  let dataPtr2 ← absAddr ptr DATA_OFF
+  let dataPtr2 ← iaddImm ptr DATA_OFF
   let dataEnd  ← iadd dataPtr2 (← ishlImm n 2)
   let n4       ← band n (← iconst64 (-4))
   let dataEnd4 ← iadd dataPtr2 (← ishlImm n4 2)
@@ -122,10 +122,10 @@ def code : Prog V L Unit := do
       store (← iaddImm c 1) a
       return %[← iaddImm dp 4])
 
-  let outPath ← absAddr ptr OUTPUT_PATH_OFF
+  let outPath ← iaddImm ptr OUTPUT_PATH_OFF
   let outCap ← iconst64 PATH_MAX_OUT
   let _ ← ext fnEmpty %[outPath, outCap, zero]
-  let _ ← ext fnWrite %[outPath, outCap, ← absAddr ptr HIST_OFF, zero, ← iconst64 HIST_BYTES]
+  let _ ← ext fnWrite %[outPath, outCap, ← iaddImm ptr HIST_OFF, zero, ← iconst64 HIST_BYTES]
 
 
 def clifIR : Except String (List FuncData) :=

@@ -155,7 +155,7 @@ theorem testW_evalW {fl : List String} {ws : WSt F32} {W : WState} (h : SimW ns 
   split
   · rename_i hf
     simp only [IExp.eval, h.reg c hc l]
-    rcases bit01 (hb c hf) with h0 | h0 <;> rw [h0] <;> decide
+    rcases flag_cases _ (hb c hf) with h0 | h0 <;> rw [h0] <;> decide
   · simp only [IExp.eval, ICmp.run, h.reg c hc l]
     by_cases e : W.regs c = 1 <;> simp [e]
 

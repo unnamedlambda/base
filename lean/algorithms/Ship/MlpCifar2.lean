@@ -2,7 +2,7 @@ import AlgorithmLib.Check.Entry
 import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
 import Warp.MlpCifarBodies
-import AlgorithmLib.ML.Launch.AppTrace
+import AlgorithmLib.MLHost.AppTrace
 
 /-!
 # The CIFAR-10 MLP neither misuses a call nor faults, part 2

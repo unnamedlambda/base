@@ -94,7 +94,7 @@ theorem capture_replay_agree (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 
   have hc1' : (Check.Tr.lit ((ps.map Prod.fst).map
       (DevCall.record Vit.vApp (drvHandle kBlas 0) 0x3f800000 0) ++
       [wordRec .streamSynchronize [0]] ++ dagRecs Vit.vApp [0x3f800000, 0] (VitDag.vCapCalls 0 Vit.VFWD_N) VitDag.S0
-        (Drv.App.at_ Vit.VGRAPH_FWD) (Drv.App.at_ Vit.VEXEC_FWD))).Covers w0 obs1 ∧ Check.DevPath w0 w1 := by
+        (arenaAt Vit.VGRAPH_FWD) (arenaAt Vit.VEXEC_FWD))).Covers w0 obs1 ∧ Check.DevPath w0 w1 := by
     rw [show ps.map Prod.fst = _ from VitWords.stepOps_calls Vit.VFWD_N]
     exact hc1
   have e := ML.dag_replay_tape Vit.vLayout Vit.vApp rfl Vit.vBufBytes_le hw hw32 ps ps VitWords.fwd_ok hU

@@ -1148,7 +1148,7 @@ theorem cifar_backward_nonempty :
     reverse pass would be silently wrong on every residual network. -/
 theorem accum_binds_then_sums :
     (CoT.accum [] 3 9 20 4).1 = [] ∧
-      (CoT.accum [(3, 9)] 3 11 20 4).1 = [TOp.ew2 addSpec 9 11 20 4] := ⟨rfl, rfl⟩
+      (CoT.accum [(3, 9)] 3 11 20 4).1 = [TOp.ew2 addW2 9 11 20 4] := ⟨rfl, rfl⟩
 
 /-- **A 93-layer stack**, to exercise depth on the real lowering rather than on
     the theorem alone.  Each layer is a contraction and an activation, with its

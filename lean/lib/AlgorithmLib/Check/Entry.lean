@@ -1,5 +1,6 @@
 module
 public import AlgorithmLib.Check.Sound
+public import Std.Data.HashSet
 meta import AlgorithmLib.Check.Sound
 public meta import AlgorithmLib.Check.Reflect
 @[expose] public section
@@ -344,6 +345,15 @@ theorem AV.room_desc {Γ : Env} {w : World} {r : Region} {n off : Nat} (hr : r �
   ⟨off, rfl, ⟨Nat.zero_le _, by show off ≤ span - n; omega, Nat.one_dvd _, hr, by omega⟩,
     by show span - n ≤ span; omega⟩
 
+/-- `TState.sub` by a hash set of `F`'s facts: linear rather than quadratic. -/
+def allInHash (S F : TState) : Bool :=
+  let H : Std.HashSet Fact := .ofList F
+  S.all (H.contains ·)
+
+@[csimp] theorem sub_eq_hash : @Prog.TState.sub = @allInHash := by
+  funext S F
+  simp only [Prog.TState.sub, allInHash, Std.HashSet.contains_ofList]
+
 /-- Whether the checker accepts a body from a state, the body leaving only by
     falling off its end, in a state whose facts include `S'` and whose record
     of the parameters names the cells and buffers `P'` does. -/
@@ -351,7 +361,7 @@ def acceptsTo (cert : Cert) (A : AS) (c : Code) (S' : TState) (P' : Par) : Bool 
   match execC cert [] 0 A c with
   | .ok o => o.brk.isEmpty && o.cont.isEmpty &&
       (match o.ok with
-       | some Af => S'.all (Af.facts.contains ·) && P'.cells.all (Af.par.cells.contains ·) &&
+       | some Af => Prog.TState.sub S' Af.facts && P'.cells.all (Af.par.cells.contains ·) &&
            P'.bufs.all (Af.par.bufs.contains ·) && P'.allocs.all (Af.par.allocs.contains ·)
        | none => true)
   | .error _ => false
@@ -429,7 +439,7 @@ theorem check_triple {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {A : AS} {c
     refine Hoare.conseq ht (fun _ _ h => h) ?_ ?_ ?_
     · rintro Γ w' ⟨⟨Af, hAf, hAh⟩, -, hk⟩
       rw [hAf] at hf
-      simp only [Bool.and_eq_true, List.all_eq_true] at hf
+      simp only [Prog.TState.sub, Bool.and_eq_true, List.all_eq_true] at hf
       obtain ⟨⟨⟨hfs, hfc⟩, hfb⟩, hfa⟩ := hf
       refine hpost w' hk.rooms (fun x hx => hAh.2.2 x (by simpa using hfs x hx)) fun x hx => ?_
       have hP := hAh.1.2.2.2.2.1
