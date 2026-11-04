@@ -1,5 +1,6 @@
 module
 public import AlgorithmLib.Check.Lin
+public import AlgorithmLib.Host.OpAgree
 import all Init.Data.Repr
 @[expose] public section
 
@@ -15,8 +16,9 @@ each describes, in the environment and world it is read in.
 `absOp` is what an operation leaves in its slot, and **`absOp_sound`** says it
 is true: wherever the abstract state describes the concrete one, the
 operation is defined and its value is one the result describes. Each case is
-one transfer function; whatever none of them covers is typed by `tyOp` or
-refused.
+one transfer function; whatever none of them covers and cannot trap is typed
+by `Op.check`, the one table of types, over the types the state gives its
+operands (`evalOp_answers`).
 -/
 
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.Hoare
@@ -690,34 +692,24 @@ structure PCond where
 def PCond.Holds (c : PCond) (vals : List UInt64) : Prop :=
   RelHolds c.rel (c.a.eval vals).toNat (c.b.eval vals).toNat
 
-/-- A call an obligation is about: an entry point, or a vendor function. -/
-inductive OCall where
-  | ffi (f : Ffi)
-  | ext (e : Ext)
-  deriving DecidableEq, Repr
-
-/-- A call whose precondition the parameters decide, written out for a proof
-    to show: `c` handed `args`, in a typestate of `facts`, the device buffers
-    `bufs` and the allocations `allocs` sized by the parameters, where the
-    parameters' values stand in the relations `conds`. -/
+/-- A vendor call whose precondition the parameters decide, written out for a
+    proof to show: `e` handed `args`, in a typestate of `facts` and the
+    allocations `allocs` sized by the parameters, where the parameters' values
+    stand in the relations `conds`. -/
 structure Obl where
-  c : OCall
+  e : Ext
   args : List PArg
   facts : TState
-  bufs : List (UInt64 × PExpr)
   allocs : List (Nat × PExpr) := []
   conds : List PCond := []
   deriving DecidableEq, Repr
 
-/-- An obligation shown, for the parameters' values, where they stand in
-    its relations: an entry point's precondition holds in every world the
-    typestate describes; a vendor function's arguments' values are ones it
-    accepts (`vendorVal`), given the allocations the parameters size. -/
+/-- An obligation shown, for the parameters' values, where they stand in its
+    relations: the vendor function's arguments' values are ones it accepts
+    (`vendorVal`), given the allocations the parameters size. -/
 def Obl.Holds (o : Obl) (vals : List UInt64) : Prop :=
   (∀ c ∈ o.conds, c.Holds vals) →
-  match o.c with
-  | .ffi f => ∀ w, TState.holds (o.facts ++ bufFacts o.bufs vals) w → Contracts.Pre f (o.args.map (PArg.bits vals)) w
-  | .ext e => vendorVal (o.facts ++ allocFacts o.allocs vals) e (o.args.map fun a => some (a.bits vals)) = true
+  vendorVal (o.facts ++ allocFacts o.allocs vals) o.e (o.args.map fun a => some (a.bits vals)) = true
 
 /-- What the checker knows of the program's parameters, never their values:
     the slots holding a number computed from them, the cells holding one, the
@@ -1459,27 +1451,6 @@ theorem AS.Holds.known {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {
   | known v => simp only [AV.Desc] at hd; rw [hd]; rfl
   | _ => cases hk
 
-/-- An operation other than a load reads its operands and nothing else. -/
-theorem evalOp_congr (m₁ m₂ : Mem) (Γ₁ Γ₂ : Env) (o : Op) (hl : ∀ op p, o ≠ .load op p)
-    (h : ∀ r ∈ o.regs, Γ₁[r]? = Γ₂[r]?) : evalOp m₁ Γ₁ o = evalOp m₂ Γ₂ o := by
-  cases o with
-  | load op p => exact absurd rfl (hl op p)
-  | iconst | fconst | memory | funcAddr => rfl
-  | iadd a b | isub a b | imul a b | udiv a b | ishl a b | ushr a b | band a b | bandNot a b
-  | bor a b | bxor a b | icmp _ a b | fadd a b | fsub a b | fmul a b | fmax a b | fmin a b
-  | fcmp _ a b | ibin _ a b | ishift _ a b | fbin _ a b =>
-    have ha := h a (by simp [Op.regs]); have hb := h b (by simp [Op.regs])
-    simp only [evalOp, bin, shiftBin, Sem.get, ha, hb]
-  | ineg a | ctz a | popcnt a | ireduce32 a | uextend64 a | sextend64 a | fneg a | fpromote a
-  | vhighBits a | fcvtFromSint _ a | fcvtToUint _ a | splat _ a | extractlane a _ | bitcast _ a
-  | iun _ a | fun1 _ a | fconv _ _ a | iext _ _ a =>
-    have ha := h a (by simp [Op.regs])
-    simp only [evalOp, un, Sem.get, ha]
-  | select c a b | bitselect c a b | fma c a b =>
-    have hc := h c (by simp [Op.regs]); have ha := h a (by simp [Op.regs])
-    have hb := h b (by simp [Op.regs])
-    simp only [evalOp, Sem.get, hc, ha, hb]
-
 /-- An operation reading its operands from slots `0`, `1`, `2` in the order
     it takes them: what it computes on an environment of just its operands. -/
 def _root_.AlgorithmLib.HProg.Op.positional : Op → Op
@@ -1539,18 +1510,17 @@ theorem cellAt_mem {S : TState} {a v : UInt64} (h : cellAt S a = some v) : Fact.
   · rename_i he; simp only [beq_iff_eq] at he; subst he; cases hf; exact hx
   · cases hf
 
-/-- Whether the typestate gives region `r` at least `n` bytes and memory is not
-    frozen: what an access below `n` into `r` needs. -/
+/-- Whether the typestate gives region `r` at least `n` bytes: what an access
+    below `n` into `r` needs. -/
 def roomIn (S : TState) (r : Region) (n : Nat) : Bool :=
-  decide (r ≠ .pinned) && S.contains (.part .frozen false) &&
-    S.any fun | .room r' k => decide (r' = r) && decide (n ≤ k) | _ => false
+  decide (r ≠ .pinned) && S.any fun | .room r' k => decide (r' = r) && decide (n ≤ k) | _ => false
 
 theorem roomIn_spec {S : TState} {w : World} {r : Region} {n : Nat} (hS : S.holds w)
-    (h : roomIn S r n = true) : r ≠ .pinned ∧ w.mem.frozen = false ∧ n ≤ w.mem.sizes r := by
+    (h : roomIn S r n = true) : r ≠ .pinned ∧ n ≤ w.mem.sizes r := by
   unfold roomIn at h
   simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
-  obtain ⟨⟨hp, hz⟩, x, hx, hr⟩ := h
-  refine ⟨hp, holds_of_mem hS hz, ?_⟩
+  obtain ⟨hp, x, hx, hr⟩ := h
+  refine ⟨hp, ?_⟩
   cases x with
   | room r' k =>
       simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
@@ -1578,8 +1548,7 @@ def memN (S : TState) (p : AV) (k : Nat) : Bool :=
   | .ptr r n => decide (n.hi + k ≤ span) && decide (n.hi < span) &&
       (roomIn S r (n.hi + k) ||
         (match n.fit with
-         | some (r', 1, d) => decide (r' = r) && decide (k ≤ d) && decide (r ≠ .pinned) &&
-             S.contains (.part .frozen false)
+         | some (r', 1, d) => decide (r' = r) && decide (k ≤ d) && decide (r ≠ .pinned)
          | _ => false))
   | _ => false
 
@@ -1588,7 +1557,7 @@ def memN (S : TState) (p : AV) (k : Nat) : Bool :=
 theorem memN_spec {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p k = true) :
     ∃ r off, decodeAddr x = some (r, off) ∧ r ≠ .pinned ∧ off + k ≤ w.mem.sizes r ∧
-      w.mem.frozen = false ∧ off + k ≤ 2 ^ 36 := by
+      off + k ≤ 2 ^ 36 := by
   obtain ⟨t, hd⟩ := hd
   unfold memN at h
   split at h
@@ -1603,15 +1572,15 @@ theorem memN_spec {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k :
     simp only [V.sc.injEq] at e
     obtain ⟨-, rfl⟩ := e
     rcases hr with hr | hr
-    · obtain ⟨hp, hz, hsz⟩ := roomIn_spec hS hr
-      exact ⟨r, off, ptr_decode h2 h3, hp, by omega, hz, by unfold span at hs; omega⟩
+    · obtain ⟨hp, hsz⟩ := roomIn_spec hS hr
+      exact ⟨r, off, ptr_decode h2 h3, hp, by omega, by unfold span at hs; omega⟩
     · split at hr
       · rename_i r' d hfit
         simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
-        obtain ⟨⟨⟨rfl, hkd⟩, hp⟩, hz⟩ := hr
+        obtain ⟨⟨rfl, hkd⟩, hp⟩ := hr
         rw [hfit] at hf
         obtain ⟨-, hle⟩ := hf
-        exact ⟨r', off, ptr_decode h2 h3, hp, by omega, holds_of_mem hS hz, by unfold span at hs; omega⟩
+        exact ⟨r', off, ptr_decode h2 h3, hp, by omega, by unfold span at hs; omega⟩
       · cases hr
   · cases h
 
@@ -1627,16 +1596,6 @@ theorem memN_sc {Γ : Env} {w : World} {S : TState} {p : AV} {u : V} {k : Nat} (
   · simp only [AV.Desc] at hd; exact ⟨_, _, hd⟩
   · obtain ⟨off, rfl, -⟩ := hd; exact ⟨_, _, rfl⟩
   · cases h
-
-/-- How many bytes a load reads. -/
-def loadBytes (op : LoadOp) : Nat :=
-  match op.kind with
-  | .uload8 | .sload8 => 1
-  | .uload16 | .sload16 => 2
-  | .uload32 | .sload32 => 4
-  | .plain => match op.ty.lanes with
-    | some (l, n) => n * tyBytes l
-    | none => tyBytes op.ty
 
 /-- A load whose bytes fit answers a value of its type: a scalar, or a vector
     read plainly. -/
@@ -1730,16 +1689,13 @@ def loadHi (op : LoadOp) : Nat :=
   | .plain => 2 ^ (8 * tyBytes op.ty) - 1
   | _ => 2 ^ op.ty.width - 1
 
-theorem int_lanes {t : ClifTy} (ht : t.isInt = true) : t.lanes = none := by
-  cases t <;> first | rfl | cases ht
-
 theorem int_bytes {t : ClifTy} (ht : t.isInt = true) : tyBytes t ≤ 8 := by
   cases t <;> first | decide | cases ht
 
 /-- A load of an integer type leaves a number no larger than `loadHi`. -/
 theorem evalOp_load_hi {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {v : V} (ht : op.ty.isInt = true)
     (h : evalOp m Γ (.load op a) = some v) : ∃ x, v = .sc op.ty x ∧ x.toNat ≤ loadHi op := by
-  have hl := int_lanes ht
+  have hl := lanes_of_isInt ht
   have hb := int_bytes ht
   have unext : ∀ (addr : UInt64) (n : Nat) (b : UInt64), n ≤ 8 → m.load addr n = some b →
       ∀ c, c = min (2 ^ (8 * n) - 1) (2 ^ op.ty.width - 1) → ∃ x, norm op.ty b = .sc op.ty x ∧ x.toNat ≤ c :=
@@ -2348,30 +2304,6 @@ def cmpA (A : AS) (c : ICmpCond) (a b : R) : Option AV :=
   | some t, some t' => if t = t' ∧ t.isInt then some (.cmp c a b) else none
   | _, _ => none
 
-theorem argsTy_of {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) :
-    ∀ {rs : List R} {ts : List ClifTy}, rs.mapM (fun r => (A.get r).scTy) = some ts → ArgsTy Γ rs ts
-  | [], ts, e => by simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at e; subst e; trivial
-  | r :: rs, ts, e => by
-      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
-        Option.some.injEq] at e
-      obtain ⟨t, ht, ts', hts, rfl⟩ := e
-      obtain ⟨x, hx, -⟩ := h.getSc ht
-      exact ⟨⟨x, hx⟩, argsTy_of h hts⟩
-
-theorem argsV_of {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) :
-    ∀ {rs : List R} {ts : List ClifTy}, rs.mapM (fun r => (A.get r).ty) = some ts → ArgsV Γ rs ts
-  | [], ts, e => by simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at e; subst e; trivial
-  | r :: rs, ts, e => by
-      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
-        Option.some.injEq] at e
-      obtain ⟨t, ht, ts', hts, rfl⟩ := e
-      have hr : r < A.len := by
-        rcases Nat.lt_or_ge r A.len with h' | h'
-        · exact h'
-        · rw [AS.get_out (Nat.not_lt_of_ge h')] at ht; cases ht
-      obtain ⟨v, hv, hd⟩ := h.get hr
-      exact ⟨tyAt_of (AV.ty_desc hd ht) hv, argsV_of h hts⟩
-
 -- ---------------------------------------------------------------------------
 -- The transfer functions are sound
 -- ---------------------------------------------------------------------------
@@ -2391,9 +2323,6 @@ theorem norm_small {t : ClifTy} (h : t.isInt = true) {z : UInt64} (hz : z.toNat 
   congr 1
   apply UInt64.toNat_inj.mp
   rw [UInt64.toNat_and, widthMask_int h, Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt hz]
-
-theorem norm_i64 (z : UInt64) : norm .i64 z = .sc .i64 z :=
-  norm_small (t := .i64) rfl z.toNat_lt
 
 /-- The normal form of a value is no larger than it. -/
 theorem mask_toNat {t : ClifTy} (ht : t.isInt = true) (x : UInt64) :
@@ -2450,7 +2379,7 @@ theorem addA_sound {Γ : Env} {w : World} {ga gb av : AV} {a b : R} {u u' : V}
     obtain ⟨ht, off, rfl, hd⟩ := addPtr_sound hda' hy hp
     rw [ht] at hb
     refine ⟨_, ?_, hd⟩
-    simp only [evalOp]; rw [bin_eval ha hb rfl]; simp only [norm_i64, addr_add]
+    simp only [evalOp]; rw [bin_eval ha hb rfl]; simp only [norm64, addr_add]
   · split at h
     · rename_i r n heq
       have hdb' := AV.asPtr_desc hdb; rw [heq] at hdb'
@@ -2459,7 +2388,7 @@ theorem addA_sound {Γ : Env} {w : World} {ga gb av : AV} {a b : R} {u u' : V}
       obtain ⟨ht, off, rfl, hd⟩ := addPtr_sound hdb' hx hp
       rw [ht] at ha
       refine ⟨_, ?_, hd⟩
-      simp only [evalOp]; rw [bin_eval ha hb rfl]; simp only [norm_i64, UInt64.add_comm x, addr_add]
+      simp only [evalOp]; rw [bin_eval ha hb rfl]; simp only [norm64, UInt64.add_comm x, addr_add]
     · simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def, Option.some.injEq] at h
       obtain ⟨na, hna, nb, hnb, n, hn, rfl⟩ := h
       obtain ⟨x, y, hx', hy', hx, hy⟩ := num2 ha hb hda hdb hna hnb
@@ -2748,11 +2677,6 @@ def bandNotA (ga gb : AV) : Option AV :=
   | .known (.sc .i64 m) => (lowMaskK m).bind (roundA ga)
   | _ => none
 
-theorem and_wide (z : UInt64) : z &&& widthMask .i64 = z := by
-  apply UInt64.toNat_inj.mp
-  rw [UInt64.toNat_and, show (widthMask .i64).toNat = 2 ^ 64 - 1 from rfl,
-    Nat.and_two_pow_sub_one_of_lt_two_pow z.toNat_lt]
-
 theorem bandA_sound' {Γ : Env} {w : World} {ga gb av : AV} {a b : R} {u u' : V}
     (ha : Γ[a]? = some u) (hb : Γ[b]? = some u') (hda : ga.Desc Γ w u) (hdb : gb.Desc Γ w u')
     (h : bandA ga gb = some av) (m : Mem) :
@@ -2767,7 +2691,7 @@ theorem bandA_sound' {Γ : Env} {w : World} {ga gb av : AV} {a b : R} {u u' : V}
       simp only [AV.Desc] at hdb
       subst hdb
       refine ⟨_, ?_, hd⟩
-      simp [evalOp, Sem.get, ha, hb, zipIntBits, norm, and_wide, clifTy_beq_self, ClifTy.isInt]
+      simp [evalOp, Sem.get, ha, hb, zipIntBits, norm, and_wide64, clifTy_beq_self, ClifTy.isInt]
     · cases h
   · exact bandA_sound ha hb hda hdb h m
 
@@ -2784,7 +2708,7 @@ theorem bandNotA_sound {Γ : Env} {w : World} {ga gb av : AV} {a b : R} {u u' : 
     simp only [AV.Desc] at hdb
     subst hdb
     refine ⟨_, ?_, hd⟩
-    simp [evalOp, Sem.get, ha, hb, zipIntBits, norm, and_wide, e, clifTy_beq_self, ClifTy.isInt]
+    simp [evalOp, Sem.get, ha, hb, zipIntBits, norm, and_wide64, e, clifTy_beq_self, ClifTy.isInt]
   · cases h
 
 theorem udivA_sound {Γ : Env} {w : World} {ga gb av : AV} {a b : R} {u u' : V}
@@ -2986,10 +2910,33 @@ def floaty : Op → Bool
   | .fpromote _ | .fcvtFromSint .. | .fcvtToUint .. | .fun1 .. | .fconv .. | .fma .. => true
   | _ => false
 
+/-- A value of type `t` has that type and is shaped as `t` says. -/
+theorem TyV.typed {t : ClifTy} {v : V} (h : TyV t v) : v.ty = t ∧ v.Shaped := by
+  unfold TyV at h
+  split at h
+  · rename_i hl; obtain ⟨x, rfl⟩ := h; exact ⟨rfl, hl⟩
+  · rename_i l n hl; obtain ⟨xs, rfl, hn⟩ := h; exact ⟨rfl, l, n, hl, hn⟩
+
+theorem TyV.of_typed {t : ClifTy} {v : V} (h : v.ty = t ∧ v.Shaped) : TyV t v := by
+  obtain ⟨rfl, hs⟩ := h
+  cases v with
+  | sc t x => exact TyV.sc hs
+  | vec t xs => obtain ⟨l, n, hl, hn⟩ := hs; exact TyV.vec hl hn
+
+/-- A slot the state describes at type `u` holds a value of that type. -/
+theorem AS.Holds.typed {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} {u : ClifTy}
+    (ht : (A.get r).ty = some u) : ∃ v, Γ[r]? = some v ∧ v.ty = u ∧ v.Shaped := by
+  have hr : r < A.len := by
+    rcases Nat.lt_or_ge r A.len with h' | h'
+    · exact h'
+    · rw [AS.get_out (Nat.not_lt_of_ge h')] at ht; cases ht
+  obtain ⟨v, hv, hd⟩ := h.get hr
+  exact ⟨v, hv, TyV.typed (AV.ty_desc hd ht)⟩
+
 /-- What an operation leaves in its slot, `none` where the checker cannot
     show it is defined: computed where every operand is known and the
     operation is not `floaty`, by a transfer function where one applies, and
-    otherwise typed by `tyOp`. -/
+    otherwise, where it cannot trap, typed by `Op.check`. -/
 def absOp (A : AS) (o : Op) : Option AV :=
   match o with
   | .load op a => absLoad A.facts op (A.get a)
@@ -3002,10 +2949,7 @@ def absOp (A : AS) (o : Op) : Option AV :=
       else
         match special A o with
         | some av => some av
-        | none =>
-          match o.regs.mapM (fun r => (A.get r).scTy) >>= tyOp o with
-          | some T => if T.lanes.isNone then some (.sc T) else none
-          | none => (o.regs.mapM (fun r => (A.get r).ty) >>= tyVOp o).map .sc
+        | none => if o.mayTrap then none else (o.check fun r => (A.get r).ty).map .sc
 
 theorem AS.Holds.get' {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} (hr : A.get r ≠ .any) :
     ∃ u, Γ[r]? = some u ∧ (A.get r).Desc Γ w u :=
@@ -3108,18 +3052,11 @@ theorem absOp_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o :
         obtain ⟨v, hv, hd⟩ := special_sound h hsp w.mem
         exact ⟨v, hv, hd v⟩
       · split at ho
-        · rename_i T hT
-          split at ho
-          · rename_i hl
-            cases ho
-            simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at hT
-            obtain ⟨ts, hts, hT⟩ := hT
-            obtain ⟨x, hx⟩ := tyOp_sound (m := w.mem) (argsTy_of h hts) hT
-            exact ⟨_, hx, TyV.sc (Option.isNone_iff_eq_none.mp hl)⟩
-          · cases ho
-        · obtain ⟨T, hT, rfl⟩ := Option.map_eq_some_iff.mp ho
-          simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at hT
-          obtain ⟨ts, hts, hT⟩ := hT
-          exact tyVOp_sound (argsV_of h hts) hT
+        · cases ho
+        · rename_i hmt
+          obtain ⟨T, hT, rfl⟩ := Option.map_eq_some_iff.mp ho
+          obtain ⟨v, hv, hty⟩ := evalOp_answers (m := w.mem) (by simpa using hmt) hT
+            (fun _ _ _ hu => h.typed hu)
+          exact ⟨v, hv, TyV.of_typed hty⟩
 
 end AlgorithmLib.Check

@@ -72,7 +72,7 @@ inductive Impl where
   | status (b : StatusBody)
 
 /-- The library function for `f`, compiled at `idx`. -/
-def compileImpl (idx : Nat) (f : Ffi) : Impl → Except String FuncData
+def compileImpl (idx : Nat) (f : LibFn) : Impl → Except String FuncData
   | .void b => Prog.compileProg idx b f.params
   | .status b => Prog.compileProgStatus idx b f.params
 

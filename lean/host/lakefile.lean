@@ -15,7 +15,7 @@ kind of consumer has to know the other exists. `lake exe upcasehost` works from
 a clean checkout.
 
 It is a shared object rather than a static library because it resolves cudarc,
-wgpu, winit and lmdb itself; linking the static one would put every transitive
+wgpu and winit itself; linking the static one would put every transitive
 system library on this link line.
 -/
 

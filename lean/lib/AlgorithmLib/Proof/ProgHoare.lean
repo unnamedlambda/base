@@ -178,7 +178,7 @@ def seqE {α β : Type} (r : Option α × St) (g : α → St → Option β × St
   | (some a, s) => g a s
   | (none, s) => (none, s)
 
-theorem emitCall_seq {α β} (f : Ffi) (args : Vals Slot f.params)
+theorem emitCall_seq {α β} (f : LibFn) (args : Vals Slot f.params)
     (k : ResV Slot f.result → St → Option α × St) (g : α → St → Option β × St) (s : St) :
     emitCall f args (fun r s => seqE (k r s) g) s = seqE (emitCall f args k s) g := by
   unfold emitCall; split <;> rfl
@@ -239,7 +239,7 @@ def St.out (s : St) : Code :=
     | [] => []
     | _ :: _ => [.straight s.cur.reverse]
 
-theorem St.out_flush (s : St) : s.flush.out = s.out := by
+@[simp] theorem St.out_flush (s : St) : s.flush.out = s.out := by
   unfold St.flush St.out
   cases h : s.cur <;> simp [h]
 
@@ -339,7 +339,6 @@ theorem St.out_push (s : St) (p : Piece) (x : St) (hp : x.pieces = p :: s.flush.
 
 theorem St.flush_err (s : St) : s.flush.err = s.err := by unfold St.flush; split <;> rfl
 theorem St.flush_n (s : St) : s.flush.n = s.n := by unfold St.flush; split <;> rfl
-
 @[simp] theorem St.leave_fst (o i : St) : (St.leave o i).1 = i.out := St.out_eq_flush i
 @[simp] theorem St.leave_pieces (o i : St) : (St.leave o i).2.pieces = o.pieces := rfl
 @[simp] theorem St.leave_cur (o i : St) : (St.leave o i).2.cur = o.cur := rfl
@@ -348,7 +347,6 @@ theorem St.flush_n (s : St) : s.flush.n = s.n := by unfold St.flush; split <;> r
 @[simp] theorem St.enter_out (s : St) : s.enter.out = [] := rfl
 @[simp] theorem St.enter_n (s : St) : s.enter.n = s.n := rfl
 @[simp] theorem St.enter_err (s : St) : s.enter.err = s.err := rfl
-@[simp] theorem St.flush_pieces_out (s : St) : s.flush.out = s.out := St.out_flush s
 
 theorem St.out_congr {x y : St} (hp : x.pieces = y.pieces) (hc : x.cur = y.cur) : x.out = y.out := by
   unfold St.out; rw [hp, hc]
@@ -475,7 +473,7 @@ theorem Cnt.jump {α : Type} (piece : Nat → Piece) (hp : ∀ n d, slotsP n (pi
   exact Cnt.push (Cnt.flush s) (St.flush_cur s) rfl (St.flush_cur s) id
     (fun _ _ => by rw [hp])
 
-theorem emitCall_cnt {α : Type} (f : Ffi) (args : Vals Slot f.params)
+theorem emitCall_cnt {α : Type} (f : LibFn) (args : Vals Slot f.params)
     (k : ResV Slot f.result → St → Option α × St) (hK : ∀ v s, Cnt s (k v s).2) (s : St) :
     Cnt s (emitCall f args k s).2 := by
   unfold emitCall; dsimp only
@@ -789,10 +787,10 @@ theorem PT.store {ty} {P R : Env → World → Prop} {v : Slot ty} {a : Slot .i6
   intro s P0 hd hf h; rw [emitGo_store] at hf ⊢; exact PT.stmt hs hk s P0 hd hf h
 
 /-- A foreign call that answers binds the next slot. -/
-theorem PT.call {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
+theorem PT.call {f : LibFn} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {P : Env → World → Prop} {R : Nat → Env → World → Prop} {Q : α → Env → World → Prop}
     (hres : f.result.isSome = true)
-    (hs : ∀ n, Stmt1 cfg (fun Γ w => Γ.size = n ∧ P Γ w) (.call (.ffi f) args.slots)
+    (hs : ∀ n, Stmt1 cfg (fun Γ w => Γ.size = n ∧ P Γ w) (.call (.lib f) args.slots)
       (fun Γ w => Γ.size = n + 1 ∧ R n Γ w) J.faultOk)
     (hk : ∀ r, PT cfg d J (R r) (k (resSlot f.result r)) Q) :
     PT cfg d J P (.call f args k) Q := by
@@ -802,10 +800,10 @@ theorem PT.call {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result �
   exact hk s.n _ P0 hd hf (St.out_stmt h (hs s.n))
 
 /-- A foreign call that answers nothing. -/
-theorem PT.callVoid {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
+theorem PT.callVoid {f : LibFn} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {P R : Env → World → Prop} {Q : α → Env → World → Prop}
     (hres : f.result.isSome = false)
-    (hs : ∀ n, Stmt1 cfg (fun Γ w => Γ.size = n ∧ P Γ w) (.callVoid (.ffi f) args.slots)
+    (hs : ∀ n, Stmt1 cfg (fun Γ w => Γ.size = n ∧ P Γ w) (.callVoid (.lib f) args.slots)
       (fun Γ w => Γ.size = n ∧ R Γ w) J.faultOk)
     (hk : PT cfg d J R (k (resSlot f.result 0)) Q) :
     PT cfg d J P (.call f args k) Q := by
@@ -878,28 +876,9 @@ theorem slotsS_ge (c : Code) : ∀ n, n ≤ slotsS n c :=
 -- Loops
 -- ---------------------------------------------------------------------------
 
-theorem mapM_len {α β : Type} {f : α → Option β} :
-    ∀ {xs : List α} {ys : List β}, xs.mapM f = some ys → ys.length = xs.length := by
-  intro xs
-  induction xs with
-  | nil => intro ys h; simp at h; subst h; rfl
-  | cons x xs ih =>
-      intro ys h
-      simp only [List.mapM_cons, Option.bind_eq_bind] at h
-      cases hx : f x with
-      | none => simp [hx] at h
-      | some y =>
-        cases hr : xs.mapM f with
-        | none => simp [hx, hr] at h
-        | some ys' =>
-          simp [hx, hr] at h; subst h; simp [ih hr]
-
 theorem Vals.slots_length : ∀ {tys : List ClifTy} (vs : Vals Slot tys), vs.slots.length = tys.length
   | [], .nil => rfl
   | _ :: _, .cons _ vs => by simp [Vals.slots, Vals.slots_length vs]
-
-theorem bindAt_size' (Γ : Env) (n : Nat) (vs : List V) : (bindAt Γ n vs).size = n + vs.length := by
-  unfold bindAt; simp; omega
 
 theorem slotsOf_eq {c : Code} (h : needS c ≤ HProg.fuel) (n : Nat) : slotsOf n c = slotsS n c :=
   (slotsGo_eq HProg.fuel c n h).1
@@ -1052,14 +1031,14 @@ theorem PT.loop {α : Type} {cfg : Cfg} {d : Nat} {J : Post}
   have hQx : ∀ Γb vs w', vs.length = exitTys.length → Xit Γ0 Γb vs w' →
       (bindAt Γb sB.n vs).size = sB.n + exitTys.length ∧
         ∃ Γ0' Γb' vs', Γ0'.size ≤ sB.n ∧ bindAt Γb sB.n vs = bindAt Γb' sB.n vs' ∧ Xit Γ0' Γb' vs' w' :=
-    fun Γb vs w' hl hx => ⟨by rw [bindAt_size', hl], Γ0, Γb, vs, hle, rfl, hx⟩
+    fun Γb vs w' hl hx => ⟨by rw [bindAt_size, hl], Γ0, Γb, vs, hle, rfl, hx⟩
   -- The head, from the carries bound after the entry environment.
   have h1 := hhead S1.n Γ0 cs
     ({ S1 with n := S1.n + tys.length, depth := S1.depth + 1 } : St).enter
     (At (bindAt Γ0 s.n cs) w) rfl (by rw [hHe]; exact fH) (nil_rule (by
       rintro _ _ ⟨rfl, rfl⟩
       refine ⟨?_, hsz.trans hS1n.symm, by rw [hS1n], hI⟩
-      simp [bindAt_size', hlen, hS1n]))
+      simp [bindAt_size, hlen, hS1n]))
   rw [hHe] at h1
   dsimp only at h1
   have h2 := St.out_stmt (st := .op (.icmp c.cc c.a c.b)) h1 (op_rule
@@ -1085,7 +1064,7 @@ theorem PT.loop {α : Type} {cfg : Cfg} {d : Nat} {J : Post}
         (by rw [hBe]; exact fB)
         (nil_rule (by
           rintro _ _ ⟨rfl, rfl⟩
-          exact ⟨by simp [bindAt_size', hlen], Γ1, t, f, by rw [hs1, hFn], rfl, hq, hv,
+          exact ⟨by simp [bindAt_size, hlen], Γ1, t, f, by rw [hs1, hFn], rfl, hq, hv,
             by simpa using hx⟩))
       rw [hBe] at h3
       dsimp only at h3
@@ -1254,7 +1233,7 @@ theorem PT.ite {α : Type} {cfg : Cfg} {d : Nat} {J : Post} {jTys : List ClifTy}
       rintro Γ' w' ⟨jv, rfl, hsz', hq⟩ vs hvs
       have hTE : sT.n ≤ sE.n := by have := slotsS_ge sE.out sT.n; rw [kE] at this; exact this
       refine ⟨?_, Γ', jv, vs, by omega, rfl, hvs, .inl hq⟩
-      rw [bindAt_size', (mapM_len hvs).trans (Vals.slots_length jv)]
+      rw [bindAt_size, (mapM_len hvs).trans (Vals.slots_length jv)]
       simp [htT]
   · rintro _ w t f ⟨hsz, Γ0, v, rfl, hs0, hP, hv⟩ hflag hb
     have hvv : v = .sc t f := by
@@ -1272,7 +1251,7 @@ theorem PT.ite {α : Type} {cfg : Cfg} {d : Nat} {J : Post} {jTys : List ClifTy}
       (by rw [St.enter, St.leave_depth, hdT, hS1d]) (by rw [hEe]; exact fE)
       (nil_rule (by
         rintro _ _ ⟨rfl, rfl⟩
-        exact ⟨by simp [bindAt_size'], Γ0, t, f, hge, rfl, hP, hv, by simpa using hb⟩))
+        exact ⟨by simp [bindAt_size], Γ0, t, f, hge, rfl, hP, hv, by simpa using hb⟩))
     rw [hEe] at h3
     dsimp only at h3
     by_cases htE : termsS sE.out = true
@@ -1281,7 +1260,7 @@ theorem PT.ite {α : Type} {cfg : Cfg} {d : Nat} {J : Post} {jTys : List ClifTy}
     · refine Hoare.conseq h3 (fun _ _ h => h) ?_ (fun _ _ _ _ h => h) (fun _ _ _ h => h)
       rintro Γ' w' ⟨jv, rfl, hsz', hq⟩ vs hvs
       refine ⟨?_, Γ', jv, vs, by omega, rfl, hvs, .inr hq⟩
-      rw [bindAt_size', (mapM_len hvs).trans (Vals.slots_length jv)]
+      rw [bindAt_size, (mapM_len hvs).trans (Vals.slots_length jv)]
       simp [htE]
 
 -- ---------------------------------------------------------------------------
@@ -1384,7 +1363,7 @@ theorem PT.dloop {α : Type} {cfg : Cfg} {d : Nat} {J : Post} {tys : List ClifTy
     have hQx : ∀ nE Γ0 Γb outs w', Γ0.size ≤ nE → outs.length = exitIdx.length → Xit Γ0 Γb outs w' →
         (bindAt Γb nE outs).size = nE + (idxTys tys exitIdx).length ∧
           ∃ Γ0' Γb' outs', Γ0'.size ≤ nE ∧ bindAt Γb nE outs = bindAt Γb' nE outs' ∧ Xit Γ0' Γb' outs' w' :=
-      fun nE Γ0 Γb outs w' hle hl hx => ⟨by simp [bindAt_size', idxTys, hl], Γ0, Γb, outs, hle, rfl, hx⟩
+      fun nE Γ0 Γb outs w' hle hl hx => ⟨by simp [bindAt_size, idxTys, hl], Γ0, Γb, outs, hle, rfl, hx⟩
     have hlenI : ∀ (Γ : Env) cs, init.slots.mapM (fun r => Γ[r]?) = some cs →
         cs.length = tys.length := fun _ _ h => (mapM_len h).trans (Vals.slots_length init)
     -- The body's triple from carries satisfying the invariant.
@@ -1397,7 +1376,7 @@ theorem PT.dloop {α : Type} {cfg : Cfg} {d : Nat} {J : Post} {tys : List ClifTy
         (At (bindAt Γ S1.n cs) w) rfl (by rw [hBe]; exact hfB)
         (nil_rule (by
           rintro _ _ ⟨rfl, rfl⟩
-          exact ⟨by simp [bindAt_size', hlen], hsz, rfl, hI⟩))
+          exact ⟨by simp [bindAt_size, hlen], hsz, rfl, hI⟩))
       rw [hBe] at h3
       exact h3
     have hbrk : ∀ Γ (ab : Nat) (e : Nat) Γb vs w', Γ.size ≤ ab →
@@ -1676,7 +1655,7 @@ noncomputable def wpR (cfg : Cfg) {α : Type} (p : Prog Slot Lvl α) :
       (∀ m, runStmt cfg Γ w (.istore8 v a) = .fault m → J.faultOk = true) ∧
       ∀ w', runStmt cfg Γ w (.istore8 v a) = .ok Γ w' → ih d J Q Γ w')
     (call := fun f args _ ih d J Q Γ w => ∀ vs, args.slots.mapM (fun r => Γ[r]?) = some vs →
-      ∃ r w', callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') ∧
+      ∃ r w', callOf cfg.locals (.lib f) vs (obsCall w (.lib f) vs) = some (r, w') ∧
         if f.result.isSome then ∀ v, r = some v → ih (resSlot f.result Γ.size) d J Q (Γ.push v) w'
         else ih (resSlot f.result 0) d J Q Γ w')
     (callLocal := fun {_ res _} r args _ ih d J Q Γ w =>
@@ -1769,10 +1748,10 @@ theorem wp_op {ty} (o : Op' Slot ty) (k : Slot ty → Prog Slot Lvl α) (Q : α 
     wp cfg d J (.op o k) Q =
       fun Γ w => (evalOp w.mem Γ o.erase = none → J.faultOk = true) ∧
         ∀ v, evalOp w.mem Γ o.erase = some v → wp cfg d J (k Γ.size) Q (Γ.push v) w := rfl
-theorem wp_call (f : Ffi) (args : Vals Slot f.params) (k : ResV Slot f.result → Prog Slot Lvl α)
+theorem wp_call (f : LibFn) (args : Vals Slot f.params) (k : ResV Slot f.result → Prog Slot Lvl α)
     (Q : α → Env → World → Prop) :
     wp cfg d J (.call f args k) Q = fun Γ w => ∀ vs, args.slots.mapM (fun r => Γ[r]?) = some vs →
-      ∃ r w', callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') ∧
+      ∃ r w', callOf cfg.locals (.lib f) vs (obsCall w (.lib f) vs) = some (r, w') ∧
         if f.result.isSome then ∀ v, r = some v → wp cfg d J (k (resSlot f.result Γ.size)) Q (Γ.push v) w'
         else wp cfg d J (k (resSlot f.result 0)) Q Γ w' := rfl
 theorem wp_store {ty} (v : Slot ty) (a : Slot .i64) (k : Prog Slot Lvl α) (Q : α → Env → World → Prop) :

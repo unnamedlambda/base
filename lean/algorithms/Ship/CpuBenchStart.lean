@@ -15,10 +15,10 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace CpuBenchSafe
 
-abbrev Any : World → Prop := Contracts.TState.holds [.part .frozen false]
+abbrev Any : World → Prop := Contracts.TState.holds []
 
 /-- The arena, and the caller's data and output of the lengths it passes. -/
 abbrev Run (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena 1536, .roomArg .data dl, .roomArg .out ol]
+  [.room .arena 1536, .roomArg .data dl, .roomArg .out ol]
 
 end CpuBenchSafe

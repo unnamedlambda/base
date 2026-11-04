@@ -9,8 +9,7 @@ import Demo.BlackHole
 # The CUDA apps neither misuse a call nor fault
 
 Each app's `main`, proven by the condition generator from the typestate it
-starts in, for any lengths of data and output the caller hands over: memory
-not frozen, kernels and cuBLAS that keep buffer sizes (`oracles`), the arena
+starts in, for any lengths of data and output the caller hands over: kernels and cuBLAS that keep buffer sizes (`oracles`), the arena
 the artifact asks for, and the driver loaded and untouched with each
 module's PTX and each entry point's name in the arena, in the driver's
 standard layout (`Drv.App.loadTS`).

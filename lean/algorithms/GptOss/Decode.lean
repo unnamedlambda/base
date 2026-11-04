@@ -13,13 +13,11 @@ public import AlgorithmLib.Surface.Drv
 meta import AlgorithmLib.Surface.Drv
 public import Tokenizer.Pretok
 meta import Tokenizer.Pretok
-public import AlgorithmLib.Host.HostIR
-meta import AlgorithmLib.Host.HostIR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
-open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
+open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 open AlgorithmLib.Prog
 open GptOssAttention hiding H
 

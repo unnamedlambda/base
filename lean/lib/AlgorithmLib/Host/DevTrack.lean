@@ -13,9 +13,10 @@ import all Init.Data.List.Sort.Basic
 `TrackOk` says the device's race tracker, and the tracker of a capture in
 progress, are states `CReached` covers --- so `CReached.ordered` and the
 refinement apply to them --- and that every event's clock is a snapshot of the
-history it belongs to (or empty, once its capture has ended). **`callBits_track`**:
-every contract keeps it. So what the World's device contracts accept, outside a
-capture and inside one, is what the abstract tracker accepts.
+history it belongs to (or empty, once its capture has ended). Each step of the
+device keeps it (`devOp_track`, `syncWrite_track`, `syncRead_track`, ...), so
+what the World's device rows accept, outside a capture and inside one, is what
+the abstract tracker accepts.
 -/
 
 namespace AlgorithmLib.Device
@@ -331,76 +332,5 @@ theorem asyncCopy_track {w : World} {p : Nat} {hostAddr : UInt64} {n : Nat} {wr 
     refine hk r' d m hr hkd ?_
     obtain ⟨⟨evs, h1, h2⟩, h3⟩ := ht
     exact ⟨⟨evs, .op p rs ws h1 hr, h2⟩, h3⟩
-
-/-- The entry points whose contracts never touch the device: libm, LMDB and
-    threads. -/
-def devUntouched : List IR.Ffi :=
-  [.sinf, .cosf, .powf, .lmdbInit, .lmdbCleanup, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .lmdbCursorScan, .threadInit, .threadCleanup, .threadJoin]
-
-/-- Follow a contract that never touches the device to each of its answers. -/
-macro "dev_keep" h:ident : tactic => `(tactic| (
-  try simp only [bind, Option.bind, cudaFail, lmdbI32] at $h:ident
-  repeat' (first
-    | (cases $h:ident; done)
-    | (injection $h:ident with h1; injection h1 with h2 h3; subst h3; rfl)
-    | split at $h:ident
-    | (dsimp only at $h:ident))))
-
-open Lean Elab Tactic Meta in
-/-- Unfold the function the left side of `h` applies. -/
-elab "unfold_head " h:ident : tactic => withMainContext do
-  let d ← getLocalDeclFromUserName h.getId
-  let T ← instantiateMVars d.type
-  let some (_, lhs, _) := T.eq? | throwError "unfold_head: not an equation"
-  let some c := lhs.getAppFn.constName? | throwError "unfold_head: no head constant"
-  evalTactic (← `(tactic| unfold $(mkIdent c):ident at $h:ident))
-
-set_option maxHeartbeats 4000000 in
-/-- **A call whose contract never touches the device leaves it as it was.** -/
-theorem callBits_dev_same (f : IR.Ffi) (hf : f ∈ devUntouched) {bits : List UInt64} {w : World}
-    {r : Option V} {w' : World} (h : callBits f bits w = some (r, w')) : w'.dev = w.dev := by
-  cases f <;> first
-    | exact absurd hf (by decide)
-    | (dsimp only [callBits] at h; unfold_head h; dev_keep h)
-
-/-- Follow a device contract to each of its answers, leaving the steps it took
-    among the hypotheses. -/
-macro "dev_walk " h:ident : tactic => `(tactic| (
-  repeat' (first
-    | (cases $h:ident; done)
-    | (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at $h:ident
-       obtain ⟨-, h3⟩ := $h:ident; subst h3)
-    | (have h9 := Option.bind_eq_some_iff.mp $h:ident; clear $h:ident; obtain ⟨_, _, $h:ident⟩ := h9)
-    | split at $h:ident
-    | (dsimp only at $h:ident))))
-
-/-- Close `TrackOk` at one answer of a contract, through the steps it took. -/
-macro "track_close" : tactic => `(tactic| (
-  repeat' (first
-    | assumption
-    | refine devOp_track (by assumption) ?_
-    | refine syncWrite_track (by assumption) ?_
-    | refine syncRead_track (by assumption) ?_
-    | refine memInfoOf_track (by assumption) ?_
-    | refine sgemvOn_track (by assumption) ?_
-    | refine sgemmOn_track (by assumption) ?_)))
-
-set_option maxHeartbeats 8000000 in
-/-- **Every contract keeps the tracker consistent.** Whatever a call does to the
-    device, the concrete race state it leaves is one the abstract tracker
-    reaches, and every recorded event clock is one of its snapshots. -/
-theorem callBits_track (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  by_cases hu : f ∈ devUntouched
-  · rw [callBits_dev_same f hu h]; exact ht
-  cases f with
-  | _ =>
-    first
-      | exact absurd (by decide) hu
-      | (cases h; done)
-      | (dsimp only [callBits] at h; unfold_head h
-         first
-           | (refine devOnly_track h ?_; intro r d hk; dev_walk hk <;> (track_close; done))
-           | (dev_walk h <;> (track_close; done)))
 
 end AlgorithmLib.Device

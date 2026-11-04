@@ -142,7 +142,6 @@ theorem afterStore_world {S : TState} {w : World} {a v : UInt64} {ao : Option UI
         (Contracts.store_live hm), rfl⟩
   cases p <;> first
     | rfl
-    | exact Contracts.store_frozen hm
     | (show m.busy.isEmpty = w.mem.busy.isEmpty; rw [Contracts.store_busy hm])
 
 /-- Retaining or releasing the context keeps every fact but how many times
@@ -471,9 +470,6 @@ theorem put_sizes {d : Dev} {id : Nat} {c : ByteArray}
     · simp [hj]
   · simp [e]
 
-theorem put_size (d : Dev) (id : Nat) (c : Option ByteArray) : (d.put id c).bufs.size = d.bufs.size := by
-  simp [Dev.put]
-
 theorem row_memcpyHtoD {S S' T : TState} {w : World} {Γ : Env} {dst src n : AV} {bits : List UInt64} {av : AV}
     (hS : S.holds w) (hbusy : w.mem.busy = []) (hb : ArgBits Γ w [dst, src, n] bits)
     (hT : T.holds w) (hv : cudaVal T .memcpyHtoD (bits.map some) = true)
@@ -520,8 +516,8 @@ theorem row_memcpyHtoD {S S' T : TState} {w : World} {Γ : Env} {dst src n : AV}
             Option.bind_eq_bind, Option.bind_some, devOnly, cuRes, Option.map_some, DevSpec.retire_nil hbusy]
         · intro f hf
           obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
-          have hk2 := sizes_keep (d := w.dev) (d' := d') (put_size _ _ _) hsizes
-          exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (put_size _ _ _) rfl rfl hk2.1
+          have hk2 := sizes_keep (d := w.dev) (d' := d') (Dev.put_bufs_size _ _ _) hsizes
+          exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (Dev.put_bufs_size _ _ _) rfl rfl hk2.1
             (fun j n _ => hk2.2 j n) (hlive := fun _ => LiveKept.of_sizes hk2.2)
             (fun e => by subst e; exact ⟨Device.syncWrite_track hsw (hS _ hf).1, Device.syncWrite_seq hsw (hS _ hf).2⟩)
         · cases hv; exact cuOk_desc Γ _
@@ -551,15 +547,6 @@ theorem op_write {S : TState} {w : World} (hS : S.holds w) (hseq : S.contains .d
   Option.isSome_iff_exists.mp (ExtContracts.op_isSome_w
     ((Contracts.readyIn_sound hS (Contracts.readyIn_seq hseq)).ready id true))
 
-theorem range_alloc {d : Dev} {p : UInt64} {n id off : Nat} {b : ByteArray}
-    (hr : d.range? p n = some (id, off, b)) : (d.bufs[id]?).join = some b ∧ off + n ≤ b.size := by
-  simp only [Dev.range?, Option.bind_eq_bind] at hr
-  obtain ⟨⟨i, o⟩, hp, hr⟩ := Option.bind_eq_some_iff.mp hr
-  obtain ⟨c, hc, hr⟩ := Option.bind_eq_some_iff.mp hr
-  split at hr
-  · cases hr; exact ⟨hc, by omega⟩
-  · cases hr
-
 theorem row_memsetD8 {S S' : TState} {w : World} {Γ : Env} {dst uc n : AV} {bits : List UInt64} {av : AV}
     (hS : S.holds w) (hbusy : w.mem.busy = []) (hb : ArgBits Γ w [dst, uc, n] bits)
     (h : cudaRow S .memsetD8 [dst, uc, n] = some (S', av)) :
@@ -580,7 +567,7 @@ theorem row_memsetD8 {S S' : TState} {w : World} {Γ : Env} {dst uc n : AV} {bit
         obtain rfl := known_bits hx hd
         obtain rfl := known_bits hz hk
         obtain ⟨id, off, buf, hr⟩ := allocFor_range hS hal
-        obtain ⟨hlb, hfit⟩ := range_alloc hr
+        obtain ⟨hlb, hfit⟩ := ExtContracts.range?_live hr
         obtain ⟨r, hop⟩ := op_write hS hseq id
         let fill := ByteArray.mk (Array.replicate z.toNat (u &&& 0xff).toUInt8)
         have hfs : fill.size = z.toNat := by simp [fill, ByteArray.size]
@@ -595,8 +582,8 @@ theorem row_memsetD8 {S S' : TState} {w : World} {Γ : Env} {dst uc n : AV} {bit
           rfl
         · intro f hf
           obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
-          have hk2 := sizes_keep (d := w.dev) (d' := d') (put_size _ _ _) hsizes
-          exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (put_size _ _ _) rfl rfl hk2.1
+          have hk2 := sizes_keep (d := w.dev) (d' := d') (Dev.put_bufs_size _ _ _) hsizes
+          exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (Dev.put_bufs_size _ _ _) rfl rfl hk2.1
             (fun j n _ => hk2.2 j n) (hlive := fun _ => LiveKept.of_sizes hk2.2)
             (fun e => by
               subst e
@@ -645,7 +632,6 @@ theorem copyIn_parts {w : World} {a : UInt64} {src : ByteArray} {m : Mem} (h : c
     (p : Part) : p.get { w with mem := m } = p.get w := by
   cases p <;> first
     | rfl
-    | exact Contracts.copyIn_frozen h
     | (show m.busy.isEmpty = w.mem.busy.isEmpty; rw [Contracts.copyIn_busy h])
 
 /-- **What a copy into host memory keeps**: the facts `copyKeeps` keeps. -/
@@ -669,9 +655,8 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
   | pinnedUsed n => show m.sizes .pinned ≤ n; rw [hsz]; exact hx0
   | cstrIn c k =>
       simp only [Contracts.storeKeeps, decide_eq_true_eq] at hk
-      have hz' : m.frozen = false := by rw [Contracts.copyIn_frozen h]; exact hx0.1
-      have hw := hx0.2.2.1
-      refine Contracts.cstrIn_kept hx0 hz' (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      have hw := hx0.2.1
+      refine Contracts.cstrIn_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
       refine copyIn_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -682,9 +667,8 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
   | text c t k _ =>
       simp only [Contracts.storeKeeps, decide_eq_true_eq] at hk
-      have hz' : m.frozen = false := by rw [Contracts.copyIn_frozen h]; exact hx0.1.1
-      have hw := hx0.1.2.2.1
-      refine Contracts.text_kept hx0 hz' (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      have hw := hx0.1.2.1
+      refine Contracts.text_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
       refine copyIn_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -698,17 +682,15 @@ theorem copyKeeps_sound {S : TState} {w : World} {a : UInt64} {src : ByteArray} 
         Bool.not_eq_true'] at hk
       obtain ⟨hc, hmiss⟩ := hk
       obtain ⟨rg, off, hd, hpin, hb⟩ := Contracts.cellOk_spec hc
-      have hz' : m.frozen = false := by rw [Contracts.copyIn_frozen h]; exact Contracts.frozen_of_load hd hpin hx0
-      refine Contracts.load_kept hd hpin hb hx0 hz' (congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      refine Contracts.load_kept hd hpin hb hx0 (congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
       refine copyIn_other h _ fun j hj e => ?_
       have := within_of hn ⟨j, hj, e⟩
       rw [hmiss i hi] at this; cases this
   | wg1 _ s => cases s <;> exact hx0
   | wgText c k _ =>
       simp only [Contracts.storeKeeps, decide_eq_true_eq] at hk
-      have hz' : m.frozen = false := by rw [Contracts.copyIn_frozen h]; exact hx0.1
-      have hw := hx0.2.1
-      refine Contracts.wgText_kept hx0 hz' (fun rg _ => congrFun hsz rg) rfl fun i hi => Unchanged.of_eq ?_
+      have hw := hx0.1
+      refine Contracts.wgText_kept hx0 (fun rg _ => congrFun hsz rg) rfl fun i hi => Unchanged.of_eq ?_
       refine copyIn_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -783,7 +765,7 @@ theorem row_memFree {S S' : TState} {w : World} {Γ : Env} {p : AV} {bits : List
         · intro f hf
           obtain ⟨hf, hna⟩ := List.mem_filter.mp hf
           obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
-          refine holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (put_size _ _ _) rfl rfl
+          refine holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (Dev.put_bufs_size _ _ _) rfl rfl
             (fun a n h => Device.BufIs.put_none h id) (fun j n e ⟨c, hc, hs⟩ => ?_)
             (fun e => by subst e; exact ⟨track_op hsq.1 hop rfl rfl rfl, Device.DefaultOnly.op hsq.2 hop⟩)
             (hlive := fun hg => by cases f <;> simp [Fact.isGraph] at hg <;> simp at hna)
@@ -813,7 +795,7 @@ theorem row_memcpyDtoH {S S' T : TState} {w : World} {Γ : Env} {dst src n : AV}
     | [x, y, z], ⟨hx, hy, hz, _⟩ =>
         simp only [List.map_cons, List.map_nil, cudaVal, argAt, List.getElem?_cons_zero, List.getElem?_cons_succ, Option.join_some] at hv
         obtain ⟨id, off, buf, hr⟩ := allocFor_range hT hv
-        obtain ⟨hlb, hfit⟩ := range_alloc hr
+        obtain ⟨hlb, hfit⟩ := ExtContracts.range?_live hr
         have hready := (Contracts.readyIn_sound hS (hseq)).ready id false
         obtain ⟨r, hop⟩ := Option.isSome_iff_exists.mp (ExtContracts.op_isSome_r hready)
         let src' := buf.extract off (off + z.toNat)
@@ -1005,8 +987,8 @@ theorem row_memcpyDtoD {S S' T : TState} {w : World} {Γ : Env} {dst src n : AV}
         simp only [List.map_cons, List.map_nil, cudaVal, argAt, List.getElem?_cons_zero, List.getElem?_cons_succ, Option.join_some, Bool.and_eq_true] at hv
         obtain ⟨did, doff, dbuf, hrd⟩ := allocFor_range hT hv.1
         obtain ⟨sid, soff, sbuf, hrs⟩ := allocFor_range hT hv.2
-        obtain ⟨hlbd, hfitd⟩ := range_alloc hrd
-        obtain ⟨-, hfits⟩ := range_alloc hrs
+        obtain ⟨hlbd, hfitd⟩ := ExtContracts.range?_live hrd
+        obtain ⟨-, hfits⟩ := ExtContracts.range?_live hrs
         have hknow := Contracts.readyIn_sound hS (Contracts.readyIn_seq hseq)
         obtain ⟨r, hop⟩ := Option.isSome_iff_exists.mp
           (ExtContracts.op_isSome_rw (hknow.ready sid false) (hknow.ready did true))
@@ -1024,8 +1006,8 @@ theorem row_memcpyDtoD {S S' T : TState} {w : World} {Γ : Env} {dst src n : AV}
           rfl
         · intro f hf
           obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf
-          have hk2 := sizes_keep (d := w.dev) (d' := d') (put_size _ _ _) hsizes
-          exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (put_size _ _ _) rfl rfl hk2.1
+          have hk2 := sizes_keep (d := w.dev) (d' := d') (Dev.put_bufs_size _ _ _) hsizes
+          exact holds_devKeep (hS f hf) hk' rfl rfl rfl rfl rfl rfl (Dev.put_bufs_size _ _ _) rfl rfl hk2.1
             (fun j n _ => hk2.2 j n) (hlive := fun _ => LiveKept.of_sizes hk2.2)
             (fun e => by
               subst e
@@ -1149,7 +1131,7 @@ theorem runLaunch_rest {d d' : Dev} {k : Launch → List ByteArray → List Byte
     | cons x ps ih =>
         intro d
         obtain ⟨a, b, c, e, f, g⟩ := ih (d.put x.1 (some x.2))
-        exact ⟨a, b, c, e, f.trans (put_size _ _ _), g⟩
+        exact ⟨a, b, c, e, f.trans (Dev.put_bufs_size _ _ _), g⟩
 
 /-- An operation on the device with no capture in progress: the tracker's
     step, then the operation. -/
@@ -1242,18 +1224,6 @@ theorem get?_nat (d : Dev) (j : Nat) : d.get? (Int.ofNat j) = (d.bufs[j]?).join 
   unfold Dev.get?
   rw [if_neg (by simp)]
   rfl
-
-theorem argBits_cons {Γ : Env} {w : World} {a : AV} {as : List AV} {bits : List UInt64}
-    (h : ArgBits Γ w (a :: as) bits) :
-    ∃ x xs, bits = x :: xs ∧ (∃ t, a.Desc Γ w (.sc t x)) ∧ ArgBits Γ w as xs := by
-  cases bits with
-  | nil => exact h.elim
-  | cons x xs => exact ⟨x, xs, rfl, h.1, h.2⟩
-
-theorem argBits_nil {Γ : Env} {w : World} {bits : List UInt64} (h : ArgBits Γ w [] bits) : bits = [] := by
-  cases bits with
-  | nil => rfl
-  | cons _ _ => exact h.elim
 
 theorem capOf_mem {S : TState} {q : Nat} {j : List Nat} {r : Race} {evs : List (Nat × Clock)}
     (h : capOf S = some (q, j, r, evs)) : Fact.cap q j r evs ∈ S := by
@@ -1374,18 +1344,18 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
         have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
         have hks : KeepsSize w.kernel := (hS _ (List.contains_iff_mem.mp horc) : (Fact.oracles).holds w).1
         obtain ⟨mi, e, ptx, hfun, hmod, hps⟩ := (hS _ (fnOf_mem hsz) : (Fact.fn fi sizes).holds w)
-        obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-        obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-        obtain ⟨x2, b, rfl, h2, hb⟩ := argBits_cons hb
-        obtain ⟨x3, b, rfl, h3, hb⟩ := argBits_cons hb
-        obtain ⟨x4, b, rfl, h4, hb⟩ := argBits_cons hb
-        obtain ⟨x5, b, rfl, h5, hb⟩ := argBits_cons hb
-        obtain ⟨x6, b, rfl, h6, hb⟩ := argBits_cons hb
-        obtain ⟨x7, b, rfl, h7, hb⟩ := argBits_cons hb
-        obtain ⟨x8, b, rfl, h8, hb⟩ := argBits_cons hb
-        obtain ⟨x9, b, rfl, h9, hb⟩ := argBits_cons hb
-        obtain ⟨x10, b, rfl, h10, hb⟩ := argBits_cons hb
-        obtain rfl := argBits_nil hb
+        obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x3, b, rfl, h3, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x4, b, rfl, h4, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x5, b, rfl, h5, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x6, b, rfl, h6, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x7, b, rfl, h7, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x8, b, rfl, h8, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x9, b, rfl, h9, hb⟩ := ArgBits.cons_inv hb
+        obtain ⟨x10, b, rfl, h10, hb⟩ := ArgBits.cons_inv hb
+        obtain rfl := ArgBits.nil_inv hb
         obtain ⟨y, hy, hfi'⟩ := Option.bind_eq_some_iff.mp hfi
         obtain rfl := known_bits h0 hy
         obtain rfl := known_bits h9 hP
@@ -1488,18 +1458,18 @@ theorem row_launchKernel {S S' T : TState} {w : World} {Γ : Env}
                 have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
                 obtain ⟨mi, e, ptx, hfun, hmod, hps⟩ := (hS _ (fnOf_mem hsz) : (Fact.fn fi sizes).holds w)
                 obtain ⟨c, hcap, hcq, hcj, hcr, hol, hev⟩ := (hS _ (capOf_mem hco) : (Fact.cap cq jn r evs).holds w)
-                obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-                obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-                obtain ⟨x2, b, rfl, h2, hb⟩ := argBits_cons hb
-                obtain ⟨x3, b, rfl, h3, hb⟩ := argBits_cons hb
-                obtain ⟨x4, b, rfl, h4, hb⟩ := argBits_cons hb
-                obtain ⟨x5, b, rfl, h5, hb⟩ := argBits_cons hb
-                obtain ⟨x6, b, rfl, h6, hb⟩ := argBits_cons hb
-                obtain ⟨x7, b, rfl, h7, hb⟩ := argBits_cons hb
-                obtain ⟨x8, b, rfl, h8, hb⟩ := argBits_cons hb
-                obtain ⟨x9, b, rfl, h9, hb⟩ := argBits_cons hb
-                obtain ⟨x10, b, rfl, h10, hb⟩ := argBits_cons hb
-                obtain rfl := argBits_nil hb
+                obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x3, b, rfl, h3, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x4, b, rfl, h4, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x5, b, rfl, h5, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x6, b, rfl, h6, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x7, b, rfl, h7, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x8, b, rfl, h8, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x9, b, rfl, h9, hb⟩ := ArgBits.cons_inv hb
+                obtain ⟨x10, b, rfl, h10, hb⟩ := ArgBits.cons_inv hb
+                obtain rfl := ArgBits.nil_inv hb
                 obtain ⟨y, hy, hfi'⟩ := Option.bind_eq_some_iff.mp hfi
                 obtain rfl := known_bits h0 hy
                 obtain rfl := known_bits h9 hP
@@ -1635,9 +1605,6 @@ theorem holds_devStep {x : Fact} {w : World} {d : Dev} (h : x.holds w)
   | wg1 _ s => cases s <;> exact h
   | _ => exact h
 
-theorem event?_nat' (d : Dev) (e : Nat) : d.event? e = (d.events[e]?).join := by
-  unfold Dev.event?; rw [if_neg (by simp)]; rfl
-
 theorem evOf_spec {S : TState} {w : World} {h : UInt64} {e : Nat} (hS : S.holds w) (hd : evOf S h = some e) :
     handleOf kEvent h = some e ∧ ∃ ev, (w.dev.events[e]?).join = some ev := by
   unfold evOf at hd
@@ -1650,7 +1617,7 @@ theorem evOf_spec {S : TState} {w : World} {h : UInt64} {e : Nat} (hS : S.holds 
       · rw [if_pos hc] at hd
         obtain rfl : e' = e := Option.some.inj hd
         have hl : (w.dev.event? e').isSome = true := hS _ (List.contains_iff_mem.mp hc)
-        rw [event?_nat'] at hl
+        rw [Contracts.event?_nat] at hl
         obtain ⟨ev, hev⟩ := Option.isSome_iff_exists.mp hl
         exact ⟨rfl, ev, hev⟩
       · rw [if_neg hc] at hd; cases hd
@@ -1668,8 +1635,8 @@ theorem row_streamSynchronize {S S' : TState} {w : World} {Γ : Env} {hh : AV} {
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, hq'⟩ := Option.bind_eq_some_iff.mp hq
       obtain rfl := known_bits h0 hy
       have hsp := drvParty_sound hS hq'
@@ -1721,7 +1688,7 @@ theorem defaultOnly_issue {r : Race} (h : Device.DefaultOnly r) (p : Nat) : Devi
   fun b e he => h b e (by simpa [Race.issue, Device.wAcc_setClock, Device.rAcc_setClock] using he)
 
 theorem evLive_lt {w : World} {e : Nat} (h : (w.dev.event? e).isSome = true) : e < w.dev.events.size := by
-  rw [event?_nat'] at h
+  rw [Contracts.event?_nat] at h
   rcases Nat.lt_or_ge e w.dev.events.size with hl | hl
   · exact hl
   · rw [Array.getElem?_eq_none hl] at h; cases h
@@ -1741,9 +1708,9 @@ theorem row_streamCreate {S S' : TState} {w : World} {Γ : Env} {p fl : AV} {bit
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
       have hl' := Contracts.streamsOf_holds hS hlst
       have hsz : w.dev.streams.size = l.length := by rw [← hl', Array.length_toList]
-      obtain ⟨pa, b, rfl, hpa, hb⟩ := argBits_cons hb
-      obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨pa, b, rfl, hpa, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain rfl := known_bits hx hfl
       obtain ⟨m, hm⟩ := Option.isSome_iff_exists.mp (memN_slot8 hS hpa hmem (drvHandle kStream w.dev.streams.size))
       obtain ⟨hst, hk1⟩ := afterStore_world (ao := p.bits) hS hm (fun y hy => (known_bits hpa hy).symm)
@@ -1792,8 +1759,8 @@ theorem row_streamDestroy {S S' : TState} {w : World} {Γ : Env} {hh : AV} {bits
         obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
         have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
         have hl' := Contracts.streamsOf_holds hS hlst
-        obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-        obtain rfl := argBits_nil hb
+        obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+        obtain rfl := ArgBits.nil_inv hb
         obtain rfl := known_bits hy hx
         have hg' : w.dev.streams.getD id false = true := by rw [streams_getD hl']; exact hg
         let d' : Dev := { w.dev with streams := w.dev.streams.set! id false }
@@ -1830,9 +1797,9 @@ theorem row_eventCreate {S S' : TState} {w : World} {Γ : Env} {p fl : AV} {bits
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
       have hn' := Contracts.eventsOf_holds hS hn
       subst hn'
-      obtain ⟨pa, b, rfl, hpa, hb⟩ := argBits_cons hb
-      obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨pa, b, rfl, hpa, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain rfl := known_bits hx hfl
       obtain ⟨m, hm⟩ := Option.isSome_iff_exists.mp (memN_slot8 hS hpa hmem (drvHandle kEvent w.dev.events.size))
       obtain ⟨hst, hk1⟩ := afterStore_world (ao := p.bits) hS hm (fun y hy => (known_bits hpa hy).symm)
@@ -1847,7 +1814,7 @@ theorem row_eventCreate {S S' : TState} {w : World} {Γ : Env} {p fl : AV} {bits
       · refine Contracts.TState.holds_cons ?_ (Contracts.TState.holds_cons ?_ (fun f hf => ?_))
         · show (w.dev.events.push _).size = _; rw [Array.size_push]
         · show (d'.event? _).isSome = true
-          rw [event?_nat']; show ((w.dev.events.push _)[w.dev.events.size]?).join.isSome = true
+          rw [Contracts.event?_nat]; show ((w.dev.events.push _)[w.dev.events.size]?).join.isSome = true
           rw [Array.getElem?_push_size]; rfl
         · obtain ⟨hf, hne⟩ := List.mem_filter.mp hf
           have h0 := hst f hf
@@ -1858,7 +1825,7 @@ theorem row_eventCreate {S S' : TState} {w : World} {Γ : Env} {p fl : AV} {bits
             rcases he with rfl | rfl
             · exact evLive_lt (w := { w with mem := m }) h0
             · obtain ⟨clk, hc, -⟩ := h0; exact evLive_lt (w := { w with mem := m }) (by rw [hc]; rfl)
-          rw [event?_nat', event?_nat']
+          rw [Contracts.event?_nat, Contracts.event?_nat]
           show ((w.dev.events.push _)[e]?).join = _
           rw [Array.getElem?_push_lt hlt, Array.getElem?_eq_getElem hlt]
       · cases hv; exact cuOk_desc Γ _
@@ -1868,7 +1835,7 @@ theorem row_eventCreate {S S' : TState} {w : World} {Γ : Env} {p fl : AV} {bits
 /-- Setting one event's slot leaves every other event as it was. -/
 theorem event?_set_ne {d d' : Dev} {e e' : Nat} {v : Option (Option (Clock × Bool))}
     (h : d'.events = d.events.set! e v) (hne : e' ≠ e) : d'.event? e' = d.event? e' := by
-  rw [event?_nat', event?_nat', h, Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds_ne (Ne.symm hne)]
+  rw [Contracts.event?_nat, Contracts.event?_nat, h, Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds_ne (Ne.symm hne)]
 
 theorem event_lt {w : World} {e : Nat} {ev : Option (Clock × Bool)} (h : (w.dev.events[e]?).join = some ev) :
     e < w.dev.events.size := by
@@ -1900,7 +1867,7 @@ theorem holds_capRecord {x : Fact} {w : World} {c c' : Capture} {e : Nat} {v : O
       by_cases he : e' = e
       · subst he
         show (Dev.event? _ e').isSome = true
-        rw [event?_nat']
+        rw [Contracts.event?_nat]
         show ((w.dev.events.set! e' _)[e']?).join.isSome = true
         rw [Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds_self_of_lt hlt]; rfl
       · show (Dev.event? _ e').isSome = true; rw [hne e' he]; exact h
@@ -1943,9 +1910,9 @@ theorem row_eventRecord {S S' : TState} {w : World} {Γ : Env} {hv hh : AV} {bit
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, he'⟩ := Option.bind_eq_some_iff.mp he
       obtain rfl := known_bits h0 hy
       obtain ⟨y', hy', hq'⟩ := Option.bind_eq_some_iff.mp hq
@@ -1969,7 +1936,7 @@ theorem row_eventRecord {S S' : TState} {w : World} {Γ : Env} {hv hh : AV} {bit
           by_cases hfl : f = .evLive e
           · subst hfl
             show (d'.event? e).isSome = true
-            rw [event?_nat']
+            rw [Contracts.event?_nat]
             show ((w.dev.events.set! e _)[e]?).join.isSome = true
             rw [Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds_self_of_lt hlt]; rfl
           · exact holds_devStep (d := d') h0 (fun _ => rfl) (fun _ => Array.size_setIfInBounds)
@@ -1981,7 +1948,7 @@ theorem row_eventRecord {S S' : TState} {w : World} {Γ : Env} {hv hh : AV} {bit
                 exact ⟨Device.track_record_outer h1.1 (Or.inr trivial) q e d' rfl hcap.symm rfl,
                   defaultOnly_issue h1.2 q⟩)
         · refine ⟨ic.2, ?_, Device.Covers.issue (Contracts.readyIn_sound hS hrd)⟩
-          rw [event?_nat']
+          rw [Contracts.event?_nat]
           show ((w.dev.events.set! e _)[e]?).join = _
           rw [Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds_self_of_lt hlt]; rfl
       · cases hv; exact cuOk_desc Γ _
@@ -1996,9 +1963,9 @@ theorem row_eventRecord {S S' : TState} {w : World} {Γ : Env} {hv hh : AV} {bit
             cases h
             have hhas := capBase_world hS hbase
             have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-            obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-            obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-            obtain rfl := argBits_nil hb
+            obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+            obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+            obtain rfl := ArgBits.nil_inv hb
             obtain ⟨y, hy, he'⟩ := Option.bind_eq_some_iff.mp he
             obtain rfl := known_bits h0 hy
             obtain ⟨y', hy', hq'⟩ := Option.bind_eq_some_iff.mp hq
@@ -2025,7 +1992,7 @@ theorem row_eventRecord {S S' : TState} {w : World} {Γ : Env} {hv hh : AV} {bit
               · refine ⟨_, rfl, rfl, rfl, rfl, hol, fun x hx => ?_⟩
                 simp only [List.mem_cons, List.mem_filter, bne_iff_ne, ne_eq] at hx
                 rcases hx with rfl | ⟨hx, hne⟩
-                · rw [event?_nat']
+                · rw [Contracts.event?_nat]
                   show ((w.dev.events.set! e _)[e]?).join = _
                   rw [Array.set!_eq_setIfInBounds, Array.getElem?_setIfInBounds_self_of_lt hlt]; rfl
                 · rw [event?_set_ne (d := w.dev) (d' := d') rfl hne]; exact hevs x hx
@@ -2057,10 +2024,10 @@ theorem row_streamWaitEvent {S S' : TState} {w : World} {Γ : Env} {hh hv fl : A
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain ⟨x2, b, rfl, h2, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, hq'⟩ := Option.bind_eq_some_iff.mp hq
       obtain rfl := known_bits h0 hy
       obtain ⟨y', hy', he'⟩ := Option.bind_eq_some_iff.mp he
@@ -2069,7 +2036,7 @@ theorem row_streamWaitEvent {S S' : TState} {w : World} {Γ : Env} {hh hv fl : A
       have hsp := drvParty_sound hS hq'
       obtain ⟨hhe, -⟩ := evOf_spec hS he'
       obtain ⟨clk, hclk, hcov⟩ : (Fact.evAll e).holds w := hS _ (List.contains_iff_mem.mp hall)
-      have hev : (w.dev.events[e]?).join = some (some (clk, false)) := by rw [← event?_nat']; exact hclk
+      have hev : (w.dev.events[e]?).join = some (some (clk, false)) := by rw [← Contracts.event?_nat]; exact hclk
       have hnc : w.dev.capturing q = false := by simp [Dev.capturing, hcap]
       let d' : Dev := { w.dev with race := (w.dev.race.issue q).1.joinInto q clk }
       refine ⟨hhas, some (ofInt .i32 cuSuccess), { w with dev := d' }, ?_, ?_, fun Γ v hv => ?_, CuKept.dev w _⟩
@@ -2106,10 +2073,10 @@ theorem row_streamWaitEvent {S S' : TState} {w : World} {Γ : Env} {hh hv fl : A
             cases h
             have hhas := capBase_world hS hbase
             have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-            obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-            obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-            obtain ⟨x2, b, rfl, h2, hb⟩ := argBits_cons hb
-            obtain rfl := argBits_nil hb
+            obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+            obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+            obtain ⟨x2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+            obtain rfl := ArgBits.nil_inv hb
             obtain ⟨y, hy, hq'⟩ := Option.bind_eq_some_iff.mp hq
             obtain rfl := known_bits h0 hy
             obtain ⟨y', hy', he'⟩ := Option.bind_eq_some_iff.mp he
@@ -2119,7 +2086,7 @@ theorem row_streamWaitEvent {S S' : TState} {w : World} {Γ : Env} {hh hv fl : A
             obtain ⟨hhe, -⟩ := evOf_spec hS he'
             obtain ⟨c, hcap, rfl, rfl, rfl, hol, hevs⟩ := (hS _ (capOf_mem hco) : (Fact.cap cq jn r evs).holds w)
             have hevc : w.dev.event? e = some (some (clk, true)) := hevs (e, clk) (mem_of_lookup hlk)
-            have hev : (w.dev.events[e]?).join = some (some (clk, true)) := by rw [← event?_nat']; exact hevc
+            have hev : (w.dev.events[e]?).join = some (some (clk, true)) := by rw [← Contracts.event?_nat]; exact hevc
             let j' : List Nat := if capIn c.origin c.joined q then c.joined else q :: c.joined
             let c' : Capture := { c with race := (c.race.issue q).1.joinInto q clk, joined := j' }
             have hwait : w.dev.waitOn q (some (clk, true)) = some { w.dev with capture := some c' } := by
@@ -2160,8 +2127,8 @@ theorem row_eventDestroy {S S' : TState} {w : World} {Γ : Env} {hv : AV} {bits 
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, he'⟩ := Option.bind_eq_some_iff.mp he
       obtain rfl := known_bits h0 hy
       obtain ⟨hhe, ev, hev⟩ := evOf_spec hS he'
@@ -2211,15 +2178,14 @@ theorem row_memGetInfo {S S' : TState} {w : World} {Γ : Env} {pf pt : AV} {bits
     cases h
     obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
     have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-    obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-    obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-    obtain rfl := argBits_nil hb
+    obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+    obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+    obtain rfl := ArgBits.nil_inv hb
     obtain ⟨m1, h1⟩ := Option.isSome_iff_exists.mp (memN_slot8 hS hx hm1 w.memInfo.1)
     obtain ⟨hst1, hk1⟩ := afterStore_world (ao := pf.bits) hS h1 (fun z hz => (known_bits hx hz).symm)
-    obtain ⟨r, off, hdec, hp, hs, hz, -⟩ := memN_spec hS hy hm2
+    obtain ⟨r, off, hdec, hp, hs, -⟩ := memN_spec hS hy hm2
     have hs' : off + 8 ≤ m1.sizes r := by rw [Contracts.store_sizes_eq h1]; exact hs
-    have hz' : m1.frozen = false := by rw [Contracts.store_frozen h1]; exact hz
-    obtain ⟨m2, h2⟩ := Option.isSome_iff_exists.mp (Contracts.store_isSome hdec hp hs' hz' w.memInfo.2)
+    obtain ⟨m2, h2⟩ := Option.isSome_iff_exists.mp (Contracts.store_isSome hdec hp hs' w.memInfo.2)
     obtain ⟨hst2, hk2⟩ := afterStore_world (w := { w with mem := m1 }) (ao := pt.bits) (afterStore_forget hst1) h2
       (fun z hz => (known_bits hy hz).symm)
     refine ⟨hhas, some (ofInt .i32 cuSuccess), { w with mem := m2 }, ?_, afterStore_forget hst2,
@@ -2305,8 +2271,8 @@ theorem row_graphDestroy {S S' : TState} {w : World} {Γ : Env} {hg : AV} {bits 
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, hgo'⟩ := Option.bind_eq_some_iff.mp hgo
       obtain rfl := known_bits h0 hy
       obtain ⟨hhg, ops, hgr, -⟩ := graphOf_spec hS hgo'
@@ -2336,8 +2302,8 @@ theorem row_graphExecDestroy {S S' : TState} {w : World} {Γ : Env} {he : AV} {b
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, heo'⟩ := Option.bind_eq_some_iff.mp heo
       obtain rfl := known_bits h0 hy
       obtain ⟨hhe, ops, hex, -⟩ := execOf_spec hS heo'
@@ -2367,9 +2333,9 @@ theorem row_graphUpload {S S' : TState} {w : World} {Γ : Env} {he hh : AV} {bit
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, heo'⟩ := Option.bind_eq_some_iff.mp heo
       obtain rfl := known_bits h0 hy
       obtain ⟨y1, hy1, hq'⟩ := Option.bind_eq_some_iff.mp hq
@@ -2429,9 +2395,9 @@ theorem row_beginCapture {S S' : TState} {w : World} {Γ : Env} {hh mo : AV} {bi
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, hq'⟩ := Option.bind_eq_some_iff.mp hq
       obtain rfl := known_bits h0 hy
       obtain rfl := known_bits h1 hm
@@ -2502,10 +2468,10 @@ theorem row_graphInstantiate {S S' : TState} {w : World} {Γ : Env} {pe hg fl : 
       cases h
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
-      obtain ⟨pa, b, rfl, hpa, hb⟩ := argBits_cons hb
-      obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain ⟨x2, b, rfl, h2, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨pa, b, rfl, hpa, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, hgo'⟩ := Option.bind_eq_some_iff.mp hgo
       obtain rfl := known_bits h1 hy
       obtain rfl := known_bits h2 hfl
@@ -2554,9 +2520,9 @@ theorem holds_endCap {x : Fact} {w : World} (o : Option (Array DevOp)) (h : x.ho
       show (w.dev.events.map _).size = n
       rw [Array.size_map]; exact h
   | evLive e =>
-      have h' : ((w.dev.events[e]?).join).isSome = true := by rw [← event?_nat']; exact h
+      have h' : ((w.dev.events[e]?).join).isSome = true := by rw [← Contracts.event?_nat]; exact h
       show (Dev.event? _ e).isSome = true
-      rw [event?_nat']
+      rw [Contracts.event?_nat]
       show ((w.dev.endCapture.events[e]?).join).isSome = true
       simp only [Dev.endCapture, Array.getElem?_map]
       cases hx : w.dev.events[e]? with
@@ -2568,7 +2534,7 @@ theorem holds_endCap {x : Fact} {w : World} (o : Option (Array DevOp)) (h : x.ho
   | evAll e =>
       obtain ⟨clk, hc, hcv⟩ := h
       refine ⟨clk, ?_, hcv⟩
-      rw [event?_nat'] at hc ⊢
+      rw [Contracts.event?_nat] at hc ⊢
       show (w.dev.endCapture.events[e]?).join = _
       simp only [Dev.endCapture, Array.getElem?_map]
       cases hx : w.dev.events[e]? with
@@ -2608,9 +2574,9 @@ theorem row_endCapture {S S' : TState} {w : World} {Γ : Env} {hh pg : AV} {bits
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
       obtain ⟨c, hcap, hco', hcj, hcr, hol, -⟩ := (hS _ (capOf_mem hco) : (Fact.cap q jn r evs).holds w)
       subst hcj hcr
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨pa, b, rfl, hpa, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨pa, b, rfl, hpa, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, hq'⟩ := Option.bind_eq_some_iff.mp hq
       obtain rfl := known_bits h0 hy
       have hsp := drvParty_sound hS hq'
@@ -2776,9 +2742,9 @@ theorem row_graphLaunch {S S' : TState} {w : World} {Γ : Env} {he hh : AV} {bit
       obtain ⟨hhas, hcap⟩ := cudaBase_world hS hbase
       have hl : w.dev.live = true := hS _ (List.contains_iff_mem.mp hlive)
       have hks : KeepsSize w.kernel := (hS _ (List.contains_iff_mem.mp horc) : (Fact.oracles).holds w).1
-      obtain ⟨x0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨x1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨x0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨x1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain ⟨y, hy, heo'⟩ := Option.bind_eq_some_iff.mp heo
       obtain rfl := known_bits h0 hy
       obtain ⟨y1, hy1, hq'⟩ := Option.bind_eq_some_iff.mp hq
@@ -2893,14 +2859,6 @@ theorem AllocsKept.of_sizes {d d' : Dev}
 theorem AllocsKept.bufs {d d' : Dev} (h : d'.bufs = d.bufs) : AllocsKept d d' :=
   fun j b hb => ⟨b, by rw [h]; exact hb, rfl⟩
 
-theorem devOnly_dev {w : World} {k : Option (Option V × Dev)} {r : Option V} {w' : World}
-    (h : devOnly w k = some (r, w')) : ∃ d, k = some (r, d) ∧ w'.dev = d := by
-  unfold devOnly at h
-  obtain ⟨⟨r0, d⟩, hk, he⟩ := Option.map_eq_some_iff.mp h
-  simp only [Prod.mk.injEq] at he
-  obtain ⟨rfl, rfl⟩ := he
-  exact ⟨d, hk, rfl⟩
-
 /-- A launch keeps every allocation, recorded by a capture or run where
     kernels keep the sizes of the buffers they write. -/
 theorem devOp_launch_keepsAllocs {d d' : Dev} {w : World} {p : Nat} {l : Launch} {ids rs ws : List Nat}
@@ -2960,7 +2918,7 @@ theorem cudaStep_keepsAllocs {f : CudaFn} {bits : List UInt64} {w : World} {r : 
   -- ctxSynchronize
   · split at h
     · cases h
-    obtain ⟨d, hk, hd⟩ := devOnly_dev h
+    obtain ⟨d, hk, hd⟩ := Device.devOnly_dev h
     rw [hd]
     cases hk
     exact AllocsKept.bufs rfl
@@ -2969,7 +2927,7 @@ theorem cudaStep_keepsAllocs {f : CudaFn} {bits : List UInt64} {w : World} {r : 
     · cases h
     obtain ⟨⟨id, off, b⟩, hr, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨bs, hbs, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨d, hk, hd⟩ := devOnly_dev h
+    obtain ⟨d, hk, hd⟩ := Device.devOnly_dev h
     rw [hd]
     obtain ⟨d1, hsw, hcu⟩ := Option.bind_eq_some_iff.mp hk
     simp only [cuRes, Option.some.injEq, Prod.mk.injEq] at hcu
@@ -2977,7 +2935,7 @@ theorem cudaStep_keepsAllocs {f : CudaFn} {bits : List UInt64} {w : World} {r : 
     simp only [Dev.syncWrite, Option.bind_eq_bind] at hsw
     obtain ⟨rr, -, hsw⟩ := Option.bind_eq_some_iff.mp hsw
     cases hsw
-    obtain ⟨hlb, hfit⟩ := range_alloc hr
+    obtain ⟨hlb, hfit⟩ := ExtContracts.range?_live hr
     have hsz := Sem.copyOut_size hbs
     exact AllocsKept.of_sizes (put_sizes (by rw [hlb, Device.overwrite_size (by omega)]; rfl))
   -- memcpyDtoH
@@ -3000,12 +2958,12 @@ theorem cudaStep_keepsAllocs {f : CudaFn} {bits : List UInt64} {w : World} {r : 
     obtain ⟨rr, -, h⟩ := Option.bind_eq_some_iff.mp h
     dsimp only at h
     obtain ⟨db, hdb, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨d, hk, hd⟩ := devOnly_dev h
+    obtain ⟨d, hk, hd⟩ := Device.devOnly_dev h
     rw [hd]
     simp only [cuRes, Option.some.injEq, Prod.mk.injEq] at hk
     obtain ⟨-, rfl⟩ := hk
-    obtain ⟨hlb, hfit⟩ := range_alloc hrd
-    obtain ⟨-, hfits⟩ := range_alloc hrs
+    obtain ⟨hlb, hfit⟩ := ExtContracts.range?_live hrd
+    obtain ⟨-, hfits⟩ := ExtContracts.range?_live hrs
     change (w.dev.bufs[did]?).join = some db at hdb
     rw [hlb] at hdb
     cases hdb
@@ -3017,11 +2975,11 @@ theorem cudaStep_keepsAllocs {f : CudaFn} {bits : List UInt64} {w : World} {r : 
     · cases h
     obtain ⟨⟨id, off, b⟩, hr, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨rr, -, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨d, hk, hd⟩ := devOnly_dev h
+    obtain ⟨d, hk, hd⟩ := Device.devOnly_dev h
     rw [hd]
     simp only [cuRes, Option.some.injEq, Prod.mk.injEq] at hk
     obtain ⟨-, rfl⟩ := hk
-    obtain ⟨hlb, hfit⟩ := range_alloc hr
+    obtain ⟨hlb, hfit⟩ := ExtContracts.range?_live hr
     exact AllocsKept.of_sizes (put_sizes (d := { w.dev with race := rr })
       (by show (w.dev.bufs[id]?.join).map _ = _
           rw [hlb, Device.overwrite_size (by
@@ -3042,7 +3000,7 @@ theorem cudaStep_keepsAllocs {f : CudaFn} {bits : List UInt64} {w : World} {r : 
       exact AllocsKept.bufs rfl
     obtain ⟨sizes, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨args, -, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨d, hk, hd⟩ := devOnly_dev h
+    obtain ⟨d, hk, hd⟩ := Device.devOnly_dev h
     rw [hd]
     obtain ⟨d1, hdo, hcu⟩ := Option.bind_eq_some_iff.mp hk
     simp only [cuRes, Option.some.injEq, Prod.mk.injEq] at hcu
@@ -3054,7 +3012,7 @@ theorem cudaStep_keepsAllocs {f : CudaFn} {bits : List UInt64} {w : World} {r : 
     obtain ⟨p, -, h⟩ := Option.bind_eq_some_iff.mp h
     split at h
     · cases h
-    obtain ⟨d, hk, hd⟩ := devOnly_dev h
+    obtain ⟨d, hk, hd⟩ := Device.devOnly_dev h
     rw [hd]
     cases hk
     exact AllocsKept.bufs rfl

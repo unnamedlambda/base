@@ -1,6 +1,4 @@
 module
-public import AlgorithmLib.Host.Clif
-meta import AlgorithmLib.Host.Clif
 public import Lz4.Comp
 meta import Lz4.Comp
 import all Init.Data.Repr

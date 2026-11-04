@@ -238,8 +238,8 @@ theorem Rep.hasTable {w : World} {s : UInt64} {T : Ht} (h : Rep w s T) :
 theorem wp_withTable {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World} {s : Slot .i64} {x c : UInt64}
     {dflt k : Prog Slot Lvl (Slot .i64)} {R : UInt64 → World → Prop}
     (hs : Γ[s]? = some (.sc .i64 x)) (hc : x ≠ 0 → fld w x CREATED = some c)
-    (hd : x = 0 ∨ c = 0 → ∀ Γ', Ext Γ Γ' → wp cfg d J dflt (AnsQ R) Γ' w)
-    (hk : x ≠ 0 → c ≠ 0 → ∀ Γ', Ext Γ Γ' → wp cfg d J k (AnsQ R) Γ' w) :
+    (hd : x = 0 ∨ c = 0 → ∀ Γ', Extends Γ Γ' → wp cfg d J dflt (AnsQ R) Γ' w)
+    (hk : x ≠ 0 → c ≠ 0 → ∀ Γ', Extends Γ Γ' → wp cfg d J k (AnsQ R) Γ' w) :
     wp cfg d J (withTable s dflt k) (AnsQ R) Γ w := by
   have z0 : c64 0 = 0 := by decide
   unfold withTable
@@ -338,17 +338,17 @@ theorem Owned.storeOut {w : World} {s e i a p x : UInt64} {m : Mem} {r : Region}
   exact ⟨Blk.keep h.blk hm, k _ _ (by decide) h.entries, k _ _ (by decide) h.index, k _ _ (by decide) h.arena,
     ⟨h.own.1.stored hm, h.own.2.1.stored hm, h.own.2.2.stored hm⟩, h.apart⟩
 
-/-- No worker runs in `w'` and region `r` is as large as in `w`: a slot of `r`
-    with room in `w` can be written in `w'`. -/
+/-- Region `r` is as large in `w'` as in `w`: a slot of `r` with room in `w`
+    can be written in `w'`. -/
 def Open (w : World) (r : Region) (w' : World) : Prop :=
-  w'.mem.frozen = false ∧ (w'.mem.region r).size = (w.mem.region r).size
+  (w'.mem.region r).size = (w.mem.region r).size
 
 theorem Open.freed {w w' w'' : World} {r : Region} {x : UInt64} (h : Open w r w') (f : Freed w' w'' x)
     (hr : r ≠ .pinned) : Open w r w'' :=
-  ⟨f.frozen.trans h.1, (f.size r hr).trans h.2⟩
+  (f.size r hr).trans h
 
 theorem open_of_stays {w w' : World} {r : Region} (h : Stays w w') (hc : Calm w) (hr : r ≠ .pinned) : Open w r w' :=
-  ⟨(h.calm hc).1, h.size r hr⟩
+  h.size r hr
 
 theorem cleanup_fine : Fine (emitGo cleanup ⟨1, 0, [], [], [], none⟩).2 := ⟨rfl, by decide⟩
 
@@ -366,9 +366,9 @@ theorem cleanup_spec (cfg : Cfg) (w : World) (slot s : UInt64) (r : Region) (off
   have hroom := (load_some hd hl).1
   refine wp_load64 (by slot) hl ?_
   apply wp_iconst64
-  refine wp_when (fun w' => w'.mem.frozen = false ∧ (w'.mem.region r).size = (w.mem.region r).size ∧
+  refine wp_when (fun w' => (w'.mem.region r).size = (w.mem.region r).size ∧
       Outside w w' fun _ _ => True)
-    (x := s) (y := c64 0) (by slot) (by slot) ?_ (fun _ => ⟨hc.1, rfl, Outside.refl _ _⟩) ?_
+    (x := s) (y := c64 0) (by slot) (by slot) ?_ (fun _ => ⟨rfl, Outside.refl _ _⟩) ?_
   · intro hne
     obtain ⟨e, i, a, ho⟩ := hs.resolve_left (by simpa [cmpInt, show c64 0 = 0 from by decide] using hne)
     obtain ⟨hes, his, has, hie, hae, hai⟩ := ho.apart
@@ -401,11 +401,11 @@ theorem cleanup_spec (cfg : Cfg) (w : World) (slot s : UInt64) (r : Region) (off
     -- the context
     refine wp_free (by slot) (Or.inr b3) ?_
     intro w4 f4
-    exact ⟨by ext_env, by rw [f4.frozen, f3.frozen, f2.frozen, f1.frozen]; exact hc.1,
+    exact ⟨by ext_env,
       by rw [f4.size r hr, f3.size r hr, f2.size r hr, f1.size r hr],
       (((f1.outside _).trans (f2.outside _)).trans (f3.outside _)).trans (f4.outside _)⟩
-  · intro Γ' w' hext ⟨hz, hsz, hO⟩
-    obtain ⟨m, hm⟩ := store_room (x := c64 0) hd hr (by rw [hsz]; exact hroom) hz
+  · intro Γ' w' hext ⟨hsz, hO⟩
+    obtain ⟨m, hm⟩ := store_room (x := c64 0) hd hr (by rw [hsz]; exact hroom)
     have hW := wrote_stored hm
     refine wp_storeI64 (by slot) (by slot) hm ?_
     refine ⟨?_, (hO.mono fun _ _ _ => trivial).trans hW.outsideBut⟩
@@ -626,7 +626,7 @@ variable {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
 theorem wp_hash {p n : Slot .i64} {a : UInt64} {bs : List UInt8} {Q : Slot .i64 → Env → World → Prop}
     (hp : Γ[p]? = some (.sc .i64 a)) (hn : Γ[n]? = some (.sc .i64 (UInt64.ofNat bs.length)))
     (hb : Bytes w a bs)
-    (hk : ∀ Γ' r, Ext Γ Γ' → Γ'[r]? = some (.sc .i64 (H bs)) → Q r Γ' w) :
+    (hk : ∀ Γ' r, Extends Γ Γ' → Γ'[r]? = some (.sc .i64 (H bs)) → Q r Γ' w) :
     wp cfg d J (LibHt.hash p n) Q Γ w := by
   have hlen := hb.len_le
   have hwn : (UInt64.ofNat (bs.length / 8)).toNat = bs.length / 8 := by
@@ -689,7 +689,7 @@ theorem wp_hash {p n : Slot .i64} {a : UInt64} {bs : List UInt8} {Q : Slot .i64 
       refine wp_imul (by slot) (by slot) ?_
       refine wp_ushrImm (by slot) ?_
       refine wp_bxor (by slot) (by slot) ?_
-      have e2 : Ext Γ Γ2 := (Ext.trans (by ext_env) hE).trans (Ext.trans (by ext_env) hE2)
+      have e2 : Extends Γ Γ2 := (Extends.trans (by ext_env) hE).trans (Extends.trans (by ext_env) hE2)
       exact hk _ _ (by ext_env) get_push_size
 
 /-- What differs in the first `i` words of `as` and `bs`, or-ed together. -/
@@ -738,7 +738,7 @@ theorem wp_bytesEq {a b n : Slot .i64} {pa pb nv : UInt64} {as bs : List UInt8}
     (ha : Γ[a]? = some (.sc .i64 pa)) (hb : Γ[b]? = some (.sc .i64 pb)) (hn : Γ[n]? = some (.sc .i64 nv))
     (hnv : nv = UInt64.ofNat as.length)
     (hA : Bytes w pa as) (hB : Bytes w pb bs) (hl : bs.length = as.length)
-    (hk : ∀ Γ' r, Ext Γ Γ' → Γ'[r]? = some (.sc .i64 (if as = bs then 1 else 0)) → Q r Γ' w) :
+    (hk : ∀ Γ' r, Extends Γ Γ' → Γ'[r]? = some (.sc .i64 (if as = bs then 1 else 0)) → Q r Γ' w) :
     wp cfg d J (bytesEq a b n) Q Γ w := by
   subst hnv
   have hlen := hA.len_le
@@ -797,7 +797,7 @@ theorem wp_bytesEq {a b n : Slot .i64} {pa pb nv : UInt64} {as bs : List UInt8}
       rw [htn] at hr2
       refine wp_icmp (y := c64 0) (by slot) (by slot) ?_
       refine wp_uextend8 (by slot) ?_
-      have e2 : Ext Γ Γ2 := (Ext.trans (by ext_env) hE).trans (Ext.trans (by ext_env) hE2)
+      have e2 : Extends Γ Γ2 := (Extends.trans (by ext_env) hE).trans (Extends.trans (by ext_env) hE2)
       refine hk _ _ (by ext_env) ?_
       have key : (diffT as bs (8 * (as.length / 8)) (diffW as bs (as.length / 8)) (as.length % 8) = 0) ↔ as = bs := by
         rw [diffT_zero, diffW_zero, list_eq_iff_getD hl]
@@ -922,7 +922,7 @@ theorem wp_find {s key len h : Slot .i64} {sv kp : UInt64} {L : Lay} {ks : List 
     (hs : Γ[s]? = some (.sc .i64 sv)) (hkey : Γ[key]? = some (.sc .i64 kp))
     (hlen : Γ[len]? = some (.sc .i64 (UInt64.ofNat kb.length))) (hh : Γ[h]? = some (.sc .i64 (H kb)))
     (hP : Probe w sv L ks) (hB : Bytes w kp kb)
-    (hk : ∀ Γ' (ra rp : Slot .i64) slotA pos, Ext Γ Γ' → Γ'[ra]? = some (.sc .i64 slotA) →
+    (hk : ∀ Γ' (ra rp : Slot .i64) slotA pos, Extends Γ Γ' → Γ'[ra]? = some (.sc .i64 slotA) →
       Γ'[rp]? = some (.sc .i64 pos) → Found w L ks kb slotA pos → Q (ra, rp) Γ' w) :
     wp cfg d J (find s key len h) Q Γ w := by
   have hc0 := hP.cap.1
@@ -1049,7 +1049,7 @@ theorem wp_find {s key len h : Slot .i64} {sv kp : UInt64} {L : Lay} {ks : List 
           refine wp_bytesEq (as := (ks[p]'hp)) (bs := kb) (by slot) (by slot)
             (by slot) (by rw [hll]) bk hB hll.symm ?_
           intro Γ4 r hE4 hr
-          refine ⟨Ext.trans (by ext_env) hE4, _, hr, by first | rfl | trivial, ?_⟩
+          refine ⟨Extends.trans (by ext_env) hE4, _, hr, by first | rfl | trivial, ?_⟩
           by_cases c : (ks[p]'hp) = kb
           · rw [if_pos c]; exact ⟨fun _ => ⟨p, hp, hvp, c⟩, fun _ => by decide⟩
           · rw [if_neg c]
@@ -1059,9 +1059,9 @@ theorem wp_find {s key len h : Slot .i64} {sv kp : UInt64} {L : Lay} {ks : List 
             subst this
             exact absurd hpe c
         · intro Γ5 w5 x nJ hE5 hx hr
-          exact ⟨Ext.trans (by ext_env) hE5, x, hx, hr⟩
+          exact ⟨Extends.trans (by ext_env) hE5, x, hx, hr⟩
       · intro Γ5 w5 x nJ hE5 hx hr
-        exact ⟨Ext.trans (by ext_env) hE5, x, hx, hr⟩
+        exact ⟨Extends.trans (by ext_env) hE5, x, hx, hr⟩
     · intro Γ6 w6 fnd nJ hE6 hfnd hr
       obtain ⟨hw, hiff⟩ := hr
       subst hw
@@ -1072,7 +1072,7 @@ theorem wp_find {s key len h : Slot .i64} {sv kp : UInt64} {L : Lay} {ks : List 
       apply wp_iconst8
       refine wp_icmp (cc := .eq) (x := v) (y := c64 0) (by slot) (by slot) ?_
       refine wp_select (x := c64 0) (y := v &&& c64 0xffffffff) (by slot) (by slot) (by slot) ?_
-      refine ⟨Ext.trans (Ext.trans (by ext_env) hE6) (by ext_env), rfl, ⟨t, hi, hprev⟩, _, _, _, _, v, _, _, rfl,
+      refine ⟨Extends.trans (Extends.trans (by ext_env) hE6) (by ext_env), rfl, ⟨t, hi, hprev⟩, _, _, _, _, v, _, _, rfl,
         by slot, by slot, by slot, by slot, hv, ?_, ?_⟩
       · intro hst
         refine ⟨i, hilt, rfl, ?_⟩
@@ -1151,7 +1151,7 @@ theorem wp_find {s key len h : Slot .i64} {sv kp : UInt64} {L : Lay} {ks : List 
     obtain ⟨hw, a, p, rfl, hF⟩ := hX
     subst hw
     simp only [carriesFrom, Vals.head, Vals.snd, Vals.tail]
-    exact hk _ _ _ _ _ (Ext.trans (by ext_env) (hEb.bindAt' hle _)) (bindAt_head _ _ _ _)
+    exact hk _ _ _ _ _ (Extends.trans (by ext_env) (hEb.bindAt hle _)) (bindAt_head _ _ _ _)
       (bindAt_second _ _ _ _ _) hF
 
 end fns
@@ -1636,7 +1636,7 @@ theorem init_spec (cfg : Cfg) (w : World) (slot : UInt64) (r : Region) (off : Na
   · intro nJ Γ' jv vs w' hle hvs ⟨hslot, x, hx, hop, hO, hq⟩
     have hj := join1 hvs hx
     subst hj
-    obtain ⟨m, hm⟩ := store_room (x := x) hd hr (by rw [hop.2]; exact hroom) hop.1
+    obtain ⟨m, hm⟩ := store_room (x := x) hd hr (by rw [hop]; exact hroom)
     refine wp_storeI64 (AlgorithmLib.Proof.bindAt_last _ _ _ hle) (get_bindAt hle hslot) hm ?_
     refine ⟨x, load_store8 hm, hq.imp id fun ⟨L, ht, hi⟩ => ⟨L, ?_, ?_⟩,
       (hO.mono fun _ _ _ => trivial).trans (wrote_stored hm).outsideBut⟩
@@ -1913,7 +1913,7 @@ theorem wp_append {s p n : Slot .i64} {sv pv : UInt64} {T : Ht} {L : Lay} {bs : 
     (hn : Γ[n]? = some (.sc .i64 (UInt64.ofNat bs.length)))
     (h : Tab w sv T L) (hb : Bytes w pv bs) (ho : bs ≠ [] → Off L.ar L.acap pv bs.length)
     (hf : bs ≠ [] → Off (sv + UInt64.ofNat ARENA) 24 pv bs.length)
-    (hk : ∀ Γ' w' r x, Ext Γ Γ' → Γ'[r]? = some (.sc .i64 x) → AppQ w sv L bs x w' → Q r Γ' w') :
+    (hk : ∀ Γ' w' r x, Extends Γ Γ' → Γ'[r]? = some (.sc .i64 x) → AppQ w sv L bs x w' → Q r Γ' w') :
     wp cfg d J (LibHt.append s p n) Q Γ w := by
   have hlen := hb.len_le
   have hacap := Blk.le36 h.ba
@@ -1989,7 +1989,7 @@ theorem wp_append {s p n : Slot .i64} {sv pv : UInt64} {T : Ht} {L : Lay} {bs : 
       exact ⟨by ext_env, _, by slot, Or.inr ⟨rfl, _,
         h.regrown g1 f (by omega) (by omega) hcs hcl W2 B2 F hm4 hm5, Nat.le_max_right _ _⟩⟩
     · intro Γ5 w5 v nJ hE5 hv hr5
-      exact ⟨Ext.trans (by ext_env) hE5, v, hv, hr5⟩
+      exact ⟨Extends.trans (by ext_env) hE5, v, hv, hr5⟩
   · intro Γ6 w6 v nJ hE6 hv hr6
     simp only [carriesFrom, Vals.head]
     rcases hr6 with ⟨rfl, g⟩ | ⟨rfl, L1, A, hroom⟩
@@ -2002,7 +2002,7 @@ theorem wp_append {s p n : Slot .i64} {sv pv : UInt64} {T : Ht} {L : Lay} {bs : 
         exact absurd hne (by simp [cmpInt, z0])
       · intro Γ7 w7 y nJ7 hE7 hy hr7
         simp only [carriesFrom]
-        exact hk _ _ _ _ (Ext.trans (Ext.trans (by ext_env) hE6) hE7) hy hr7
+        exact hk _ _ _ _ (Extends.trans (Extends.trans (by ext_env) hE6) hE7) hy hr7
     · have hb1 : Bytes w6 pv bs := by
         by_cases e : bs = []
         · exact Or.inl e
@@ -2031,7 +2031,7 @@ theorem wp_append {s p n : Slot .i64} {sv pv : UInt64} {T : Ht} {L : Lay} {bs : 
         exact ⟨by ext_env, _, by slot, Or.inr ⟨rfl, _, A.fill h hroom W7 B7 hm⟩⟩
       · intro Γ7 w7 y nJ7 hE7 hy hr7
         simp only [carriesFrom]
-        exact hk _ _ _ _ (Ext.trans (Ext.trans (by ext_env) hE6) hE7) hy hr7
+        exact hk _ _ _ _ (Extends.trans (Extends.trans (by ext_env) hE6) hE7) hy hr7
 
 end fns
 
@@ -2466,7 +2466,7 @@ set_option maxHeartbeats 1600000 in
     new one cannot be allocated: the table and its index, either way. -/
 theorem wp_grow {s : Slot .i64} {sv : UInt64} {T : Ht} {L : Lay} {Q : Unit → Env → World → Prop}
     (hs : Γ[s]? = some (.sc .i64 sv)) (h : Tab w sv T L) (hI : Idx w L (keysOf T))
-    (hk : ∀ Γ' w', Ext Γ Γ' → GrowQ w sv T L w' → Q () Γ' w') :
+    (hk : ∀ Γ' w', Extends Γ Γ' → GrowQ w sv T L w' → Q () Γ' w') :
     wp cfg d J (LibHt.grow s) Q Γ w := by
   have hpos := h.pos
   have hr := h.room
@@ -2585,7 +2585,7 @@ theorem wp_grow {s : Slot .i64} {sv : UInt64} {T : Ht} {L : Lay} {Q : Unit → E
       refine wp_storeI64 (by slot) (by slot) hm ?_
       have W := wrote_stored hm
       have hj : 8 * ii.toNat + 8 ≤ L'.icap * 8 := by omega
-      refine ⟨Ext.trans (Ext.trans (Ext.trans (by ext_env) hE2) hE3) (by ext_env), ?_, ?_, ?_⟩
+      refine ⟨Extends.trans (Extends.trans (Extends.trans (by ext_env) hE2) hE3) (by ext_env), ?_, ?_, ?_⟩
       · exact hT.wroteOff W (hT.apart.2.1.symm.clear hbi hj)
           (Off.prefix (hT.apart.2.2.2.1.symm.clear hbi hj) (Nat.mul_le_mul_right _ hT.room.1))
           (Off.prefix (hT.apart.2.2.2.2.2.clear hbi hj) hT.room.2)
@@ -2604,12 +2604,12 @@ theorem wp_grow {s : Slot .i64} {sv : UInt64} {T : Ht} {L : Lay} {Q : Unit → E
     · intro Γ9 w9 hE9 hinv
       obtain ⟨hT, hIi, hK⟩ := hinv
       rw [hcnt, ← hlen, List.take_length] at hIi
-      exact ⟨Ext.trans (by ext_env) hE9, L', hT, hIi, hK⟩
+      exact ⟨Extends.trans (by ext_env) hE9, L', hT, hIi, hK⟩
   · intro _
     have A := h.grown g1
     exact ⟨L, h.appended A, hI.appended h A, A.kept h⟩
   · intro Γ' w' hE hR
-    exact hk _ _ (Ext.trans (by ext_env) hE) hR
+    exact hk _ _ (Extends.trans (by ext_env) hE) hR
 
 end fns
 
@@ -2729,7 +2729,7 @@ theorem wp_insertAt {s slot key klen val vlen hh : Slot .i64} {sv slotA kp vp : 
     (hsl : slotA = L.ix + UInt64.ofNat (8 * i.toNat))
     (hkb : Bytes w kp kb) (hvb : Bytes w vp vb) (sk : kb ≠ [] → Src sv L kp kb.length)
     (svv : vb ≠ [] → Src sv L vp vb.length)
-    (hk : ∀ Γ' w', Ext Γ Γ' → InsQ w sv T L kb vb w' → Q () Γ' w') :
+    (hk : ∀ Γ' w', Extends Γ Γ' → InsQ w sv T L kb vb w' → Q () Γ' w') :
     wp cfg d J (LibHt.insertAt s slot key klen val vlen hh) Q Γ w := by
   have hpos := h.pos
   have hr := h.room
@@ -2829,7 +2829,7 @@ theorem wp_insertAt {s slot key klen val vlen hh : Slot .i64} {sv slotA kp vp : 
         · exact Or.inl e
         · exact M.keeps.bytes _ _ e ⟨hvb.inW e, (svv e).1, (svv e).2.2.1⟩ hvb
     · intro Γ5 w5 v nJ hE5 hv hr5
-      exact ⟨Ext.trans (by ext_env) hE5, v, hv, hr5⟩
+      exact ⟨Extends.trans (by ext_env) hE5, v, hv, hr5⟩
   · intro Γ6 w6 v nJ hE6 hv hr6
     simp only [carriesFrom, Vals.head]
     rcases hr6 with ⟨rfl, g⟩ | ⟨rfl, L1, hT1, S1, K1, hlt1, hix1, har1, hac1, hkb1, hvb1⟩
@@ -2839,7 +2839,7 @@ theorem wp_insertAt {s slot key klen val vlen hh : Slot .i64} {sv slotA kp vp : 
       · intro _
         exact InsQ.grows h S.idx g
       · intro Γ' w' hE hR
-        exact hk _ _ (Ext.trans (Ext.trans (by ext_env) hE6) hE) hR
+        exact hk _ _ (Extends.trans (Extends.trans (by ext_env) hE6) hE) hR
     · refine wp_when (InsQ w sv T L kb vb) (x := c64 1) (y := c64 0) (by slot) (by slot) ?_ ?_ ?_
       · intro _
         have ok1 : kb ≠ [] → Off L1.ar L1.acap kp kb.length := fun e => by rw [har1, hac1]; exact (sk e).2.1
@@ -2856,7 +2856,7 @@ theorem wp_insertAt {s slot key klen val vlen hh : Slot .i64} {sv slotA kp vp : 
             exact ⟨L1, K1.trans ((hT1.grown g7).kept hT1), Or.inr ⟨hT1.appended (hT1.grown g7),
               S1.idx.appended hT1 (hT1.grown g7)⟩⟩
           · intro Γ' w' hE hR
-            exact ⟨Ext.trans (Ext.trans (by ext_env) hE7) hE, hR⟩
+            exact ⟨Extends.trans (Extends.trans (by ext_env) hE7) hE, hR⟩
         · have hT2 := hT1.appended A1
           have K2 := K1.trans (A1.kept hT1)
           have S2 : Spot w7 L2 (keysOf T) kb i t := S1.keeps A1.keeps (fun j hj => movP_blk hT1.rep.blk hT1.bi
@@ -2883,7 +2883,7 @@ theorem wp_insertAt {s slot key klen val vlen hh : Slot .i64} {sv slotA kp vp : 
                 exact ⟨L2, K2.trans ((hT2.grown g8).kept hT2), Or.inr ⟨hT2.appended (hT2.grown g8),
                   S2.idx.appended hT2 (hT2.grown g8)⟩⟩
               · intro Γ' w' hE hR
-                exact ⟨Ext.trans (Ext.trans (by ext_env) hE8) hE, hR⟩
+                exact ⟨Extends.trans (Extends.trans (by ext_env) hE8) hE, hR⟩
             · have hT3 := hT2.appended A2
               have K3 := K2.trans (A2.kept hT2)
               have S3 : Spot w8 L3 (keysOf T) kb i t := S2.keeps A2.keeps (fun j hj => movP_blk hT2.rep.blk hT2.bi
@@ -3010,24 +3010,24 @@ theorem wp_insertAt {s slot key klen val vlen hh : Slot .i64} {sv slotA kp vp : 
                 · intro _
                   refine wp_grow (T := pushed T kb vb) (by slot) hTf (by rw [keysOf_pushed]; exact If) ?_
                   rintro Γ' w' hE ⟨L4, hT4, hI4, K4⟩
-                  exact ⟨Ext.trans (by ext_env) hE, L4, Kall.trans K4, Or.inl ⟨hT4, by
+                  exact ⟨Extends.trans (by ext_env) hE, L4, Kall.trans K4, Or.inl ⟨hT4, by
                     rw [← keysOf_pushed T kb vb]; exact hI4⟩⟩
                 · intro _
                   exact ⟨_, Kall, Or.inl ⟨hTf, If⟩⟩
                 · intro Γ' w' hE hR
-                  exact ⟨Ext.trans (by ext_env) hE, hR⟩
+                  exact ⟨Extends.trans (by ext_env) hE, hR⟩
               · intro he
                 exact absurd (by simpa [cmpInt] using he) (ofNat_ne_neg1 (n := L2.used) (by omega))
               · intro Γ' w' hE hR
-                exact ⟨Ext.trans (Ext.trans (by ext_env) hE8) hE, hR⟩
+                exact ⟨Extends.trans (Extends.trans (by ext_env) hE8) hE, hR⟩
           · intro he
             exact absurd (by simpa [cmpInt] using he) (ofNat_ne_neg1 (n := L1.used) (by omega))
           · intro Γ' w' hE hR
-            exact ⟨Ext.trans (Ext.trans (by ext_env) hE7) hE, hR⟩
+            exact ⟨Extends.trans (Extends.trans (by ext_env) hE7) hE, hR⟩
       · intro he
         exact absurd he (by decide)
       · intro Γ' w' hE hR
-        exact hk _ _ (Ext.trans (Ext.trans (by ext_env) hE6) hE) hR
+        exact hk _ _ (Extends.trans (Extends.trans (by ext_env) hE6) hE) hR
 
 end fns
 
@@ -3357,7 +3357,7 @@ theorem wp_set {s key klen val vlen : Slot .i64} {sv kp vp : UInt64} {T : Ht} {L
     (hvlen : Γ[vlen]? = some (.sc .i64 (UInt64.ofNat vb.length)))
     (h : Tab w sv T L) (hI : Idx w L (keysOf T)) (hkb : Bytes w kp kb) (hvb : Bytes w vp vb)
     (ck : kb ≠ [] → Clear sv L kp kb.length) (cv : vb ≠ [] → Clear sv L vp vb.length)
-    (hk : ∀ Γ' w', Ext Γ Γ' → SetQ w sv T L kb vb w' → Q () Γ' w') :
+    (hk : ∀ Γ' w', Extends Γ Γ' → SetQ w sv T L kb vb w' → Q () Γ' w') :
     wp cfg d J (LibHt.set s key klen val vlen) Q Γ w := by
   have z0 : c64 0 = 0 := by decide
   have hr := h.room
@@ -3373,7 +3373,7 @@ theorem wp_set {s key klen val vlen : Slot .i64} {sv kp vp : UInt64} {T : Ht} {L
   intro Γ2 ra rp slotA pos hE2 hra hrp hF
   apply wp_iconst64
   obtain ⟨i, hi, hsl, hF⟩ := hF
-  refine wp_ifte (fun _ Γ' w' => Ext Γ Γ' ∧ SetQ w sv T L kb vb w') (x := pos) (y := c64 0) (by slot) (by slot)
+  refine wp_ifte (fun _ Γ' w' => Extends Γ Γ' ∧ SetQ w sv T L kb vb w') (x := pos) (y := c64 0) (by slot) (by slot)
     ?_ ?_ ?_
   · intro hp0
     have hp0' : pos = 0 := by simpa [cmpInt, z0] using hp0
@@ -3391,7 +3391,7 @@ theorem wp_set {s key klen val vlen : Slot .i64} {sv kp vp : UInt64} {T : Ht} {L
     refine wp_insertAt (kb := kb) (vb := vb) (by slot) (by slot) (by slot) (by slot) (by slot) (by slot) (by slot) h
       ⟨hI, hi, hemp, hpath, hbef⟩ hnot hsl hkb hvb (fun e => (ck e).src h) (fun e => (cv e).src h) ?_
     rintro Γ' w' hE ⟨L', K, hR⟩
-    refine ⟨Ext.trans (Ext.trans (Ext.trans hE1 hE2) (by ext_env)) hE, L', K, hR.imp ?_ id⟩
+    refine ⟨Extends.trans (Extends.trans (Extends.trans hE1 hE2) (by ext_env)) hE, L', K, hR.imp ?_ id⟩
     rintro ⟨hT, hIx⟩
     rw [set_absent hnot, keysOf_pushed]
     exact ⟨hT, hIx⟩
@@ -3422,7 +3422,7 @@ theorem wp_set {s key klen val vlen : Slot .i64} {sv kp vp : UInt64} {T : Ht} {L
     rw [eA]
     refine wp_iaddImm (x := L.e + UInt64.ofNat (p * ENTRY)) (by slot) ?_
     refine wp_load64 (by slot) (by rw [e8 _ 24 24 (by decide)]; exact f24) ?_
-    refine wp_ifte (fun _ Γ' w' => Ext Γ Γ' ∧ SetQ w sv T L kb vb w')
+    refine wp_ifte (fun _ Γ' w' => Extends Γ Γ' ∧ SetQ w sv T L kb vb w')
       (x := UInt64.ofNat (T.entries[p]'hp').2.size) (y := UInt64.ofNat vb.length) (by slot) (by slot) ?_ ?_ ?_
     · intro heq
       have hsz : vb.length = (T.entries[p]'hp').2.size := by
@@ -3447,7 +3447,7 @@ theorem wp_set {s key klen val vlen : Slot .i64} {sv kp vp : UInt64} {T : Ht} {L
         (by rw [hl]; exact Blk.room h.ba h.rep.calm hj) (by rw [hl]; exact hap) ?_
       intro w1 W1 B1 _
       rw [hl] at W1
-      refine ⟨Ext.trans (Ext.trans hE1 hE2) (by ext_env), L, Kept.wrote (y := L.ar) (k := L.acap) (by simp [blocks]) h.ba W1 hj,
+      refine ⟨Extends.trans (Extends.trans hE1 hE2) (by ext_env), L, Kept.wrote (y := L.ar) (k := L.acap) (by simp [blocks]) h.ba W1 hj,
         Or.inl ?_⟩
       rw [hset, keysOf_setVal]
       exact ⟨h.setInPlace hp' ho hsz (Nat.le_refl _) W1 B1,
@@ -3465,7 +3465,7 @@ theorem wp_set {s key klen val vlen : Slot .i64} {sv kp vp : UInt64} {T : Ht} {L
         · intro _
           exact ⟨L, (h.grown g).kept h, Or.inr ⟨h.appended (h.grown g), hI.appended h (h.grown g)⟩⟩
         · intro Γ' w' hE hR
-          exact ⟨Ext.trans (Ext.trans (Ext.trans (Ext.trans hE1 hE2) (by ext_env)) hE3) (Ext.trans (by ext_env) hE), hR⟩
+          exact ⟨Extends.trans (Extends.trans (Extends.trans (Extends.trans hE1 hE2) (by ext_env)) hE3) (Extends.trans (by ext_env) hE), hR⟩
       · have hT1 := h.appended A
         have K1 := A.kept h
         have I1 := hI.appended h A
@@ -3511,18 +3511,18 @@ theorem wp_set {s key klen val vlen : Slot .i64} {sv kp vp : UInt64} {T : Ht} {L
           have Ia := I1.wrote hT1.bi W1 (hT1.apart.2.2.2.1.clear hT1.be (hjc 16 (by decide)))
           have Ib := Ia.wrote (Blk.keep hT1.bi hm1) W2
             (hT1.apart.2.2.2.1.clear (Blk.keep hT1.be hm1) (hjc 24 (by decide)))
-          refine ⟨Ext.trans (by ext_env) (Ext.refl _), { L1 with offs := L1.offs.set p ((L1.offs[p]).1, L.used) },
+          refine ⟨Extends.trans (by ext_env) (Extends.refl _), { L1 with offs := L1.offs.set p ((L1.offs[p]).1, L.used) },
             ((K1.trans Ka).trans Kb).lay rfl, Or.inl ?_⟩
           rw [hset, keysOf_setVal]
           exact ⟨hT1.setMoved hp' ho1 hU (by rw [A.used]; omega) A.new hm1 hm2, Ib.lay rfl rfl⟩
         · intro he
           exact absurd (by simpa [cmpInt] using he) (ofNat_ne_neg1 (n := L.used) (by omega))
         · intro Γ' w' hE hR
-          exact ⟨Ext.trans (Ext.trans (Ext.trans (Ext.trans hE1 hE2) (by ext_env)) hE3) (Ext.trans (by ext_env) hE), hR⟩
+          exact ⟨Extends.trans (Extends.trans (Extends.trans (Extends.trans hE1 hE2) (by ext_env)) hE3) (Extends.trans (by ext_env) hE), hR⟩
     · rintro nJ Γ' jv vs w' hle hvs ⟨hE, hR⟩
-      exact ⟨hE.bindAt hle _, hR⟩
+      exact ⟨hE.bindAt_of hle _, hR⟩
   · rintro nJ Γ' jv vs w' hle hvs ⟨hE, hR⟩
-    exact hk _ _ (hE.bindAt hle _) hR
+    exact hk _ _ (hE.bindAt_of hle _) hR
 
 end fns
 

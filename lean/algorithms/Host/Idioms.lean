@@ -260,8 +260,8 @@ def checkedCfg (n : Nat) : Except String (Prog V L Unit) :=
   else .error s!"{n} is not a multiple of 16"
 
 /-- A callee the generator chose, with its argument list typed by that choice. -/
-def dynCall (f : Ffi) (args : Vals V f.params) : Prog V L Unit := do
-  let _ ← ffi f args
+def dynCall (f : LibFn) (args : Vals V f.params) : Prog V L Unit := do
+  let _ ← callLib f args
   pure ()
 
 /-- Polymorphic in the CLIF type, with the side condition as an auto-param. -/

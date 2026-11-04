@@ -3,10 +3,6 @@ public import AlgorithmLib.Surface.LibHt
 meta import AlgorithmLib.Surface.LibHt
 public import AlgorithmLib.Surface.LibMath
 meta import AlgorithmLib.Surface.LibMath
-public import AlgorithmLib.Surface.LibLmdb
-meta import AlgorithmLib.Surface.LibLmdb
-public import AlgorithmLib.Surface.LibThread
-meta import AlgorithmLib.Surface.LibThread
 public import AlgorithmLib.Core.Artifact
 meta import AlgorithmLib.Core.Artifact
 import all Init.Data.Repr
@@ -16,11 +12,10 @@ import all Init.Data.List.Sort.Basic
 /-!
 # Linking the libraries into a program
 
-A program names the engine's entry points (`Ffi`); the libraries written in
-CLIF implement some of them over C calls. `link` appends the functions a
-program's calls need and points each call at its function, and
-`emitArtifacts` links every artifact it writes, so none reaches a host
-calling an entry point a library implements.
+A program calls the functions of the libraries written in CLIF by name
+(`LibFn`). `link` appends the functions a program's calls need and points each
+call at its function, and `emitArtifacts` links every artifact it writes, so
+none reaches a host calling a library function by name.
 -/
 
 namespace AlgorithmLib.Link
@@ -29,23 +24,21 @@ open AlgorithmLib.IR
 open AlgorithmLib.Prog
 open AlgorithmLib.Lib
 
-/-- The library function implementing `f`; `none` for an entry point the
-    engine still provides. -/
-def implOf (f : Ffi) : Option Impl :=
-  [LibHt.implOf f, LibMath.implOf f, LibLmdb.implOf f,
-    LibThread.implOf f].findSome? id
+/-- The library function named `f`. -/
+def implOf (f : LibFn) : Option Impl :=
+  [LibHt.implOf f, LibMath.implOf f].findSome? id
 
-/-- Point every call to an entry point in `table` at its library function. A
+/-- Point every call to a library function in `table` at the function. A
     function answers an `i64`, so an `i32` answer is the low half of it and an
     `f32` answer those bits. -/
-def relink (table : List (Ffi × Nat)) (f : FuncData) : FuncData := Id.run do
+def relink (table : List (LibFn × Nat)) (f : FuncData) : FuncData := Id.run do
   let mut next := f.nextVal
   let mut blocks := []
   for b in f.blocks do
     let mut insts := []
     for i in b.insts do
       match i with
-      | .call d (.ffi g) args =>
+      | .call d (.lib g) args =>
           match table.find? (·.1 == g), d with
           | some (_, k), some dv =>
               if g.result == some .i32 then
@@ -64,18 +57,18 @@ def relink (table : List (Ffi × Nat)) (f : FuncData) : FuncData := Id.run do
     blocks := blocks ++ [{ b with insts }]
   return { f with blocks }
 
-/-- The engine entry points a function calls. -/
-def ffisOf (f : FuncData) : List Ffi :=
+/-- The library functions a function calls by name. -/
+def libsCalledBy (f : FuncData) : List LibFn :=
   f.blocks.flatMap fun b => b.insts.filterMap fun
-    | .call _ (.ffi g) _ => some g
+    | .call _ (.lib g) _ => some g
     | _ => none
 
 /-- **Link the libraries into a program.** The functions its calls need are
-    appended, in `Ffi.all`'s order, and each call is pointed at its function.
+    appended, in `LibFn.all`'s order, and each call is pointed at its function.
     A program that calls none is returned as it is. -/
 def link (fs : List FuncData) : Except String (List FuncData) := do
-  let called := fs.flatMap ffisOf
-  let used := Ffi.all.filter fun g => (implOf g).isSome && called.contains g
+  let called := fs.flatMap libsCalledBy
+  let used := LibFn.all.filter fun g => (implOf g).isSome && called.contains g
   if used.isEmpty then return fs
   let n := fs.length
   let mut table := []
@@ -98,7 +91,7 @@ def withHost (fs : List FuncData) : Except String (List FuncData) := do
   return fs
 
 /-- **Write each artifact, linked.** Every artifact is written here, so none
-    reaches a host still calling an entry point a library implements. -/
+    reaches a host still calling a library function by name. -/
 def emitArtifacts (dir : String) (entries : Array ArtifactEntry) : IO Unit := do
   let linked ← entries.mapM fun (name, a) => do
     match withHost a.functions with

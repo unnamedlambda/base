@@ -30,8 +30,7 @@ deriving instance ToExpr for AlgorithmLib.Check.Carry
 deriving instance ToExpr for AlgorithmLib.Check.PExpr
 deriving instance ToExpr for AlgorithmLib.Check.PArg
 deriving instance ToExpr for AlgorithmLib.Check.PCond
-deriving instance ToExpr for AlgorithmLib.IR.Ffi
-deriving instance ToExpr for AlgorithmLib.Check.OCall
+deriving instance ToExpr for AlgorithmLib.IR.LibFn
 deriving instance ToExpr for AlgorithmLib.Check.Obl
 deriving instance ToExpr for AlgorithmLib.Check.Par
 deriving instance ToExpr for AlgorithmLib.Check.Slots

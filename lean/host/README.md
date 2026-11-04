@@ -52,8 +52,9 @@ state something about.
 
 That has limits, and they are the interesting part:
 
-* **The menu is closed.** `AlgorithmLib.IR.Ffi` has 85 constructors. What is not
-  in it cannot be done, and adding one is Rust work plus a table entry, not a
+* **The menu is closed.** A program calls the C libraries `AlgorithmLib.IR.Ext`
+  names and the library functions `AlgorithmLib.IR.LibFn` names. What is not
+  in them cannot be done, and adding one is a table entry and its model, not a
   Lean import.
 * **Top-level `IO` does not vanish.** Something has to open the runtime. It
   shrinks to a fixed prelude; it does not go away.
@@ -132,9 +133,5 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
 * **Conventions, not coverage.** Every entry point is callable: `ffi f args`
   takes `Vals V f.params` and returns `ResV V f.result`, both read off `Ffi`,
   so arity and types are the call's type and there is nothing to keep in step.
-  What is still uneven is the layer *above* that: `ProgFFI` gives wgpu, cuda,
-  files, the window and the hash table a wrapper that reads the context pointer
-  out of its slot for you; lmdb and threads have no such convention, because no
-  two generators agree on one and `ContextSlots` has no entry for either.
-  Inventing one here would mean shipping a convention no artifact uses, so they
-  stay at the bare `ffi` call until a real one exists to lift.
+  `ProgFFI` gives the hash table's functions a wrapper that reads the context
+  pointer out of its slot for you.

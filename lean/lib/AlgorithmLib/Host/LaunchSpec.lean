@@ -15,7 +15,7 @@ world's kernel oracle, `World.kernel`. A kernel's own proof is about a modeled
 machine, so what joins the two is one statement about the device, named here
 once: `Honest w.kernel l M`, every output the device gives for launch `l` is one
 the modeled machine relates to its input by `M`. That is the GPU-side trusted
-reading, as `callBits` is the host-side one.
+reading, as the models of the C libraries (`Ext`) are the host-side one.
 
 The host rule for a launch made directly is `DrvLaunch.drvLaunch_triple`,
 through `launchStep_honest`: from a world where `cuLaunchKernel` answers, every

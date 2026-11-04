@@ -43,7 +43,7 @@ def roundTrip : Prog V L Unit := do
   let _ ← ext (.cuda .memFree) %[← load64 (← iaddImm base SLOT_BUF)]
 
 abbrev Start : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .devSeq,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq,
    .retained 0, .nbufs 0, .room .arena 4096, .room .data N, .room .out N]
 
 ship_entry roundTrip : roundTrip under Start
@@ -84,7 +84,7 @@ def launchOnce : Prog V L Unit := do
     z32, ← iconst64 0, ← iaddImm base SLOT_PARAMS, ← iconst64 0]
 
 abbrev LaunchStart : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .devSeq, .oracles,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq, .oracles,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
    .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8])]]
@@ -114,7 +114,7 @@ def streamEvent : Prog V L Unit := do
   let _ ← ext (.cuda .streamDestroy) %[← load64 (← iaddImm base SLOT_STREAM)]
 
 abbrev StreamStart : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .devSeq,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq,
    .retained 0, .streams [], .events 0, .room .arena 4096]
 
 ship_entry streamEvent : streamEvent under StreamStart
@@ -170,7 +170,7 @@ def streamLaunch : Prog V L Unit := do
   let _ ← ext (.cuda .streamSynchronize) %[← iconst64 0]
 
 abbrev StreamLaunchStart : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .devSeq, .oracles,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq, .oracles,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0, .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
    .text (regionBase .arena + UInt64.ofNat PTX_OFF) none 128 [("k", [8])]]
@@ -210,8 +210,7 @@ def blasProduct : Prog V L Unit := do
   let _ ← ext (.cuda .memFree) %[← load64 (← iaddImm base SLOT_C)]
 
 abbrev BlasStart : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part (.has .cublas) true, .part .capturing false, .part .frozen false,
-   .part .idle true, .devSeq, .oracles, .retained 0, .nbufs 0, .nblas 0, .room .arena 4096]
+  [.part (.has .cuda) true, .part (.has .cublas) true, .part .capturing false, .part .idle true, .devSeq, .oracles, .retained 0, .nbufs 0, .nblas 0, .room .arena 4096]
 
 ship_entry blasProduct : blasProduct under BlasStart
 
@@ -251,7 +250,7 @@ def graphReplay : Prog V L Unit := do
   let _ ← ext (.cuda .graphDestroy) %[← load64 (← iaddImm base SLOT_GRAPH)]
 
 abbrev GraphStart : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .devSeq, .oracles,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq, .oracles,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0, .ngraphs 0, .nexecs 0,
    .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
@@ -320,8 +319,7 @@ def forkJoin : Prog V L Unit := do
   let _ ← ext (.cuda .graphDestroy) %[← load64 (← iaddImm base SLOT_GRAPH)]
 
 abbrev ForkStart : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part (.has .cublas) true, .part .capturing false, .part .frozen false,
-   .part .idle true, .devSeq, .oracles,
+  [.part (.has .cuda) true, .part (.has .cublas) true, .part .capturing false, .part .idle true, .devSeq, .oracles,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .nblas 0, .streams [], .events 0, .ngraphs 0, .nexecs 0,
    .room .arena 4096,
    .text (regionBase .arena + UInt64.ofNat NAME_OFF) (some "k") 2 [],
@@ -344,7 +342,7 @@ def sizedUpload : Prog V L Unit := do
     let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base SLOT_BUF), ← dataPtr, bytes]
 
 abbrev SizedStart (dl n : UInt64) : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .part .cuda true,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .devSeq, .oracles, .room .arena 4096, .roomArg .data dl,
    .cell (regionBase .arena + UInt64.ofNat SLOT_BUF) (devPtr 0),
    .cell (regionBase .arena + UInt64.ofNat SLOT_N) n, .alloc 0 ((n * 4).toNat)]
@@ -375,7 +373,7 @@ def sizedDownload : Prog V L Unit := do
     let _ ← ext (.cuda .memcpyDtoH) %[← outPtr, ← load64 (← iaddImm base SLOT_BUF), ol]
 
 abbrev SizedOut (ol n : UInt64) : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .part .cuda true,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .devSeq, .oracles, .room .arena 4096, .roomArg .out ol,
    .cell (regionBase .arena + UInt64.ofNat SLOT_BUF) (devPtr 0),
    .cell (regionBase .arena + UInt64.ofNat SLOT_N) n, .alloc 0 ((n * 4).toNat)]

@@ -9,15 +9,13 @@ public import Scan.Ship
 meta import Scan.Ship
 public import GptOss.Kernels
 meta import GptOss.Kernels
-public import AlgorithmLib.Host.HostIR
-meta import AlgorithmLib.Host.HostIR
 public import AlgorithmLib.Surface.Drv
 meta import AlgorithmLib.Surface.Drv
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
-open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
+open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 open AlgorithmLib.Prog
 
 /-!

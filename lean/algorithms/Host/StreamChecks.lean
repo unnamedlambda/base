@@ -131,12 +131,11 @@ def args : List Sem.V :=
   [.sc .i64 (Sem.regionBase .data), .sc .i64 8,
    .sc .i64 (Sem.regionBase .out), .sc .i64 64]
 
-/-- Where the bodies may start: the driver loaded and nothing made, memory not
-    frozen, kernels that keep their buffers' sizes, the arena holding the
+/-- Where the bodies may start: the driver loaded and nothing made, kernels that keep their buffers' sizes, the arena holding the
     kernel's text and its entry point's name, and room in the output for the
     copy back. Nothing about the input's bytes is asked. -/
 def device0 : Contracts.TState :=
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .devSeq, .oracles,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq, .oracles,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .streams [], .events 0,
    .room .arena MEM, .room .out 64,
    .text (Sem.regionBase .arena + UInt64.ofNat NAME_MAIN) (some "main") 5 [],

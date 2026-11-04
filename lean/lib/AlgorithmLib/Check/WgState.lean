@@ -26,7 +26,7 @@ abbrev addr (off : Nat) : UInt64 := regionBase .arena + UInt64.ofNat off
 
 /-- What a program starts from. -/
 def loadTS (a : App) : TState :=
-  [.part .gpuAdapter true, .part .frozen false, .part .idle true, .room .arena a.memSize, .nwg 0,
+  [.part .gpuAdapter true, .part .idle true, .room .arena a.memSize, .nwg 0,
    .wg1 .commandEncoder none, .wg1 .computePass none, .wg1 .commandBuffer none,
    .wgText (addr a.NAME) 4 false] ++
   (a.pipes.map fun p => .wgText (addr p.shaderOff) p.shaderLen true) ++

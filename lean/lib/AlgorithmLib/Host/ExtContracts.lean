@@ -514,8 +514,6 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
   | .base .fileWriteFromPtr =>
       [("the path's field readable", .documented "Sem.readField: up to cap bytes, to the first NUL"),
        ("the bytes readable", .documented "pwrite(2): size bytes from src")]
-  | .base .threadStart | .base .threadFinish =>
-      [("never called but by the thread library", .unmodelled "stated as threadSpawn and threadJoin")]
   | .base .stdinReadline =>
       [("room for the line, up to cap", .documented "fgets: at most cap bytes written at dst")]
   | .serial .count => [("the ports listed", .unmodelled "the world's serialNames")]
@@ -1730,7 +1728,7 @@ theorem cudaStep_respects_frame (f : CudaFn) (bits : List UInt64) (w : World) (r
     obtain ⟨p, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨⟨id, off, b⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨_, _, m, hk, hreg, -, -, -⟩ := asyncCopy_region h
+    obtain ⟨_, _, m, hk, hreg, -, -⟩ := asyncCopy_region h
     simp only [Option.some.injEq, Prod.mk.injEq] at hk
     obtain ⟨-, rfl⟩ := hk
     exact Unchanged.of_region hreg a
@@ -1739,14 +1737,14 @@ theorem cudaStep_respects_frame (f : CudaFn) (bits : List UInt64) (w : World) (r
     · cases h
     obtain ⟨p, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨⟨id, off, b⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
-    obtain ⟨_, _, m, hk, hreg, hlive, hfz, hsub⟩ := asyncCopy_region h
+    obtain ⟨_, _, m, hk, hreg, hlive, hsub⟩ := asyncCopy_region h
     obtain ⟨m0, hm0, hk⟩ := Option.bind_eq_some_iff.mp hk
     simp only [Option.some.injEq, Prod.mk.injEq] at hk
     obtain ⟨-, rfl⟩ := hk
-    obtain ⟨hl0, hb0, hf0⟩ := copyIn_meta hm0
+    obtain ⟨hl0, hb0⟩ := copyIn_meta hm0
     intro x y hx hy
     have hy0 : m0.load a 1 = some y :=
-      Mem.load_congr hreg (Mem.readable_busy_sub (hlive.trans rfl) hfz
+      Mem.load_congr hreg (Mem.readable_busy_sub (hlive.trans rfl)
         (fun b hb => hsub b (by
           rw [hb0] at hb
           exact (List.mem_filter.mp hb).1))) hy

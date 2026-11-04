@@ -127,7 +127,7 @@ def sample : Artifact where
         .fconst ⟨3⟩ .f64 0xFFFFFFFFFFFFFFFF,
         .load ⟨4⟩ { kind := .uload8, ty := .i32 } ⟨0⟩,
         -- A primitive, whose result nothing reads, and a function.
-        .call none (.ffi .sinf) [⟨0⟩],
+        .call none (.lib .sinf) [⟨0⟩],
         .call none (.local 1) [⟨0⟩],
         -- An indirect one, at a signature and a convention.
         .call (some ⟨5⟩) .native [⟨0⟩, ⟨0⟩, ⟨0⟩, ⟨0⟩, ⟨0⟩],

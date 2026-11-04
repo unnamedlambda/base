@@ -14,7 +14,7 @@ import all Init.Data.List.Sort.Basic
 /-!
 # The native-code contracts, checked against the runtime
 
-What `Sem.callFfi` says `cl_native_load`, `cl_native_free`, `cl_native_arch`
+What the models (`Sem.ffiNativeLoad` and its kin) say `cl_native_load`, `cl_native_free`, `cl_native_arch`
 and `cl_cpu_has` do, run through `base/tests/hprog_native_corpus.rs` on an
 x86-64 host and compared byte for byte with what the interpreter computed here,
 with the oracles set to that host: architecture 1, and `sse2`, which every

@@ -31,7 +31,7 @@ def _root_.AlgorithmLib.IR.ClifTy.isIntTy : ClifTy → Bool
 
 /-- What a callee takes and answers.
 
-    An `Ffi`'s is a total function of the constructor, so it needs no table.
+    An `LibFn`'s is a total function of the constructor, so it needs no table.
     This exists for the other arm: a `local` call names a function of the same
     program, whose signature is its entry block's, and a body is compiled
     before the function it calls necessarily exists as a term. So the builder
@@ -55,7 +55,7 @@ abbrev FnEnv := List (Nat × CalleeSig)
     this table for one of the program's own, and for machine code the address
     and four `i64`s in, an `i64` out. -/
 def FnEnv.sigOf (e : FnEnv) : Callee → Option CalleeSig
-  | .ffi f   => some { params := f.params, result := f.result }
+  | .lib f   => some { params := f.params, result := f.result }
   | .local k => (e.find? (·.1 == k)).map (·.2)
   | .native  => some { params := [.i64, .i64, .i64, .i64, .i64], result := some .i64 }
   | .host ps r => some { params := .i64 :: ps, result := r }

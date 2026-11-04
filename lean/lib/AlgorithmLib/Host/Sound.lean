@@ -2193,26 +2193,6 @@ theorem runK_brif {lc : Sem.Locals} {F : FuncData} {steps : Nat} {vals : Blocks.
 -- Binding parameters, on both sides
 -- ---------------------------------------------------------------------------
 
-theorem bindAt_size (Γ : Sem.Env) (m : Nat) (vs : List V) :
-    (Sem.bindAt Γ m vs).size = m + vs.length := by
-  simp only [Sem.bindAt, Array.size_append, Array.size_extract, Array.size_replicate,
-    List.size_toArray]
-  omega
-
-theorem bindAt_lt (Γ : Sem.Env) (m : Nat) (vs : List V) (i : Nat) (hi : i < m)
-    (hΓ : i < Γ.size) : (Sem.bindAt Γ m vs)[i]? = Γ[i]? := by
-  simp only [Sem.bindAt]
-  rw [Array.getElem?_append_left (by simp; omega), Array.getElem?_append_left (by simp; omega)]
-  rw [Array.getElem?_extract]; simp [hΓ]; omega
-
-theorem bindAt_hi (Γ : Sem.Env) (m : Nat) (vs : List V) (j : Nat) :
-    (Sem.bindAt Γ m vs)[m + j]? = vs[j]? := by
-  simp only [Sem.bindAt]
-  rw [Array.getElem?_append_right (by simp; omega)]
-  simp only [Array.size_append, Array.size_extract, Array.size_replicate]
-  have : m + j - (min m Γ.size + (m - Γ.size)) = j := by omega
-  simp [this]
-
 theorem bindVals_frame : ∀ (tys : List ClifTy) (vs : List V) (m : Nat) (vals : Blocks.Vals),
     KeepsBelow m vals (bindVals vals (parsOf m tys) vs) := by
   intro tys
@@ -2260,27 +2240,12 @@ theorem bind_rel {A : Scope} {vals : Blocks.Vals} {Γ : Sem.Env} (h : Rel A vals
   · obtain ⟨x, hx, hxv⟩ := h i h1
     have him := hA i h1
     refine ⟨x, ?_, bindVals_frame tys vs m vals i him x hxv⟩
-    rw [bindAt_lt Γ m vs i him (h.lt h1)]; exact hx
+    rw [bindAt_lt him (h.lt h1)]; exact hx
   · obtain ⟨j, rfl⟩ : ∃ j, i = m + j := ⟨i - m, by omega⟩
     have hj : j < vs.length := by omega
     refine ⟨vs[j], ?_, ?_⟩
-    · rw [bindAt_hi]; simp [hj]
+    · rw [bindAt_at]; simp [hj]
     · rw [bindVals_hi tys vs m vals hl j hj]; simp [hj]
-
-theorem mapM_length {α β : Type} {f : α → Option β} :
-    ∀ {xs : List α} {ys : List β}, xs.mapM f = some ys → ys.length = xs.length := by
-  intro xs
-  induction xs with
-  | nil => intro ys h; simp at h; subst h; rfl
-  | cons x xs ih =>
-      intro ys h
-      simp only [List.mapM_cons, Option.bind_eq_bind] at h
-      cases hx : f x with
-      | none => simp [hx] at h
-      | some y =>
-        cases hr : xs.mapM f with
-        | none => simp [hx, hr] at h
-        | some zs => simp [hx, hr] at h; subst h; simp [ih hr]
 
 /-- The emitter resolves in-range slots to themselves. -/
 theorem map_get_aligned {s : CS} {n : Nat} (ha : Aligned s n) (rs : List R)
@@ -2468,7 +2433,7 @@ theorem sim_br {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {S : Scope}
     cases hm : args.mapM (fun r => Γ[r]?) with
     | none => trivial
     | some vs =>
-      refine ⟨L, hL, (mapM_length hm).trans hlen, vals, 0, hr.sub hneed, KeepsBelow.refl n vals,
+      refine ⟨L, hL, (mapM_len hm).trans hlen, vals, 0, hr.sub hneed, KeepsBelow.refl n vals,
         fun st => ?_⟩
       exact runK_jump ((args_read ha hr hin).trans hm)
 
@@ -2491,7 +2456,7 @@ theorem sim_cont {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {S : Scope}
     cases hm : args.mapM (fun r => Γ[r]?) with
     | none => trivial
     | some vs =>
-      refine ⟨L, hL, (mapM_length hm).trans hlen, vals, 0, KeepsBelow.refl n vals, fun st => ?_⟩
+      refine ⟨L, hL, (mapM_len hm).trans hlen, vals, 0, KeepsBelow.refl n vals, fun st => ?_⟩
       exact runK_jump ((args_read ha hr hin).trans hm)
 
 /-- The states `emitIte` passes through, by name. -/
@@ -2676,7 +2641,7 @@ theorem sim_arm {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
       cases hm : rs.mapM (fun r => Γ'[r]?) with
       | none => trivial
       | some vs =>
-        have hvl : vs.length = jTys.length := (mapM_length hm).trans hlen
+        have hvl : vs.length = jTys.length := (mapM_len hm).trans hlen
         obtain ⟨hr1, hc1, hp1⟩ := ht1 hterm
         have hSlt : ∀ i, S.mem i = true → i < ne := by
           intro i hi; have := hr.lt hi; omega
@@ -3177,7 +3142,7 @@ theorem loop_trip {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
             rw [show l.exitR.mapM (Sem.get Γ1) = l.exitR.mapM (fun r => Γ1[r]?) from rfl, hm]
             have hargs := (args_read hDa hrel1 hok.hexitR).trans hm
             refine hexit vals1 w1 Γ1 vs _ (c + 1) (hrel1.sub hok.hneed)
-              (hfh.trans (hf1.mono (by omega))) ((mapM_length hm).trans hok.hexitN) (fun st => ?_)
+              (hfh.trans (hf1.mono (by omega))) ((mapM_len hm).trans hok.hexitN) (fun st => ?_)
             rw [show st + (c + 1) = (st + c) + 1 by omega, enterC _ _ _ _ hlen, heq1',
               loopBrif_exit hxv hcond hargs]
         · -- the test says go round: the body
@@ -3265,7 +3230,7 @@ theorem loop_trip {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
             | some next =>
               have hGa' : Aligned (loopG f s l pre body) nb := hGa
               refine (ihk vals2 w2 next (hfb.trans (hf2.mono (by omega)))
-                ((mapM_length hm).trans hclen)).restart (c := c2 + (c + 1 + 1))
+                ((mapM_len hm).trans hclen)).restart (c := c2 + (c + 1 + 1))
                 (fun st => ?_)
               rw [← Nat.add_assoc, hpfx, heq2 _ (hPG hterm),
                 runK_jump ((args_read hGa' hrel2 hcin).trans hm)]
@@ -3310,7 +3275,7 @@ theorem sim_loop {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
     cases hm : l.init.mapM (fun r => Γ[r]?) with
     | none => trivial
     | some inits =>
-      exact (htrip k vals w inits (KeepsBelow.refl n vals) ((mapM_length hm).trans hok.hinitN)).restart
+      exact (htrip k vals w inits (KeepsBelow.refl n vals) ((mapM_len hm).trans hok.hinitN)).restart
         (c := 0) (start := fun st => runK cfg.locals F st ⟨vals, w⟩ [.jump ⟨s.nextBlk⟩ (l.init.map s.get)])
         (fun st => runK_jump ((args_read ha hr hok.hinit).trans hm))
 
@@ -3631,7 +3596,7 @@ theorem dloop_trip {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
           simp only
           split
           · rename_i hcond
-            refine (ihk vals2 w2 next hfb ((mapM_length hm).trans hclen)).restart
+            refine (ihk vals2 w2 next hfb ((mapM_len hm).trans hclen)).restart
               (c := c + 1) (fun st => ?_)
             rw [show st + (c + 1) = (st + c) + 1 by omega, enterC _ _ _ _ hlen, heq2',
               dloopBack_cont hxv hcond hargs]
@@ -3641,7 +3606,7 @@ theorem dloop_trip {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
             | none => trivial
             | some outs =>
               refine dloop_exit hF f hok s ha hi hSn vals0 vals2 w2 Γ2 outs _ (c + 1)
-                (hrel2.sub hsub) hfb ((mapM_length hout).trans hok.hexitN) (fun st => ?_)
+                (hrel2.sub hsub) hfb ((mapM_len hout).trans hok.hexitN) (fun st => ?_)
               rw [show st + (c + 1) = (st + c) + 1 by omega, enterC _ _ _ _ hlen, heq2',
                 dloopBack_exit hxv hcond (exit_read hargs l.exitIdx outs
                   (fun i hi => by simp; have := hok.hexitI i hi; omega) hout)]
@@ -3678,7 +3643,7 @@ theorem sim_dloop {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
     | none => trivial
     | some inits =>
       have hargs := (args_read ha hr hok.hinit).trans hm
-      have hil : inits.length = l.pTys.length := (mapM_length hm).trans hok.hinitN
+      have hil : inits.length = l.pTys.length := (mapM_len hm).trans hok.hinitN
       cases hg : l.guard with
       | none =>
         simp only [Option.isSome_none]
@@ -3711,7 +3676,7 @@ theorem sim_dloop {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
               | some outs =>
                 exact dloop_exit hF f hok s ha hi hSn vals vals w Γ outs
                   (fun st => runK cfg.locals F st ⟨vals, w⟩ [dloopEntry s l]) 0 hr (KeepsBelow.refl n vals)
-                  ((mapM_length hout).trans hok.hexitN)
+                  ((mapM_len hout).trans hok.hexitN)
                   (fun st => dloopEntry_exit hg hxv hcond (exit_read hargs l.exitIdx outs
                     (fun i hi => by simp; have := hok.hexitI i hi; have := hok.hinitN; omega)
                     hout))

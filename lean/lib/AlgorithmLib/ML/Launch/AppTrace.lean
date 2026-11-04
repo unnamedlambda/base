@@ -49,19 +49,15 @@ def _root_.AlgorithmLib.Drv.App.launchRec (a : Drv.App) (j : Nat) : CallRec :=
 def _root_.AlgorithmLib.Drv.App.runCalls (a : Drv.App) (js : List Nat) : Tr :=
   .lit (js.map a.launchRec ++ [⟨.ext (.cuda .ctxSynchronize), []⟩])
 
-/-- The buffer a parameter value names, for a program in the standard
-    layout: a pointer into one of its allocations names that allocation,
-    wherever in it it points, and any other value is itself. -/
-def wordBuf (a : Drv.App) (x : UInt64) : Clif.BufDesc :=
-  match devPtrOf x with
-  | some (i, _) => if i < a.bufs.length then .near (Int.ofNat (a.bufSlot i)) else .const (Int.ofNat x.toNat)
-  | none => .const (Int.ofNat x.toNat)
-
-/-- The launch a call is, for a program in the standard layout: a
+/-- The device write a call is, for a program in the standard layout: a
     `cuLaunchKernel` handed kernel `j`'s function handle is kernel `j`'s
     launch, handed the buffers the parameter values it was observed reading
-    name; any other call launches nothing. -/
+    name; a `cublasSgemm` is a product and a `cuGraphLaunch` a replay, each
+    handed what its words name; any other call writes nothing a pipeline
+    reads. -/
 def appLaunchOfCall (a : Drv.App) : Callee × List V → List DeviceOp
+  | (.ext (.cublas .sgemm), vs) => [gemmOp a (vs.map fun x => (asBits x).getD 0)]
+  | (.ext (.cuda .graphLaunch), vs) => [graphOp a (vs.map fun x => (asBits x).getD 0)]
   | (.ext (.cuda .launchKernel), v :: rest) =>
       match asBits v with
       | some h => match handleOf kFunc h with
@@ -73,6 +69,20 @@ def appLaunchOfCall (a : Drv.App) : Callee × List V → List DeviceOp
 
 /-- The launches a sequence of calls makes, in order. -/
 def appLaunchesOf (a : Drv.App) (cs : List (Callee × List V)) : List DeviceOp := cs.flatMap (appLaunchOfCall a)
+
+/-- The call `Drv.App.sgemm` makes for `g`. -/
+def _root_.AlgorithmLib.Drv.App.gemmRec (a : Drv.App) (g : Gemm) : CallRec :=
+  { callee := .ext (.cublas .sgemm), args := (a.gemmWords g).map .is }
+
+/-- The call a step makes. -/
+def _root_.AlgorithmLib.Drv.App.stepRec (a : Drv.App) : Sum Nat Gemm → CallRec
+  | .inl j => a.launchRec j
+  | .inr g => a.gemmRec g
+
+/-- **Taking `ss` in order, then waiting**: the calls a body that does that
+    makes. -/
+def _root_.AlgorithmLib.Drv.App.mixedCalls (a : Drv.App) (ss : List (Sum Nat Gemm)) : Tr :=
+  .lit (ss.map a.stepRec ++ [⟨.ext (.cuda .ctxSynchronize), []⟩])
 
 theorem handleOf_drvHandle {kind j : Nat} (hk : kind < 2 ^ 8) (hj : j < 2 ^ 48) :
     handleOf kind (drvHandle kind j) = some j := by
@@ -115,7 +125,7 @@ theorem wordBuf_devPtr {a : Drv.App} {i : Nat} (h1 : i < a.bufs.length) (h2 : i 
 /-- Pointers to the starts of allocations name them. -/
 theorem words_bufs {a : Drv.App} {ks : List Nat} {ws : List V}
     (hk : ∀ i ∈ ks, i < a.bufs.length ∧ i < 2 ^ 16) (h : argsOk (ks.map fun i => ArgPat.is (devPtr i)) ws) :
-    ws.map (fun x => wordBuf a ((asBits x).getD 0)) = ks.map fun i => Clif.BufDesc.near (Int.ofNat (a.bufSlot i)) := by
+    ws.map (fun x => wordBuf a ((asBits x).getD 0)) = ks.map fun i => BufDesc.near (Int.ofNat (a.bufSlot i)) := by
   induction ks generalizing ws with
   | nil =>
       cases ws with
@@ -193,5 +203,84 @@ theorem launchesOf_runCalls {a : Drv.App} {js : List Nat}
     {cs : List (Callee × List V)} (h : (a.runCalls js).Has cs) : appLaunchesOf a cs = js.map (appLaunch a) := by
   cases h with
   | lit hm => exact appLaunchesOf_launches (fun j hm' => List.all_eq_true.mp hj j hm') hm
+
+/-- Values matched word for word are those words. -/
+theorem words_exact : ∀ {ws : List UInt64} {vs : List V}, argsOk (ws.map ArgPat.is) vs →
+    vs.map (fun x => (asBits x).getD 0) = ws
+  | [], [], _ => rfl
+  | [], _ :: _, h => h.elim
+  | _ :: _, [], h => h.elim
+  | w :: ws, v :: vs, ⟨hv, h⟩ => by
+      have hv' : asBits v = some w := hv
+      rw [List.map_cons, hv', Option.getD_some, words_exact h]
+
+theorem appLaunchOfCall_gemm {a : Drv.App} {g : Gemm} {x : Callee × List V}
+    (hm : (a.gemmRec g).Matches x) : appLaunchOfCall a x = [appGemm a g] := by
+  obtain ⟨c, vs⟩ := x
+  obtain ⟨hc, ha⟩ := hm
+  simp only [Drv.App.gemmRec] at hc ha
+  subst hc
+  simp only [appLaunchOfCall, appGemm, words_exact ha]
+
+/-- What a step must be for its observed call to be read: a readable kernel,
+    or a product. -/
+def _root_.AlgorithmLib.Drv.App.stepReadable (a : Drv.App) : Sum Nat Gemm → Bool
+  | .inl j => a.readable j
+  | .inr _ => true
+
+theorem appLaunchesOf_steps {a : Drv.App} :
+    ∀ {ss : List (Sum Nat Gemm)} {cs : List (Callee × List V)}, (∀ s ∈ ss, a.stepReadable s = true) →
+      recsMatch (ss.map a.stepRec ++ [⟨.ext (.cuda .ctxSynchronize), []⟩]) cs →
+      appLaunchesOf a cs = ss.map (appStep a)
+  | [], [x], _, ⟨hm, _⟩ => by simp [appLaunchesOf, appLaunchOfCall_sync hm]
+  | [], [], _, h => h.elim
+  | [], _ :: _ :: _, _, ⟨_, h⟩ => h.elim
+  | s :: ss, x :: cs, hs, ⟨hm, h⟩ => by
+      have e := appLaunchesOf_steps (ss := ss) (fun i hi => hs i (List.mem_cons_of_mem _ hi)) h
+      simp only [appLaunchesOf, List.flatMap_cons, List.map_cons] at e ⊢
+      have hr := hs s List.mem_cons_self
+      cases s with
+      | inl j =>
+          obtain ⟨h1, h2, h3⟩ := readable_spec hr
+          rw [appLaunchOfCall_launch h1 h2 h3 hm, e]; rfl
+      | inr g => rw [appLaunchOfCall_gemm hm, e]; rfl
+  | _ :: _, [], _, h => h.elim
+
+/-- **The device writes a run of `mixedCalls` makes are its steps' records.** -/
+theorem launchesOf_mixedCalls {a : Drv.App} {ss : List (Sum Nat Gemm)}
+    (hs : ss.all a.stepReadable = true)
+    {cs : List (Callee × List V)} (h : (a.mixedCalls ss).Has cs) : appLaunchesOf a cs = ss.map (appStep a) := by
+  cases h with
+  | lit hm => exact appLaunchesOf_steps (fun s hm' => List.all_eq_true.mp hs s hm') hm
+
+/-- **Replaying executable graph `e` on stream `s` `k` times, then waiting for
+    the stream**: the calls a body that does that makes. -/
+def _root_.AlgorithmLib.Drv.App.replayCalls (e s : UInt64) (k : Nat) : Tr :=
+  .lit (List.replicate k ⟨.ext (.cuda .graphLaunch), [.is e, .is s]⟩ ++
+    [⟨.ext (.cuda .streamSynchronize), [.is s]⟩])
+
+theorem appLaunchesOf_replays {a : Drv.App} {e s : UInt64} :
+    ∀ {k : Nat} {cs : List (Callee × List V)},
+      recsMatch (List.replicate k ⟨.ext (.cuda .graphLaunch), [.is e, .is s]⟩ ++
+        [⟨.ext (.cuda .streamSynchronize), [.is s]⟩]) cs →
+      appLaunchesOf a cs = List.replicate k (graphOp a [e, s])
+  | 0, [⟨c, vs⟩], ⟨⟨hc, _⟩, _⟩ => by
+      simp only at hc; subst hc; rfl
+  | 0, [], h => h.elim
+  | 0, _ :: _ :: _, ⟨_, h⟩ => h.elim
+  | k + 1, ⟨c, vs⟩ :: cs, ⟨⟨hc, ha⟩, h⟩ => by
+      simp only at hc ha; subst hc
+      have e' := appLaunchesOf_replays (a := a) (k := k) h
+      simp only [appLaunchesOf, List.flatMap_cons, List.replicate_succ] at e' ⊢
+      rw [e']
+      simp only [appLaunchOfCall, words_exact (ws := [e, s]) ha, List.singleton_append]
+  | _ + 1, [], h => h.elim
+
+/-- **The device writes a run of `replayCalls` makes are its replays.** -/
+theorem launchesOf_replayCalls {a : Drv.App} {e s : UInt64} {k : Nat}
+    {cs : List (Callee × List V)} (h : (Drv.App.replayCalls e s k).Has cs) :
+    appLaunchesOf a cs = List.replicate k (graphOp a [e, s]) := by
+  cases h with
+  | lit hm => exact appLaunchesOf_replays hm
 
 end AlgorithmLib.ML

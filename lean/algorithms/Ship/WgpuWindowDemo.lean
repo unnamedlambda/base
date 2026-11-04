@@ -29,7 +29,7 @@ namespace WgpuSafe
 /-- What the logic tests start from: memory, with the caller's data and
     output holding the lengths it passes. -/
 abbrev WindowDemoTestIO (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.roomArg .data dl, .roomArg .out ol, .part .frozen false, .room .arena WindowDemo.layoutMeta.totalSize]
+  [.roomArg .data dl, .roomArg .out ol, .room .arena WindowDemo.layoutMeta.totalSize]
 
 /-- What the render test starts from: wgpu untouched, in its terms. -/
 abbrev WindowDemoRenderIO (dl ol : UInt64) : World → Prop := Contracts.TState.holds

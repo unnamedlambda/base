@@ -32,7 +32,7 @@ theorem bytecount_fine : Fine (emitGo (fnBody ptrParams (ByteCount.code (V := Sl
 
 /-- The caller's data and output, of the lengths it passes. -/
 abbrev Run (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .roomArg .data dl, .roomArg .out ol]
+  [.roomArg .data dl, .roomArg .out ol]
 
 set_option maxRecDepth 20000 in
 theorem bytecount_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run dataLen outLen w)
@@ -65,7 +65,7 @@ theorem clampsum_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h 
 /-- SelfDescribing's arena, and the caller's data and output of the lengths
     it passes. -/
 abbrev SdRun (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena 4420, .roomArg .data dl, .roomArg .out ol]
+  [.room .arena 4420, .roomArg .data dl, .roomArg .out ol]
 
 theorem selfDescribing_size : SelfDescribing.layoutMeta.totalSize = 4420 := by native_decide
 
@@ -79,7 +79,7 @@ theorem selfDescribing_schema_fine :
 
 set_option maxRecDepth 20000 in
 theorem selfDescribing_schema_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .frozen false, .room .arena SelfDescribing.layoutMeta.totalSize,
+    (h : Contracts.TState.holds [.room .arena SelfDescribing.layoutMeta.totalSize,
       .roomArg .data dataLen, .roomArg .out outLen] w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.schemaCode (V := Slot) (L := Lvl))) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.schemaCode (V := Slot) (L := Lvl))) ≠ .fault m := by
@@ -104,7 +104,7 @@ theorem selfDescribing_stats_fine :
 
 set_option maxRecDepth 20000 in
 theorem selfDescribing_stats_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .frozen false, .room .arena SelfDescribing.layoutMeta.totalSize,
+    (h : Contracts.TState.holds [.room .arena SelfDescribing.layoutMeta.totalSize,
       .roomArg .data dataLen, .roomArg .out outLen] w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.statsCode (V := Slot) (L := Lvl))) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.statsCode (V := Slot) (L := Lvl))) ≠ .fault m := by
@@ -119,7 +119,7 @@ theorem selfDescribing_bulk_fine :
 
 set_option maxRecDepth 20000 in
 theorem selfDescribing_bulk_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .frozen false, .room .arena SelfDescribing.layoutMeta.totalSize,
+    (h : Contracts.TState.holds [.room .arena SelfDescribing.layoutMeta.totalSize,
       .roomArg .data dataLen, .roomArg .out outLen] w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.bulkCode (V := Slot) (L := Lvl))) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emitAns (SelfDescribing.bulkCode (V := Slot) (L := Lvl))) ≠ .fault m := by

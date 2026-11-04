@@ -27,7 +27,7 @@ open AlgorithmLib.HProg AlgorithmLib.HProg.Sem
     holding the context slot and the key and value scratch, the input its
     count, the output its sum. -/
 abbrev HtStart : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .part .idle true, .room .arena 0xC0, .room .data 8,
+  Contracts.TState.holds [.part .idle true, .room .arena 0xC0, .room .data 8,
     .room .out 8]
 
 theorem ht_fine : Fine (emitGo (fnBody ptrParams (ht (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
@@ -44,11 +44,11 @@ theorem ht_no_misuse (cfg : Cfg) [Check.Linked true cfg] (dataLen outLen : UInt6
     run cfg (runArgs dataLen outLen) w (emit ht) ≠ .misuse m := by
   check_body
 
-/-- Where `wc` may start: memory not frozen, the input the field holding the
+/-- Where `wc` may start: the input the field holding the
     file's path, `dl` bytes the caller passes, the arena holding the largest
     file it reads, the output its count. -/
 abbrev WcStart (dl : UInt64) : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .roomArg .data dl, .room .arena (BUF + WC_MAX),
+  Contracts.TState.holds [.roomArg .data dl, .room .arena (BUF + WC_MAX),
     .room .out 8]
 
 theorem wc_fine : Fine (emitGo (fnBody ptrParams (wc (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
@@ -59,28 +59,6 @@ set_option maxRecDepth 20000 in
     the file is read into room for as much as it asks for. -/
 theorem wc_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : WcStart dataLen w) (m : String) :
     run cfg (runArgs dataLen outLen) w (emit wc) ≠ .misuse m := by
-  check_body
-
-/-- The arguments `kv` is run with: the output has room for the scan. -/
-def kvArgs : List V :=
-  [.sc .i64 (regionBase .data), .sc .i64 64, .sc .i64 (regionBase .out),
-   .sc .i64 0x100000]
-
-/-- Where `kv` may start: memory not frozen, no LMDB context live, the input
-    its count and then a C string (the directory), the arena holding the slot
-    and the key and value scratch, the output room for the scan. -/
-abbrev KvStart : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .part .lmdb false, .cstr (regionBase .data + 8),
-    .room .arena 0xC0, .room .data 8, .room .out 0x100000]
-
-theorem kv_fine : Fine (emitGo (fnBody ptrParams (kv (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-set_option maxRecDepth 20000 in
-/-- **`kv` never misuses the ordered store**, whatever the directory already
-    holds: the scan writes only the rows that fit in the room it is given. -/
-theorem kv_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : KvStart w) (m : String) :
-    run cfg kvArgs w (emit kv) ≠ .misuse m := by
   check_body
 
 end SystemBench

@@ -82,48 +82,14 @@ noncomputable def blockLocals (fns : Nat → Option FuncData) : Nat → Sem.Loca
 def Sem.Locals.le (L₁ L₂ : Sem.Locals) : Prop :=
   ∀ i args w r, L₁ i args w = .ok r → L₂ i args w = .ok r
 
-theorem spawnWorker_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (vs : List V) (w : World)
-    (r : Option V × World) (hc : Sem.spawnWorker L₁ vs w = some r) :
-    Sem.spawnWorker L₂ vs w = some r := by
-  unfold Sem.spawnWorker at hc ⊢
-  split at hc
-  · next _ ctx _ fn _ arg =>
-    by_cases h0 : (ctx == 0) = true
-    · rw [if_pos h0] at hc ⊢; exact hc
-    · rw [if_neg h0] at hc ⊢
-      by_cases h1 : (!(ctx == threadCtx && w.thread.live) || w.thread.outstanding.isSome) = true
-      · rw [if_pos h1] at hc; cases hc
-      · rw [if_neg h1] at hc ⊢
-        by_cases hb : fn < fnBase
-        · rw [if_pos hb] at hc; cases hc
-        · rw [if_neg hb] at hc ⊢
-          cases hl : L₁ (fn - fnBase).toNat [.sc .i64 arg] w with
-          | error _ => rw [hl] at hc; cases hc
-          | ok x => rw [hl] at hc; rw [h _ _ _ _ hl]; exact hc
-  · cases hc
-
 theorem callOf_mono {L₁ L₂ : Sem.Locals} (h : L₁.le L₂) (c : Callee) (vs : List V) (w : World)
     (r : Option V × World) (hc : Sem.callOf L₁ c vs w = some r) : Sem.callOf L₂ c vs w = some r := by
   cases c with
-  | ffi f =>
+  | lib f =>
       simp only [Sem.callOf] at hc ⊢
-      split at hc
-      · cases hc
-      · rename_i hfz
-        rw [if_neg hfz]
-        split at hc
-        · rename_i hsp
-          rw [if_pos hsp]; exact spawnWorker_mono h vs w r hc
-        · rename_i hsp
-          rw [if_neg hsp]
-          split at hc
-          · rename_i hlib
-            rw [if_pos hlib]
-            cases hl : L₁ f.libSlot vs w with
-            | error _ => rw [hl] at hc; simp [Except.toOption] at hc
-            | ok x => rw [hl] at hc; rw [h _ _ _ _ hl]; exact hc
-          · rename_i hlib
-            rw [if_neg hlib]; exact hc
+      cases hl : L₁ f.libSlot (vs.map normV) w with
+      | error _ => rw [hl] at hc; simp [Except.toOption] at hc
+      | ok x => rw [hl] at hc; rw [h _ _ _ _ hl]; exact hc
   | «local» i =>
       simp only [Sem.callOf] at hc ⊢
       cases hl : L₁ i vs w with

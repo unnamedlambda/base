@@ -23,11 +23,11 @@ conditions.
 | A2 | `Blocks` is Cranelift's block behavior | us | `HProgCorpus`, 12 CFG shapes |
 | A3 | regions are disjoint, stores are ordered | the runtime | declared |
 | A4 | Cranelift is compositional over A1/A2 | Cranelift | declared |
-| A5 | the frames of the symbols a program calls | us | proven for every entry point but `threadSpawn` and its shims, whose callee is the program's own (`callFfi_respects_frame`), and for every C library function (`ext_respects_frame`) |
+| A5 | the frames of the symbols a program calls | us | proven for every C library function (`ext_respects_frame`); a library function linked into the program (`Lib.Ht`, `Lib.Math`) is the program's own code, whose writes its proof covers |
 | A6 | the C libraries do what their contracts state | their vendors | each precondition tagged by where it comes from (`Ext.sources`): *documented* (the vendor's stated rules), *observed* (a corpus agrees with the machine), *unmodelled* (outside what the model states, so a call there has no answer) |
 | A7 | a GPU runs the kernel it is handed, and cuBLAS its routine | NVIDIA | `Honest` and `VendorKeeps` are hypotheses of every launch and routine triple, never facts |
 | A8 | the OS kernel and the crates under the engine's adapters | the OS; the crates' authors | the adapters — files, threads, windows (`winit`), serial ports, USB, CPU topology, and wgpu (the `wgpu` crate) — are single calls into `std` and portable crates; their models are checked by the corpora on the machines they run on |
-| A9 | the CLIF libraries (`Lib.Ht`, `Lib.Math`, `Lib.Lmdb`, `Lib.Thread`) meet the entry points they replace | us | `Lib.Math` by construction (it performs `Libm`'s operations); `Lib.Ht` *proven* function by function (`Ship.HtSpec`): each neither misuses a call nor faults, and where it returns it answers what the entry point's model answers and leaves the table the model leaves, or, where an allocation fails, which the model has no case for, the table as it was; the rest *observed*: every corpus and application runs the linked library against the entry point's model. A program proven as it is linked, its calls read by the library functions' own statements, assumes none of this (`Ship.HtLinked`); what is assumed, for a program whose statement is over the entry points, is that the statement is its linked program's |
+| A9 | the CLIF libraries (`Lib.Ht`, `Lib.Math`) meet their functions' statements | us | *proven* function by function (`Ship.HtSpec`, `Ship.MathSpec`): each neither misuses a call nor faults, and where it returns it answers and leaves what its statement says; the checker's theorems take the statements as `Linked`, which a linked program meets (`Ship.HtLinked`, `Ship.MathCheck`) |
 
 A1 and A2 are checked by *executing* small programs through the real Rust path
 and comparing bytes — the artifact is deserialized, decoded, compiled by
@@ -49,12 +49,9 @@ as good as the vendor's documentation, an *observed* one is checked on the
 machines the corpora run on, and an *unmodelled* one is a place the model
 refuses to answer rather than guess.
 
-A9 is the redesign's own debt: a program's theorems are about the program as
-it names the engine's entry points, and the artifact links CLIF libraries in
-their place. Until each library is proven to refine its entry point's model,
-the corpora are the evidence. A theorem about the linked program itself owes
-nothing here: its calls are the program's own, to functions with statements
-of their own.
+A9 is proven: a program's calls of a library's functions are calls of its own
+functions, at the places the libraries are linked, and its theorems read them
+by the functions' statements (`Linked`), which the libraries meet.
 
 A4 is the only item that finite testing cannot reach: it quantifies over
 programs, and no number of sampled points settles it. The known way to close it
@@ -118,20 +115,18 @@ axiom gpu_runs_what_it_is_handed : True
     kernel and the crates beneath them are read through their models. -/
 axiom os_kernel_as_modelled : True
 
-/-- **A9 — the CLIF libraries refine the entry points they replace.** Proven
-    for `Lib.Math` by construction and for `Lib.Ht` function by function
-    against the entry points' models (`Ship.HtSpec`), up to an allocation that
-    fails; observed by the corpora and applications for the others. That a
-    program's statement over the entry points is its linked program's is
-    assumed for all of them; a program proven as it is linked (`Ship.HtLinked`)
-    assumes none of it. -/
-axiom libraries_refine_entry_points : True
+/-- **A9 — the CLIF libraries meet their functions' statements.** Proven for
+    `Lib.Ht` and `Lib.Math` function by function (`Ship.HtSpec`,
+    `Ship.MathSpec`); a program's theorem reads its library calls by those
+    statements (`Linked`), which its linked functions meet (`Ship.HtLinked`,
+    `Ship.MathCheck`). -/
+axiom libraries_meet_statements : True
 
 /-- The trusted base of a program, rendered. A1–A4 and A6–A9 are fixed; only
     A5 varies, and for most programs it is short or empty. -/
 def report (c : Code) : String :=
   "A1 instruction semantics, A2 block semantics, A3 memory model, " ++
   "A4 compiler compositionality, A6 C library contracts, A7 GPU and vendor oracle, " ++
-  "A8 OS kernel, A9 library refinement; A5: " ++ footprintReport c
+  "A8 OS kernel, A9 library statements; A5: " ++ footprintReport c
 
 end AlgorithmLib.HProg.Trust

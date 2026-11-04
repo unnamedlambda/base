@@ -87,11 +87,11 @@ theorem roundTrip_linked (env : FnEnv) (steps k : Nat) (w : World) (hc : Calm w)
   have mk : ∀ n, Misses base (base + c64 16) n := fun n => misses_of hd0 hdk (Or.inr (Or.inl (by decide)))
   have mv : ∀ n, Misses base (base + c64 32) n := fun n => misses_of hd0 hdv (Or.inr (Or.inl (by decide)))
   have mo : ∀ n, Misses base (base + c64 128) n := fun n => misses_of hd0 hdo (Or.inr (Or.inl (by decide)))
-  obtain ⟨kb, hkl, hkb⟩ := (room_out (w := w) (n := 8) hdk hna (by omega) (by decide) hc.1).bytes
-  obtain ⟨vb, hvl, hvb⟩ := (room_out (w := w) (n := 8) hdv hna (by omega) (by decide) hc.1).bytes
+  obtain ⟨kb, hkl, hkb⟩ := (room_out (w := w) (n := 8) hdk hna (by omega) (by decide)).bytes
+  obtain ⟨vb, hvl, hvb⟩ := (room_out (w := w) (n := 8) hdv hna (by omega) (by decide)).bytes
   have hkne : kb ≠ [] := fun e => by rw [e] at hkl; cases hkl
   have hvne : vb ≠ [] := fun e => by rw [e] at hvl; cases hvl
-  have M0 : Mine w base kb vb := ⟨hc, hkb, hvb, room_out hdo hna (by omega) (by decide) hc.1⟩
+  have M0 : Mine w base kb vb := ⟨hc, hkb, hvb, room_out hdo hna (by omega) (by decide)⟩
   have keep : ∀ w1 w2, Outside w1 w2 (Misses base) → Mine w1 base kb vb → Mine w2 base kb vb :=
     fun w1 w2 O M => ⟨O.calm M.1, O.keeps.bytes _ kb hkne ⟨M.2.1.inW hkne, ok, mk _⟩ M.2.1,
       O.keeps.bytes _ vb hvne ⟨M.2.2.1.inW hvne, ov, mv _⟩ M.2.2.1,

@@ -10,12 +10,12 @@ import all Init.Data.List.Sort.Basic
 /-!
 # `Lib.Math` — `sinf`, `cosf`, `powf` as CLIF
 
-`Vocab.Libm` states each as a sequence of IEEE operations; here each is that
+`Host.Libm` states each as a sequence of IEEE operations; here each is that
 sequence, instruction for instruction, with the same constants by their bits.
 A branch the definition takes, this takes; where the definition computes only
 the value one branch needs, this may compute both and select, which leaves the
 answer the same. So the functions a program calls answer what `Libm` says, on
-every machine.
+every machine; `Ship.MathSpec` proves it of each, for every argument.
 -/
 
 namespace AlgorithmLib.LibMath
@@ -213,7 +213,7 @@ def powf : StatusBody := do
   answer r.head
 
 /-- The function implementing a math entry point. -/
-def implOf : Ffi → Option Impl
+def implOf : LibFn → Option Impl
   | .sinf => some (.status (trig false))
   | .cosf => some (.status (trig true))
   | .powf => some (.status powf)

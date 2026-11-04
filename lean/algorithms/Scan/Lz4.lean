@@ -50,10 +50,6 @@ def lz4Surface : Surface :=
         -- `Libm` states them: the conversions between doubles and integers
         -- its range reduction and `exp2` make.
       , `Float.toInt64, `Int64.toFloat ]
-        -- Reached only by `warp32_entry_sound`, whose statement quantifies over
-        -- machine states. The compressor performs no float operation and the
-        -- emitted body has no float instruction.
-      ++ evalOpOpaque
     allowedHyp :=
       [ `LT.lt, `LE.le, `Eq, `Ne, `Nat.lt, `Nat.le, `Not
         -- structural, not assumptions about the world: `Sim` is the interleaving
@@ -118,11 +114,7 @@ def lz4Surface : Surface :=
       , (`Lz4Sites.RegConfined, `Lz4Sites.regConfined_shipped)
         -- the cursor bound the ten `sbAddr` stores need, for the whole run of
         -- every warp
-      , (`Lz4Sites.CursorAtSites, `Lz4Sites.cursorAtSites_shipped)
-        -- the launch model's soundness on the entry block asks that the machine
-        -- entered with the parameter the compiled form declares.  Not assumed:
-        -- exhibited at a concrete state.
-      , (`AlgorithmLib.Clif.Check.TypesAgree, `Lz4NonVacuity.warp32_entry_arg) ]
+      , (`Lz4Sites.CursorAtSites, `Lz4Sites.cursorAtSites_shipped) ]
     openObligations :=
       [ `Lz4Ship.LayoutOK
         -- a hypothesis of the GENERIC lemmas (`launches_correct` and friends,
@@ -194,15 +186,6 @@ def roots : List Name :=
   , `Lz4Interleave.halt_after_272
   , `Lz4Interleave.pc272_unique
   , `Lz4Interleave.launchAgrees_of_confined
-    -- the block model `Clif.launchesOf` reads a host program through: sound on
-    -- the entry block of the emitted one, at both shipped geometries
-  , `Lz4NonVacuity.warp32_entry_sound
-  , `Lz4NonVacuity.warp32_entry_arg
-  , `Lz4NonVacuity.warp32_entry_size
-  , `Lz4NonVacuity.warp32_entry_ok
-  , `Lz4NonVacuity.warp64_entry_ok
-  , `Lz4NonVacuity.warp32_blocks_ty_ok
-  , `Lz4NonVacuity.warp64_blocks_ty_ok
     -- the emitted HOST program: both kernel parameters name one allocation
     -- (the calls it makes are `Lz4CompSafe.warp15_calls`, in `Ship.Lz4Comp`)
   , `Lz4Host.params_same_buffer
@@ -324,14 +307,7 @@ end Lz4Scan
 -- but the growth is linear in the claim count, so the limit is kept close enough
 -- to the measured cost to still be a canary if that ever stops being true.
 /-- Claims that rest on the compiler, via `native_decide`. -/
-def nativeRoster : List Name :=
-  [ `Lz4NonVacuity.warp32_entry_sound
-   , `Lz4NonVacuity.warp32_entry_arg
-   , `Lz4NonVacuity.warp32_entry_size
-   , `Lz4NonVacuity.warp32_entry_ok
-   , `Lz4NonVacuity.warp64_entry_ok
-   , `Lz4NonVacuity.warp32_blocks_ty_ok
-   , `Lz4NonVacuity.warp64_blocks_ty_ok ]
+def nativeRoster : List Name := []
 
 set_option maxHeartbeats 600000 in
 open Lz4Scan TrustScan in

@@ -18,7 +18,7 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace LocalCalls
 
-abbrev SW : World → Prop := Contracts.TState.holds [.part .frozen false, .room .arena 4096]
+abbrev SW : World → Prop := Contracts.TState.holds [.room .arena 4096]
 
 def wrap : Body := sequenceWrapper [5, 6]
 

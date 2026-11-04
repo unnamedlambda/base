@@ -18,6 +18,26 @@ buffers' lengths satisfies, and `strSpan` where a string ends.
 
 namespace AlgorithmLib.HProg.Sem
 
+
+theorem Mem.readable_sub {m : Mem} {r : Region} {off n off' n' : Nat} (h : m.readable r off n = true)
+    (h1 : off ≤ off') (h2 : off' + n' ≤ off + n) : m.readable r off' n' = true := by
+  unfold Mem.readable at h ⊢
+  simp only [Bool.and_eq_true, Bool.or_eq_true] at h ⊢
+  rcases h with hp | ⟨hl, hb⟩
+  · exact .inl hp
+  · refine .inr ⟨?_, ?_⟩
+    · obtain ⟨x, hx, hx'⟩ := List.any_eq_true.mp hl
+      refine List.any_eq_true.mpr ⟨x, hx, ?_⟩
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hx' ⊢
+      omega
+    · refine List.all_eq_true.mpr fun b hb' => ?_
+      have := List.all_eq_true.mp hb b hb'
+      simp only [Busy.clear, Bool.or_eq_true, Bool.not_eq_true', decide_eq_true_eq] at this ⊢
+      rcases this with hw | hc | hc
+      · exact .inl hw
+      · exact .inr (.inl (by omega))
+      · exact .inr (.inr (by omega))
+
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
 
@@ -26,32 +46,30 @@ structure MemSame (m₁ m₂ : Mem) : Prop where
   size : ∀ r, (m₁.region r).size = (m₂.region r).size
   live : m₁.pinnedLive = m₂.pinnedLive
   busy : m₁.busy = m₂.busy
-  frozen : m₁.frozen = m₂.frozen
 
 /-- A kernel oracle that hands back buffers of the lengths it was given. -/
 def KeepsSize (k : Launch → List ByteArray → List ByteArray) : Prop :=
   ∀ l bs, (k l bs).map ByteArray.size = bs.map ByteArray.size
 
-theorem MemSame.refl (m : Mem) : MemSame m m := ⟨fun _ => rfl, rfl, rfl, rfl⟩
+theorem MemSame.refl (m : Mem) : MemSame m m := ⟨fun _ => rfl, rfl, rfl⟩
 
 theorem MemSame.symm {m₁ m₂ : Mem} (h : MemSame m₁ m₂) : MemSame m₂ m₁ :=
-  ⟨fun r => (h.size r).symm, h.live.symm, h.busy.symm, h.frozen.symm⟩
+  ⟨fun r => (h.size r).symm, h.live.symm, h.busy.symm⟩
 
 theorem MemSame.trans {m₁ m₂ m₃ : Mem} (h₁ : MemSame m₁ m₂) (h₂ : MemSame m₂ m₃) : MemSame m₁ m₃ :=
-  ⟨fun r => (h₁.size r).trans (h₂.size r), h₁.live.trans h₂.live, h₁.busy.trans h₂.busy,
-    h₁.frozen.trans h₂.frozen⟩
+  ⟨fun r => (h₁.size r).trans (h₂.size r), h₁.live.trans h₂.live, h₁.busy.trans h₂.busy⟩
 
 theorem MemSame.retire {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (c : Clock) :
     MemSame (m₁.retire c) (m₂.retire c) :=
-  ⟨fun r => by have := h.size r; cases r <;> exact this, h.live, by simp only [Mem.retire, h.busy], h.frozen⟩
+  ⟨fun r => by have := h.size r; cases r <;> exact this, h.live, by simp only [Mem.retire, h.busy]⟩
 
 theorem MemSame.readable {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (r : Region) (off n : Nat) :
     m₁.readable r off n = m₂.readable r off n := by
-  simp only [Mem.readable, h.frozen, h.live, h.busy]
+  simp only [Mem.readable, h.live, h.busy]
 
 theorem MemSame.reachable {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (r : Region) (off n : Nat) :
     m₁.reachable r off n = m₂.reachable r off n := by
-  simp only [Mem.reachable, h.frozen, h.live, h.busy]
+  simp only [Mem.reachable, h.live, h.busy]
 
 theorem MemSame.load_isSome {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (a : UInt64) (n : Nat) :
     (m₁.load a n).isSome = (m₂.load a n).isSome := by
@@ -171,11 +189,11 @@ theorem MemSame.store_isSome {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (a : UInt
 
 theorem MemSame.setRegion {m₁ m₂ : Mem} (h : MemSame m₁ m₂) (r : Region) {b₁ b₂ : ByteArray}
     (hb : b₁.size = b₂.size) : MemSame (m₁.setRegion r b₁) (m₂.setRegion r b₂) := by
-  refine ⟨fun r' => ?_, ?_, ?_, ?_⟩
+  refine ⟨fun r' => ?_, ?_, ?_⟩
   · by_cases hr : r' = r
     · subst hr; rw [region_setRegion_self, region_setRegion_self, hb]
     · rw [region_setRegion_ne _ _ hr, region_setRegion_ne _ _ hr, h.size r']
-  all_goals cases r <;> first | exact h.live | exact h.busy | exact h.frozen
+  all_goals cases r <;> first | exact h.live | exact h.busy
 
 /-- `m'` is `m` with at most `n` bytes from `off` in region `r` changed. -/
 structure StoreFrame (m m' : Mem) (r : Region) (off n : Nat) : Prop where
@@ -414,15 +432,6 @@ open AlgorithmLib.HProg.Sem
 -- What a write leaves alone
 -- ---------------------------------------------------------------------------
 
-theorem _root_.ByteArray.size_set!_eq (b : ByteArray) (i : Nat) (v : UInt8) :
-    (b.set! i v).size = b.size := by
-  cases b; simp [ByteArray.set!, ByteArray.size, Array.set!_eq_setIfInBounds]
-
-theorem _root_.ByteArray.get!_set!_of_ne (b : ByteArray) (i j : Nat) (v : UInt8) (h : i ≠ j) :
-    (b.set! i v).get! j = b.get! j := by
-  cases b with | mk bs =>
-  simp [ByteArray.set!, ByteArray.get!, Array.set!_eq_setIfInBounds, getElem!_def, h]
-
 /-- An address a region decodes is that region's base plus the offset. -/
 theorem decodeAddr_eq {a : UInt64} {r : Region} {off : Nat} (h : decodeAddr a = some (r, off)) :
     a = regionBase r + UInt64.ofNat off := by
@@ -449,10 +458,6 @@ theorem decodeAddr_eq {a : UInt64} {r : Region} {off : Nat} (h : decodeAddr a = 
           simp only [UInt64.ofNat_toNat]; rw [UInt64.add_comm, UInt64.sub_add_cancel]
         · rw [if_neg h4] at h; cases h
 
-theorem Mem.region_setRegion_self (m : Mem) (r : Region) (b : ByteArray) :
-    (m.setRegion r b).region r = b := by
-  cases r <;> rfl
-
 theorem Mem.region_setRegion_ne (m : Mem) (r r' : Region) (b : ByteArray) (h : r ≠ r') :
     (m.setRegion r b).region r' = m.region r' := by
   cases r <;> cases r' <;> first | rfl | exact absurd rfl h
@@ -469,7 +474,7 @@ theorem _root_.AlgorithmLib.HProg.Sem.Mem.readable_setRegion (m : Mem) (r : Regi
 /-- A store leaves the live allocations and the copies in flight alone. -/
 theorem _root_.AlgorithmLib.HProg.Sem.Mem.store_meta {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64}
     (h : m.store a n v = some m') :
-    m'.pinnedLive = m.pinnedLive ∧ m'.busy = m.busy ∧ m'.frozen = m.frozen := by
+    m'.pinnedLive = m.pinnedLive ∧ m'.busy = m.busy := by
   unfold Mem.store at h
   cases hd : decodeAddr a with
   | none => simp [hd] at h
@@ -479,7 +484,7 @@ theorem _root_.AlgorithmLib.HProg.Sem.Mem.store_meta {m m' : Mem} {a : UInt64} {
     split at h
     · cases h
     · injection h with h; subst h
-      cases r <;> exact ⟨rfl, rfl, rfl⟩
+      cases r <;> exact ⟨rfl, rfl⟩
 
 /-- Liveness and growth of pinned memory. -/
 theorem _root_.ByteArray.get!_append_left' (b c : ByteArray) (i : Nat) (h : i < b.size) :
@@ -491,14 +496,14 @@ theorem _root_.ByteArray.get!_append_left' (b c : ByteArray) (i : Nat) (h : i < 
 
 /-- A copy into host memory leaves them alone too. -/
 theorem copyIn_meta {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a src = some m') :
-    m'.pinnedLive = m.pinnedLive ∧ m'.busy = m.busy ∧ m'.frozen = m.frozen := by
+    m'.pinnedLive = m.pinnedLive ∧ m'.busy = m.busy := by
   unfold copyIn at h
   have key : ∀ (is : List Nat) (mm mm' : Mem),
       is.foldlM (fun mm i => mm.store (a + UInt64.ofNat i) 1 (src.get! i).toUInt64) mm = some mm' →
-      mm'.pinnedLive = mm.pinnedLive ∧ mm'.busy = mm.busy ∧ mm'.frozen = mm.frozen := by
+      mm'.pinnedLive = mm.pinnedLive ∧ mm'.busy = mm.busy := by
     intro is
     induction is with
-    | nil => intro mm mm' h; simp at h; subst h; exact ⟨rfl, rfl, rfl⟩
+    | nil => intro mm mm' h; simp at h; subst h; exact ⟨rfl, rfl⟩
     | cons i is ih =>
       intro mm mm' h
       simp only [List.foldlM_cons, Option.bind_eq_bind] at h
@@ -506,21 +511,19 @@ theorem copyIn_meta {m m' : Mem} {a : UInt64} {src : ByteArray} (h : copyIn m a 
       | none => simp [hs] at h
       | some m1 =>
         simp only [hs, Option.bind_some] at h
-        obtain ⟨h1, h2, h5⟩ := ih m1 mm' h
-        obtain ⟨h3, h4, h6⟩ := Mem.store_meta hs
-        exact ⟨h1.trans h3, h2.trans h4, h5.trans h6⟩
+        obtain ⟨h1, h2⟩ := ih m1 mm' h
+        obtain ⟨h3, h4⟩ := Mem.store_meta hs
+        exact ⟨h1.trans h3, h2.trans h4⟩
   exact key _ m m' h
 
 /-- Fewer copies in flight, the same allocations: whatever could be read still
     can be. -/
 theorem Mem.readable_busy_sub {m m' : Mem} (hlive : m'.pinnedLive = m.pinnedLive)
-    (hfz : m'.frozen = m.frozen) (hsub : ∀ b ∈ m.busy, b ∈ m'.busy) (r : Region) (off n : Nat)
+    (hsub : ∀ b ∈ m.busy, b ∈ m'.busy) (r : Region) (off n : Nat)
     (h : m'.readable r off n = true) : m.readable r off n = true := by
   unfold Mem.readable at h ⊢
-  rw [hlive, hfz] at h
+  rw [hlive] at h
   simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true, List.all_eq_true] at h ⊢
-  obtain ⟨hf, h⟩ := h
-  refine ⟨hf, ?_⟩
   rcases h with h | ⟨h2, h3⟩
   · exact Or.inl h
   · exact Or.inr ⟨h2, fun b hb => h3 b (hsub b hb)⟩
@@ -538,8 +541,8 @@ theorem foldl_set!_other (off j : Nat) (v : UInt64) :
     simp only [List.foldl_cons]
     obtain ⟨h1, h2⟩ := foldl_set!_other off j v is _ (fun k hk => h k (List.mem_cons_of_mem _ hk))
     refine ⟨h1.trans ?_, h2.trans ?_⟩
-    · exact ByteArray.get!_set!_of_ne _ _ _ _ (h i (List.mem_cons_self ..))
-    · exact ByteArray.size_set!_eq _ _ _
+    · exact Sem.get!_set!_ne _ _ _ _ (h i (List.mem_cons_self ..))
+    · exact Sem.set!_size _ _ _
 
 /-- **A store changes no byte outside the bytes it stores.** -/
 theorem Mem.store_other {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64}
@@ -569,7 +572,7 @@ theorem Mem.store_other {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64}
             have e' : off' = off + i := by omega
             rw [decodeAddr_eq hd', decodeAddr_eq hd, e', UInt64.ofNat_add, UInt64.add_assoc]
           obtain ⟨hg, hs⟩ := foldl_set!_other off (off' + 0) v (List.range n) (m.region r) hne
-          rw [Mem.region_setRegion_self, hs, Mem.readable_setRegion]
+          rw [Sem.region_setRegion_self, hs, Mem.readable_setRegion]
           simp only [show List.range 1 = [0] from rfl, List.foldr_cons, List.foldr_nil]
           rw [hg]
         · simp [Mem.region_setRegion_ne _ _ _ _ hr, Mem.readable_setRegion]
@@ -634,8 +637,6 @@ theorem Mem.readable_withLive {m : Mem} {L : List (Nat × Nat)} (hL : ∀ r ∈ 
     m.readable r off n = true := by
   unfold Mem.readable at h ⊢
   simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true, List.any_eq_true] at h ⊢
-  obtain ⟨hf, h⟩ := h
-  refine ⟨hf, ?_⟩
   rcases h with h | ⟨⟨x, hx, h2⟩, h3⟩
   · exact Or.inl h
   · exact Or.inr ⟨⟨x, hL x hx, h2⟩, h3⟩
@@ -678,8 +679,6 @@ theorem Mem.readable_grow (m : Mem) (extra : ByteArray) (x : Nat × Nat) (r : Re
   unfold Mem.readable at h ⊢
   simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true, List.any_eq_true,
     List.any_cons] at h ⊢
-  obtain ⟨hf, h⟩ := h
-  refine ⟨hf, ?_⟩
   rcases h with h | ⟨⟨y, hy, h2⟩, h3⟩
   · exact Or.inl h
   · exact Or.inr ⟨Or.inr ⟨y, hy, h2⟩, h3⟩

@@ -105,6 +105,72 @@ def slotsOf (n : Nat) (c : Code) : Nat := slotsGo fuel n c
 def bindAt (Γ : Env) (n : Nat) (vs : List V) : Env :=
   (Γ.take n ++ Array.replicate (n - Γ.size) default) ++ vs.toArray
 
+theorem bindAt_size (Γ : Env) (n : Nat) (vs : List V) : (bindAt Γ n vs).size = n + vs.length := by
+  simp only [bindAt, Array.size_append, Array.take_eq_extract, Array.size_extract, Array.size_replicate,
+    List.size_toArray]
+  omega
+
+theorem bindAt_lt {Γ : Env} {n i : Nat} {vs : List V} (hi : i < n) (hs : i < Γ.size) :
+    (bindAt Γ n vs)[i]? = Γ[i]? := by
+  simp only [bindAt]
+  rw [Array.getElem?_append_left (by simp; omega), Array.getElem?_append_left (by simp; omega)]
+  rw [Array.getElem?_extract]; simp [hs]; omega
+
+/-- The values bound sit from the slot they are bound at. -/
+theorem bindAt_at (Γ : Env) (n : Nat) (vs : List V) (j : Nat) : (bindAt Γ n vs)[n + j]? = vs[j]? := by
+  simp only [bindAt]
+  rw [Array.getElem?_append_right (by simp; omega)]
+  simp only [Array.size_append, Array.size_extract, Array.size_replicate]
+  have : n + j - (min n Γ.size + (n - Γ.size)) = j := by omega
+  simp [this]
+
+theorem mapM_len {α β : Type} {f : α → Option β} :
+    ∀ {xs : List α} {ys : List β}, xs.mapM f = some ys → ys.length = xs.length
+  | [], ys, h => by simp at h; subst h; rfl
+  | x :: xs, ys, h => by
+      simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨y, -, ys', hys, rfl⟩ := h
+      simp [mapM_len hys]
+
+/-- **`Γ'` keeps every slot of `Γ`**: what a body's later environments are to
+    the one a step was entered with. -/
+def Extends (Γ Γ' : Env) : Prop := Γ.size ≤ Γ'.size ∧ ∀ i, i < Γ.size → Γ'[i]? = Γ[i]?
+
+theorem Extends.refl (Γ : Env) : Extends Γ Γ := ⟨Nat.le_refl _, fun _ _ => rfl⟩
+
+theorem Extends.trans {Γ Γ' Γ'' : Env} (h : Extends Γ Γ') (h' : Extends Γ' Γ'') : Extends Γ Γ'' :=
+  ⟨Nat.le_trans h.1 h'.1, fun i hi => by rw [h'.2 i (Nat.lt_of_lt_of_le hi h.1), h.2 i hi]⟩
+
+theorem Extends.size {Γ Γ' : Env} (h : Extends Γ Γ') : Γ.size ≤ Γ'.size := h.1
+
+/-- A slot's value, carried to an environment that keeps it. -/
+theorem Extends.get {Γ Γ' : Env} (h : Extends Γ Γ') {i : Nat} {v : V} (hi : Γ[i]? = some v) : Γ'[i]? = some v := by
+  have hs : i < Γ.size := by
+    rcases Nat.lt_or_ge i Γ.size with hs | hs
+    · exact hs
+    · rw [Array.getElem?_eq_none hs] at hi; cases hi
+  rw [h.2 i hs, hi]
+
+theorem Extends.push (Γ : Env) (v : V) : Extends Γ (Γ.push v) :=
+  ⟨by simp, fun i hi => by rw [Array.getElem?_push, if_neg (by omega)]⟩
+
+theorem Extends.append (Γ δ : Env) : Extends Γ (Γ ++ δ) :=
+  ⟨by simp, fun i hi => Array.getElem?_append_left hi⟩
+
+/-- A push after what an environment keeps still keeps it. -/
+theorem Extends.push_of {Γ Γ' : Env} (h : Extends Γ Γ') (v : V) : Extends Γ (Γ'.push v) := h.trans (Extends.push Γ' v)
+
+/-- Binding past what an environment keeps still keeps it. -/
+theorem Extends.bindAt {Γ Γb : Env} (h : Extends Γ Γb) {n : Nat} (hn : Γ.size ≤ n) (vs : List V) :
+    Extends Γ (Sem.bindAt Γb n vs) :=
+  ⟨by rw [bindAt_size]; have := h.1; omega, fun i hi => by
+    rw [bindAt_lt (by omega) (Nat.lt_of_lt_of_le hi h.1)]; exact h.2 i hi⟩
+
+/-- The same, where the binding starts past the environment kept. -/
+theorem Extends.bindAt_of {Γ Γ' : Env} (h : Extends Γ Γ') {n : Nat} (hn : Γ'.size ≤ n) (vs : List V) :
+    Extends Γ (Sem.bindAt Γ' n vs) := Extends.bindAt h (Nat.le_trans h.1 hn) vs
+
 /-- What a call is observed with besides its arguments: a kernel launch
     through the driver, with the parameter values it reads as it is made. -/
 def callWords (w : World) : Callee → List V → List V
@@ -147,31 +213,6 @@ structure Cfg where
   /-- How many loop iterations one run may take in total. -/
   steps : Nat := 100000000
   locals : Locals := noLocals
-
-/-- `cl_thread_spawn`: run the function at address `fn` on the argument
-    pointer, as a worker: function `u0:i` is at `fnBase + i`. A worker takes
-    one pointer and answers nothing, which `Prog.program` makes true of every
-    function whose address a program takes; one that answers is refused here.
-    The worker runs to completion here, and memory stays frozen until it is
-    joined. -/
-def spawnWorker (locals : Locals) (vs : List V) (w : World) : Option (Option V × World) :=
-  match vs with
-  | [.sc _ ctx, .sc _ fn, .sc _ arg] =>
-      if ctx == 0 then some (some (ofInt .i64 (-1)), w)
-      else if !(ctx == threadCtx && w.thread.live) || w.thread.outstanding.isSome then none
-      else
-        if fn < fnBase then none else
-        match locals (fn - fnBase).toNat [.sc .i64 arg] w with
-        | .error _ => none
-        | .ok (some _, _) => some (some (ofInt .i64 (-1)), w)
-        | .ok (none, w') =>
-            if w'.mem.frozen || w'.thread.outstanding.isSome then none
-            else
-              let h := w'.thread.next
-              some (some (ofInt .i64 h),
-                    { w' with mem := { w'.mem with frozen := true },
-                              thread := { w'.thread with next := h + 1, outstanding := some h } })
-  | _ => none
 
 /-- The value an `atomic_rmw` leaves in memory, from the old value and its
     operand, at width `t`. -/
@@ -257,7 +298,6 @@ def baseCall (f : BaseFn) (bits : List UInt64) (w : World) : Option (Option V ×
   | .fileWriteFromPtr => ffiFileWriteFromPtr bits w
   | .stdinReadline => ffiStdinReadline bits w
   -- Stated where programs meet them, as the thread library's spawn and join.
-  | .threadStart | .threadFinish => none
 
 /-- **What the C library's functions do**, on their arguments' bits.
     `memcpy` between overlapping ranges is undefined, so it is not answered. -/
@@ -342,31 +382,33 @@ def extCall (e : Ext) (vs : List V) (w : World) : Option (Option V × World) :=
       baseCall f bits w
   | _, _ => none
 
+/-- A value as a call into a library passes it: its bits at its type's
+    width, as the answer comes back (`libAnswer`). -/
+def normV : V → V
+  | .sc t x => norm t x
+  | v => v
+
 /-- What a library function's 64-bit answer is to the caller of the entry
     point it implements: the low bits, at the entry point's type. -/
-def libAnswer (f : Ffi) : Option V → Option V
+def libAnswer (f : LibFn) : Option V → Option V
   | some (.sc _ x) => f.result.map fun t => norm t x
   | _ => none
 
-/-- What a call does, by what it names: an import by its contract, one of the
-    program's own functions by `locals` — an entry point a library implements
-    is one, at `Ffi.libSlot` — a host's function by the contract the world
+/-- What a call does, by what it names: one of the program's own functions by
+    `locals` — a function of a library linked into it is one, at
+    `LibFn.libSlot` — a host's function by the contract the world
     states for it (`World.hostFn`), machine code not at all. Both interpreters
     make every call through this. -/
 def callOf (locals : Locals) (c : Callee) (vs : List V) (w : World) : Option (Option V × World) :=
   match c with
-  | .ffi f =>
-      -- an outstanding worker may touch anything: only joining is defined
-      if w.mem.frozen && f != .threadJoin && f != .threadCleanup then none
-      else if f == .threadSpawn then spawnWorker locals vs w
-      else if f.inLib then (locals f.libSlot vs w).toOption.map fun (r, w') => (libAnswer f r, w')
-      else callImport f.cname vs w
+  | .lib f =>
+      (locals f.libSlot (vs.map normV) w).toOption.map fun (r, w') => (libAnswer f r, w')
   | .local i => (locals i vs w).toOption
   | .native => none
   | .host _ r =>
       match vs with
       | .sc _ fp :: args =>
-          if w.mem.frozen then none else do
+          do
             let bits ← args.mapM asBits
             let (res, m) ← w.hostFn fp bits w.mem
             some (r.bind fun t => res.map (norm t), { w with mem := m })
@@ -376,17 +418,17 @@ def callOf (locals : Locals) (c : Callee) (vs : List V) (w : World) : Option (Op
 
 /-- Why a call that `callOf` does not answer is stuck. -/
 def uncalled : Callee → String
-  | .ffi f => s!"{f.cname} has no executable contract"
+  | .lib f => s!"{f.cname} has no executable contract"
   | .local i => s!"calls u0:{i}, whose meaning is not given"
   | .native => "calls machine code, which the model does not read"
   | .host _ _ => "calls a function of the host's whose contract the world does not state"
-  | .atomic _ => "an atomic on an unaligned, unmapped or frozen address"
+  | .atomic _ => "an atomic on an unaligned or unmapped address"
   | .ext e => s!"{e.lib.name}!{e.symbol} on arguments it does not define"
 
 /-- A call `callOf` does not answer: a refused import, and a library called on
     arguments it does not define, are misuse; anything else is stuck. -/
 def refused {α : Type} : Callee → Outcome α
-  | .ffi f => .misuse (uncalled (.ffi f))
+  | .lib f => .misuse (uncalled (.lib f))
   | .ext e => .misuse (uncalled (.ext e))
   | c => .stuck (uncalled c)
 
@@ -401,12 +443,10 @@ def failOf {α : Type} (locals : Locals) (c : Callee) (vs : List V) (w : World) 
       match locals i vs w with
       | .error f => f.out
       | .ok _ => .stuck (uncalled (.local i))
-  | .ffi f =>
-      if f.inLib && !w.mem.frozen then
-        match locals f.libSlot vs w with
-        | .error e => e.out
-        | .ok _ => refused (.ffi f)
-      else refused (.ffi f)
+  | .lib f =>
+      match locals f.libSlot (vs.map normV) w with
+      | .error e => e.out
+      | .ok _ => refused (.lib f)
   | c => refused c
 
 theorem failOf_ne_ok {α : Type} {lc : Locals} {c : Callee} {vs : List V} {w : World} {a : α} {w' : World} :
@@ -417,9 +457,7 @@ theorem failOf_ne_ok {α : Type} {lc : Locals} {c : Callee} {vs : List V} {w : W
     · rename_i f _; cases f <;> simp [Fail.out]
     · simp
   · split
-    · split
-      · rename_i f _; cases f <;> simp [Fail.out]
-      · exact refused_ne_ok
+    · rename_i f _; cases f <;> simp [Fail.out]
     · exact refused_ne_ok
   · exact refused_ne_ok
 

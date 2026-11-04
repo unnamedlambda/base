@@ -155,7 +155,7 @@ def openObligations : List String :=
      resident experts computes *a* mixture, and what is at stake is whether it \
      is the mixture the model specifies. Evidence: a wrong binding is caught by \
      the distinctness check the existing MoE demo already runs. Closes by: \
-     moving the policy into CLIF, where `ClifCheck` can decide it.",
+     moving the policy into CLIF, where the checker can decide it.",
     "ExpertFragmentPlan: no plan-realisation claim is made across a fragment \
      containing an MXFP4 launch. Launch records resolve to proven stages, and \
      these are not stages yet, so the composition theorem is unavailable rather \

@@ -8,8 +8,6 @@ mod blackhole;
 mod cli;
 #[path = "compress/src/main.rs"]
 mod compress;
-#[path = "csv/src/main.rs"]
-mod csv;
 #[path = "draw/src/main.rs"]
 mod draw;
 #[path = "fft/src/main.rs"]
@@ -55,7 +53,6 @@ fn main() {
         "blackhole" => blackhole::main(args),
         "cli" => cli::main(args),
         "compress" => compress::main(args),
-        "csv" => csv::main(args),
         "draw" => draw::main(args),
         "fft" => fft::main(args),
         "gemv-warp" => gemv_warp::main(args),
@@ -80,7 +77,6 @@ fn main() {
             eprintln!("  blackhole");
             eprintln!("  cli");
             eprintln!("  compress");
-            eprintln!("  csv");
             eprintln!("  draw");
             eprintln!("  fft");
             eprintln!("  gemv-warp");

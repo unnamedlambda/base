@@ -60,10 +60,10 @@ lean_lib Lz4 where
 @[default_target]
 lean_lib Ship where
   roots := #[`Ship.NoMisuse, `Ship.CudaSafe, `Ship.CudaBackwardSafe, `Ship.CudaBenchSafe,
-    `Ship.WgpuDraw, `Ship.WgpuFallingSand, `Ship.WgpuWindowDemo, `Ship.WgpuWindowDemoMain, `Ship.WgpuRaymarch, `Ship.WgpuRaymarchMain, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CudaApps, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.CudaPipeline, `Ship.Lz4Comp, `Ship.MlpCifar1, `Ship.MlpCifar2, `Ship.VitSafe,
+    `Ship.WgpuDraw, `Ship.WgpuFallingSand, `Ship.WgpuWindowDemo, `Ship.WgpuWindowDemoMain, `Ship.WgpuRaymarch, `Ship.WgpuRaymarchMain, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CudaApps, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.CudaPipeline, `Ship.Lz4Comp, `Ship.MlpCifar1, `Ship.MlpCifar2, `Ship.QwenReplay, `Ship.VitSafe,
     `Ship.GemvWarpQwen, `Ship.GemvWarpMid, `Ship.GemvWarpMid2, `Ship.GemvWarpWide,
     `Ship.FallingSandMain,
-    `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Libs, `Ship.HtSpec, `Ship.HtRuns, `Ship.HtLinked, `Ship.HtCheck]
+    `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Libs, `Ship.HtSpec, `Ship.LibCheck, `Ship.MathSpec, `Ship.MathCheck, `Ship.HtRuns, `Ship.HtLinked, `Ship.HtCheck]
   moreLeanArgs := #["--tstack=262144", "-M", "3500"]
 
 -- The trust, ship and layout scans. Plain files: they read proof terms.
@@ -81,8 +81,6 @@ lean_lib Main where
 -- and runs them (the target is in `lib/lakefile.lean`).
 lean_exe gencompressalgorithm where
   root := `Main.Demo.Compress
-lean_exe gencsvalgorithm where
-  root := `Main.Demo.Csv
 lean_exe gengradwarpalgorithm where
   root := `Main.Warp.Grad
 lean_exe gengemvwarpalgorithm where
@@ -163,11 +161,7 @@ lean_exe genhprogcpucorpus where
   root := `Main.Host.CpuCorpus
 lean_exe genhprogwgpucorpus where
   root := `Main.Host.WgpuCorpus
-lean_exe genhproglmdbcorpus where
-  root := `Main.Host.LmdbCorpus
 lean_exe genhprognativecorpus where
   root := `Main.Host.NativeCorpus
 lean_exe genhproglocalcorpus where
   root := `Main.Host.LocalCorpus
-lean_exe genhprogthreadcorpus where
-  root := `Main.Host.ThreadCorpus

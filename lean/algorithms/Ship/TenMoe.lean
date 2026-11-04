@@ -55,7 +55,7 @@ theorem mem_size : MlpCifar.MMEM_SIZE = 565248 := by decide +kernel
     The arena's size is its number: an address over the caller's choice is
     bounded by arithmetic, which reads a size only as a number. -/
 abbrev Bind (dl : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena 565248, .roomArg .data dl]
+  [.room .arena 565248, .roomArg .data dl]
 
 ship_entry main : MlpCifar.mLoadFn under Load
 
@@ -69,7 +69,7 @@ theorem bindExperts_fine : Fine (emitGo (fnBody ptrParams (MlpCifar.mBindExperts
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
 theorem bindExperts_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .frozen false, .room .arena MlpCifar.MMEM_SIZE, .roomArg .data dataLen] w)
+    (h : Contracts.TState.holds [.room .arena MlpCifar.MMEM_SIZE, .roomArg .data dataLen] w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mBindExperts : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.mBindExperts : Prog Slot Lvl Unit)) ≠ .fault m := by

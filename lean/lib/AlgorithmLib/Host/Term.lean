@@ -496,96 +496,100 @@ def _root_.AlgorithmLib.IR.LoadKind.admits : LoadKind → ClifTy → Bool
   | .uload16, t | .sload16, t => t.isInt && decide (t.width > 16)
   | .uload32, t | .sload32, t => t.isInt && decide (t.width > 32)
 
-/-- The type `o` yields, or `none` when an operand is out of scope, the operand
-    types disagree, or the operation does not apply to them. -/
-def Op.check (Γ : TyEnv) : Op → Option ClifTy
+/-- **The type `o` yields**, its operands' types read by `get`, or `none` when
+    an operand has none, the operand types disagree, or the operation does not
+    apply to them. The one table of which operations apply to which types: the
+    emitted body is checked by it (`Stmt.check`, with the body's own types),
+    and the checker types operations by it (`Check.absOp`, with the types it
+    knows of the slots). -/
+def Op.check (get : R → Option ClifTy) : Op → Option ClifTy
   | .iconst ty _ => need ty.isInt ty
   | .fconst ty _ => need ty.isFloat ty
   | .iadd a b | .isub a b | .imul a b | .udiv a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       need (ta == tb && ta.isInt) ta
   | .band a b | .bandNot a b | .bor a b | .bxor a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       need (ta == tb && (ta.isInt || ta.isVec)) ta
   | .ineg a | .ctz a | .popcnt a => do
-      let ta ← Γ.get a; need ta.isInt ta
+      let ta ← get a; need ta.isInt ta
   -- Cranelift lets the shift amount be any integer type.
   | .ishl a b | .ushr a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       need (ta.isInt && tb.isInt) ta
   | .ireduce32 a => do
-      let ta ← Γ.get a; need (ta.isInt && ta.width > 32) .i32
+      let ta ← get a; need (ta.isInt && ta.width > 32) .i32
   | .uextend64 a | .sextend64 a => do
-      let ta ← Γ.get a; need (ta.isInt && ta.width < 64) .i64
+      let ta ← get a; need (ta.isInt && ta.width < 64) .i64
   -- On vectors the result is a per-lane mask at the lane's own width, the same
   -- shape `fcmp` produces and the one `bitselect` and `vhighBits` consume.
   | .icmp _ a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       if ta.isVec then need (ta == tb) ta
       else need (ta == tb && ta.isInt) .i8
   | .select c a b => do
-      let tc ← Γ.get c; let ta ← Γ.get a; let tb ← Γ.get b
+      let tc ← get c; let ta ← get a; let tb ← get b
       need (tc.isInt && ta == tb) ta
   -- The mask is the operands' own type: it comes from a comparison that was
   -- bitcast to that width, which is what makes the lane-wise select expressible.
   | .bitselect c a b => do
-      let tc ← Γ.get c; let ta ← Γ.get a; let tb ← Γ.get b
+      let tc ← get c; let ta ← get a; let tb ← get b
       need (tc == ta && ta == tb) ta
   | .fadd a b | .fsub a b | .fmul a b | .fmax a b | .fmin a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta
   | .fneg a => do
-      let ta ← Γ.get a; need (ta.isFloat || ta.isFloatVec) ta
+      let ta ← get a; need (ta.isFloat || ta.isFloatVec) ta
   | .fpromote a => do
-      let ta ← Γ.get a; need (ta == .f32) .f64
+      let ta ← get a; need (ta == .f32) .f64
   -- On vectors the result is a per-lane mask at the lane's own width, which is
   -- the type `evalOp` produces and the width `bitselect` needs. Cranelift calls
   -- that type `i32x4`; there is no such `ClifTy`, and `Inst.fcmp` carries no
   -- result annotation for one to disagree with, so the mask keeps the operand
   -- type and `bitcast` — which compares widths — accepts it either way.
   | .fcmp _ a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       if ta.isFloatVec then need (ta == tb) ta
       else need (ta == tb && ta.isFloat) .i8
   | .fcvtFromSint ty a => do
-      let ta ← Γ.get a; need (ta.isInt && ty.isFloat) ty
+      let ta ← get a; need (ta.isInt && ty.isFloat) ty
   -- `i32` or `i64` only, for the reason `FConv.admits` gives.
   | .fcvtToUint ty a => do
-      let ta ← Γ.get a; need (ta.isFloat && ty.isInt && decide (ty.width ≥ 32)) ty
+      let ta ← get a; need (ta.isFloat && ty.isInt && decide (ty.width ≥ 32)) ty
   | .splat ty a => do
-      let ta ← Γ.get a; let (lane, _) ← ty.lanes
+      let ta ← get a; let (lane, _) ← ty.lanes
       need (ta == lane) ty
   | .extractlane a lane => do
-      let ta ← Γ.get a; let (lt, n) ← ta.lanes
+      let ta ← get a; let (lt, n) ← ta.lanes
       need (lane < n) lt
   | .vhighBits a => do
-      let ta ← Γ.get a; need ta.isVec .i32
+      let ta ← get a; need ta.isVec .i32
   -- A vector is reinterpreted only as itself: its lanes are the value, and a
   -- reading at another lane width would have to re-cut them.
   | .bitcast ty a => do
-      let ta ← Γ.get a; need (ta.width == ty.width && (!ta.isVec || ta == ty)) ty
+      let ta ← get a; need (ta.width == ty.width && (!ta.isVec || ta == ty)) ty
   | .load op a => do
-      let ta ← Γ.get a; need (ta == .i64 && op.kind.admits op.ty) op.ty
+      let ta ← get a; need (ta == .i64 && op.kind.admits op.ty) op.ty
   | .ibin _ a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       need (ta == tb && ta.isInt) ta
   | .ishift _ a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       need (ta.isInt && tb.isInt) ta
   | .iun k a => do
-      let ta ← Γ.get a; need (k.admits ta) ta
+      let ta ← get a; need (k.admits ta) ta
   | .fbin _ a b => do
-      let ta ← Γ.get a; let tb ← Γ.get b
+      let ta ← get a; let tb ← get b
       need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta
   | .fun1 _ a => do
-      let ta ← Γ.get a; need (ta.isFloat || ta.isFloatVec) ta
+      let ta ← get a; need (ta.isFloat || ta.isFloatVec) ta
   | .fma a b c => do
-      let ta ← Γ.get a; let tb ← Γ.get b; let tc ← Γ.get c
+      let ta ← get a; let tb ← get b; let tc ← get c
       need (ta == tb && ta == tc && (ta.isFloat || ta.isFloatVec)) ta
   | .fconv k ty a => do
-      let ta ← Γ.get a; need (k.admits ta ty) ty
+      let ta ← get a; need (k.admits ta ty) ty
   | .iext k ty a => do
-      let ta ← Γ.get a; need (k.admits ta ty) ty
+      let ta ← get a; need (k.admits ta ty) ty
   | .memory => some .i64
   | .funcAddr _ => some .i64
 
@@ -597,7 +601,7 @@ def argsOk (Γ : TyEnv) (d : CalleeSig) (args : List R) : Bool :=
 /-- The type a statement appends to the environment, or `none` for statements
     that bind nothing. `ok` is the check itself. -/
 def Stmt.check (env : FnEnv) (Γ : TyEnv) : Stmt → Bool × Option ClifTy
-  | .op o => match o.check Γ with
+  | .op o => match o.check Γ.get with
       | some t => (true, some t)
       | none => (false, none)
   | .store ty v a =>

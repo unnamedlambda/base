@@ -135,10 +135,6 @@ theorem devMem_put (d : Dev) (id : Nat) (o : ByteArray) (h : id < d.bufs.size) :
   · subst hi; simp [Array.getElem?_setIfInBounds, h]
   · simp [Array.getElem?_setIfInBounds, Ne.symm hi, hi]
 
-theorem put_size (d : Dev) (id : Nat) (o : Option ByteArray) :
-    (d.put id o).bufs.size = d.bufs.size := by
-  simp [Dev.put]
-
 theorem devMem_putAll : ∀ (ws : List (Nat × ByteArray)) (d : Dev),
     (∀ p ∈ ws, p.1 < d.bufs.size) →
     devMem (ws.foldl (fun d (id, o) => d.put id (some o)) d) = writeAll (devMem d) ws
@@ -146,7 +142,7 @@ theorem devMem_putAll : ∀ (ws : List (Nat × ByteArray)) (d : Dev),
   | (id, o) :: ws, d, h => by
       simp only [List.foldl_cons, writeAll]
       rw [devMem_putAll ws (d.put id (some o))
-        (fun p hp => by rw [put_size]; exact h p (List.mem_cons_of_mem _ hp)),
+        (fun p hp => by rw [Dev.put_bufs_size]; exact h p (List.mem_cons_of_mem _ hp)),
         devMem_put d id o (h (id, o) (List.mem_cons_self ..))]
 
 theorem mapM_get (d : Dev) : ∀ (ids : List Nat) (ins : List ByteArray),

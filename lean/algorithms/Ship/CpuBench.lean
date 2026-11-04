@@ -22,7 +22,7 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 namespace CpuBenchSafe
 
 abbrev Load (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena 1536,
+  [.room .arena 1536,
    .cstrIn (regionBase .arena + UInt64.ofNat CpuBench.NAME_OFF) 4, .roomArg .data dl, .roomArg .out ol]
 
 /-- The layout as numbers. The assembler computes it, and the kernel would run
@@ -36,7 +36,7 @@ theorem asmLoad_fine : Fine (emitGo (fnBody ptrParams (CpuBench.asmLoad : Prog S
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem asmLoad_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .frozen false, .room .arena CpuBench.MEM_SIZE,
+    (h : Contracts.TState.holds [.room .arena CpuBench.MEM_SIZE,
       .cstrIn (regionBase .arena + UInt64.ofNat CpuBench.NAME_OFF) 4, .roomArg .data dataLen,
       .roomArg .out outLen] w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (CpuBench.asmLoad : Prog Slot Lvl Unit)) ≠ .misuse m ∧

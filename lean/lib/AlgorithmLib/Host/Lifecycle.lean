@@ -1,88 +1,15 @@
 module
 public import AlgorithmLib.Host.LifecycleCore
 meta import AlgorithmLib.Host.LifecycleCore
-public import AlgorithmLib.Host.KeepsCuda
-meta import AlgorithmLib.Host.KeepsCuda
-public import AlgorithmLib.Host.KeepsBlas
-meta import AlgorithmLib.Host.KeepsBlas
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
-/-! `Host.Lifecycle`: what each entry point keeps (`callBits_keeps`), and the lifecycle facts that follow. -/
+/-! `Host.Lifecycle`: typestates — the facts a checker carries about a world — and what each gives of memory and the device. -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
 
 namespace AlgorithmLib.HProg.Contracts
-
-derive_keeps
-
-/-- **No call adds to or drops from the observations**: a call is observed
-    where it is made, before it runs. -/
-theorem callBits_obs (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) : w'.obs = w.obs := (callBits_keeps f h).obs
-
-/-- **Every call keeps every part it does not move.** -/
-theorem callBits_parts (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) : KeepsParts f w w' := (callBits_keeps f h).parts
-
-/-- **No call changes what a kernel or cuBLAS computes.** -/
-theorem callBits_oracles (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) : w'.kernel = w.kernel ∧ w'.vendor = w.vendor :=
-  (callBits_keeps f h).oracles
-
-/-- **Every call keeps the size of every region but the pinned one.** -/
-theorem callBits_rooms (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) : KeepsRooms w w' := (callBits_keeps f h).rooms
-
-/-- **Every call leaves page-locked memory the size it was.** -/
-theorem callBits_pinned (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) : KeepsPinned w w' :=
-  (callBits_keeps f h).pinned
-
-/-- **An entry point's answer is a scalar of the type its signature gives.** -/
-theorem callBits_scalar (f : IR.Ffi) {bits : List UInt64} {w : World} {v : V} {w' : World}
-    (h : callBits f bits w = some (some v, w')) : ∃ x, v = .sc (f.result.getD .i64) x :=
-  (callBits_keeps f h).scalar v rfl
-
--- ---------------------------------------------------------------------------
--- What the movers leave
--- ---------------------------------------------------------------------------
-
-theorem sets_lmdbInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .lmdbInit bits w = some (r, w')) : w'.lmdb.live = true := by
-  change ffiLmdbInit bits w = some (r, w') at h
-  unfold ffiLmdbInit at h
-  walk h
-  all_goals first | exact ⟨rfl, rfl⟩ | rfl | grind [→ store_frozen]
-
-theorem empties_lmdbInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .lmdbInit bits w = some (r, w')) : w'.lmdb.envs.isEmpty = true := by
-  change ffiLmdbInit bits w = some (r, w') at h
-  unfold ffiLmdbInit at h
-  walk h
-  all_goals first | rfl | grind [→ store_frozen]
-
-theorem sets_threadInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .threadInit bits w = some (r, w')) : w'.thread.live = true := by
-  change ffiThreadInit bits w = some (r, w') at h
-  unfold ffiThreadInit at h
-  walk h
-  all_goals first | exact ⟨rfl, rfl⟩ | rfl | grind [→ store_frozen]
-
-theorem sets_threadCleanup {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .threadCleanup bits w = some (r, w')) : w'.mem.frozen = false := by
-  change ffiThreadCleanup bits w = some (r, w') at h
-  unfold ffiThreadCleanup at h
-  walk h
-  all_goals first | exact ⟨rfl, rfl⟩ | rfl | grind [→ store_frozen]
-
-theorem sets_threadJoin {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .threadJoin bits w = some (r, w')) (hz : w.mem.frozen = false) : w'.mem.frozen = false := by
-  change ffiThreadJoin bits w = some (r, w') at h
-  unfold ffiThreadJoin at h
-  walk h
-  all_goals first | rfl | exact hz
 
 -- ---------------------------------------------------------------------------
 -- Typestates
@@ -210,7 +137,7 @@ def Fact.holds : Fact → World → Prop
   | .cstr a, w => CStr w.mem a
   | .devSeq, w => Device.TrackOk w.dev ∧ Device.DefaultOnly w.dev.race
   | .oracles, w => Sem.KeepsSize w.kernel ∧ VendorKeeps w.vendor
-  | .cstrIn a n, w => w.mem.frozen = false ∧ CStr w.mem a ∧ a.toNat + n < 2 ^ 64 ∧
+  | .cstrIn a n, w => CStr w.mem a ∧ a.toNat + n < 2 ^ 64 ∧
       ∃ r off k, r ≠ .pinned ∧ off + n < 2 ^ 36 ∧ Sem.strSpan w.mem a = some (r, off, k) ∧ k ≤ n
   | .roomArg r x, w => x.toNat ≤ w.mem.sizes r ∧ x.toNat ≤ 2 ^ 36
   | .devBuf a n, w => Device.BufIs (asI32 a) n.toNat w.dev
@@ -224,7 +151,7 @@ def Fact.holds : Fact → World → Prop
   | .retained n, w => w.dev.retained = n
   | .nbufs n, w => w.dev.bufs.size = n
   | .alloc id n, w => ∃ b, (w.dev.bufs[id]?).join = some b ∧ b.size = n
-  | .text a s n sigs, w => (w.mem.frozen = false ∧ CStr w.mem a ∧ a.toNat + n < 2 ^ 64 ∧
+  | .text a s n sigs, w => (CStr w.mem a ∧ a.toNat + n < 2 ^ 64 ∧
       ∃ r off k, r ≠ .pinned ∧ off + n < 2 ^ 36 ∧ Sem.strSpan w.mem a = some (r, off, k) ∧ k ≤ n) ∧
       ∃ t, readCStrAt w.mem a = some t ∧ (∀ x, s = some x → x = t) ∧ ∀ p ∈ sigs, ptxParamSizes t p.1 = some p.2
   | .nmods n, w => w.dev.modules.size = n
@@ -245,7 +172,7 @@ def Fact.holds : Fact → World → Prop
   | .wg1 k none, w => w.wg.lost = true ∨ w.wg.NoneOf k
   | .wg1 k (some s), w => w.wg.lost = true ∨ ∀ (i : Nat) (d : WgData), w.wg.objs[i]? = some (true, d) →
       d.kind = k → w.wg.isOne k i = true ∧ w.wg.Fits d s
-  | .wgText a n sh, w => w.mem.frozen = false ∧ a.toNat + n < 2 ^ 64 ∧
+  | .wgText a n sh, w => a.toNat + n < 2 ^ 64 ∧
       (∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ w.mem.sizes r ∧ off + n ≤ 2 ^ 36) ∧
       ∃ t, Sem.wgText w.mem a (UInt64.ofNat n) = some t ∧ (sh = true → w.wgslOk t = true)
 
@@ -335,55 +262,9 @@ theorem cellOk_spec {a : UInt64} (h : cellOk a = true) :
     exact ⟨r, off, hd, h.1, h.2⟩
   · cases h
 
-/-- Whether a call with these argument bits may write the byte at `x`, over
-    every answer it may give. -/
-def mayWrite (f : IR.Ffi) (bits : List UInt64) (x : UInt64) : Bool := (frame f).mayWrite bits x
-
-theorem mayWrite_sound {f : IR.Ffi} {bits : List UInt64} {x : UInt64} (h : mayWrite f bits x = false)
-    (ret : Option UInt64) : ¬ (frame f).allows bits ret x :=
-  Frame.mayWrite_sound h ret
-
-theorem mapM_asBits_sc : ∀ (bits : List UInt64), (bits.map (V.sc .i64)).mapM asBits = some bits
+theorem mapM_asBits_i64 : ∀ (bits : List UInt64), (bits.map (V.sc .i64)).mapM asBits = some bits
   | [] => rfl
-  | b :: bits => by simp [List.mapM_cons, asBits, mapM_asBits_sc bits]
-
-theorem frozen_of_load {m : Mem} {a : UInt64} {n : Nat} {v : UInt64} {r : Region} {off : Nat}
-    (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (h : m.load a n = some v) : m.frozen = false := by
-  have := (load_some hd h).2.1
-  rw [readable_off_pinned hp] at this
-  simpa using this
-
-/-- **No call freezes memory**: only spawning a worker does. -/
-theorem callBits_unfrozen {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) (hz : w.mem.frozen = false) : w'.mem.frozen = false := by
-  by_cases hm : Part.frozen ∈ moves f
-  · cases f <;> first | exact absurd hm (by decide) | skip
-    · exact sets_threadJoin h hz
-    · exact sets_threadCleanup h
-  · have := callBits_parts f h .frozen hm
-    simp only [Part.get] at this
-    rw [this]; exact hz
-
-/-- A byte outside a call's frame survives it. -/
-theorem unchanged_of_mayWrite {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) {x : UInt64} (hx : mayWrite f bits x = false) :
-    Unchanged w.mem w'.mem x := by
-  have hcall : callFfi f (bits.map (V.sc .i64)) w = some (r, w') := by
-    unfold callFfi; rw [mapM_asBits_sc]; exact h
-  exact callFfi_respects_frame f _ w r w' hcall bits (mapM_asBits_sc bits) _ (mayWrite_sound hx _)
-
-/-- **A cell outside a call's frame survives it.** -/
-theorem cell_kept {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    {a v : UInt64} (h : callBits f bits w = some (r, w')) (hok : cellOk a = true)
-    (hno : ((List.range 8).all fun i => !mayWrite f bits (a + UInt64.ofNat i)) = true)
-    (hc : w.mem.load a 8 = some v) : w'.mem.load a 8 = some v := by
-  obtain ⟨rg, off, hd, hp, hb⟩ := cellOk_spec hok
-  have hz := callBits_unfrozen h (frozen_of_load hd hp hc)
-  refine load_kept hd hp hb hc hz (callBits_rooms f h rg hp) fun i hi => ?_
-  have hm : mayWrite f bits (a + UInt64.ofNat i) = false := by
-    have := List.all_eq_true.mp hno i (List.mem_range.mpr hi)
-    simpa using this
-  exact unchanged_of_mayWrite h hm
+  | b :: bits => by simp [List.mapM_cons, asBits, mapM_asBits_i64 bits]
 
 theorem load_setLive {m : Mem} {a : UInt64} {r : Region} {off : Nat} (hd : decodeAddr a = some (r, off))
     (hp : r ≠ .pinned) (L : List (Nat × Nat)) (n : Nat) :
@@ -391,10 +272,6 @@ theorem load_setLive {m : Mem} {a : UInt64} {r : Region} {off : Nat} (hd : decod
   unfold Mem.load
   simp only [hd, Option.bind_eq_bind, Option.bind_some]
   cases r <;> first | exact absurd rfl hp | rfl
-
-theorem load_setFrozen {m : Mem} (hz : m.frozen = false) (a : UInt64) (n : Nat) :
-    ({ m with frozen := false } : Mem).load a n = m.load a n := by
-  cases m; simp_all
 
 /-- A mover that stores `K` at the slot it is handed leaves the slot holding
     `K`. -/
@@ -475,21 +352,6 @@ theorem cstr_other {m m' : Mem} {x a : UInt64} {n : Nat} {v : UInt64} (ho : othe
       rw [store_region_other h hx hr]
       exact hc
 
-/-- The LMDB slot's initialiser writes memory only at its slot. -/
-theorem slotInit_mem {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (hf : f = .lmdbInit) (h : callBits f bits w = some (r, w')) :
-    ∃ slot, bits = [slot] ∧ ∃ v, w.mem.store slot 8 v = some w'.mem := by
-  subst hf
-  change ffiLmdbInit bits w = some (r, w') at h
-  unfold ffiLmdbInit at h
-  split at h
-  · split at h
-    · cases h
-    · simp only [Option.bind_eq_bind] at h
-      obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      cases h; exact ⟨_, rfl, _, hm⟩
-  · cases h
-
 /-- A byte past a range that does not wrap is outside it. -/
 theorem within_apart {b a : UInt64} {len n i : Nat} (hi : i < n) (ha : a.toNat + n ≤ 2 ^ 64)
     (h : b.toNat + len ≤ a.toNat ∨ (a.toNat + n ≤ b.toNat ∧ b.toNat + len ≤ 2 ^ 64)) :
@@ -540,294 +402,43 @@ theorem Frame.touches_false {fr : Frame} {args : List UInt64} {a : UInt64} {n : 
   · simp only [List.any_eq_false, List.mem_range, Bool.not_eq_true] at h
     exact h i hi
 
-/-- **A C string within `n` bytes is kept** by a step that keeps memory
-    unfrozen, keeps every region's size and leaves those bytes alone. -/
+/-- **A C string within `n` bytes is kept** by a step that keeps every
+    region's size and leaves those bytes alone. -/
 theorem cstrIn_kept {w w' : World} {a : UInt64} {n : Nat} (hx : (Fact.cstrIn a n).holds w)
-    (hz' : w'.mem.frozen = false) (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
     (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.cstrIn a n).holds w' := by
-  obtain ⟨hz, hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩ := hx
+  obtain ⟨hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩ := hx
   have hd := strSpan_decode hsp
   have hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := fun i hi =>
     Sem.decodeAddr_add hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  have hb := bytes_kept hp hbytes (strSpan_bound hsp) hz hz' (hsz r hp) (fun i hi => hu i (by omega))
+  have hb := bytes_kept hp hbytes (strSpan_bound hsp) (hsz r hp) (fun i hi => hu i (by omega))
   obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb
-  refine ⟨hz', ?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩
+  refine ⟨?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩
   unfold CStr; rw [hrd]; exact hc
 
 /-- A C string's bytes left alone leave what it reads. -/
 theorem text_kept {w w' : World} {a : UInt64} {s : Option String} {n : Nat} {sg : List (String × List Nat)}
     (hx : (Fact.text a s n sg).holds w)
-    (hz' : w'.mem.frozen = false) (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
     (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.text a s n sg).holds w' := by
-  obtain ⟨⟨hz, hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩, t, hs, hst, hsg⟩ := hx
+  obtain ⟨⟨hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩, t, hs, hst, hsg⟩ := hx
   have hd := strSpan_decode hsp
   have hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := fun i hi =>
     Sem.decodeAddr_add hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  have hb := bytes_kept hp hbytes (strSpan_bound hsp) hz hz' (hsz r hp) (fun i hi => hu i (by omega))
+  have hb := bytes_kept hp hbytes (strSpan_bound hsp) (hsz r hp) (fun i hi => hu i (by omega))
   obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb
-  refine ⟨⟨hz', ?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩, t, ?_, hst, hsg⟩
+  refine ⟨⟨?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩, t, ?_, hst, hsg⟩
   · unfold CStr; rw [hrd]; exact hc
   · show readCStr w'.mem a = some t; rw [hrd]; exact hs
 
-/-- Whether a call with these argument bits keeps a fact, whatever it answers. -/
-def keeps (f : IR.Ffi) (bits : List UInt64) : Fact → Bool
-  | .part p _ => !(moves f).contains p
-  | .room r _ => r != .pinned
-  | .cell a _ => cellOk a && (List.range 8).all fun i => !mayWrite f bits (a + UInt64.ofNat i)
-  | .held _ _ | .opened _ _ => false
-  | .cstr a => f == .lmdbInit && otherRegion (bits.headD 0) a
-  | .htAt _ _ _ => false
-  | .devSeq => Device.devUntouched.contains f
-  | .oracles => true
-  | .cstrIn a n => !(frame f).touches bits a n
-  | .roomArg r _ => r != .pinned
-  | .devBuf _ _ => Device.devUntouched.contains f
-  | .pinnedUsed _ => true
-  | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => Device.devUntouched.contains f
-  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ | .text _ _ _ _ => false
-  | .nwg _ | .wgo _ _ | .wg1 _ _ | .wgText _ _ _ => false
-
-theorem keeps_sound {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits f bits w = some (r, w')) {x : Fact} (hk : keeps f bits x = true) (hx : x.holds w) :
-    x.holds w' := by
-  cases x with
-  | part p b =>
-      have hn : p ∉ moves f := fun hin => by simp_all [keeps]
-      exact (callBits_parts f h p hn).trans hx
-  | room rg n =>
-      have hp : rg ≠ .pinned := by intro e; subst e; exact absurd hk (by simp only [keeps]; decide)
-      show n ≤ w'.mem.sizes rg
-      rw [callBits_rooms f h rg hp]; exact hx
-  | cell a v =>
-      simp only [keeps, Bool.and_eq_true] at hk
-      exact cell_kept h hk.1 hk.2 hx
-  | held _ _ | opened _ _ => simp [keeps] at hk
-  | cstr a =>
-      simp only [keeps, Bool.and_eq_true, beq_iff_eq] at hk
-      obtain ⟨slot, rfl, _, hm⟩ := slotInit_mem hk.1 h
-      exact cstr_other hk.2 hm hx
-  | devSeq =>
-      obtain ⟨ht, hd⟩ := hx
-      refine ⟨Device.callBits_track f h ht, ?_⟩
-      simp only [keeps, List.contains_iff_mem] at hk
-      rw [Device.callBits_dev_same f hk h]; exact hd
-  | oracles =>
-      obtain ⟨e1, e2⟩ := callBits_oracles f h
-      show Sem.KeepsSize w'.kernel ∧ VendorKeeps w'.vendor
-      rw [e1, e2]; exact hx
-  | cstrIn a n =>
-      refine cstrIn_kept hx (callBits_unfrozen h hx.1) (fun rg hp => callBits_rooms f h rg hp) fun i hi => ?_
-      refine unchanged_of_mayWrite h ?_
-      simp only [keeps, Bool.not_eq_true'] at hk
-      exact Frame.touches_false hk i hi
-  | roomArg rg x =>
-      have hp : rg ≠ .pinned := by intro e; subst e; exact absurd hk (by simp only [keeps]; decide)
-      show x.toNat ≤ w'.mem.sizes rg ∧ _
-      rw [callBits_rooms f h rg hp]; exact hx
-  | devBuf a n =>
-      simp only [keeps, List.contains_iff_mem] at hk
-      show Device.BufIs _ _ w'.dev; rw [Device.callBits_dev_same f hk h]; exact hx
-  | pinnedUsed n =>
-      show w'.mem.sizes .pinned ≤ n
-      rw [callBits_pinned f h]; exact hx
-  | streams _ | events _ | evLive _ | readyAll _ | evAll _ =>
-      simp only [keeps, List.contains_iff_mem] at hk
-      exact Fact.holds_dev rfl (Device.callBits_dev_same f hk h) hx
-  | htAt _ _ _ => simp [keeps] at hk
-  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ | text _ _ _ _
-  | nwg _ | wgo _ _ | wg1 _ _ | wgText _ _ _ => simp [keeps] at hk
-
-theorem kept_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : World} {r : Option V} {w' : World}
-    (hS : S.holds w) (h : callBits f bits w = some (r, w')) : TState.holds (S.filter (keeps f bits)) w' := by
-  intro x hx
-  obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
-  exact keeps_sound h hk (hS x hm)
-
-/-- The cell a mover leaves at its slot, when the slot is a cell. -/
-def slotCell (bits : List UInt64) (v : UInt64) (S : TState) : TState :=
-  if cellOk (bits.headD 0) then .cell (bits.headD 0) v :: S else S
-
-theorem slotCell_holds {bits : List UInt64} {v : UInt64} {S : TState} {w' : World}
-    (hc : ∀ slot, bits = [slot] → cellOk slot = true → w'.mem.load slot 8 = some v)
-    (hb : ∃ slot, bits = [slot]) (hS : S.holds w') : (slotCell bits v S).holds w' := by
-  obtain ⟨slot, rfl⟩ := hb
-  unfold slotCell
-  split
-  · exact TState.holds_cons (hc slot rfl (by assumption)) hS
-  · exact hS
-
-/-- **What a call leaves of a typestate, but the device's streams and
-    events**: the facts it keeps, and what a lifecycle call makes: its parts,
-    and the handle it writes to its slot. A cleanup whose slot the typestate
-    knows is resolved by it. -/
-def afterLife (f : IR.Ffi) (bits : List UInt64) (S : TState) : TState :=
-  let k := S.filter (keeps f bits)
-  let slot := bits.headD 0
-  match f with
-  | .lmdbInit => .part .lmdb true :: .part .lmdbEmpty true :: slotCell bits lmdbCtx k
-  | .threadInit => .part .thread true :: slotCell bits threadCtx k
-  | .lmdbCleanup =>
-      if S.contains (.cell slot 0) then S
-      else if S.contains (.cell slot lmdbCtx) then .part .lmdb false :: slotCell bits 0 k else k
-  | .threadCleanup =>
-      .part .frozen false ::
-        if S.contains (.cell slot threadCtx) && cellOk slot then .part .thread false :: .cell slot 0 :: k
-        else k
-  | .threadJoin => if S.contains (.part .frozen false) then .part .frozen false :: k else k
-  | _ => k
-
-/-- A one-slot entry answers only on one argument. -/
-theorem one_slot {bits : List UInt64} {α : Type} {g : UInt64 → Option α} {x : α}
-    (h : (match bits with | [slot] => g slot | _ => none) = some x) : ∃ slot, bits = [slot] := by
-  match bits, h with
-  | [slot], _ => exact ⟨slot, rfl⟩
-
-theorem cell_storeAt {w w' : World} {m' : Mem} {slot K : UInt64} (hok : cellOk slot = true)
-    (hm : w.mem.store slot 8 K = some m') (hw : w'.mem = m') : w'.mem.load slot 8 = some K := by
-  rw [hw]; exact cell_of_store hok hm
-
 theorem holds_of_mem {S : TState} {w : World} {x : Fact} (hS : S.holds w) (h : S.contains x = true) :
     x.holds w := hS x (by simpa using h)
-
-theorem slotCell_one {slot v : UInt64} {S : TState} {w' : World}
-    (hc : cellOk slot = true → w'.mem.load slot 8 = some v) (hS : S.holds w') :
-    (slotCell [slot] v S).holds w' := by
-  unfold slotCell
-  split
-  · exact TState.holds_cons (hc (by assumption)) hS
-  · exact hS
-
-/-- What a mover that stores `K` at its one slot leaves there. -/
-def StoresAt (K : UInt64) (bits : List UInt64) (w' : World) : Prop :=
-  ∃ slot, bits = [slot] ∧ (cellOk slot = true → w'.mem.load slot 8 = some K)
-
-theorem stores_lmdbInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .lmdbInit bits w = some (r, w')) : StoresAt lmdbCtx bits w' := by
-  change ffiLmdbInit bits w = some (r, w') at h
-  unfold ffiLmdbInit at h
-  split at h
-  · rename_i slot
-    refine ⟨slot, rfl, fun hok => ?_⟩
-    split at h
-    · cases h
-    · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      cases h
-      exact cell_of_store hok hm
-  · cases h
-
-theorem stores_threadInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .threadInit bits w = some (r, w')) : StoresAt threadCtx bits w' := by
-  change ffiThreadInit bits w = some (r, w') at h
-  unfold ffiThreadInit at h
-  split at h
-  · rename_i slot
-    refine ⟨slot, rfl, fun hok => ?_⟩
-    split at h
-    · cases h
-    · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      cases h
-      exact cell_of_store hok hm
-  · cases h
-
-/-- A cleanup handed a slot holding zero changes nothing. -/
-theorem lmdbCleanup_zero {slot : UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .lmdbCleanup [slot] w = some (r, w')) (hc : w.mem.load slot 8 = some 0) : w' = w := by
-  change ffiLmdbCleanup [slot] w = some (r, w') at h
-  simp only [ffiLmdbCleanup, hc, Option.bind_eq_bind, Option.bind_some, BEq.rfl, if_true,
-    Option.some.injEq, Prod.mk.injEq] at h
-  exact h.2.symm
-
-/-- A cleanup handed a slot holding its handle ends the lifecycle and zeroes the slot. -/
-theorem lmdbCleanup_ctx {slot : UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .lmdbCleanup [slot] w = some (r, w')) (hc : w.mem.load slot 8 = some lmdbCtx) :
-    w'.lmdb.live = false ∧ (cellOk slot = true → w'.mem.load slot 8 = some 0) := by
-  change ffiLmdbCleanup [slot] w = some (r, w') at h
-  simp only [ffiLmdbCleanup, hc, Option.bind_eq_bind, Option.bind_some] at h
-  have h0 : (lmdbCtx == 0) = false := by decide
-  rw [h0, if_neg (by decide)] at h
-  split at h
-  · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-    cases h
-    exact ⟨rfl, fun hok => cell_of_store hok hm⟩
-  · cases h
-
-theorem threadCleanup_ctx {slot : UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .threadCleanup [slot] w = some (r, w')) (hok : cellOk slot = true)
-    (hc : w.mem.load slot 8 = some threadCtx) :
-    w'.thread.live = false ∧ w'.mem.load slot 8 = some 0 := by
-  obtain ⟨rg, off, hd, hp, -⟩ := cellOk_spec hok
-  have hz := frozen_of_load hd hp hc
-  change ffiThreadCleanup [slot] w = some (r, w') at h
-  simp only [ffiThreadCleanup, load_setFrozen hz, hc, Option.bind_eq_bind, Option.bind_some] at h
-  have h0 : (threadCtx == 0) = false := by decide
-  rw [h0, if_neg (by decide)] at h
-  split at h
-  · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-    cases h
-    exact ⟨rfl, cell_of_store hok hm⟩
-  · cases h
 
 theorem TState.holds_cell {S : TState} {w : World} {a v : UInt64} (hS : S.holds w)
     (h : S.contains (.cell a v) = true) : w.mem.load a 8 = some v := holds_of_mem hS h
 
 theorem TState.holds_cell_mem {S : TState} {w : World} {a v : UInt64} (hS : S.holds w)
     (h : Fact.cell a v ∈ S) : w.mem.load a 8 = some v := hS _ h
-
-/-- **What `afterLife` says of a typestate is true after the call.** -/
-theorem afterLife_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : World} {r : Option V}
-    {w' : World} (hS : S.holds w) (h : callBits f bits w = some (r, w')) : (afterLife f bits S).holds w' := by
-  have hk := kept_sound hS h
-  cases f
-  case lmdbInit =>
-    obtain ⟨slot, rfl, hc⟩ := stores_lmdbInit h
-    exact TState.holds_cons (sets_lmdbInit h) (TState.holds_cons (empties_lmdbInit h) (slotCell_one hc hk))
-  case threadInit =>
-    obtain ⟨slot, rfl, hc⟩ := stores_threadInit h
-    exact TState.holds_cons (sets_threadInit h) (slotCell_one hc hk)
-  case lmdbCleanup =>
-    obtain ⟨slot, rfl⟩ : ∃ slot, bits = [slot] := by
-      change ffiLmdbCleanup bits w = some (r, w') at h
-      unfold ffiLmdbCleanup at h
-      split at h
-      · exact ⟨_, rfl⟩
-      · cases h
-    change TState.holds (if S.contains (.cell slot 0) = true then S
-      else if S.contains (.cell slot lmdbCtx) = true then
-        .part .lmdb false :: slotCell [slot] 0 (S.filter (keeps .lmdbCleanup [slot]))
-      else S.filter (keeps .lmdbCleanup [slot])) w'
-    split
-    · rename_i h0; rw [lmdbCleanup_zero h (TState.holds_cell hS h0)]; exact hS
-    · split
-      · rename_i hc
-        have := lmdbCleanup_ctx h (TState.holds_cell hS hc)
-        exact TState.holds_cons this.1 (slotCell_one this.2 hk)
-      · exact hk
-  case threadCleanup =>
-    obtain ⟨slot, rfl⟩ : ∃ slot, bits = [slot] := by
-      change ffiThreadCleanup bits w = some (r, w') at h
-      unfold ffiThreadCleanup at h
-      split at h
-      · exact ⟨_, rfl⟩
-      · cases h
-    change TState.holds (.part .frozen false ::
-      if (S.contains (.cell slot threadCtx) && cellOk slot) = true then
-        .part .thread false :: .cell slot 0 :: S.filter (keeps .threadCleanup [slot])
-      else S.filter (keeps .threadCleanup [slot])) w'
-    refine TState.holds_cons (sets_threadCleanup h) ?_
-    split
-    · rename_i hc
-      rw [Bool.and_eq_true] at hc
-      have := threadCleanup_ctx h hc.2 (TState.holds_cell hS hc.1)
-      exact TState.holds_cons this.1 (TState.holds_cons this.2 hk)
-    · exact hk
-  case threadJoin =>
-    change TState.holds (if S.contains (.part .frozen false) = true then
-      .part .frozen false :: S.filter (keeps .threadJoin bits) else S.filter (keeps .threadJoin bits)) w'
-    split
-    · rename_i hz
-      exact TState.holds_cons (sets_threadJoin h (holds_of_mem hS hz)) hk
-    · exact hk
-  all_goals exact hk
 
 -- ---------------------------------------------------------------------------
 -- What a room gives
@@ -958,36 +569,28 @@ theorem devAfter_copy {S : TState} {w w' : World} (hS : S.holds w) (hc : Device.
       rw [hr]
       exact ((readyIn_sound hS h).op_self hop).grow rfl rfl (DevSpec.sync_grows _ _)
 
-/-- **What a call leaves of a typestate**: what `afterLife` says. -/
-def after (f : IR.Ffi) (bits : List UInt64) (S : TState) : TState := afterLife f bits S
-
-/-- **What a call leaves of a typestate is true after it.** -/
-theorem after_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : World} {r : Option V}
-    {w' : World} (hS : S.holds w) (h : callBits f bits w = some (r, w')) : (after f bits S).holds w' :=
-  afterLife_sound hS h
-
-theorem reachable_of {m : Mem} {r : Region} (hp : r ≠ .pinned) (hz : m.frozen = false) (off n : Nat) :
+theorem reachable_of {m : Mem} {r : Region} (hp : r ≠ .pinned) (off n : Nat) :
     m.reachable r off n = true := by
-  cases r <;> first | exact absurd rfl hp | (unfold Mem.reachable; rw [hz]; rfl)
+  cases r <;> first | exact absurd rfl hp | (unfold Mem.reachable; rfl)
 
 theorem store_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + n ≤ m.sizes r)
-    (hz : m.frozen = false) (v : UInt64) : (m.store a n v).isSome = true := by
+    (v : UInt64) : (m.store a n v).isSome = true := by
   unfold Mem.store
   simp only [hd, Option.bind_eq_bind, Option.bind_some]
   rw [if_neg]
   · rfl
-  · simp only [reachable_of hp hz, Bool.not_true, Bool.or_false, decide_eq_true_eq]
+  · simp only [reachable_of hp, Bool.not_true, Bool.or_false, decide_eq_true_eq]
     unfold Mem.sizes at hs; omega
 
 theorem load_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + n ≤ m.sizes r)
-    (hz : m.frozen = false) : (m.load a n).isSome = true := by
-  rw [load_of hd hs (by rw [readable_off_pinned hp, hz]; rfl)]; rfl
+    : (m.load a n).isSome = true := by
+  rw [load_of hd hs (readable_off_pinned hp _ _)]; rfl
 
 theorem copyOut_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + n ≤ m.sizes r)
-    (hz : m.frozen = false) (hn : off + n ≤ 2 ^ 36) : (copyOut m a n).isSome = true := by
+    (hn : off + n ≤ 2 ^ 36) : (copyOut m a n).isSome = true := by
   unfold copyOut
   suffices ∀ (l : List Nat) (acc : ByteArray), (∀ i ∈ l, i < n) →
       (l.foldlM (fun (acc : ByteArray) i => do
@@ -1001,7 +604,7 @@ theorem copyOut_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
       intro acc hl
       have hi := hl i List.mem_cons_self
       have hd' := Sem.decodeAddr_add hd (i := i) (by rw [Sem.regionSpan_toNat]; omega)
-      obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (load_isSome (n := 1) hd' hp (by omega) hz)
+      obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (load_isSome (m := m) (n := 1) hd' hp (by omega))
       simp only [List.foldlM_cons, hb]
       exact ih _ (fun j hj => hl j (List.mem_cons_of_mem _ hj))
 
@@ -1030,17 +633,17 @@ theorem copyOut_congr {m m' : Mem} {a : UInt64} {n : Nat}
 
 theorem wgText_kept {w w' : World} {a : UInt64} {n : Nat} {sh : Bool}
     (hx : (Fact.wgText a n sh).holds w)
-    (hz' : w'.mem.frozen = false) (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
     (hok : w'.wgslOk = w.wgslOk)
     (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.wgText a n sh).holds w' := by
-  obtain ⟨hz, hw, ⟨r, off, hd, hp, hs, hsp⟩, t, ht, hok'⟩ := hx
-  refine ⟨hz', hw, ⟨r, off, hd, hp, by rw [hsz r hp]; exact hs, hsp⟩, t, ?_, by rw [hok]; exact hok'⟩
+  obtain ⟨hw, ⟨r, off, hd, hp, hs, hsp⟩, t, ht, hok'⟩ := hx
+  refine ⟨hw, ⟨r, off, hd, hp, by rw [hsz r hp]; exact hs, hsp⟩, t, ?_, by rw [hok]; exact hok'⟩
   have hn : (UInt64.ofNat n).toNat = n := by rw [UInt64.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
   have hc : copyOut w'.mem a n = copyOut w.mem a n := copyOut_congr fun i hi => by
     have hd' := Sem.decodeAddr_add hd (i := i) (by rw [Sem.regionSpan_toNat]; omega)
-    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp (load_isSome (n := 1) hd' hp (by omega) hz)
+    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp (load_isSome (m := w.mem) (n := 1) hd' hp (by omega))
     obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp
-      (load_isSome (n := 1) hd' hp (by rw [hsz r hp]; omega) hz')
+      (load_isSome (m := w'.mem) (n := 1) hd' hp (by rw [hsz r hp]; omega))
     rw [hx, hy, hu i hi x y hx hy]
   unfold Sem.wgText readBytes at ht ⊢
   rw [hn] at ht ⊢
@@ -1048,23 +651,23 @@ theorem wgText_kept {w w' : World} {a : UInt64} {n : Nat} {sh : Bool}
 
 theorem copyIn_isSome {m : Mem} {a : UInt64} {r : Region} {off : Nat} (src : ByteArray)
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + src.size ≤ m.sizes r)
-    (hz : m.frozen = false) (hn : off + src.size ≤ 2 ^ 36) : (copyIn m a src).isSome = true := by
+    (hn : off + src.size ≤ 2 ^ 36) : (copyIn m a src).isSome = true := by
   unfold copyIn
-  suffices ∀ (l : List Nat) (mm : Mem), (∀ i ∈ l, i < src.size) → mm.frozen = false →
+  suffices ∀ (l : List Nat) (mm : Mem), (∀ i ∈ l, i < src.size) →
       mm.sizes r = m.sizes r →
       (l.foldlM (fun (mm : Mem) i => mm.store (a + UInt64.ofNat i) 1 (src.get! i).toUInt64) mm).isSome = true from
-    this _ _ (fun i hi => List.mem_range.mp hi) hz rfl
+    this _ _ (fun i hi => List.mem_range.mp hi) rfl
   intro l
   induction l with
-  | nil => intro _ _ _ _; rfl
+  | nil => intro _ _ _; rfl
   | cons i l ih =>
-      intro mm hl hz' hsz
+      intro mm hl hsz
       have hi := hl i List.mem_cons_self
       have hd' := Sem.decodeAddr_add hd (i := i) (by rw [Sem.regionSpan_toNat]; omega)
       obtain ⟨m1, hm1⟩ := Option.isSome_iff_exists.mp
-        (store_isSome (n := 1) hd' hp (by rw [hsz]; omega) hz' (src.get! i).toUInt64)
+        (store_isSome (n := 1) hd' hp (by rw [hsz]; omega) (src.get! i).toUInt64)
       simp only [List.foldlM_cons, hm1, Option.bind_eq_bind, Option.bind_some]
-      exact ih m1 (fun j hj => hl j (List.mem_cons_of_mem _ hj)) ((store_frozen hm1).trans hz')
+      exact ih m1 (fun j hj => hl j (List.mem_cons_of_mem _ hj))
         ((congrFun (store_sizes_eq hm1) r).trans hsz)
 
 /-- **The CUDA context is live**, where the typestate says so. -/
@@ -1078,53 +681,46 @@ theorem capture_of_state {S : TState} {w : World} (hS : S.holds w)
   have := holds_of_mem hS h
   simpa [Fact.holds, Part.get, Option.isSome_eq_false_iff, Option.isNone_iff_eq_none] using this
 
-/-- **The vendor keeps its promises**, where the typestate names its oracles. -/
-theorem vendor_of_state {S : TState} {w : World} (hS : S.holds w)
-    (h : S.contains .oracles = true) : VendorKeeps w.vendor :=
-  (holds_of_mem hS h).2
-
 /-- Whether a typestate gives `n` bytes at `a`: they lie in one region other
-    than the pinned one, which it knows is large enough, and memory is not
-    frozen. -/
+    than the pinned one, which it knows is large enough. -/
 def roomAt (S : TState) (a : UInt64) (n : Nat) : Bool :=
   match decodeAddr a with
   | some (r, off) => decide (r ≠ .pinned) && decide (off + n ≤ 2 ^ 36) &&
-      S.contains (.part .frozen false) &&
       S.any fun | .room r' k => decide (r' = r) && decide (off + n ≤ k) | _ => false
   | none => false
 
 /-- `n` bytes at `a` lie inside one region outside pinned memory, within the
-    span an address names, with memory not frozen: a load or a store of them
+    span an address names: a load or a store of them
     finds them, and so does one of any part of them. -/
 def Fits (m : Mem) (a : UInt64) (n : Nat) : Prop :=
-  ∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ m.sizes r ∧ m.frozen = false ∧
+  ∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ m.sizes r ∧
     off + n ≤ 2 ^ 36
 
 theorem Fits.load {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : ∃ x, m.load a n = some x := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := h
-  exact Option.isSome_iff_exists.mp (load_isSome hd hp hs hz)
+  obtain ⟨r, off, hd, hp, hs, -⟩ := h
+  exact Option.isSome_iff_exists.mp (load_isSome hd hp hs)
 
 theorem Fits.store {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) (v : UInt64) :
     ∃ m', m.store a n v = some m' := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := h
-  exact Option.isSome_iff_exists.mp (store_isSome hd hp hs hz v)
+  obtain ⟨r, off, hd, hp, hs, -⟩ := h
+  exact Option.isSome_iff_exists.mp (store_isSome hd hp hs v)
 
 theorem Fits.mono {m : Mem} {a : UInt64} {n n' : Nat} (hn : n ≤ n') (h : Fits m a n') : Fits m a n := by
-  obtain ⟨r, off, hd, hp, hs, hz, hsp⟩ := h
-  exact ⟨r, off, hd, hp, by omega, hz, by omega⟩
+  obtain ⟨r, off, hd, hp, hs, hsp⟩ := h
+  exact ⟨r, off, hd, hp, by omega, by omega⟩
 
 /-- Part of bytes that fit fits. -/
 theorem Fits.part {m : Mem} {a : UInt64} {n i k : Nat} (h : Fits m a n) (hik : i + k ≤ n) (hk : 0 < k) :
     Fits m (a + UInt64.ofNat i) k := by
-  obtain ⟨r, off, hd, hp, hs, hz, hsp⟩ := h
+  obtain ⟨r, off, hd, hp, hs, hsp⟩ := h
   have hd' := Sem.decodeAddr_add (i := i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  exact ⟨r, off + i, hd', hp, by omega, hz, by omega⟩
+  exact ⟨r, off + i, hd', hp, by omega, by omega⟩
 
-/-- A fit asks only a region's size and whether memory is frozen. -/
-theorem Fits.congr {m m' : Mem} {a : UInt64} {n : Nat} (hs : m'.sizes = m.sizes) (hz : m'.frozen = m.frozen)
+/-- A fit asks only a region's size. -/
+theorem Fits.congr {m m' : Mem} {a : UInt64} {n : Nat} (hs : m'.sizes = m.sizes)
     (h : Fits m a n) : Fits m' a n := by
-  obtain ⟨r, off, hd, hp, hsz, hf, hsp⟩ := h
-  exact ⟨r, off, hd, hp, by rw [hs]; exact hsz, by rw [hz]; exact hf, hsp⟩
+  obtain ⟨r, off, hd, hp, hsz, hsp⟩ := h
+  exact ⟨r, off, hd, hp, by rw [hs]; exact hsz, hsp⟩
 
 theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) : Fits w.mem a n := by
@@ -1132,9 +728,8 @@ theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.hold
   split at h
   · rename_i r off hd
     simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h
-    obtain ⟨⟨⟨hp, hn⟩, hz⟩, x, hx, hr⟩ := h
-    have hz' : w.mem.frozen = false := holds_of_mem hS hz
-    refine ⟨r, off, hd, hp, ?_, hz', hn⟩
+    obtain ⟨⟨hp, hn⟩, x, hx, hr⟩ := h
+    refine ⟨r, off, hd, hp, ?_, hn⟩
     cases x with
     | room r' k =>
         simp only [Bool.and_eq_true, decide_eq_true_eq] at hr
@@ -1149,37 +744,37 @@ theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.hold
 
 theorem slot8_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w) (h : roomAt S a 8 = true) :
     Slot8 w.mem a := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := roomAt_spec hS h
-  exact store_isSome hd hp hs hz
+  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
+  exact store_isSome hd hp hs
 
 theorem store_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) (v : UInt64) : (w.mem.store a n v).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := roomAt_spec hS h
-  exact store_isSome hd hp hs hz v
+  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
+  exact store_isSome hd hp hs v
 
 theorem load_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) : (w.mem.load a n).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := roomAt_spec hS h
-  exact load_isSome hd hp hs hz
+  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
+  exact load_isSome hd hp hs
 
 theorem load8_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w) (h : roomAt S a 8 = true) :
     Load8 w.mem a := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := roomAt_spec hS h
-  exact load_isSome hd hp hs hz
+  obtain ⟨r, off, hd, hp, hs, -⟩ := roomAt_spec hS h
+  exact load_isSome hd hp hs
 
 theorem load8_of_cell {S : TState} {w : World} {a v : UInt64} (hS : S.holds w)
     (h : S.contains (.cell a v) = true) : Load8 w.mem a := by
   unfold Load8; rw [TState.holds_cell hS h]; rfl
 
 theorem Fits.readable {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : Readable m a n := by
-  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := h
-  exact copyOut_isSome hd hp hs hz hn
+  obtain ⟨r, off, hd, hp, hs, hn⟩ := h
+  exact copyOut_isSome hd hp hs hn
 
 theorem Fits.writable {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : Writable m a n := by
-  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := h
+  obtain ⟨r, off, hd, hp, hs, hn⟩ := h
   intro src hsrc
   subst hsrc
-  exact copyIn_isSome src hd hp hs hz hn
+  exact copyIn_isSome src hd hp hs hn
 
 theorem readable_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S a n = true) : Readable w.mem a n :=
@@ -1194,8 +789,8 @@ theorem roomAt_mono {S : TState} {a : UInt64} {n k : Nat} (h : roomAt S a n = tr
   unfold roomAt at h ⊢
   split at h
   · simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true] at h ⊢
-    obtain ⟨⟨⟨hp, hn⟩, hz⟩, x, hx, hr⟩ := h
-    refine ⟨⟨⟨hp, by omega⟩, hz⟩, x, hx, ?_⟩
+    obtain ⟨⟨hp, hn⟩, x, hx, hr⟩ := h
+    refine ⟨⟨hp, by omega⟩, x, hx, ?_⟩
     cases x <;> simp only [Bool.and_eq_true, decide_eq_true_eq] at hr ⊢
     all_goals first | exact hr | exact ⟨hr.1, by omega⟩
   · cases h
@@ -1295,13 +890,12 @@ theorem nonCell_kept {S : TState} {w w' : World} (hS : S.holds w) (hp : ∀ p : 
 
 /-- A store that cannot reach a cell's eight bytes leaves what the cell
     holds. -/
-theorem store_cell_kept {w w' : World} {a b c v : UInt64} {n : Nat} (hz : w'.mem.frozen = w.mem.frozen)
+theorem store_cell_kept {w w' : World} {a b c v : UInt64} {n : Nat}
     (hsz : w'.mem.sizes = w.mem.sizes) (h : w.mem.store a n b = some w'.mem) (hn : n ≤ 2 ^ 64)
     (hc : cellOk c = true) (hk : ∀ i, i < 8 → within a n (c + UInt64.ofNat i) = false)
     (hx : w.mem.load c 8 = some v) : w'.mem.load c 8 = some v := by
   obtain ⟨rg, off, hd, hpin, hb⟩ := cellOk_spec hc
-  have hz' : w'.mem.frozen = false := by rw [hz]; exact frozen_of_load hd hpin hx
-  refine load_kept hd hpin hb hx hz' (congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+  refine load_kept hd hpin hb hx (congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
   refine Mem.store_other h _ fun j hj e => ?_
   have := within_of hn ⟨j, hj, e⟩
   rw [hk i hi] at this; cases this
@@ -1329,11 +923,9 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl hdv.2.2.2.1 hx0
   | wgText c k sh =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
-      have hz' : w'.mem.frozen = false := by
-        have := hp .frozen; simp only [Part.get] at this; rw [this]; exact hx0.1
-      refine wgText_kept hx0 hz' (fun rg _ => congrFun hsz rg) hdv.2.2.2.2 fun i hi => Unchanged.of_eq ?_
+      refine wgText_kept hx0 (fun rg _ => congrFun hsz rg) hdv.2.2.2.2 fun i hi => Unchanged.of_eq ?_
       refine Mem.store_other h _ fun j hj e => ?_
-      have hw : c.toNat + k < 2 ^ 64 := hx0.2.1
+      have hw : c.toNat + k < 2 ^ 64 := hx0.1
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
         Nat.mod_eq_of_lt (by omega : i < 2 ^ 64), Nat.mod_eq_of_lt (by omega : j < 2 ^ 64),
@@ -1344,10 +936,8 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
   | oracles => show Sem.KeepsSize w'.kernel ∧ _; rw [hdv.2.1, hdv.2.2.1]; exact hx0
   | cstrIn c k =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
-      have hz' : w'.mem.frozen = false := by
-        have := hp .frozen; simp only [Part.get] at this; rw [this]; exact hx0.1
-      have hw := hx0.2.2.1
-      refine cstrIn_kept hx0 hz' (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      have hw := hx0.2.1
+      refine cstrIn_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
       refine Mem.store_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -1358,10 +948,8 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
   | text c t k _ =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
-      have hz' : w'.mem.frozen = false := by
-        have := hp .frozen; simp only [Part.get] at this; rw [this]; exact hx0.1.1
-      have hw := hx0.1.2.2.1
-      refine text_kept hx0 hz' (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      have hw := hx0.1.2.1
+      refine text_kept hx0 (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
       refine Mem.store_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -1372,7 +960,7 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
       · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
   | cell c v =>
       simp only [storeKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true'] at hk
-      exact store_cell_kept (hp .frozen) hsz h hn hk.1 hk.2 hx0
+      exact store_cell_kept hsz h hn hk.1 hk.2 hx0
   | htAt c m m' =>
       simp only [storeKeeps, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range,
         Bool.not_eq_true'] at hk
@@ -1388,7 +976,7 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
         omega
       have hl : w'.mem.load c 8 = w.mem.load c 8 := by
         obtain ⟨s, -, -, -, -, hl, -⟩ : HtSpec.HtObj w c m m' := hx0
-        rw [hl]; exact store_cell_kept (hp .frozen) hsz h hn hc hmiss hl
+        rw [hl]; exact store_cell_kept hsz h hn hc hmiss hl
       exact HtSpec.HtObj.stored hx0 h hhp hd hr hl
 
 /-- A store of `n` bytes at `a` leaves a cell eight bytes it cannot reach,
@@ -1461,33 +1049,16 @@ theorem afterStore_sound {S : TState} {w w' : World} {ao vo : Option UInt64} {a 
           · exact hk
 
 theorem foldl_stores_sizes {α : Type} (f : α → Mem → Option Mem) (hf : ∀ x m m', f x m = some m' →
-    m'.sizes = m.sizes ∧ m'.frozen = m.frozen ∧ m'.busy = m.busy) :
+    m'.sizes = m.sizes ∧ m'.busy = m.busy) :
     ∀ (l : List α) (m m' : Mem), l.foldlM (fun mm x => f x mm) m = some m' →
-      m'.sizes = m.sizes ∧ m'.frozen = m.frozen ∧ m'.busy = m.busy
-  | [], m, m', h => by cases h; exact ⟨rfl, rfl, rfl⟩
+      m'.sizes = m.sizes ∧ m'.busy = m.busy
+  | [], m, m', h => by cases h; exact ⟨rfl, rfl⟩
   | x :: l, m, m', h => by
       simp only [List.foldlM_cons, Option.bind_eq_bind] at h
       obtain ⟨m1, h1, h⟩ := Option.bind_eq_some_iff.mp h
-      obtain ⟨e1, f1, b1⟩ := hf x m m1 h1
-      obtain ⟨e2, f2, b2⟩ := foldl_stores_sizes f hf l m1 m' h
-      exact ⟨e2.trans e1, f2.trans f1, b2.trans b1⟩
-
-set_option maxHeartbeats 2000000 in
-/-- Every entry point is found by its own C name. -/
-theorem ofCname_cname (f : IR.Ffi) : IR.Ffi.ofCname f.cname = some f := by
-  cases f <;> decide
-
-/-- **A call is its contract.** Outside a worker's lifetime, a call to any entry
-    point but `threadSpawn` is `callBits` on its argument bits. -/
-theorem callOf_ffi {f : IR.Ffi} (hf : f.engine = true) (lc : Locals) (vs : List V) {w : World}
-    (hz : w.mem.frozen = false) :
-    callOf lc (.ffi f) vs w = (vs.mapM asBits).bind (fun bits => callBits f bits w) := by
-  have hf' : (f == .threadSpawn) = false ∧ f.inLib = false := by
-    simpa [IR.Ffi.engine, bne, Bool.and_eq_true] using hf
-  have hs := hf'.1
-  have hl := hf'.2
-  simp only [callOf, hz, hs, hl, Bool.false_and, Bool.false_eq_true, if_false, callImport, ofCname_cname,
-    bind, Option.bind, callFfi]
+      obtain ⟨e1, b1⟩ := hf x m m1 h1
+      obtain ⟨e2, b2⟩ := foldl_stores_sizes f hf l m1 m' h
+      exact ⟨e2.trans e1, b2.trans b1⟩
 
 -- ---------------------------------------------------------------------------
 -- The device, from the typestate
@@ -1512,27 +1083,6 @@ theorem vendorKeeps_of_state {S : TState} {w : World} (hS : S.holds w) (h : S.co
 -- ---------------------------------------------------------------------------
 -- Half of a cell
 -- ---------------------------------------------------------------------------
-
-theorem Mem.readable_sub {m : Mem} {r : Region} {off n off' n' : Nat} (h : m.readable r off n = true)
-    (h1 : off ≤ off') (h2 : off' + n' ≤ off + n) : m.readable r off' n' = true := by
-  unfold Mem.readable at h ⊢
-  simp only [Bool.and_eq_true, Bool.or_eq_true] at h ⊢
-  obtain ⟨hz, hp⟩ := h
-  refine ⟨hz, ?_⟩
-  rcases hp with hp | ⟨hl, hb⟩
-  · exact .inl hp
-  · refine .inr ⟨?_, ?_⟩
-    · obtain ⟨x, hx, hx'⟩ := List.any_eq_true.mp hl
-      refine List.any_eq_true.mpr ⟨x, hx, ?_⟩
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hx' ⊢
-      omega
-    · refine List.all_eq_true.mpr fun b hb' => ?_
-      have := List.all_eq_true.mp hb b hb'
-      simp only [Busy.clear, Bool.or_eq_true, Bool.not_eq_true', decide_eq_true_eq] at this ⊢
-      rcases this with hw | hc | hc
-      · exact .inl hw
-      · exact .inr (.inl (by omega))
-      · exact .inr (.inr (by omega))
 
 theorem byte_toNat_lt (x : UInt8) : x.toUInt64.toNat < 256 := by
   simp only [UInt8.toNat_toUInt64]; exact x.toNat_lt
@@ -1715,12 +1265,12 @@ theorem mapM_isSome_of {α β : Type} {f : α → Option β} :
 /-- Bindings in room can be read. -/
 theorem readIds_of_state {S : TState} {w : World} {p : UInt64} {n : Nat} (hS : S.holds w)
     (h : roomAt S p (4 * n) = true) : (readIds w.mem p n).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := roomAt_spec hS h
+  obtain ⟨r, off, hd, hp, hs, hn⟩ := roomAt_spec hS h
   have hl : ((List.range n).mapM fun i => w.mem.load (p + UInt64.ofNat (4 * i)) 4).isSome = true := by
     refine mapM_isSome_of fun i hi => ?_
     have hi := List.mem_range.mp hi
     have hd' := Sem.decodeAddr_add (i := 4 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-    exact load_isSome hd' hp (by omega) hz
+    exact load_isSome hd' hp (by omega)
   obtain ⟨raw, hraw⟩ := Option.isSome_iff_exists.mp hl
   unfold readIds
   rw [hraw]; rfl
@@ -1741,35 +1291,35 @@ theorem cstrIn_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w)
   all_goals first | cases hr | skip
   rename_i a' n
   simp only [beq_iff_eq] at hr; subst hr
-  exact (hS _ hx).2.1
+  exact (hS _ hx).1
 
 /-- **Memory a call reads or writes, by a length the program was handed**: its
     region holds that many bytes, and the access lies within them. -/
 theorem copyOut_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Fact.roomArg r x ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Fact.roomArg r x ∈ S)
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hb : off + n ≤ x.toNat) :
     (copyOut w.mem a n).isSome = true := by
   have hx := hS _ hm
-  exact copyOut_isSome hd hp (by have := hx.1; omega) (holds_of_mem hS hz) (by have := hx.2; omega)
+  exact copyOut_isSome hd hp (by have := hx.1; omega) (by have := hx.2; omega)
 
 theorem readable_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Fact.roomArg r x ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Fact.roomArg r x ∈ S)
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hb : off + n ≤ x.toNat) :
     Readable w.mem a n :=
-  copyOut_of_roomArg hS hm hz hd hp hb
+  copyOut_of_roomArg hS hm hd hp hb
 
 theorem writable_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Fact.roomArg r x ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Fact.roomArg r x ∈ S)
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hb : off + n ≤ x.toNat) :
     Writable w.mem a n := by
   have hx := hS _ hm
   intro src hsrc
   subst hsrc
-  exact copyIn_isSome src hd hp (by have := hx.1; omega) (holds_of_mem hS hz) (by have := hx.2; omega)
+  exact copyIn_isSome src hd hp (by have := hx.1; omega) (by have := hx.2; omega)
 
 /-- The same, at an address a value past a known one. -/
 theorem readable_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Fact.roomArg r X ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Fact.roomArg r X ∈ S)
     (hd : decodeAddr b = some (r, off)) (hp : r ≠ .pinned) (hb : off + x.toNat + n ≤ X.toNat) :
     Readable w.mem (b + x) n := by
   rcases Nat.eq_zero_or_pos n with rfl | hn
@@ -1779,10 +1329,10 @@ theorem readable_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : N
     have hd' : decodeAddr (b + x) = some (r, off + x.toNat) := by
       have := Sem.decodeAddr_add (i := x.toNat) hd (by simp only [regionSpan, UInt64.reduceToNat]; have := hx.2; omega)
       rwa [UInt64.ofNat_toNat] at this
-    exact readable_of_roomArg hS hm hz hd' hp (by omega)
+    exact readable_of_roomArg hS hm hd' hp (by omega)
 
 theorem writable_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Fact.roomArg r X ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Fact.roomArg r X ∈ S)
     (hd : decodeAddr b = some (r, off)) (hp : r ≠ .pinned) (hb : off + x.toNat + n ≤ X.toNat) :
     Writable w.mem (b + x) n := by
   rcases Nat.eq_zero_or_pos n with rfl | hn
@@ -1793,7 +1343,7 @@ theorem writable_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : N
     have hd' : decodeAddr (b + x) = some (r, off + x.toNat) := by
       have := Sem.decodeAddr_add (i := x.toNat) hd (by simp only [regionSpan, UInt64.reduceToNat]; have := hx.2; omega)
       rwa [UInt64.ofNat_toNat] at this
-    exact writable_of_roomArg hS hm hz hd' hp (by omega)
+    exact writable_of_roomArg hS hm hd' hp (by omega)
 
 end AlgorithmLib.HProg.Contracts
 

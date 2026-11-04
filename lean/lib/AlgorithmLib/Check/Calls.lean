@@ -4,15 +4,15 @@ import all Init.Data.Repr
 @[expose] public section
 
 /-!
-# `Check.Calls` — what a foreign call needs, decided
+# `Check.Calls` — what a C library call needs, decided
 
-A call's precondition (`Contracts.Pre`) is a proposition about the world; the
-checker needs a decision. `preB` decides it from what the checker knows of the
-arguments and the typestate, by *atoms* each proven once: a context handle
-that is null or live (`ctxB`), bytes in memory the typestate gives room for
-(`memN`, `memB`), a C string (`cstrB`), a lifecycle part
-(`partB`), and the device's own facts. **`preB_sound`**: where `preB` accepts,
-`Pre` holds of the bits the arguments carry.
+A call's precondition (`ExtContracts.ExtPre`) is a proposition about the
+world; the checker needs a decision. `preExt` decides it from what the checker
+knows of the arguments and the typestate, by *atoms* each proven once: bytes
+in memory the typestate gives room for (`memN`, `memB`), a C string
+(`cstrB`), a lifecycle part (`partB`), a handle held (`handB`), and the
+device's own facts. **`preExt_sound`**: where `preExt` accepts, `ExtPre` holds
+of the bits the arguments carry.
 -/
 
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.Hoare
@@ -20,7 +20,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
-open AlgorithmLib.HProg.Contracts (Fact TState after after_sound keeps keeps_sound readyIn streamsOf eventsOf partyOf evId roomAt roomAt_spec holds_of_mem
+open AlgorithmLib.HProg.Contracts (Fact TState readyIn streamsOf eventsOf partyOf evId roomAt roomAt_spec holds_of_mem
   Part)
 
 -- ---------------------------------------------------------------------------
@@ -38,6 +38,16 @@ def ArgBits (Γ : Env) (w : World) : List AV → List UInt64 → Prop
   | [], [] => True
   | a :: as, x :: xs => (∃ t, a.Desc Γ w (.sc t x)) ∧ ArgBits Γ w as xs
   | _, _ => False
+
+theorem ArgBits.cons_inv {Γ : Env} {w : World} {a : AV} {as : List AV} {bits : List UInt64}
+    (h : ArgBits Γ w (a :: as) bits) :
+    ∃ x xs, bits = x :: xs ∧ (∃ t, a.Desc Γ w (.sc t x)) ∧ ArgBits Γ w as xs := by
+  match bits, h with
+  | x :: xs, ⟨hx, hxs⟩ => exact ⟨x, xs, rfl, hx, hxs⟩
+
+theorem ArgBits.nil_inv {Γ : Env} {w : World} {bits : List UInt64} (h : ArgBits Γ w [] bits) : bits = [] := by
+  match bits, h with
+  | [], _ => rfl
 
 theorem argBits_of {Γ : Env} {w : World} :
     ∀ {as : List AV} {vs : List V} {bits : List UInt64}, DescAll Γ w as vs →
@@ -76,34 +86,16 @@ theorem known_bits {Γ : Env} {w : World} {a : AV} {x k : UInt64} (hd : ∃ t, a
 -- Atoms
 -- ---------------------------------------------------------------------------
 
-/-- A handle that is null, or the live one of a context. -/
-def ctxB (S : TState) (p : Part) (H : UInt64) (a : AV) : Bool :=
-  match a.bits with
-  | some c => c == 0 || (c == H && S.contains (.part p true))
-  | none => false
-
-theorem ctxB_sound {Γ : Env} {w : World} {S : TState} {p : Part} {H x : UInt64} {a : AV} (hS : S.holds w)
-    (hd : ∃ t, a.Desc Γ w (.sc t x)) (h : ctxB S p H a = true) : x = 0 ∨ (x = H ∧ p.get w = true) := by
-  unfold ctxB at h
-  split at h
-  · rename_i c hc
-    rw [known_bits hd hc]
-    simp only [Bool.or_eq_true, beq_iff_eq, Bool.and_eq_true] at h
-    rcases h with h | ⟨h1, h2⟩
-    · exact .inl h
-    · exact .inr ⟨h1, holds_of_mem hS h2⟩
-  · cases h
-
 theorem memN_readable {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p k = true) : Readable w.mem x k := by
-  obtain ⟨r, off, hdec, hp, hs, hz, hn⟩ := memN_spec hS hd h
-  exact Contracts.copyOut_isSome hdec hp hs hz hn
+  obtain ⟨r, off, hdec, hp, hs, hn⟩ := memN_spec hS hd h
+  exact Contracts.copyOut_isSome hdec hp hs hn
 
 theorem memN_writable {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p k = true) : Writable w.mem x k := by
-  obtain ⟨r, off, hdec, hp, hs, hz, hn⟩ := memN_spec hS hd h
+  obtain ⟨r, off, hdec, hp, hs, hn⟩ := memN_spec hS hd h
   intro src hsrc; subst hsrc
-  exact Contracts.copyIn_isSome src hdec hp hs hz hn
+  exact Contracts.copyIn_isSome src hdec hp hs hn
 
 theorem roomIn_mono {S : TState} {r : Region} {k n : Nat} (h : roomIn S r k = true) (hn : n ≤ k) :
     roomIn S r n = true := by
@@ -128,14 +120,14 @@ theorem memN_mono {S : TState} {p : AV} {k n : Nat} (h : memN S p k = true) (hn 
       split at hr
       · rename_i r' d hfit
         simp only [Bool.and_eq_true, decide_eq_true_eq] at hr ⊢
-        exact ⟨⟨⟨hr.1.1.1, by omega⟩, hr.1.2⟩, hr.2⟩
+        exact ⟨⟨hr.1.1, by omega⟩, hr.2⟩
       · cases hr
   · cases h
 
 theorem memN_slot8 {Γ : Env} {w : World} {S : TState} {p : AV} {x : UInt64} (hS : S.holds w)
     (hd : ∃ t, p.Desc Γ w (.sc t x)) (h : memN S p 8 = true) : Contracts.Slot8 w.mem x := by
-  obtain ⟨r, off, hdec, hp, hs, hz, -⟩ := memN_spec hS hd h
-  exact fun v => Contracts.store_isSome hdec hp hs hz v
+  obtain ⟨r, off, hdec, hp, hs, -⟩ := memN_spec hS hd h
+  exact fun v => Contracts.store_isSome hdec hp hs v
 
 /-- A length bounded by the region an address points into, no further than
     the bound leaves room for. -/
@@ -144,7 +136,7 @@ def memLen (S : TState) (p n : AV) : Bool :=
   | .ptr r m, some nn =>
       match nn.fit with
       | some (r', s, d) => decide (r = r') && decide (s = 1) && decide (m.hi ≤ d) &&
-          decide (m.hi + nn.hi ≤ span) && decide (m.hi < span) && S.contains (.part .frozen false)
+          decide (m.hi + nn.hi ≤ span) && decide (m.hi < span)
       | none => false
   | _, _ => false
 
@@ -158,7 +150,7 @@ def memB (S : TState) (p n : AV) : Bool :=
 theorem memLen_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memLen S p n = true) :
     ∃ r off, decodeAddr x = some (r, off) ∧ r ≠ .pinned ∧ off + k.toNat ≤ w.mem.sizes r ∧
-      w.mem.frozen = false ∧ off + k.toNat ≤ 2 ^ 36 := by
+      off + k.toNat ≤ 2 ^ 36 := by
   obtain ⟨t0, hp0⟩ := hp
   have hp : ∃ t, p.asPtr.Desc Γ w (.sc t x) := ⟨t0, AV.asPtr_desc hp0⟩
   unfold memLen at h
@@ -168,7 +160,7 @@ theorem memLen_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64
     split at h
     · rename_i r' s d hf
       simp only [Bool.and_eq_true, decide_eq_true_eq] at h
-      obtain ⟨⟨⟨⟨⟨rfl, rfl⟩, hd⟩, hs⟩, h3⟩, hz⟩ := h
+      obtain ⟨⟨⟨⟨rfl, rfl⟩, hd⟩, hs⟩, h3⟩ := h
       obtain ⟨t, off, e, ⟨h1, h2, -⟩, -⟩ := hp
       simp only [V.sc.injEq] at e
       obtain ⟨-, rfl⟩ := e
@@ -179,14 +171,14 @@ theorem memLen_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64
       obtain ⟨-, hy2, -, hfit⟩ := hy
       rw [hf] at hfit
       obtain ⟨hpin, hle⟩ := hfit
-      exact ⟨r, off, ptr_decode h2 h3, hpin, by omega, holds_of_mem hS hz, by unfold span at hs; omega⟩
+      exact ⟨r, off, ptr_decode h2 h3, hpin, by omega, by unfold span at hs; omega⟩
     · cases h
   · cases h
 
 theorem memB_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memB S p n = true) :
     ∃ r off, decodeAddr x = some (r, off) ∧ r ≠ .pinned ∧ off + k.toNat ≤ w.mem.sizes r ∧
-      w.mem.frozen = false ∧ off + k.toNat ≤ 2 ^ 36 := by
+      off + k.toNat ≤ 2 ^ 36 := by
   unfold memB at h
   split at h
   · rename_i k' hk
@@ -199,8 +191,8 @@ theorem memB_spec {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} 
         obtain ⟨t, hd⟩ := hn
         obtain ⟨y, e, hy⟩ := AV.num_desc hd hnn
         cases e
-        obtain ⟨r, off, hdec, hpin, hs, hz, h36⟩ := memN_spec hS hp h
-        exact ⟨r, off, hdec, hpin, by have := hy.2.1; omega, hz, by have := hy.2.1; omega⟩
+        obtain ⟨r, off, hdec, hpin, hs, h36⟩ := memN_spec hS hp h
+        exact ⟨r, off, hdec, hpin, by have := hy.2.1; omega, by have := hy.2.1; omega⟩
       · cases h
 
 /-- Bytes `[p, p + n)`: by `memB`, or by `rb`, which answers for the
@@ -221,15 +213,15 @@ theorem memBR_fits {Γ : Env} {w : World} {S : TState} {rb : Nat → Nat → Boo
 theorem memB_readable {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memB S p n = true) :
     Readable w.mem x k.toNat := by
-  obtain ⟨r, off, hdec, hpin, hs, hz, h36⟩ := memB_spec hS hp hn h
-  exact Contracts.copyOut_isSome hdec hpin hs hz h36
+  obtain ⟨r, off, hdec, hpin, hs, h36⟩ := memB_spec hS hp hn h
+  exact Contracts.copyOut_isSome hdec hpin hs h36
 
 theorem memB_writable {Γ : Env} {w : World} {S : TState} {p n : AV} {x k : UInt64} (hS : S.holds w)
     (hp : ∃ t, p.Desc Γ w (.sc t x)) (hn : ∃ t, n.Desc Γ w (.sc t k)) (h : memB S p n = true) :
     Writable w.mem x k.toNat := by
-  obtain ⟨r, off, hdec, hpin, hs, hz, h36⟩ := memB_spec hS hp hn h
+  obtain ⟨r, off, hdec, hpin, hs, h36⟩ := memB_spec hS hp hn h
   intro src hsrc
-  exact Contracts.copyIn_isSome src hdec hpin (by rw [hsrc]; exact hs) hz (by rw [hsrc]; exact h36)
+  exact Contracts.copyIn_isSome src hdec hpin (by rw [hsrc]; exact hs) (by rw [hsrc]; exact h36)
 
 /-- A C string the typestate names at a known address. -/
 def cstrB (S : TState) (a : AV) : Bool :=
@@ -255,11 +247,6 @@ theorem partB_sound {w : World} {S : TState} {p : Part} {b : Bool} (hS : S.holds
 -- What a call leaves
 -- ---------------------------------------------------------------------------
 
-/-- The bits of every argument, where all are known. -/
-def allBits : List AV → Option (List UInt64)
-  | [] => some []
-  | a :: as => do let b ← a.bits; let bs ← allBits as; pure (b :: bs)
-
 /-- The argument positions a frame reads. -/
 def frPos : Frame → List Nat
   | .none | .anywhere => []
@@ -280,53 +267,6 @@ theorem touches_congr {fr : Frame} {args args' : List UInt64}
     (h : ∀ k ∈ frPos fr, args.getD k 0 = args'.getD k 0) (a : UInt64) (n : Nat) :
     fr.touches args a n = fr.touches args' a n := by
   cases fr <;> simp_all [Frame.touches, frPos, mayWrite_congr h]
-
-/-- The argument positions a call's keeping of fact `x` reads: its frame's for
-    the bytes it may write, the slot for a C string `init` writes. -/
-def fpos (f : Ffi) : Fact → List Nat
-  | .cell .. | .cstrIn .. => frPos (frame f)
-  | .cstr _ => [0]
-  | _ => []
-
-theorem keeps_congr {f : Ffi} {bits bits' : List UInt64} (x : Fact)
-    (h : ∀ k ∈ fpos f x, bits.getD k 0 = bits'.getD k 0) : keeps f bits x = keeps f bits' x := by
-  have hgd : ∀ (l : List UInt64), l.headD 0 = l.getD 0 0 := fun l => by cases l <;> rfl
-  cases x with
-  | cell a v =>
-      have hfr : ∀ k ∈ frPos (frame f), bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (by
-        simp only [fpos]; exact hk)
-      simp only [keeps, Contracts.mayWrite, mayWrite_congr hfr]
-  | cstrIn a n =>
-      have hfr : ∀ k ∈ frPos (frame f), bits.getD k 0 = bits'.getD k 0 := fun k hk => h k (by
-        simp only [fpos]; exact hk)
-      simp only [keeps, touches_congr hfr]
-  | cstr a =>
-      have h0 := h 0 (by simp [fpos])
-      simp only [keeps, hgd, h0]
-  | _ => rfl
-
-/-- Whether a call keeps a fact, decided by the arguments it is handed: where
-    its keeping reads only arguments known, as `keeps` says. -/
-def keepA (f : Ffi) (as : List AV) (x : Fact) : Bool :=
-  (fpos f x).all (fun k => (as.getD k .any).bits.isSome) && keeps f (as.map (·.bits.getD 0)) x
-
-/-- What a call leaves of a typestate: the table's `after` where every argument
-    is known; otherwise each fact `keepA` keeps. -/
-def postA (f : Ffi) (as : List AV) (S : TState) : TState :=
-  match allBits as with
-  | some bits => after f bits S
-  | none => S.filter (keepA f as)
-
-theorem allBits_eq {Γ : Env} {w : World} : ∀ {as : List AV} {bits bs : List UInt64},
-    ArgBits Γ w as bits → allBits as = some bs → bits = bs
-  | [], [], bs, _, h => by simp only [allBits, Option.some.injEq] at h; exact h
-  | [], _ :: _, _, h, _ => h.elim
-  | _ :: _, [], _, h, _ => h.elim
-  | a :: as, x :: xs, bs, ⟨hd, hds⟩, h => by
-      simp only [allBits, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
-        Option.some.injEq] at h
-      obtain ⟨b, hb, bs', hbs', rfl⟩ := h
-      rw [known_bits hd hb, allBits_eq hds hbs']
 
 theorem argBits_getD {Γ : Env} {w : World} : ∀ {as : List AV} {bits : List UInt64} {k : Nat} {y : UInt64},
     ArgBits Γ w as bits → (as.getD k .any).bits = some y → bits.getD k 0 = y
@@ -349,71 +289,9 @@ theorem knownAt_getD {Γ : Env} {w : World} {as : List AV} {bits : List UInt64} 
   | none => rw [e] at hy; cases hy
   | some a => rw [e] at hy; simp only [Option.getD_some] at hy; simp [hy]
 
-/-- **A fact `keepA` keeps** holds after the call. -/
-theorem keepA_sound {Γ : Env} {f : Ffi} {as : List AV} {bits : List UInt64} {w0 w w' : World}
-    {r : Option V} (hb : ArgBits Γ w0 as bits) (h : callBits f bits w = some (r, w')) {x : Fact}
-    (hk : keepA f as x = true) (hx : x.holds w) : x.holds w' := by
-  unfold keepA at hk
-  simp only [Bool.and_eq_true] at hk
-  obtain ⟨hall, hk⟩ := hk
-  refine keeps_sound h ?_ hx
-  rw [keeps_congr (bits' := as.map (·.bits.getD 0)) x (knownAt_getD hb hall)]
-  exact hk
-
-theorem postA_sound {Γ : Env} {f : Ffi} {as : List AV} {S : TState} {bits : List UInt64} {w w' : World}
-    {r : Option V} (hb : ArgBits Γ w as bits) (hS : S.holds w)
-    (h : callBits f bits w = some (r, w')) : (postA f as S).holds w' := by
-  unfold postA
-  split
-  · rename_i bs hbs; rw [← allBits_eq hb hbs]; exact after_sound hS h
-  · intro x hx
-    obtain ⟨hx, hk⟩ := List.mem_filter.mp hx
-    exact keepA_sound hb h hk (hS x hx)
-
 -- ---------------------------------------------------------------------------
 -- Entry points
 -- ---------------------------------------------------------------------------
-
-/-- The size of the device buffer the typestate names by id. -/
-def devBufOf (S : TState) (a : UInt64) : Option UInt64 :=
-  S.findSome? fun | .devBuf a' n => if a' == a then some n else none | _ => none
-
-theorem devBufOf_mem {S : TState} {a n : UInt64} (h : devBufOf S a = some n) : Fact.devBuf a n ∈ S := by
-  unfold devBufOf at h
-  obtain ⟨x, hx, hf⟩ := List.exists_of_findSome?_eq_some h
-  cases x <;> simp only [reduceCtorEq] at hf
-  rename_i a' n'
-  split at hf
-  · rename_i he; simp only [beq_iff_eq] at he; subst he; cases hf; exact hx
-  · cases hf
-
-/-- A slot holding null, or a live context's handle, by the cell the typestate
-    names there. -/
-def slotOk (S : TState) (p : Part) (H : UInt64) (s : AV) : Bool :=
-  match s.bits with
-  | some a => match cellAt S a with
-    | some v => v == 0 || (v == H && S.contains (.part p true))
-    | none => false
-  | none => false
-
-theorem slotOk_sound {Γ : Env} {w : World} {S : TState} {p : Part} {H x : UInt64} {s : AV} (hS : S.holds w)
-    (hd : ∃ t, s.Desc Γ w (.sc t x)) (h : slotOk S p H s = true) :
-    ∀ c, w.mem.load x 8 = some c → c = 0 ∨ (c = H ∧ p.get w = true) := by
-  unfold slotOk at h
-  split at h
-  · rename_i a ha
-    rw [known_bits hd ha]
-    split at h
-    · rename_i v hv
-      intro c hc
-      have hl : w.mem.load a 8 = some v := hS _ (cellAt_mem hv)
-      rw [hl] at hc; cases hc
-      simp only [Bool.or_eq_true, beq_iff_eq, Bool.and_eq_true] at h
-      rcases h with h | ⟨h1, h2⟩
-      · exact .inl h
-      · exact .inr ⟨h1, holds_of_mem hS h2⟩
-    · cases h
-  · cases h
 
 /-- `gemmStridedFits`, by the three buffers' sizes. -/
 def gemmStridedFitsN (ea eb ec : Nat) (ta tb m n k sa sb sc batch oa ob oc la lb lc : UInt64)
@@ -440,52 +318,6 @@ theorem gemmStridedFits_eq (ea eb ec : Nat) (ta tb m n k sa sb sc batch oa ob oc
     (A B C : ByteArray) : gemmStridedFits ea eb ec ta tb m n k sa sb sc batch oa ob oc la lb lc A B C =
       gemmStridedFitsN ea eb ec ta tb m n k sa sb sc batch oa ob oc la lb lc A.size B.size C.size := rfl
 
-/-- The CUDA context handle. -/
-def cudaB (S : TState) (c : AV) : Bool := ctxB S .cuda cudaCtx c
-
-/-- Whether the party a stream id names knows every access, by the streams
-    the typestate names; a stream id naming no party asks nothing. -/
-def streamReady (S : TState) (sid : AV) : Bool :=
-  match sid.bits, streamsOf S with
-  | some s, some l => match partyOf l s with
-    | some p => readyIn S p
-    | none => true
-  | _, _ => false
-
-def preLmdbInit (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [s] => S.contains (.part .lmdb false) && memN S s 8
-  | _ => false
-
-def preLmdbBeginWriteTxn (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [c, _] => ctxB S .lmdb lmdbCtx c
-  | _ => false
-
-def preLmdbCommitWriteTxn (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [c, _] => ctxB S .lmdb lmdbCtx c
-  | _ => false
-
-def preLmdbCleanup (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [s] => memN S s 8 && slotOk S .lmdb lmdbCtx s
-  | _ => false
-
-def preLmdbOpen (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [c, pp, _] => ctxB S .lmdb lmdbCtx c && cstrB S pp && S.contains (.part .lmdbEmpty true)
-  | _ => false
-
-def preLmdbPut (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [c, _, kp, kl, vp, vl] =>
-      ctxB S .lmdb lmdbCtx c &&
-        (match kl.bits, vl.bits with
-         | some a, some b => memN S kp (asI32 a).toNat && memN S vp (asI32 b).toNat
-         | _, _ => false)
-  | _ => false
-
 /-- The bounds the typestate gives on the table at slot `a`: on its values,
     and on how many times it was made. -/
 def htAtOf (a : UInt64) : TState → Option (Nat × Nat)
@@ -504,17 +336,6 @@ theorem htAtOf_mem {a : UInt64} : ∀ {S : TState} {n k : Nat}, htAtOf a S = som
         · rename_i e; subst e; cases h; exact List.mem_cons_self
         · exact List.mem_cons_of_mem _ (htAtOf_mem h)
       · exact List.mem_cons_of_mem _ (htAtOf_mem h)
-
-/-- A scan from the first key only (a key of no bytes), into room for `cap`
-    bytes. -/
-def preLmdbCursorScan (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [c, _, _, kl, _, rp, cap] =>
-      ctxB S .lmdb lmdbCtx c &&
-        (match kl.bits, cap.bits with
-         | some k, some n => decide (asI32 k ≤ 0) && memN S rp n.toNat
-         | _, _ => false)
-  | _ => false
 
 /-- A handle of kind `k` held, by its description. -/
 def handB (k : Contracts.Held) : AV → Bool
@@ -632,47 +453,5 @@ theorem gemmBf16Fits_eq (ta tb m n k oa ob oc la lb lc : UInt64) (A B C : ByteAr
     gemmBf16Fits ta tb m n k oa ob oc la lb lc A B C =
       gemmBf16FitsN ta tb m n k oa ob oc la lb lc A.size B.size C.size := rfl
 
-def preThreadCleanup (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [s] => memN S s 8 && slotOk S .thread threadCtx s
-  | _ => false
-
-def preThreadInit (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [s] => S.contains (.part .thread false) && memN S s 8
-  | _ => false
-
-def preThreadJoin (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [c, _] => ctxB S .thread threadCtx c
-  | _ => false
-
-/-- A call whose contract asks nothing but its arguments' number. -/
-def preArity (n : Nat) (as : List AV) : Bool := as.length == n
-
-/-- A call whose contract asks a live CUDA context first, among `n`
-    arguments, and where `cap`, the device not capturing. -/
-def preCtxN (S : TState) (n : Nat) (cap : Bool) (as : List AV) : Bool :=
-  match as with
-  | c :: rest => rest.length + 1 == n && cudaB S c && (!cap || S.contains (.part .capturing false))
-  | [] => false
-
-/-- **What a call needs, decided.** One case per entry point the checker
-    decides; every other entry point is refused. -/
-def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Bool :=
-  match f with
-  | .cosf | .sinf => preArity 1 as
-  | .powf => preArity 2 as
-  | .lmdbInit => preLmdbInit S as
-  | .lmdbBeginWriteTxn => preLmdbBeginWriteTxn S as
-  | .lmdbCommitWriteTxn => preLmdbCommitWriteTxn S as
-  | .lmdbCleanup => preLmdbCleanup S as
-  | .lmdbOpen => preLmdbOpen S as
-  | .lmdbPut => preLmdbPut S as
-  | .lmdbCursorScan => preLmdbCursorScan S as
-  | .threadInit => preThreadInit S as
-  | .threadJoin => preThreadJoin S as
-  | .threadCleanup => preThreadCleanup S as
-  | _ => false
 
 end AlgorithmLib.Check

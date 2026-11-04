@@ -1,24 +1,23 @@
-//! Base's libraries (`system_bench`: hash table, LMDB, files) against the Rust
+//! Base's libraries (`system_bench`: hash table, files) against the Rust
 //! crates a program would use instead. Prints `<workload> <column> <ns>` lines.
 
 use base::{Artifact, Driver};
 use std::ffi::CString;
 use std::hint::black_box;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 /// Samples per timing.
 const SAMPLES: usize = 7;
 
-/// Records `ht` and `kv` handle.
+/// Records `ht` handles.
 const N: u64 = 100_000;
 
 /// The file `wc` reads.
 const WC_BYTES: usize = 32 * 1024 * 1024;
 
-/// Room in the output for `kv`'s scan: per record a `u16` key and value
-/// length, the key and the value.
-const OUT_BYTES: usize = 64 + 4 + (N as usize) * (4 + 8 + 32);
+/// Room in the output: the answer.
+const OUT_BYTES: usize = 64;
 
 fn key_of(i: u64) -> u64 {
     (i + 1).wrapping_mul(0x9E3779B97F4A7C15)
@@ -40,60 +39,6 @@ fn rust_ht(n: u64) -> u64 {
         sum = sum.wrapping_add(u64::from_le_bytes(v[..8].try_into().unwrap()));
     }
     sum
-}
-
-/// Open `dir`, write `n` records in one transaction in scrambled key order,
-/// commit, and scan them all into `out` from byte 64 as `Lib.Lmdb`'s scan lays
-/// them out.
-fn rust_kv(dir: &Path, n: u64, out: &mut [u8]) -> u64 {
-    use liblmdb_sys as sys;
-    use lmdb_zero as lmdb;
-    std::fs::create_dir_all(dir).unwrap();
-    let mut b = lmdb::EnvBuilder::new().unwrap();
-    b.set_mapsize(1 << 30).unwrap();
-    b.set_maxdbs(1).unwrap();
-    let env = unsafe { b.open(dir.to_str().unwrap(), lmdb::open::WRITEMAP | lmdb::open::NOSYNC, 0o600) }
-        .unwrap();
-    let dbi = lmdb::Database::open(&env, None, &lmdb::DatabaseOptions::defaults()).unwrap().into_raw();
-    unsafe {
-        let mut txn = std::ptr::null_mut();
-        assert_eq!(sys::mdb_txn_begin(env.as_raw(), std::ptr::null_mut(), 0, &mut txn), 0);
-        let mut val = [0u8; 32];
-        for i in 0..n {
-            let key = ((i * 7919) % n).to_be_bytes();
-            for c in val.chunks_mut(8) {
-                c.copy_from_slice(&key_of(i).to_le_bytes());
-            }
-            let mut k = sys::MDB_val { mv_size: 8, mv_data: key.as_ptr() as *const _ };
-            let mut v = sys::MDB_val { mv_size: 32, mv_data: val.as_ptr() as *const _ };
-            assert_eq!(sys::mdb_put(txn, dbi, &mut k, &mut v, 0), 0);
-        }
-        assert_eq!(sys::mdb_txn_commit(txn), 0);
-        let mut txn = std::ptr::null_mut();
-        assert_eq!(sys::mdb_txn_begin(env.as_raw(), std::ptr::null_mut(), sys::MDB_RDONLY, &mut txn), 0);
-        let mut cur = std::ptr::null_mut();
-        assert_eq!(sys::mdb_cursor_open(txn, dbi, &mut cur), 0);
-        let mut k = sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
-        let mut v = sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
-        let mut at = 64 + 4;
-        let mut count = 0u32;
-        let mut rc = sys::mdb_cursor_get(cur, &mut k, &mut v, sys::MDB_cursor_op::MDB_FIRST);
-        while rc == 0 && (count as u64) < n {
-            out[at..at + 2].copy_from_slice(&(k.mv_size as u16).to_le_bytes());
-            out[at + 2..at + 4].copy_from_slice(&(v.mv_size as u16).to_le_bytes());
-            at += 4;
-            out[at..at + k.mv_size].copy_from_slice(std::slice::from_raw_parts(k.mv_data as *const u8, k.mv_size));
-            at += k.mv_size;
-            out[at..at + v.mv_size].copy_from_slice(std::slice::from_raw_parts(v.mv_data as *const u8, v.mv_size));
-            at += v.mv_size;
-            count += 1;
-            rc = sys::mdb_cursor_get(cur, &mut k, &mut v, sys::MDB_cursor_op::MDB_NEXT);
-        }
-        out[64..68].copy_from_slice(&count.to_le_bytes());
-        sys::mdb_cursor_close(cur);
-        sys::mdb_txn_abort(txn);
-        count as u64
-    }
 }
 
 /// Read the file into a buffer kept across calls, as Base reads into memory
@@ -160,21 +105,6 @@ fn main() {
         _ => { unsafe { drv.execute("ht", &input, &mut out) }.unwrap(); }
     });
     println!("ht\trust\t{:.0}\nht\tbase\t{:.0}", t[0], t[1]);
-
-    // kv: each side its own directory, reopened by every call
-    let (dir_rust, dir_base): (PathBuf, PathBuf) = (work.join("kv-rust"), work.join("kv-base"));
-    let mut input = N.to_le_bytes().to_vec();
-    input.extend(cstr(&dir_base));
-    let mut out_rust = vec![0u8; OUT_BYTES];
-    let want = rust_kv(&dir_rust, N, &mut out_rust);
-    unsafe { drv.execute("kv", &input, &mut out) }.unwrap();
-    assert_eq!(answer(&out), want, "kv count");
-    assert!(out[64..] == out_rust[64..], "kv scans differ");
-    let t = time(2, |c| match c {
-        0 => { black_box(rust_kv(&dir_rust, N, &mut out_rust)); }
-        _ => { unsafe { drv.execute("kv", &input, &mut out) }.unwrap(); }
-    });
-    println!("kv\trust\t{:.0}\nkv\tbase\t{:.0}", t[0], t[1]);
 
     // wc: lines of 1 to 80 bytes
     let file = work.join("wc.txt");

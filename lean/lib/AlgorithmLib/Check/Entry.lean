@@ -158,16 +158,6 @@ theorem argBits_known : ∀ (bits : List UInt64) (Γ : Env) (w : World),
   | [], _, _ => trivial
   | _ :: bits, Γ, w => ⟨⟨.i64, rfl⟩, argBits_known bits Γ w⟩
 
-/-- **An obligation the checker's own decision shows**: where `preB` decides
-    the call, handed the arguments' bits, in the obligation's typestate at the
-    parameters' values. -/
-theorem Obl.holds_of_preB {o : Obl} {f : Ffi} (hc : o.c = .ffi f)
-    (h : preB f ((o.args.map (PArg.bits vals)).map fun x => .known (.sc .i64 x))
-      (o.facts ++ bufFacts o.bufs vals) = true) : o.Holds vals := by
-  unfold Obl.Holds
-  rw [hc]
-  exact fun _ w hw => preB_sound hw (argBits_known _ ∅ w) h fun _ _ e => by cases e
-
 /-- **A body the checker accepts never misuses a call and never faults**, run
     from any arguments and world its state describes. -/
 theorem check_run {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {A : AS} {c : Code} (hc : accepts cert A c = true)

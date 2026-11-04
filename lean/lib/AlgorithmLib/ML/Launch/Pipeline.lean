@@ -649,11 +649,6 @@ theorem mapStageIP_exclusive {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) 
 -- A reduction is a stage too
 -- ---------------------------------------------------------------------------
 
-/-- A single store leaves every other address alone. -/
-theorem mem_store1_other (st : WSt) (b : Buf) (i : Nat) (v : Float32) (c : Buf)
-    (j : Nat) (h : ¬ (c = b ∧ j = i)) : (st.store1 b i v).mem c j = st.mem c j := by
-  simp [WSt.store1, h]
-
 /-- **The strided dot's only memory effect is its one lane-0 store.** -/
 theorem dotStrided_frame (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (st : WSt) (c : Buf) (j : Nat)
@@ -662,7 +657,7 @@ theorem dotStrided_frame (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
   show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
           ((warpReduceSum 0 1).run
             (((dotStridedBody bA bB ixA ixB K).elabAt cta 0).run st))).mem c j = _
-  rw [wrun_storeLane0, mem_store1_other _ _ _ _ _ _ h, warpReduceSum_mem,
+  rw [wrun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceSum_mem,
       dotStridedBody_mem]
 
 /-- **The fused reduction's only memory effect is its one lane-0 store.** -/
@@ -675,7 +670,7 @@ theorem dotStrided4_frame (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFEx
           ((warpReduceSum 0 1).run
             (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run
               st))).mem c j = _
-  rw [wrun_storeLane0, mem_store1_other _ _ _ _ _ _ h, warpReduceSum_mem,
+  rw [wrun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceSum_mem,
       dotStrided4Body_mem]
 
 /-- **The strided maximum's only memory effect is its one lane-0 store.** -/
@@ -686,7 +681,7 @@ theorem maxStrided_frame (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
   show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
           ((warpReduceMaxE.elabAt cta 0 (fun _ _ => 0) (fun _ _ => 0)).run
             (((maxStridedBody b ix K init).elabAt cta 0).run st))).mem c j = _
-  rw [wrun_storeLane0, mem_store1_other _ _ _ _ _ _ h, warpReduceMaxE_mem,
+  rw [wrun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceMaxE_mem,
       maxStridedBody_mem]
 
 /-- **A row maximum, as a pipeline stage.**

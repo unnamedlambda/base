@@ -100,6 +100,47 @@ ship_entry runFwdBlas : MlpCifar.runMixed MlpCifar.fwdBlasSteps under ((Run 0 0)
 
 ship_entry runBwdBlas : MlpCifar.runMixed MlpCifar.bwdBlasSteps under ((Run 0 0))
 
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+/-- Every run of the shipped cuBLAS forward pass that ends makes its steps'
+    calls in order, launches and products, then waits. -/
+theorem runFwdBlas_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.fwdBlasSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    (MlpCifar.app.mixedCalls MlpCifar.fwdBlasSteps).Covers w obs := by
+  check_calls
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+/-- …and of the cuBLAS backward pass. -/
+theorem runBwdBlas_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.bwdBlasSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    (MlpCifar.app.mixedCalls MlpCifar.bwdBlasSteps).Covers w obs := by
+  check_calls
+
+set_option maxRecDepth 100000 in
+/-- **The device writes every run of the shipped cuBLAS forward pass makes are
+    its plan**: the proven kernels and the declared products, read from its
+    calls. -/
+theorem runFwdBlas_realises (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.fwdBlasSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    ∃ cs, Check.callsOf obs = (Check.callsOf w.obs).reverse ++ cs ∧
+      ML.planOf? MlpCifar.mlpTable MlpCifar.blasDeclared none (ML.appLaunchesOf MlpCifar.app cs) = some MlpCifar.fwdBlasPlan := by
+  obtain ⟨cs, e, hc⟩ := runFwdBlas_calls cfg dataLen outLen w h hr
+  exact ⟨cs, e, by rw [ML.launchesOf_mixedCalls (by decide) hc]; exact MlpCifar.fwd_blas_realises⟩
+
+set_option maxRecDepth 100000 in
+/-- …and of the cuBLAS backward pass. -/
+theorem runBwdBlas_realises (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runMixed MlpCifar.bwdBlasSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    ∃ cs, Check.callsOf obs = (Check.callsOf w.obs).reverse ++ cs ∧
+      ML.planOf? MlpCifar.mlpTable MlpCifar.blasDeclared none (ML.appLaunchesOf MlpCifar.app cs) = some MlpCifar.bwdBlasPlan := by
+  obtain ⟨cs, e, hc⟩ := runBwdBlas_calls cfg dataLen outLen w h hr
+  exact ⟨cs, e, by rw [ML.launchesOf_mixedCalls (by decide) hc]; exact MlpCifar.bwd_blas_realises⟩
+
 end MlpCifarSafe2
 
 #print axioms MlpCifarSafe2.fetchZ1_no_misuse

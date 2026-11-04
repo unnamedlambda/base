@@ -1,6 +1,8 @@
 module
 public import AlgorithmLib.Host.Ffi
+public import AlgorithmLib.Host.DrvCodes
 meta import AlgorithmLib.Host.Ffi
+meta import AlgorithmLib.Host.DrvCodes
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -43,31 +45,6 @@ def cuInvalidHandle : Int := 400
 /-- `CUDA_ERROR_STREAM_CAPTURE_UNJOINED`: a capture ended with a stream that
     joined it not joined back. -/
 def cuCaptureUnjoined : Int := 904
-
-/-- Where device buffer `n` starts. Allocations lie `2^36` bytes apart, so an
-    offset inside one never reaches the next. -/
-def devPtr (n : Nat) : UInt64 := UInt64.ofNat (2 ^ 52 + n * 2 ^ 36)
-
-/-- The buffer a device pointer falls in, and the offset into it. -/
-def devPtrOf (p : UInt64) : Option (Nat × Nat) :=
-  let x := p.toNat
-  if 2 ^ 52 ≤ x && x < 2 ^ 53 then some ((x - 2 ^ 52) / 2 ^ 36, (x - 2 ^ 52) % 2 ^ 36)
-  else none
-
-/-- A stream, module or function handle: its kind and index. -/
-def drvHandle (kind i : Nat) : UInt64 := UInt64.ofNat (2 ^ 56 + kind * 2 ^ 48 + i + 1)
-
-def handleOf (kind : Nat) (h : UInt64) : Option Nat :=
-  let x := h.toNat
-  let lo := 2 ^ 56 + kind * 2 ^ 48
-  if lo < x && x ≤ lo + 2 ^ 48 then some (x - lo - 1) else none
-
-def kStream : Nat := 1
-def kModule : Nat := 2
-def kFunc : Nat := 3
-def kEvent : Nat := 4
-def kGraph : Nat := 6
-def kExec : Nat := 7
 
 /-- The race an operation by `p` is checked against: the capture's own, if `p`
     is capturing, and the device's otherwise. -/

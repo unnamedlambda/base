@@ -13,16 +13,13 @@ the device does changes a buffer's length: uploads write a buffer's own
 length, kernels and cuBLAS are refused an output of another length, and a
 free empties the id for good. So a buffer made with `n` bytes has `n` bytes
 for as long as it lives (`BufIs`), through every call that does not start the
-device afresh (`callBits_bufs`).
+device afresh.
 -/
 
 namespace AlgorithmLib.Device
 
 open AlgorithmLib.HProg.Sem
 open AlgorithmLib.HProg.DevSpec (get?_put_size mapM_get_sizes)
-
-theorem put_bufs_size (d : Dev) (id : Nat) (o : Option ByteArray) : (d.put id o).bufs.size = d.bufs.size := by
-  simp [Dev.put]
 
 /-- Buffer `i` has been made, and has `n` bytes while it lives. -/
 def BufIs (i : Int) (n : Nat) (d : Dev) : Prop :=
@@ -49,7 +46,7 @@ theorem BufIs.push {i : Int} {n : Nat} {d : Dev} (h : BufIs i n d) (x : Option B
 
 theorem BufIs.put_none {i : Int} {n : Nat} {d : Dev} (h : BufIs i n d) (id : Nat) : BufIs i n (d.put id none) := by
   obtain ⟨h0, hlt, hb⟩ := h
-  refine ⟨h0, by rw [put_bufs_size]; exact hlt, fun b hb' => hb b ?_⟩
+  refine ⟨h0, by rw [Dev.put_bufs_size]; exact hlt, fun b hb' => hb b ?_⟩
   have hn : ¬ i < 0 := by omega
   simp only [Dev.get?, Dev.put, hn, if_false, Array.getElem?_setIfInBounds] at hb' ⊢
   by_cases e : id = i.toNat
@@ -59,7 +56,7 @@ theorem BufIs.put_none {i : Int} {n : Nat} {d : Dev} (h : BufIs i n d) (id : Nat
 theorem BufIs.put_same {i : Int} {n : Nat} {d : Dev} (h : BufIs i n d) {id : Nat} {b : ByteArray}
     (hb : ∀ x, d.get? id = some x → x.size = b.size) (hlive : (d.get? id).isSome = true) :
     BufIs i n (d.put id (some b)) :=
-  h.of_sizes (Nat.le_of_eq (put_bufs_size _ _ _).symm) (get?_put_size d id b · hb hlive)
+  h.of_sizes (Nat.le_of_eq (Dev.put_bufs_size _ _ _).symm) (get?_put_size d id b · hb hlive)
 
 theorem map_size_of_check : ∀ {os is : List ByteArray},
     (os.length != is.length || (os.zip is).any (fun (o, i) => o.size != i.size)) = false →
@@ -111,7 +108,7 @@ theorem runLaunch_bufs {i : Int} {n : Nat} {d d' : Dev} {k : Launch → List Byt
               (by rw [hget, hx]; rfl)
           obtain ⟨ys, hys, hyssz⟩ := mapM_get_sizes hput ids xs hxs
           exact ih os ys (d.put id (some o)) hys (by rw [hs.2, hyssz])
-            (hb.of_sizes (Nat.le_of_eq (put_bufs_size _ _ _).symm) hput)
+            (hb.of_sizes (Nat.le_of_eq (Dev.put_bufs_size _ _ _).symm) hput)
 
 /-- A vendor routine keeps every buffer's length: it is refused an output of
     another length. -/

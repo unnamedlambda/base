@@ -196,8 +196,7 @@ def proveFuel : Nat := 14
     bytes no further than its size, nor its span. -/
 def memIn (A : AS) (a : R) (len : Lin) (g : Region) : Bool :=
   let b : Int := (regionBase g).toNat
-  decide (g ≠ .pinned) && A.facts.contains (.part .frozen false) &&
-    A.ctx.prove proveFuel (len.scale (-1)) &&
+  decide (g ≠ .pinned) && A.ctx.prove proveFuel (len.scale (-1)) &&
     A.ctx.prove proveFuel ((Lin.atom (.slot a)).add (len.add (((Lin.atom (.size g)).scale (-1)).add (Lin.const (-b))))) &&
     A.ctx.prove proveFuel (((Lin.atom (.slot a)).scale (-1)).add (Lin.const b)) &&
     A.ctx.prove proveFuel ((Lin.atom (.slot a)).add (len.add (Lin.const (-b - 2 ^ 36)))) &&
@@ -215,7 +214,7 @@ theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : 
     (hm : memIn A a len g = true) {t : ClifTy} {x : UInt64} (hx : Γ[a]? = some (.sc t x)) :
     Fits w.mem x (len.eval Γ w).toNat := by
   simp only [memIn, Bool.and_eq_true, decide_eq_true_eq] at hm
-  obtain ⟨⟨⟨⟨⟨⟨hg, hz⟩, h0⟩, h1⟩, h2⟩, h3⟩, h4⟩ := hm
+  obtain ⟨⟨⟨⟨⟨hg, h0⟩, h1⟩, h2⟩, h3⟩, h4⟩ := hm
   have hC := AS.ctx_sound h
   have e0 := Ctx.prove_sound hC h0
   have e1 := Ctx.prove_sound hC h1
@@ -233,7 +232,7 @@ theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : 
     apply UInt64.toNat_inj.mp
     rw [addr_toNat g (Nat.le_of_lt hspan), hoff]
   subst hxe
-  exact ⟨g, off, ptr_decode (Nat.le_refl _) hspan, hg, by omega, holds_of_mem h.2.2 hz, by omega⟩
+  exact ⟨g, off, ptr_decode (Nat.le_refl _) hspan, hg, by omega, by omega⟩
 
 theorem memRel_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : R} {k : Nat}
     (hm : memRel A a k = true) {t : ClifTy} {x : UInt64} (hx : Γ[a]? = some (.sc t x)) : Fits w.mem x k := by
@@ -435,7 +434,7 @@ theorem opAV_desc {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : O
           obtain ⟨x, hx, ha⟩ := slot_i64 h hai
           obtain ⟨y, hy, hb⟩ := slot_i64 h hbi
           have e2 : v = .sc .i64 (x - y) := by
-            simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
+            simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide64, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
           subst e2
           have hle := Ctx.prove_sound (AS.ctx_sound h) hp
           simp only [Lin.eval_sub, eval_lin1, slotVal_sc hx, slotVal_sc hy] at hle
@@ -460,7 +459,7 @@ theorem opAV_desc {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : O
           obtain ⟨x, hx, ha⟩ := slot_i64 h hc.1
           obtain ⟨y, hy, hb⟩ := slot_i64 h hc.2
           have e2 : v = .sc .i64 (x + y) := by
-            simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
+            simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide64, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
           subst e2
           have hxp : (Γ.push (V.sc .i64 (x + y)))[a]? = some (.sc .i64 x) := by
             have hlt : a < Γ.size := by rw [h.1.1]; exact ha
@@ -506,7 +505,7 @@ theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : 
       obtain ⟨x, hx, ha⟩ := slot_i64 h hc.1
       obtain ⟨y, hy, hb⟩ := slot_i64 h hc.2
       have e : v = .sc .i64 (x + y) := by
-        simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
+        simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide64, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
       subst e
       have both : ({ dfn := some ⟨[(.slot a, 1), (.slot b, 1)], 0⟩ } : Sym).Fits
           (Γ.push (.sc .i64 (x + y))) w A.len (A.len + 1) := by
@@ -540,7 +539,7 @@ theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : 
       obtain ⟨x, hx, ha⟩ := slot_i64 h hc.1
       obtain ⟨y, hy, hb⟩ := slot_i64 h hc.2
       have e : v = .sc .i64 (x - y) := by
-        simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
+        simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide64, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
       subst e
       refine fits_new h (fun z hz => ?_) (fun g hg => by simp [Sym.regions, Lin.regions] at hg)
         ⟨fun D hD => ?_, fun p hp => by simp at hp⟩
@@ -562,7 +561,7 @@ theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : 
         obtain ⟨t, e⟩ := AV.bits_desc (h.descAt hy) hcb
         cases e
         have e : v = .sc .i64 (x * c) := by
-          simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
+          simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide64, ClifTy.isInt, clifTy_beq_self] at hv; exact hv.symm
         subst e
         refine fits_new h (fun z hz => by rw [lin1_slots a _ z (by simpa [Sym.slots] using hz)]; exact ha)
           (fun g hg => lin1_regions a _ g (by simpa [Sym.regions] using hg)) ⟨fun D hD => ?_, fun p hp => by simp at hp⟩
@@ -590,7 +589,7 @@ theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : 
           apply UInt64.toNat_inj.mp
           rw [UInt64.toNat_mod]; simp only [ClifTy.width]; exact Nat.mod_eq_of_lt hk
         have e : v = .sc .i64 (x <<< k) := by
-          simp [evalOp, shiftBin, Sem.get, hx, hy, norm, and_wide, htb, show ClifTy.isInt .i64 = true from rfl] at hv
+          simp [evalOp, shiftBin, Sem.get, hx, hy, norm, and_wide64, htb, show ClifTy.isInt .i64 = true from rfl] at hv
           rw [← hv, hmod]
         subst e
         refine fits_new h (fun z hz => by rw [lin1_slots a _ z (by simpa [Sym.slots] using hz)]; exact ha)
@@ -620,7 +619,7 @@ theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : 
           apply UInt64.toNat_inj.mp
           rw [UInt64.toNat_mod]; simp only [ClifTy.width]; exact Nat.mod_eq_of_lt hk
         have e : v = .sc .i64 (x >>> k) := by
-          simp [evalOp, shiftBin, Sem.get, hx, hy, norm, and_wide, htb, show ClifTy.isInt .i64 = true from rfl] at hv
+          simp [evalOp, shiftBin, Sem.get, hx, hy, norm, and_wide64, htb, show ClifTy.isInt .i64 = true from rfl] at hv
           rw [← hv, hmod]
         subst e
         refine fits_new h (fun z hz => ?_) (fun g hg => ?_) ⟨fun D hD => by simp at hD, fun p hp => ?_⟩
@@ -650,7 +649,7 @@ theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : 
         have hc0' : (c == 0) = false := by
           simp only [beq_eq_false_iff_ne, ne_eq]; intro e; subst e; simp at hc0
         have e : v = .sc .i64 (x / c) := by
-          simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide, ClifTy.isInt, clifTy_beq_self, hc0'] at hv
+          simp [evalOp, bin, Sem.get, hx, hy, norm, and_wide64, ClifTy.isInt, clifTy_beq_self, hc0'] at hv
           exact hv.2.symm
         subst e
         refine fits_new h (fun z hz => ?_) (fun g hg => ?_) ⟨fun D hD => by simp at hD, fun p hp => ?_⟩
@@ -1072,7 +1071,7 @@ theorem bitrevFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w
         omega
       -- the shift
       have e : v = .sc .i64 (X >>> (B % UInt64.ofNat (ClifTy.width .i64))) := by
-        simp [evalOp, shiftBin, Sem.get, hx, hb, norm, and_wide, show ClifTy.isInt .i64 = true from rfl] at hv
+        simp [evalOp, shiftBin, Sem.get, hx, hb, norm, and_wide64, show ClifTy.isInt .i64 = true from rfl] at hv
         exact hv.symm
       subst e
       have hjn := Ctx.prove_sound hC hp
@@ -1113,7 +1112,7 @@ theorem opFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o
           apply UInt64.toNat_inj.mp
           rw [UInt64.toNat_mod]; simp only [ClifTy.width]; exact Nat.mod_eq_of_lt hk
         have e : v = .sc .i64 (x >>> k) := by
-          simp [evalOp, shiftBin, Sem.get, hx, hy, norm, and_wide, htb, show ClifTy.isInt .i64 = true from rfl] at hv
+          simp [evalOp, shiftBin, Sem.get, hx, hy, norm, and_wide64, htb, show ClifTy.isInt .i64 = true from rfl] at hv
           rw [← hv, hmod]
         subst e
         have hsz := h.1.1

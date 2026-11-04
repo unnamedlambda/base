@@ -22,7 +22,7 @@ namespace CpuAppsSafe
 theorem sha256_size : Sha256.layoutMeta.totalSize = 4202624 := by decide +kernel
 
 abbrev Sha256Main (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena 4202624, .roomArg .data dl, .roomArg .out ol]
+  [.room .arena 4202624, .roomArg .data dl, .roomArg .out ol]
 
 theorem Sha256_fine : Fine (emitGo (fnBody ptrParams (Sha256.mainCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -30,7 +30,7 @@ theorem Sha256_fine : Fine (emitGo (fnBody ptrParams (Sha256.mainCode : Prog Slo
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1500000 in
 theorem Sha256_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .frozen false, .room .arena Sha256.layoutMeta.totalSize,
+    (h : Contracts.TState.holds [.room .arena Sha256.layoutMeta.totalSize,
       .roomArg .data dataLen, .roomArg .out outLen] w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Sha256.mainCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (Sha256.mainCode : Prog Slot Lvl Unit)) ≠ .fault m := by

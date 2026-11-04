@@ -20,7 +20,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
-open AlgorithmLib.HProg.Contracts (Fact TState after keeps roomAt afterStore storeKeeps cellOk readyIn)
+open AlgorithmLib.HProg.Contracts (Fact TState roomAt afterStore storeKeeps cellOk readyIn)
 
 -- ---------------------------------------------------------------------------
 -- Joins
@@ -363,7 +363,7 @@ def absStore (A : AS) (v a : R) (n : Nat) : Except String AS :=
 /-- Whether `n` bytes at slot `a` lie inside a heap block the state names,
     with no copy in flight and no worker running. -/
 def memBlk (A : AS) (a : R) (n : Nat) : Bool :=
-  decide (0 < n) && A.facts.contains (.part .frozen false) && A.facts.contains (.part .idle true) &&
+  decide (0 < n) && A.facts.contains (.part .idle true) &&
     match A.get a with
     | .into b _ hi =>
         (match A.get b with
@@ -442,14 +442,10 @@ def parOp (A : AS) : Op → Option (ClifTy × PExpr)
       | _, _ => none
   | _ => none
 
-/-- The obligation a call of `f` handed `pas` leaves, in the state's facts and
-    buffers, where the parameters stand in the relations the record knows. -/
-def oblOf (A : AS) (f : Ffi) (pas : List PArg) : Obl := ⟨.ffi f, pas, A.facts, A.par.bufs, A.par.allocs, A.par.conds⟩
-
 /-- The obligation a vendor call handed `pas` leaves: that its arguments'
     values are ones it accepts, given the allocations the parameters size and
     the relations they stand in. -/
-def eOblOf (A : AS) (e : Ext) (pas : List PArg) : Obl := ⟨.ext e, pas, A.facts, [], A.par.allocs, A.par.conds⟩
+def eOblOf (A : AS) (e : Ext) (pas : List PArg) : Obl := ⟨e, pas, A.facts, A.par.allocs, A.par.conds⟩
 
 /-- The allocation a call makes of a size the parameters give: `cuMemAlloc`
     handed a number the record computes makes allocation `k`, `k` the count
@@ -466,28 +462,16 @@ def sizedAlloc (A : AS) (e : Ext) (args : List R) : List (Nat × PExpr) :=
     what the record says of the world, the allocations it sizes and the one
     the call makes of a size they give, where the call keeps every allocation
     and kernels keep the sizes of the buffers they write; and the cells it
-    names, where the call writes no host memory and leaves memory unfrozen. -/
+    names, where the call writes no host memory. -/
 def AS.afterVendor (A0 : AS) (e : Ext) (args : List R) (S : TState) : AS :=
   let A := A0.forgetKinds e.kills
   if e.keepsAllocs && A.facts.contains .oracles then
-    let keep := writesNone e && S.contains (.part .frozen false)
+    let keep := writesNone e
     (A.withFacts S).withPar { A.par.clearWorld with
       allocs := sizedAlloc A e args ++ A.par.allocs,
       cells := if keep then A.par.cells.filter (cellOk ·.1) else [],
       ctxs := if keep then A.par.ctxs.filter (cellOk ·.2) else [] }
   else A.withFacts S
-
-/-- How a foreign call's precondition is shown, and the record after: decided
-    by the facts; or an obligation on the parameters the record holds, or, in
-    a run that gathers them, gathers. -/
-def ffiPre (A : AS) (f : Ffi) (args : List R) : Option Par :=
-  if preB f (args.map A.get) A.facts (relRb A args) then some A.par else
-  match args.mapM (parArg A) with
-  | some pas =>
-      if A.par.obls.contains (oblOf A f pas) then some A.par
-      else if A.par.collect then some { A.par with obls := A.par.obls ++ [oblOf A f pas] }
-      else none
-  | none => none
 
 /-- The cell a load reads the context of a hash table from: a 64-bit load at
     a known address the typestate says holds one. -/
@@ -497,19 +481,6 @@ def ctxOp (A : AS) : Op → Option UInt64
       | .plain, .i64, .known (.sc _ x) => if (htAtOf x A.facts).isSome then some x else none
       | _, _, _ => none
   | _ => none
-
-/-- The state after a foreign call the checker accepts, its answer not yet
-    appended. -/
-def AS.ffiCall (A : AS) (f : Ffi) (args : List R) : Except String AS :=
-  let as := args.map A.get
-  if f.engine && A.facts.contains (.part .frozen false) && as.all (·.scTy.isSome) then
-    match ffiPre A f args with
-    | some P => .ok ((A.forgetHands.withFacts (postA f as A.facts)).withPar (P.keepWorld (keepA f as)))
-    | none => .error s!"call {f.cname}: precondition not decided (args {repr as})"
-  else .error s!"call {f.cname}: precondition not decided (args {repr as})"
-
-/-- What a foreign call answers: any number of its result type. -/
-def ffiAnswer (S : TState) (f : Ffi) (as : List AV) : AV := .sc (f.result.getD .i64)
 
 /-- What a library call answers: for `calloc` asked for a known number of
     bytes, null or a heap block of that many; for whether a library is there,
@@ -534,11 +505,10 @@ def answersAs (c : Callee) (val : Bool) : Bool :=
   | _ => true
 
 /-- What a call into a library keeps of a typestate, having written, outside
-    the heap, at most the bytes from `lo` up to `hi`: that no worker runs and
-    no copy is in flight, every region's room outside pinned memory, and the
+    the heap, at most the bytes from `lo` up to `hi`: that no copy is in flight, every region's room outside pinned memory, and the
     cells clear of those bytes. -/
 def libKeeps (lo hi : Nat) : Fact → Bool
-  | .part p b => (p == .frozen && !b) || (p == .idle && b)
+  | .part p b => p == .idle && b
   | .room r _ => r != .pinned
   | .roomArg r _ => r != .pinned
   | .cell c _ => cellOk c && (hi ≤ c.toNat || c.toNat + 8 ≤ lo)
@@ -607,19 +577,26 @@ def AS.libLookup (A : AS) (c kp kl rp : R) : Option (AS × AV) :=
       | _, _ => none
   | _, _ => none
 
-/-- **The rule for a call into `Lib.Ht`**, by the function called, with no
-    worker running and no copy in flight. -/
-def AS.libRule (A : AS) (f : Ffi) (args : List R) : Option (AS × AV) :=
+/-- A math function, handed singles, answers a single and leaves the world. -/
+def AS.libMath (A : AS) (args : List R) : Option (AS × AV) :=
+  if args.all fun r => (A.get r).scTy == some .f32 then some (A.libDone 0 0 [], .sc .f32) else none
+
+/-- **The rule for a call into `Lib.Ht` or `Lib.Math`**, by the function
+    called, with no worker running and no copy in flight. -/
+def AS.libRule (A : AS) (f : LibFn) (args : List R) : Option (AS × AV) :=
   match f, args with
   | .htInit, [a] => A.libInit a
   | .htCleanup, [a] => A.libCleanup a
   | .htCreate, [c] => A.libCreate c
   | .htInsert, [c, kp, kl, vp, vl] => A.libInsert c kp kl vp vl
   | .htLookup, [c, kp, kl, rp] => A.libLookup c kp kl rp
+  | .sinf, [x] => A.libMath [x]
+  | .cosf, [x] => A.libMath [x]
+  | .powf, [x, y] => A.libMath [x, y]
   | _, _ => none
 
-def AS.libCall (A : AS) (f : Ffi) (args : List R) : Except String (AS × AV) :=
-  if A.facts.contains (.part .frozen false) && A.facts.contains (.part .idle true) then
+def AS.libCall (A : AS) (f : LibFn) (args : List R) : Except String (AS × AV) :=
+  if A.facts.contains (.part .idle true) then
     match A.libRule f args with
     | some r => .ok r
     | none => .error s!"call {f.cname}: precondition not decided (args {repr (args.map A.get)})"
@@ -665,24 +642,18 @@ def wordsOf (A : AS) : Callee → List R → Option (List ArgPat)
   | _, _ => some []
 
 /-- **The call rule.** The state after a call the checker accepts, its answer
-    not yet appended, and what it answers: an entry point of the engine by
-    `AS.ffiCall`; one a library implements by `AS.libCall`, where `lb` says
-    library calls are read; a library function the typestate follows by what
+    not yet appended, and what it answers: a function of a library linked into
+    the program by `AS.libCall`, where `lb` says library calls are read; a library function the typestate follows by what
     it needs (`preExt`) and keeps (`extKeepsA`); no other callee is
     accepted. -/
 def AS.callee (A : AS) (lb : Bool) (c : Callee) (args : List R) : Except String (AS × AV) :=
   match c with
-  | .ffi f =>
-      if f.inLib then
-        if lb then A.libCall f args else .error s!"call {f.cname}: a library's, and library calls are not read"
-      else
-      match A.ffiCall f args with
-      | .ok B => .ok (B, ffiAnswer A.facts f (args.map A.get))
-      | .error e => .error e
+  | .lib f =>
+      if lb then A.libCall f args else .error s!"call {f.cname}: a library's, and library calls are not read"
   | .ext e =>
       let as := args.map A.get
       if e.vendor then
-        if A.facts.contains (.part .frozen false) && A.facts.contains (.part .idle true) &&
+        if A.facts.contains (.part .idle true) &&
             as.all (·.scTy.isSome) then
           match vendorRow A.facts e as with
           | some (S, av) =>
@@ -738,8 +709,8 @@ def stmtStr (n : Nat) : Stmt → String
   | .store ty v a => s!"store.{repr ty} v{v} -> [v{a}]"
   | .storeUnaligned v a => s!"store v{v} -> [v{a}]"
   | .istore8 v a => s!"istore8 v{v} -> [v{a}]"
-  | .call c as => s!"v{n} = call {match c with | .ffi f => f.cname | c => (repr c).pretty} {as}"
-  | .callVoid c as => s!"call {match c with | .ffi f => f.cname | c => (repr c).pretty} {as}"
+  | .call c as => s!"v{n} = call {match c with | .lib f => f.cname | c => (repr c).pretty} {as}"
+  | .callVoid c as => s!"call {match c with | .lib f => f.cname | c => (repr c).pretty} {as}"
 
 /-- The slots a statement reads. -/
 def stmtRegs : Stmt → List R

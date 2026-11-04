@@ -311,7 +311,7 @@ structure Cond (V : ClifTy → Type) where
   exitOnTrue : Bool
 
 /-- A call to a function of this same program, or to a symbol resolved inside
-    it: what `Ffi` does not cover. The callee travels with the reference, so
+    it: what `LibFn` does not cover. The callee travels with the reference, so
     `emit` can collect the table a body needs rather than being handed one.
 
     No id: the fold gives each callee its position in the table the first time
@@ -335,7 +335,7 @@ inductive Prog (V : ClifTy → Type) (L : List ClifTy → List ClifTy → Type) 
   | storeUnaligned {ty α} (v : V ty) (a : V .i64) (k : Prog V L α) : Prog V L α
   | istore8 {ty α} (v : V ty) (a : V .i64) (h : ty.isInt = true := by decide)
       (k : Prog V L α) : Prog V L α
-  | call {α} (f : Ffi) (args : Vals V f.params)
+  | call {α} (f : LibFn) (args : Vals V f.params)
       (k : ResV V f.result → Prog V L α) : Prog V L α
   | callLocal {ps res α} (r : LocalRef ps res) (args : Vals V ps)
       (k : ResV V res → Prog V L α) : Prog V L α
@@ -437,7 +437,7 @@ def St.bind1 (s : St) (st : Stmt) : R × St :=
 
 /-- Record a local callee's signature, which is what the checker reads a
     `local` call's arity from. An import needs no record: its signature is a
-    function of the `Ffi` the call already carries. -/
+    function of the `LibFn` the call already carries. -/
 def St.useLocal (s : St) (index : Nat) (params : List ClifTy)
     (result : Option ClifTy) : St :=
   { s with callees := s.callees.withLocal index params result }
@@ -473,9 +473,9 @@ def St.leave (outer inner : St) : List Piece × St :=
 -- and a body with thousands of them overflows.
 
 /-- A call to a foreign function: its answer binds the next slot, if it has one. -/
-@[inline] def emitCall {α : Type} (f : Ffi) (args : Vals Slot f.params) (k : ResV Slot f.result → St → Option α × St)
+@[inline] def emitCall {α : Type} (f : LibFn) (args : Vals Slot f.params) (k : ResV Slot f.result → St → Option α × St)
     (s : St) : Option α × St :=
-  let c : Callee := .ffi f
+  let c : Callee := .lib f
   let as := args.slots
   if f.result.isSome then
     let (r, s) := s.bind1 (.call c as)
@@ -488,7 +488,7 @@ def St.leave (outer inner : St) : List Piece × St :=
     (args : Vals Slot ps) (k : ResV Slot res → St → Option α × St) (s : St) : Option α × St :=
   let s := match r.callee with
     | .local i => s.useLocal i ps res
-    | .ffi _ | .native | .host _ _ | .atomic _ | .ext _ => s
+    | .lib _ | .native | .host _ _ | .atomic _ | .ext _ => s
   let as := args.slots
   if res.isSome then
     let (v, s) := s.bind1 (.call r.callee as)
@@ -667,7 +667,7 @@ theorem emitGo_storeUnaligned {ty} (v : Slot ty) (a : Slot .i64) (k : Prog Slot 
     emitGo (.storeUnaligned v a k) = fun s => emitGo k (s.stmt (.storeUnaligned v a)) := rfl
 theorem emitGo_istore8 {ty} (v : Slot ty) (a : Slot .i64) (h : ty.isInt = true) (k : Prog Slot Lvl α) :
     emitGo (.istore8 v a h k) = fun s => emitGo k (s.stmt (.istore8 v a)) := rfl
-theorem emitGo_call (f : Ffi) (args : Vals Slot f.params) (k : ResV Slot f.result → Prog Slot Lvl α) :
+theorem emitGo_call (f : LibFn) (args : Vals Slot f.params) (k : ResV Slot f.result → Prog Slot Lvl α) :
     emitGo (.call f args k) = emitCall f args (fun r => emitGo (k r)) := rfl
 theorem emitGo_callLocal {ps res} (r : LocalRef ps res) (args : Vals Slot ps)
     (k : ResV Slot res → Prog Slot Lvl α) :
@@ -795,10 +795,6 @@ def entryParams (tys : List ClifTy) : Prog V L (Vals V tys) :=
 def iconst (ty : ClifTy) (k : Int) (h : ty.isInt = true := by decide) :
     Prog V L (V ty) := op (.iconst ty k h)
 def iconst64 (k : Int) : Prog V L (V .i64) := iconst .i64 k
-/-- The address of the program's own function `u0:i`, to start a thread
-    running it (`Lib.Thread.spawn`); `program` refuses one not shaped like a
-    worker. -/
-def funcAddr (i : Nat) : Prog V L (V .i64) := op (.funcAddr i)
 def iconst32 (k : Int) : Prog V L (V .i32) := iconst .i32 k
 def fconst (ty : ClifTy) (bits : UInt64) (h : ty.isFloat = true := by decide) :
     Prog V L (V ty) := op (.fconst ty bits h)
@@ -1003,11 +999,11 @@ def istore32 {ty} (v : V ty) (a : V .i64)
 /-- Call an entry point. The signature says what it takes and whether it binds
     a result, so a generator cannot pass the wrong list or read a result that
     does not exist. -/
-def ffi (f : Ffi) (args : Vals V f.params) : Prog V L (ResV V f.result) :=
+def callLib (f : LibFn) (args : Vals V f.params) : Prog V L (ResV V f.result) :=
   .call f args .ret
 /-- The same, for the effect alone. -/
-def ffiVoid (f : Ffi) (args : Vals V f.params) : Prog V L Unit := do
-  let _ ← ffi (L := L) f args
+def callLibVoid (f : LibFn) (args : Vals V f.params) : Prog V L Unit := do
+  let _ ← callLib (L := L) f args
   pure ()
 
 /-- Call another function of this program, or a symbol resolved inside it. -/
@@ -1241,7 +1237,7 @@ def run (p : Body) (params : List ClifTy := ptrParams) :
 def callNames (p : Body) (params : List ClifTy := ptrParams) : List String :=
   let (c, _, _) := run p params
   (HProg.callsOf c).map fun
-    | .ffi f   => f.cname
+    | .lib f   => f.cname
     | .local k => s!"u0:{k}"
     | .native  => "native"
     | .host _ _ => "host"
@@ -1355,26 +1351,15 @@ def entryTys (f : FuncData) : List ClifTy :=
 def answers (f : FuncData) : Bool :=
   f.blocks.any (·.insts.any fun | .ret (some _) => true | _ => false)
 
-/-- **What a host and a thread are handed is what they call.** A function a
-    host can name is a C function taking the input and output buffers and
-    answering a status, and a function whose address a program takes is a
-    worker, taking one pointer and answering nothing: what `symbol` and
-    `cl_thread_start` call them as. -/
+/-- **What a host is handed is what it calls.** A function a host can name is
+    a C function taking the input and output buffers and answering a status:
+    what `symbol` calls it as. -/
 def checkShapes (fs : List FuncData) : Except String Unit := do
   for f in fs do
     if let some n := f.name then
       unless entryTys f == ptrParams && answers f do
         throw s!"u0:{f.index} is exported as {n} but is not shaped like an entry point, which \
           takes the input and output buffers and answers a status"
-    for b in f.blocks do
-      for inst in b.insts do
-        if let .funcAddr _ (.local k) := inst then
-          match fs[k]? with
-          | none => throw s!"u0:{f.index} takes the address of u0:{k}, which the program does not define"
-          | some g =>
-              unless entryTys g == [.i64] && !answers g do
-                throw s!"u0:{f.index} takes the address of u0:{k}, which is not shaped like a \
-                  worker: one pointer in, nothing out"
 
 /-- The functions of an artifact, in `u0:N` order, or the first failure.
 /-- **The view is the shipped function.** True by `rfl` on the projection;

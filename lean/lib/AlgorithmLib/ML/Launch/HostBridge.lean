@@ -1,6 +1,10 @@
 module
-public import AlgorithmLib.Host.HostIR
-meta import AlgorithmLib.Host.HostIR
+public import AlgorithmLib.ML.Launch.Record
+meta import AlgorithmLib.ML.Launch.Record
+public import AlgorithmLib.Host.DrvCodes
+meta import AlgorithmLib.Host.DrvCodes
+public import AlgorithmLib.Host.World
+meta import AlgorithmLib.Host.World
 public import AlgorithmLib.ML.Launch.Declared
 meta import AlgorithmLib.ML.Launch.Declared
 public import AlgorithmLib.Surface.Drv
@@ -10,29 +14,24 @@ import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 /-!
-  # From the host program to the pipeline
+  # From the host program's device writes to the pipeline
 
-  Two halves of the story meet here.
+  A program in the driver's standard layout (`Drv.App`) states the device
+  writes it makes as records, by definition (`appLaunch`): a launch's kernel,
+  grid and parameter array, and the buffers in it. `ML/Launch/Sequence.lean`
+  proves what the kernels compute: `Pipeline.run_denote` says a list of
+  `StageSpec`s executed in order computes the fold of their `step`s.
 
-  `HostIR.lean` proves what the *host* does: `flatHI_sound` says the emitted
-  CLIF — a real loop, body once, executed by a program counter — performs
-  exactly the declared sequence of `LaunchRec`s.  A `LaunchRec` names a PTX
-  slot and a grid.
-
-  `ML/Launch/Sequence.lean` proves what the *kernels* compute: `Pipeline.run_denote`
-  says a list of `StageSpec`s executed in order computes the fold of their
-  `step`s, for any length.
-
-  What connects a PTX slot to a `StageSpec` is a fact about the *runtime* — that `cl_cuda_launch off … gx` runs the module at `off`
-  on `gx` blocks — and it is the third row of `Clif.lean`'s trusted table.  This
-  file makes it a value: a `KernelBinding` list, checked against each launch
-  record by a decidable function.  A drifted slot or a grid that disagrees with
-  the stage's own `grid` field yields `none` rather than a quietly wrong stage.
+  What connects a launch to a `StageSpec` is a fact about the kernels: that the
+  module at `off` is the stage's compiled kernel. This file makes it a value: a
+  `KernelBinding` list, checked against each record by a decidable function. A
+  record whose kernel, parameter array or grid disagrees with the table yields
+  `none` rather than a quietly wrong stage.
 -/
 
 namespace AlgorithmLib.ML
 
-open AlgorithmLib.IR AlgorithmLib.Clif AlgorithmLib.Host
+open AlgorithmLib.IR AlgorithmLib.HProg.Sem
 
 /-- **Which PTX slot holds which stage's kernel.**
 
@@ -62,12 +61,11 @@ structure KernelBinding where
       could bind `rmsStage` to an array holding entirely different buffers and
       every downstream theorem would still go through.
 
-      `Clif.bindsOf` recovers the array's *contents* from the stores preceding
-      each launch: `near k` for a handle loaded from layout slot `k` of the
-      descriptor pointer, `far b k` for one reached through an unresolved base
-      — a per-layer weight, whose base depends on the runtime layer index.
-      Requiring them to match is what turns the stage's buffer numbering into a
-      claim about the emitted program.
+      A record states the array's contents (`appBufs`): `near k` for the
+      handle in slot `k` of the arena, `far b k` for one at slot `k` of a base
+      the program computes — a per-layer weight. Requiring them to match is
+      what ties the stage's buffer numbering to the handles the program
+      stores.
 
       The residue is a renaming — which layout slot holds which abstract buffer
       — and that is one named table per model rather than an unstated gap. -/
@@ -95,10 +93,8 @@ def bindingOf? : List KernelBinding → Nat → Nat → List BufDesc → Option 
       if kBo = bo ∧ kOff = off ∧ kBufs = bs then some S
       else bindingOf? ks off bo bs
 
-/-- **A device write together with the bind array the host had filled in for
-    it** — `Clif.deviceOpsOf`'s element type.  A vendor call carries `none`; so
-    does a launch whose array the scan could not resolve, and both are refused
-    by `stageOf?` rather than matched on the record alone. -/
+/-- **A device write together with the buffers it is handed.** A vendor call
+    carries `none` for a parameter array, and is refused by `stageOf?`. -/
 abbrev DeviceOp := LaunchRec × OpBinds
 
 /-- The bind array kernel `j` of a program in the driver's standard layout
@@ -127,10 +123,51 @@ def appLaunchWith (a : Drv.App) (j : Nat) (bs : List BufDesc) : DeviceOp :=
     allocations its declaration lists. -/
 def appLaunch (a : Drv.App) (j : Nat) : DeviceOp := appLaunchWith a j (appBufs a j)
 
-/-- The launches a stage can be read from: the engine's positional entry
-    points, and the driver's `cuLaunchKernel`, whose record a program in the
-    driver's standard layout states (`Drv.App`). -/
-def stageLaunchNames : List String := AlgorithmLib.Clif.positionalLaunchNames ++ ["cuLaunchKernel"]
+/-- The buffer a parameter value names, for a program in the standard
+    layout: a pointer into one of its allocations names that allocation,
+    wherever in it it points, and any other value is itself. -/
+def wordBuf (a : Drv.App) (x : UInt64) : BufDesc :=
+  match devPtrOf x with
+  | some (i, _) => if i < a.bufs.length then .near (Int.ofNat (a.bufSlot i)) else .const (Int.ofNat x.toNat)
+  | none => .const (Int.ofNat x.toNat)
+
+/-- **A cuBLAS product** of a program in the standard layout, as
+    `Drv.App.sgemm` takes it: `(ta, tb, m, n, k, A, B, C)`. -/
+abbrev Gemm := Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat
+
+/-- The words `Drv.App.sgemm` hands cuBLAS for `g`: the program's cuBLAS
+    handle, the shape, the addresses of the scalars `1` and `0` in the arena,
+    and the allocations with their leading dimensions. -/
+def _root_.AlgorithmLib.Drv.App.gemmWords (a : Drv.App) : Gemm → List UInt64
+  | (ta, tb, m, n, k, A, B, C) =>
+      [drvHandle kBlas 0, UInt64.ofNat ta, UInt64.ofNat tb, UInt64.ofNat m, UInt64.ofNat n, UInt64.ofNat k,
+       (regionBase .arena + UInt64.ofNat a.ONE), devPtr A, UInt64.ofNat (if ta = 1 then k else m), devPtr B,
+       UInt64.ofNat (if tb = 1 then n else k), (regionBase .arena + UInt64.ofNat a.ZERO), devPtr C, UInt64.ofNat m]
+
+/-- A cuBLAS product as a pipeline reads it: the function, and what each word
+    it is handed names. -/
+def gemmOp (a : Drv.App) (ws : List UInt64) : DeviceOp :=
+  ({ fnName := (Ext.cublas .sgemm).symbol, kernelOff := none, nBufs := none, bindOff := none,
+     gridX := none, blockX := none }, { args := ws.map (wordBuf a) })
+
+/-- A captured graph's replay as a pipeline reads it: the function, and what
+    the words it is handed (the executable graph and the stream) name. -/
+def graphOp (a : Drv.App) (ws : List UInt64) : DeviceOp :=
+  ({ fnName := (Ext.cuda .graphLaunch).symbol, kernelOff := none, nBufs := none, bindOff := none,
+     gridX := none, blockX := none }, { args := ws.map (wordBuf a) })
+
+/-- **The record of product `g`** of a program in the standard layout. -/
+def appGemm (a : Drv.App) (g : Gemm) : DeviceOp := gemmOp a (a.gemmWords g)
+
+/-- A step of a program that launches kernels and calls cuBLAS: kernel `j`'s
+    launch, or a product. -/
+def appStep (a : Drv.App) : Sum Nat Gemm → DeviceOp
+  | .inl j => appLaunch a j
+  | .inr g => appGemm a g
+
+
+/-- The calls a stage can be read from: the driver's kernel launch. -/
+def stageLaunchNames : List String := [(Ext.cuda .launchKernel).symbol]
 
 /-- **The stage a launch record names.**
 
@@ -152,9 +189,7 @@ def stageLaunchNames : List String := AlgorithmLib.Clif.positionalLaunchNames ++
       that stream: `none` is the default stream, which is ordered against
       everything, and a fragment whose records disagree realises nothing.
 
-      A `_named` variant is refused outright: its extra argument shifts every
-      later one, so `Clif.launchAt` declines to recover its fields and the
-      match below would be reading the wrong positions. -/
+      -/
 def stageOf? (T : List KernelBinding) (str : Option Nat) (op : DeviceOp) : Option StageSpec :=
   if op.1.fnName ∉ stageLaunchNames then none
   else if op.1.stream ≠ str then none else
@@ -320,13 +355,11 @@ structure DeclaredBinding where
   args : List BufDesc
   decl : DeclaredStep
 
-/-- The calls a declared step can be read from: the engine's vendor entry
-    points, and cuBLAS's own and the driver's graph launch, which a program in
-    the driver's standard layout calls (`Drv.App`). -/
+/-- The calls a declared step can be read from: cuBLAS's products, a copy from
+    the host, and a captured graph's replay. -/
 def writerNames : List String :=
-  AlgorithmLib.Clif.deviceWriterNames ++
-    ["cublasSgemv", "cublasSgemm", "cublasSgemmStridedBatched", "cublasGemmEx", "cublasGemmStridedBatchedEx",
-     "cuGraphLaunch"]
+  [Ext.cublas .sgemv, Ext.cublas .sgemm, Ext.cublas .sgemmStridedBatched, Ext.cublas .sgemmBatched,
+   Ext.cublas .gemmEx, Ext.cublas .gemmStridedBatchedEx, Ext.cuda .memcpyHtoD, Ext.cuda .graphLaunch].map Ext.symbol
 
 def declaredOf? : List DeclaredBinding → String → List BufDesc → Option DeclaredStep
   | [],                   _,  _  => none
@@ -336,7 +369,7 @@ def declaredOf? : List DeclaredBinding → String → List BufDesc → Option De
       -- costs proportionally to it.
       --
       -- `args` first, for the same reason `bindingOf?` tests `bindOff` first:
-      -- every declared entry in a transformer layer is named `cl_cublas_sgemv`,
+      -- every declared entry in a transformer layer is the same GEMV,
       -- so the name never discriminates and testing it first means each of the
       -- nine entries is rejected only after comparing a nine-element argument
       -- list.  The arguments are what tell `Wq` from `Wk` from `Wv`.
@@ -530,113 +563,5 @@ theorem stepsOf?_appendTable (T T' : List KernelBinding) (D D' : List DeclaredBi
           cases hr : stepsOf? T D str rest with
           | none => rw [hr] at h0; exact Option.noConfusion h0
           | some rest' => rw [ih rest' hr]; rw [hr] at h0; exact h0
-
--- ---------------------------------------------------------------------------
--- The two halves, joined
--- ---------------------------------------------------------------------------
-
-/-- **The executed launch sequence realises the same pipeline as the declared
-    one.**
-
-    An immediate corollary of `flatHI_sound`, and that is the point: because the
-    trace the machine accumulates *is* `HStmt.launches`, anything proven about
-    the declared sequence transfers to the sequence the compiled program
-    actually performs — through the layer loop and the call, neither of which a
-    static scan of the emitted CLIF can see through.
-
-    `bs` is the bind-array list the scan recovered for the same code — supplied
-    rather than derived, because `HStmt` declares a launch *sequence* and the
-    arrays are recovered by `Clif.bindsOf` from the instructions.  It is not a
-    new assumption: the caller discharges `hpl` on the real program, where `bs`
-    *is* `Clif.bindsOf` of it, and `Clif.bindsOf_length` says the zip drops
-    nothing. -/
-theorem host_realises_pipeline
-    (fnLaunch : Callee) (ptr : Val)
-    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") (P : List HI)
-    (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
-    (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
-    (htame : HStmt.TameB ptr s = true)
-    (hfar : FarOk e ptr n s.farArgs)
-    (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
-    (hfit : Fits P p (code fnLaunch ptr n p s))
-    (T : List KernelBinding) (Pl : Pipeline)
-    (str : Option Nat) (hpl : pipelineOf? T str s.deviceOps = some Pl) :
-    ∃ k c', hsteps ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
-      ∧ pipelineOf? T str (c'.trace.zip c'.btrace) = some Pl := by
-  obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
-    flatHI_sound fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
-  exact ⟨k, c', hr, by
-    rw [htr, hbt, List.nil_append, List.nil_append]; exact hpl⟩
-
-/-- **End to end on the host side.**
-
-    Running the emitted program performs a device-write sequence which, under
-    the kernel table, *is* a pipeline; and executing that pipeline computes its
-    denotation — the fold of the stages' `step`s over memory.
-
-    Read as a chain: the loop-and-call structure of the driver (proven), the
-    device writes it performs *and the buffers each was handed* (proven), the
-    stages those resolve to (checked against the table), and what those stages
-    compute (proven).  What is left trusted between the third and fourth links
-    is exactly the table: that the PTX at slot `off` is the compiled `S.ew`.  It
-    is a hypothesis with a name rather than a step nothing mentions. -/
-theorem host_computes_denote
-    (fnLaunch : Callee) (ptr : Val)
-    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") (P : List HI)
-    (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
-    (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
-    (htame : HStmt.TameB ptr s = true)
-    (hfar : FarOk e ptr n s.farArgs)
-    (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
-    (hfit : Fits P p (code fnLaunch ptr n p s))
-    (T : List KernelBinding) (Pl : Pipeline)
-    (str : Option Nat) (hpl : pipelineOf? T str s.deviceOps = some Pl)
-    (hex : Pl.Exclusive) (st : WSt) :
-    ∃ k c', hsteps ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
-      ∧ pipelineOf? T str (c'.trace.zip c'.btrace) = some Pl
-      ∧ (Pl.run st).mem = Pl.denote st.mem := by
-  obtain ⟨k, c', hr, hp⟩ :=
-    host_realises_pipeline fnLaunch ptr hfn P s n p e sm ct hptr he htame hfar hfd hfit
-      T Pl str hpl
-  exact ⟨k, c', hr, hp, Pipeline.run_denote Pl hex st⟩
-
-/-- **The whole thing, with the declared steps in it.**
-
-    Running the emitted CLIF performs a device-write sequence — records *and*
-    bind arrays, through the loop; under the two tables that sequence *is* a
-    `Plan`; and the plan computes its denotation given `Honours R`, one named
-    hypothesis covering every declared step.
-
-    This is what "proven all the way" means here. The chain from a host loop to
-    a memory transformation is closed; what it rests on is enumerated rather
-    than assumed silently: the PTX printer, the PTX model and driver, and the
-    performance gaps taken deliberately — float associativity, and cuBLAS's
-    unspecified fold order. `Plan.declaredCount` measures the last of these.
-
-    **Nothing is supplied alongside the program.**  Taking the bind list as a
-    parameter would mean sourcing it from a separate static scan, which cannot
-    see through the layer loop — leaving what the twenty-fourth iteration bound
-    outside the theorem.  The machine executes the bind stores, so the arrays
-    in the conclusion are the ones the program wrote. -/
-theorem host_computes_plan
-    (fnLaunch : Callee) (ptr : Val)
-    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") (P : List HI)
-    (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
-    (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
-    (htame : HStmt.TameB ptr s = true)
-    (hfar : FarOk e ptr n s.farArgs)
-    (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
-    (hfit : Fits P p (code fnLaunch ptr n p s))
-    (T : List KernelBinding) (D : List DeclaredBinding) (Pl : Plan)
-    (str : Option Nat) (hpl : planOf? T D str s.deviceOps = some Pl)
-    (R : Realisation) (hR : Honours R) (hex : Pl.Exclusive) (st : WSt) :
-    ∃ k c', hsteps ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
-      ∧ planOf? T D str (c'.trace.zip c'.btrace) = some Pl
-      ∧ (Pl.run R st).mem = Pl.denote st.mem := by
-  obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
-    flatHI_sound fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
-  exact ⟨k, c', hr,
-         by rw [htr, hbt, List.nil_append, List.nil_append]; exact hpl,
-         Plan.run_denote R hR Pl hex st⟩
 
 end AlgorithmLib.ML

@@ -67,7 +67,7 @@ def dispatchOnce : Prog V L Unit := do
   let _ ← ext (.wgpu .bufferRead) %[dev, st, z, out, ← iconst64 N]
 
 abbrev Start : World → Prop := Contracts.TState.holds
-  [.part .gpuAdapter true, .part .frozen false, .part .idle true, .room .arena 4096, .room .out N,
+  [.part .gpuAdapter true, .part .idle true, .room .arena 4096, .room .out N,
    .nwg 0, .wg1 .commandEncoder none, .wg1 .computePass none, .wg1 .commandBuffer none,
    .wgText (regionBase .arena + UInt64.ofNat SHADER_OFF) SHADER_LEN true,
    .wgText (regionBase .arena + UInt64.ofNat NAME_OFF) 4 false]

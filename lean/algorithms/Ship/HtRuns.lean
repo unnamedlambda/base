@@ -38,16 +38,16 @@ structure Api (V : ClifTy → Type) (L : List ClifTy → List ClifTy → Type) w
   getEntry : V .i64 → V .i32 → V .i64 → V .i64 → Prog V L (V .i64)
 
 /-- The table called by its entry points, each a call to the library's
-    function at the entry point's place (`Ffi.libSlot`). -/
+    function at the entry point's place (`LibFn.libSlot`). -/
 def entry : Api V L where
-  init s := ffiVoid .htInit %[s]
-  cleanup s := ffiVoid .htCleanup %[s]
-  create c := do uextend64 (← ffi .htCreate %[c])
-  insert c k kl v vl := ffiVoid .htInsert %[c, k, kl, v, vl]
-  lookup c k kl o := do uextend64 (← ffi .htLookup %[c, k, kl, o])
-  increment c k kl a := ffi .htIncrement %[c, k, kl, a]
-  count c := do uextend64 (← ffi .htCount %[c])
-  getEntry c i ko vo := do uextend64 (← ffi .htGetEntry %[c, i, ko, vo])
+  init s := callLibVoid .htInit %[s]
+  cleanup s := callLibVoid .htCleanup %[s]
+  create c := do uextend64 (← callLib .htCreate %[c])
+  insert c k kl v vl := callLibVoid .htInsert %[c, k, kl, v, vl]
+  lookup c k kl o := do uextend64 (← callLib .htLookup %[c, k, kl, o])
+  increment c k kl a := callLib .htIncrement %[c, k, kl, a]
+  count c := do uextend64 (← callLib .htCount %[c])
+  getEntry c i ko vo := do uextend64 (← callLib .htGetEntry %[c, i, ko, vo])
 
 def lo32 (x : V .i64) : Prog V L (V .i64) := do band x (← iconst64 0xFFFFFFFF)
 
@@ -63,7 +63,7 @@ def lib : Api V L where
 
 /-- The library's function for an entry point, as one of the program's: the
     function `Ship.HtSpec`'s `_calls` theorems speak of. -/
-def fnOf (f : Ffi) : Option Fn := (LibHt.implOf f).map (LibSpec.implFn f.params)
+def fnOf (f : LibFn) : Option Fn := (LibHt.implOf f).map (LibSpec.implFn f.params)
 
 /-- The program's functions: the library's, at the places a linked program
     calls them and at the places their entry points name. -/

@@ -12,9 +12,9 @@ A `Frame` says which memory a call may disturb, and only that: a call writes
 at an address built from its own arguments and leaves the rest of memory
 alone. It does not say what it writes.
 
-Every entry point has one, read off `base/src/ffi/`. None is taken on trust:
-`Spec.lean` proves each contract writes only inside its frame
-(`callFfi_respects_frame`).
+Every C library function has one (`Ext.frame`). None is taken on trust:
+`ExtContracts` proves each model writes only inside its frame
+(`ext_respects_frame`).
 -/
 
 namespace AlgorithmLib.HProg
@@ -50,35 +50,10 @@ inductive Frame where
   | anywhere
   deriving Repr, BEq
 
-/-- Context slots are one pointer wide, and every `*_init`/`*_cleanup` writes
-    exactly that at the slot it is handed. -/
-def ctxSlot : Frame := .fixed 0 8
-
-/-- The memory each entry point may write, ordered by module to match
-    `base/src/ffi/`.
-
-    A total function of `Ffi`, so every entry point has a frame and none is
-    named that no declaration uses — which a table keyed by symbol name could
-    not say: a misspelt symbol there is a program with no frame. -/
-def frame : IR.Ffi → Frame
-  -- mod.rs — the libm shims are pure.
-  | .sinf | .cosf | .powf => .none
-
-  -- The hash table's entry points are `Lib.Ht`'s functions, the program's
-  -- own: the engine writes nothing for them.
-  | .htInit | .htCleanup | .htCreate | .htCount | .htInsert | .htIncrement | .htLookup | .htGetEntry => .none
-
-  -- lmdb.rs — reads write their result where the caller asked, for as long as
-  -- the stored value is.
-  | .lmdbInit | .lmdbCleanup => ctxSlot
-  | .lmdbCursorScan => .at 5 6
-  | .lmdbOpen | .lmdbPut | .lmdbBeginWriteTxn | .lmdbCommitWriteTxn => .none
-
-  -- thread.rs — a spawned body runs against the arena it is handed, so what it
-  -- writes is the callee's frame, not this one's.
-  | .threadInit | .threadCleanup => ctxSlot
-  | .threadSpawn => .dataDependent 2
-  | .threadJoin => .none
+/-- The memory a library function's call may write for the engine: none. The
+    functions are `Lib.Ht`'s and `Lib.Math`'s, the program's own, and what
+    they write is their bodies'. -/
+def frame : IR.LibFn → Frame := fun _ => .none
 
 /-- **What a C library function may write**, by its parameters. The copies
     write their destination for their count; the driver writes each object it
@@ -110,9 +85,6 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   -- other functions write none.
   | .base .fileReadToPtr => .at 2 4
   | .base .stdinReadline => .at 0 1
-  -- A thread started runs a function of the program's against the arena it
-  -- is handed.
-  | .base .threadStart => .dataDependent 1
   | .base _ => .none
   -- The serial library writes a port's name and what a read takes; the USB
   -- library what a transfer brings back from the device.
@@ -129,11 +101,6 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   | .window .poll => .fixed 1 32
   | .window _ => .none
 
-/-- The frame declared for a symbol, or `none` when it is not an entry point —
-    which is the honest answer for a program's own colocated functions, and the
-    one a proof has to handle. -/
-def frameOf (name : String) : Option Frame := (IR.Ffi.ofCname name).map frame
-
 -- ---------------------------------------------------------------------------
 -- What one program assumes
 -- ---------------------------------------------------------------------------
@@ -143,7 +110,7 @@ def frameOf (name : String) : Option Frame := (IR.Ffi.ofCname name).map frame
     nothing here reads what it does. A call to one of the program's own
     functions assumes nothing: its body is part of the program. -/
 def calleeFrame : IR.Callee → Option (String × Option Frame)
-  | .ffi f   => some (f.cname, frameOf f.cname)
+  | .lib f   => some (f.cname, some (frame f))
   | .local _ => none
   | .native  => some ("native code", some .anywhere)
   -- A host's function likewise: nothing here reads what it does.

@@ -133,22 +133,21 @@ theorem map_push_live {α : Type} (live : α → Bool) (arr : Array α) (x : α)
 -- ---------------------------------------------------------------------------
 
 /-- `m'` is `m` with at most its bytes changed and pinned memory grown:
-    frozen alike, every other region as large. -/
+    every other region as large. -/
 def Rewritten (m m' : Mem) : Prop :=
-  m'.frozen = m.frozen ∧ (∀ r, r ≠ .pinned → m'.sizes r = m.sizes r) ∧ m.sizes .pinned ≤ m'.sizes .pinned ∧
-    m'.busy = m.busy
+  (∀ r, r ≠ .pinned → m'.sizes r = m.sizes r) ∧ m.sizes .pinned ≤ m'.sizes .pinned ∧ m'.busy = m.busy
 
-theorem Rewritten.refl (m : Mem) : Rewritten m m := ⟨rfl, fun _ _ => rfl, Nat.le_refl _, rfl⟩
+theorem Rewritten.refl (m : Mem) : Rewritten m m := ⟨fun _ _ => rfl, Nat.le_refl _, rfl⟩
 
-theorem Rewritten.of_eq {m m' : Mem} (hf : m'.frozen = m.frozen) (hs : m'.sizes = m.sizes)
+theorem Rewritten.of_eq {m m' : Mem} (hs : m'.sizes = m.sizes)
     (hb : m'.busy = m.busy) : Rewritten m m' :=
-  ⟨hf, fun r _ => by rw [hs], by rw [hs]; exact Nat.le_refl _, hb⟩
+  ⟨fun r _ => by rw [hs], by rw [hs]; exact Nat.le_refl _, hb⟩
 
 theorem Rewritten.copyIn (m : Mem) (a : UInt64) (src : ByteArray) :
     Rewritten m ((Sem.copyIn m a src).getD m) := by
   cases h : Sem.copyIn m a src with
   | none => exact Rewritten.refl m
-  | some m' => exact Rewritten.of_eq (copyIn_frozen h) (copyIn_sizes_eq h) (copyIn_busy h)
+  | some m' => exact Rewritten.of_eq (copyIn_sizes_eq h) (copyIn_busy h)
 
 theorem Blk.live {w : World} {x : UInt64} {n : Nat} (h : Blk w x n) : Held.live .heap w x = true := by
   obtain ⟨off, m, hat, -⟩ := h
@@ -160,8 +159,6 @@ theorem Blk.live {w : World} {x : UInt64} {n : Nat} (h : Blk w x n) : Held.live 
 structure LibStep (e : Ext) (bits : List UInt64) (w : World) (r : Option V) (w' : World) : Prop where
   obs : w'.obs = w.obs
   dev : w'.dev = w.dev
-  lmdb : w'.lmdb = w.lmdb
-  thread : w'.thread = w.thread
   display : w'.display = w.display
   cudaDevice : w'.cudaDevice = w.cudaDevice
   gpuAdapter : w'.gpuAdapter = w.gpuAdapter
@@ -338,7 +335,7 @@ theorem wl_step {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := wlCall_of h
   obtain ⟨wl, inp, he⟩ := wlEffect_shape c w
   have hwl : ((wlEffect c w).2).wl = wl := by rw [he]
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | window =>
@@ -455,7 +452,7 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
     (h : serialCall f bits w = some (r, w')) : LibStep (.serial f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := serialCall_of h
   obtain ⟨ser, he⟩ := serEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | port =>
@@ -610,7 +607,7 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
     (h : usbCall f bits w = some (r, w')) : LibStep (.usb f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := usbCall_of h
   obtain ⟨usb, ifs, he⟩ := usbEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | usbInterface =>
@@ -669,7 +666,7 @@ theorem cpu_step {f : CpuFn} {bits : List UInt64} {w : World} {r : Option V} {w'
   split at h
   · cases h
   · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl, ?_,
+    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl, ?_,
       fun ⟨_, h⟩ => nomatch h⟩
     intro k x hk; simp [Ext.opens] at hk
 
@@ -679,14 +676,14 @@ theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {
   have hr : Rewritten w.mem w'.mem := by
     rcases hmem with hm | ⟨-, _, _, hc⟩
     · rw [hm]; exact Rewritten.refl _
-    · exact Rewritten.of_eq (copyIn_frozen hc) (copyIn_sizes_eq hc) (copyIn_busy hc)
+    · exact Rewritten.of_eq (copyIn_sizes_eq hc) (copyIn_busy hc)
   generalize w'.native = n at hw
   generalize w'.fs = fs at hw
   generalize w'.stdin = si at hw
   generalize w'.stdout = so at hw
   generalize w'.mem = m at hw hr
   subst hw
-  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hr,
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hr,
     fun k _ _ hl => by cases k <;> exact hl,
     fun k x hk => by simp [Ext.opens] at hk, fun ⟨_, h⟩ => nomatch h⟩
 
@@ -698,8 +695,8 @@ theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {
 theorem LibStep.of_mem {e : Ext} {bits : List UInt64} {w : World} {r : Option V} {m : Mem}
     (hm : Rewritten w.mem m) (ho : e.opens = none) (hl : m.pinnedLive = w.mem.pinnedLive) :
     LibStep e bits w r { w with mem := m } :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hm, fun k _ _ hl => by cases k <;> exact hl,
-    fun k _ hk => (by rw [ho] at hk; cases hk), fun _ _ _ _ h => h.same rfl hm.2.2.1 hl⟩
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hm, fun k _ _ hl => by cases k <;> exact hl,
+    fun k _ hk => (by rw [ho] at hk; cases hk), fun _ _ _ _ h => h.same rfl hm.2.1 hl⟩
 
 theorem find_cons_isSome {α : Type} (p : α → Bool) (x : α) (l : List α) (h : (l.find? p).isSome = true) :
     ((x :: l).find? p).isSome = true := by
@@ -718,18 +715,18 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
       (DevSpec.copyIn_same hm).live.symm
   -- memmove
   · obtain ⟨bs, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
       (DevSpec.copyIn_same hm).live.symm
   -- memset
   · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     cases h
-    exact LibStep.of_mem (Rewritten.of_eq (copyIn_frozen hm) (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
+    exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm)) rfl
       (DevSpec.copyIn_same hm).live.symm
   -- strlen
   · obtain ⟨i, -, h⟩ := Option.bind_eq_some_iff.mp h
@@ -741,13 +738,13 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     · cases h
     split at h
     · cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun k _ _ hl => hl, ?_,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun k _ _ hl => hl, ?_,
         fun _ _ _ _ h => h⟩
       intro k x _ hx h0
       exact (answer_zero rfl hx h0).elim
     · rename_i hz hroom
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, rfl⟩,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, rfl⟩,
         fun k a _ hl => ?_, ?_, fun _ _ _ _ h => h.alloc _⟩
       · simp only [Mem.sizes, Mem.region, ByteArray.size_append]; omega
       · cases k
@@ -769,7 +766,7 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
       exact LibStep.of_mem (Rewritten.refl _) rfl rfl
     · obtain ⟨⟨off, n⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq rfl (funext fun r => by cases r <;> rfl) rfl,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq (funext fun r => by cases r <;> rfl) rfl,
         fun k a hk hl => ?_, ?_, fun _ hc => absurd rfl hc⟩
       · cases k
         all_goals first | exact hl | exact absurd rfl hk
@@ -806,7 +803,7 @@ theorem lib_step {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {r : O
   case c f => exact c_step h
   case present l =>
     obtain ⟨rfl, -⟩ := present_same h
-    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl,
+    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl,
       fun k x hk => by simp [Ext.opens] at hk, fun ⟨_, h⟩ => nomatch h⟩
   all_goals
     simp only [extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true, Bool.false_eq_true,
@@ -858,26 +855,21 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       cases p
       · show w'.dev.live = w.dev.live; rw [st.dev]
       · show w'.dev.capture.isSome = w.dev.capture.isSome; rw [st.dev]
-      · exact st.mem.1
-      · show w'.lmdb.live = w.lmdb.live; rw [st.lmdb]
-      · show w'.thread.live = w.thread.live; rw [st.thread]
-      · show w'.lmdb.envs.isEmpty = w.lmdb.envs.isEmpty; rw [st.lmdb]
       · show w'.display = w.display; rw [st.display]
       · show w'.cudaDevice = w.cudaDevice; rw [st.cudaDevice]
       · show w'.gpuAdapter = w.gpuAdapter; rw [st.gpuAdapter]
-      · show w'.mem.busy.isEmpty = w.mem.busy.isEmpty; rw [st.mem.2.2.2]
+      · show w'.mem.busy.isEmpty = w.mem.busy.isEmpty; rw [st.mem.2.2]
       · show w'.has _ = w.has _; simp only [World.has, st.present]
   | room rg n =>
       show n ≤ w'.mem.sizes rg
       by_cases hp : rg = .pinned
-      · subst hp; exact Nat.le_trans hx st.mem.2.2.1
-      · rw [st.mem.2.1 rg hp]; exact hx
+      · subst hp; exact Nat.le_trans hx st.mem.2.1
+      · rw [st.mem.1 rg hp]; exact hx
   | cell a v =>
       simp only [extKeeps, Bool.and_eq_true] at hk
       obtain ⟨⟨-, hok⟩, hno⟩ := hk
       obtain ⟨rg, off, hd, hp, hbytes⟩ := cellOk_spec hok
-      have hz : w.mem.frozen = false := frozen_of_load hd hp hx
-      refine load_kept hd hp hbytes hx (by rw [st.mem.1, hz]) (st.mem.2.1 _ hp) fun i hi => ?_
+      refine load_kept hd hp hbytes hx (st.mem.1 _ hp) fun i hi => ?_
       have hm : e.frame.mayWrite bits (a + UInt64.ofNat i) = false := by
         have := List.all_eq_true.mp hno i (List.mem_range.mpr hi)
         simpa using this
@@ -904,18 +896,18 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
   | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl st.wg hx
   | wgText a n sh =>
       simp only [extKeeps, Bool.and_eq_true, Bool.not_eq_true'] at hk
-      refine wgText_kept hx (by rw [st.mem.1]; exact hx.1) (fun rg hp => st.mem.2.1 rg hp) st.wgslOk fun i hi => ?_
+      refine wgText_kept hx (fun rg hp => st.mem.1 rg hp) st.wgslOk fun i hi => ?_
       exact ExtContracts.ext_respects_frame e vs w r w' h bits hb _
         (Frame.mayWrite_sound (Frame.touches_false hk.2 i hi) _)
   | roomArg rg x =>
       show x.toNat ≤ w'.mem.sizes rg ∧ _
       refine ⟨?_, hx.2⟩
       by_cases hp : rg = .pinned
-      · subst hp; exact Nat.le_trans hx.1 st.mem.2.2.1
-      · rw [st.mem.2.1 rg hp]; exact hx.1
+      · subst hp; exact Nat.le_trans hx.1 st.mem.2.1
+      · rw [st.mem.1 rg hp]; exact hx.1
   | cstrIn a n =>
       simp only [extKeeps, Bool.and_eq_true, Bool.not_eq_true'] at hk
-      refine cstrIn_kept hx (by rw [st.mem.1]; exact hx.1) (fun rg hp => st.mem.2.1 rg hp) fun i hi => ?_
+      refine cstrIn_kept hx (fun rg hp => st.mem.1 rg hp) fun i hi => ?_
       exact ExtContracts.ext_respects_frame e vs w r w' h bits hb _
         (Frame.mayWrite_sound (Frame.touches_false hk.2 i hi) _)
   | htAt _ _ _ | cstr _ => simp [extKeeps] at hk
@@ -1148,8 +1140,8 @@ theorem roomAt_sub {S S' : TState} (hsub : ∀ x ∈ S', x ∈ S) {a : UInt64} {
   unfold roomAt at h ⊢
   split at h
   · simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true, List.contains_iff_mem] at h ⊢
-    obtain ⟨⟨⟨hp, hn⟩, hz⟩, x, hx, hr⟩ := h
-    exact ⟨⟨⟨hp, hn⟩, hsub _ hz⟩, x, hsub _ hx, hr⟩
+    obtain ⟨⟨hp, hn⟩, x, hx, hr⟩ := h
+    exact ⟨⟨hp, hn⟩, x, hsub _ hx, hr⟩
   · cases h
 
 /-- What an engine function needs: its arguments, and for a wait or a wake
@@ -1188,8 +1180,8 @@ theorem baseNeeds_pre {f : BaseFn} {bits : List UInt64} {w : World} {hs : List (
         (Fits.mono (Nat.min_le_left _ _) (room _ (List.mem_cons_of_mem _ List.mem_cons_self))).writable⟩
     | (split at hn
        · rename_i ha; cases hn
-         obtain ⟨r, off, hd, hp, hs, hz, -⟩ := room _ List.mem_cons_self
-         exact ⟨ha, load_isSome hd hp hs hz⟩
+         obtain ⟨r, off, hd, hp, hs, -⟩ := room _ List.mem_cons_self
+         exact ⟨ha, load_isSome hd hp hs⟩
        · cases hn)
 
 /-- The C strings a call reads: a window's title. -/
@@ -1256,7 +1248,7 @@ theorem usbIface_get {w : World} {a : UInt64} {j : Nat} (h : w.usbIface? a = som
   | some f => exact ⟨f, rfl⟩
 
 /-- **What a call needs is enough**: the handles `extNeeds` names held, and
-    the bytes it names in memory not frozen, give the call's precondition. -/
+    the bytes it names in memory, give the call's precondition. -/
 theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
     {hs : List (Held × UInt64)} {rs : List (UInt64 × Nat)}
     (hn : extNeeds e bits = some (hs, rs))

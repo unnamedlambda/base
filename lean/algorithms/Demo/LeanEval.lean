@@ -32,11 +32,11 @@ def STACK_SZ       : Nat := 4096
 open AlgorithmLib.IR
 open AlgorithmLib.Prog
 
-abbrev fnHtInit : Ffi := .htInit
-abbrev fnHtCleanup : Ffi := .htCleanup
-abbrev fnHtCreate : Ffi := .htCreate
-abbrev fnHtInsert : Ffi := .htInsert
-abbrev fnHtLookup : Ffi := .htLookup
+abbrev fnHtInit : LibFn := .htInit
+abbrev fnHtCleanup : LibFn := .htCleanup
+abbrev fnHtCreate : LibFn := .htCreate
+abbrev fnHtInsert : LibFn := .htInsert
+abbrev fnHtLookup : LibFn := .htLookup
 
 /-- The constants and base addresses the evaluator reads, made once in the
     entry block. `ctx` is the binding table, created before the machine runs. -/
@@ -189,7 +189,7 @@ def readVar (k : K V) (evalLbl : EvalLbl L) (start : V .i64) :
       istore8 ch (← iadd k.identAddr (← umin n k.identLast))
       return %[← iaddImm p 1, ← iaddImm n 1])
   let v ← ifte .ugt (e.snd) k.identSz (failWith evalLbl k) (do
-    let _ ← ffi fnHtLookup
+    let _ ← callLib fnHtLookup
       %[k.ctx, k.identAddr, ← ireduce32 (e.snd), k.htValAddr]
     return %[← load64 k.htValAddr])
   return (e.head, v.head)
@@ -201,7 +201,7 @@ def bindName (k : K V) (evalLbl : EvalLbl L) (namePos value : V .i64) :
   let (_, len) ← readName k namePos
   let _ ← ifte .ugt len k.identSz (failWith evalLbl k) (do
     store value k.htValAddr
-    ffiVoid fnHtInsert
+    callLibVoid fnHtInsert
       %[k.ctx, k.identAddr, ← ireduce32 len, k.htValAddr, ← iconst32 8]
     pure %[])
 
@@ -461,9 +461,9 @@ def mainCode : Prog V L Unit := do
   -- one byte short of the buffer: its last byte stays zero, the text's end
   let _ ← readFile ptr INPUT_PATH (SOURCE_BUF - INPUT_PATH) SOURCE_BUF (SOURCE_BUF_SZ - 1)
   let htSlotPtr ← absAddr ptr AlgorithmLib.ContextSlots.ht
-  ffiVoid fnHtInit %[htSlotPtr]
+  callLibVoid fnHtInit %[htSlotPtr]
   let ctx ← load64 htSlotPtr
-  let _ ← ffi fnHtCreate %[ctx]
+  let _ ← callLib fnHtCreate %[ctx]
 
   let k : K V := {
     ptr := ptr, z8 := z8, zero := zero, one := one,
@@ -575,7 +575,7 @@ def mainCode : Prog V L Unit := do
       (ifte .ne value zero (do writeText k "true\n"; pure %[])
         (do writeText k "false\n"; pure %[]))
       (do writeDecimal k value; pure %[]))
-  ffiVoid fnHtCleanup %[htSlotPtr]
+  callLibVoid fnHtCleanup %[htSlotPtr]
 
 -- Deciding `wf` walks the whole body: deeper than the default recursion budget,
 -- and long enough that the kernel does not finish inside the default heartbeats.

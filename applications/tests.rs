@@ -25,8 +25,6 @@ mod shared_sum_rayon;
 mod cli_comparison;
 #[path = "compress/tests/roundtrip.rs"]
 mod compress_roundtrip;
-#[path = "csv/tests/smoke.rs"]
-mod csv_smoke;
 #[path = "draw/tests/smoke.rs"]
 mod draw_smoke;
 #[path = "fft/tests/comparison.rs"]

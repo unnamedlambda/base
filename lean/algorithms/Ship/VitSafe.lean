@@ -33,7 +33,7 @@ theorem seedIx : Vit.VSEED = 977 := by native_decide
     live context, no capture open, the allocation of 102400 bytes with its
     pointer in its slot, and the caller's data and output. -/
 abbrev Run (i s d o : Nat) : World → Prop := Contracts.TState.holds
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .part .cuda true,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .devSeq, .oracles, .room .arena 1041668, .room .data d, .room .out o,
    .alloc i 102400, .cell (Drv.App.at_ s) (devPtr i)]
 

@@ -152,7 +152,7 @@ theorem wgDev_holds {S : TState} {w : World} {Γ : Env} {a : AV} {x : UInt64} {i
 theorem wgText_of {S : TState} {w : World} {a : UInt64} {n : Nat} {sh : Bool} (hS : S.holds w)
     (h : Fact.wgText a n sh ∈ S) :
     ∃ t, wgText w.mem a (UInt64.ofNat n) = some t ∧ (sh = true → w.wgslOk t = true) :=
-  (hS _ h).2.2.2
+  (hS _ h).2.2
 
 theorem wgTextAt_holds {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
     (h : wgTextAt S a n = true) : ∃ t, wgText w.mem a (UInt64.ofNat n) = some t := by
@@ -477,7 +477,7 @@ variable {S S' : TState} {w : World} {Γ : Env} {bits : List UInt64} {av : AV}
 
 theorem row_createInstance (hS : S.holds w) (hl : w.wg.lost = false) (hb : ArgBits Γ w [] bits)
     (h : wgRow S .createInstance [] = some (S', av)) : WgOk .createInstance bits w S' av := by
-  obtain rfl := argBits_nil hb
+  obtain rfl := ArgBits.nil_inv hb
   exact wgMake_ok (d := .instance) hS hl h (by simp [wgDecode]) (by decide) rfl (by simp [WgState.Fits])
     (by simp [wgKills, WgShape.kind])
 
@@ -487,8 +487,8 @@ theorem row_requestAdapter {i : AV} (hS : S.holds w) (hl : w.wg.lost = false) (h
   obtain ⟨⟨ii, si⟩, hi, h⟩ := h
   split at h
   · rename_i hc
-    obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-    obtain rfl := argBits_nil hb
+    obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+    obtain rfl := ArgBits.nil_inv hb
     obtain ⟨d, hg, -⟩ := wgoArg_holds hS hl hx hi
     have ha : w.gpuAdapter = true := holds_of_mem hS hc
     exact wgMake_ok (d := .adapter) hS hl h (by simp [wgDecode, wgDRequestAdapter, hg, ha]) (by decide) rfl
@@ -499,8 +499,8 @@ theorem row_requestDevice {a : AV} (hS : S.holds w) (hl : w.wg.lost = false) (hb
     (h : wgRow S .requestDevice [a] = some (S', av)) : WgOk .requestDevice bits w S' av := by
   simp only [wgRow, wgR_requestDevice, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, si⟩, hi, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨d, hg, -⟩ := wgoArg_holds hS hl hx hi
   exact wgMake_ok (d := .device []) hS hl h (by simp [wgDecode, wgDRequestDevice, hg]) (by decide) rfl
     (by simp [WgState.Fits]) (by simp [wgKills, WgShape.kind])
@@ -509,8 +509,8 @@ theorem row_deviceGetQueue {a : AV} (hS : S.holds w) (hl : w.wg.lost = false) (h
     (h : wgRow S .deviceGetQueue [a] = some (S', av)) : WgOk .deviceGetQueue bits w S' av := by
   simp only [wgRow, wgR_deviceGetQueue, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
   exact wgMake_ok (d := .queue) hS hl h (by simp [wgDecode, wgDGetQueue, hg]) (by decide) rfl
     (by simp [WgState.Fits]) (by simp [wgKills, WgShape.kind])
@@ -519,10 +519,10 @@ theorem row_deviceCreateBuffer {a u sz : AV} (hS : S.holds w) (hl : w.wg.lost = 
     (h : wgRow S .deviceCreateBuffer [a, u, sz] = some (S', av)) : WgOk .deviceCreateBuffer bits w S' av := by
   simp only [wgRow, wgR_deviceCreateBuffer, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, usage, hu, size, hsz, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hy hu
   obtain rfl := known_bits hz hsz
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
@@ -537,10 +537,10 @@ theorem row_deviceCreateShaderModule {a src n : AV} (hS : S.holds w) (hl : w.wg.
     WgOk .deviceCreateShaderModule bits w S' av := by
   simp only [wgRow, wgR_deviceCreateShaderModule, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, sa, hsa, k, hk, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hy hsa
   obtain rfl := known_bits hz hk
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
@@ -559,10 +559,10 @@ theorem row_deviceCreateBindGroupLayout {a ents n : AV} (hS : S.holds w) (hl : w
     WgOk .deviceCreateBindGroupLayout bits w S' av := by
   simp only [wgRow, wgR_deviceCreateBindGroupLayout, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, ea, hea, k, hk, es, hes, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hy hea
   obtain rfl := known_bits hz hk
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
@@ -581,10 +581,10 @@ theorem row_deviceCreatePipelineLayout {a arr n : AV} (hS : S.holds w) (hl : w.w
     WgOk .deviceCreatePipelineLayout bits w S' av := by
   simp only [wgRow, wgR_deviceCreatePipelineLayout, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, ea, hea, k, hk, gs, hgs, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hy hea
   obtain rfl := known_bits hz hk
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
@@ -635,12 +635,12 @@ theorem row_deviceCreateComputePipeline {a lh mh entry n : AV} (hS : S.holds w) 
     WgOk .deviceCreateComputePipeline bits w S' av := by
   simp only [wgRow, wgR_deviceCreateComputePipeline, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨li, l⟩, hL, ⟨mi, m⟩, hm, ⟨ii, sc⟩, hi, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain ⟨u, b, rfl, hu, hb⟩ := argBits_cons hb
-  obtain ⟨v, b, rfl, hv, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨u, b, rfl, hu, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨v, b, rfl, hv, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
   obtain ⟨dl, hgl, -, hfl, hkl⟩ := wgoArg_holds hS hl hy hL
   obtain ⟨dm, hgm, -, hfm, hkm⟩ := wgoArg_holds hS hl hz hm
@@ -690,11 +690,11 @@ theorem row_deviceCreateBindGroup {a lh ents n : AV} (hS : S.holds w) (hl : w.wg
     WgOk .deviceCreateBindGroup bits w S' av := by
   simp only [wgRow, wgR_deviceCreateBindGroup, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, ⟨li, l⟩, hL, ea, hea, k, hk, es, hes, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain ⟨u, b, rfl, hu, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨u, b, rfl, hu, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hz hea
   obtain rfl := known_bits hu hk
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
@@ -728,14 +728,14 @@ theorem row_deviceCreateRenderPipeline {a mh vs vn fs fn fmt : AV} (hS : S.holds
     WgOk .deviceCreateRenderPipeline bits w S' av := by
   simp only [wgRow, wgR_deviceCreateRenderPipeline, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨mi, m⟩, hm, ⟨ii, sc⟩, hi, va, hva, vk, hvk, fa, hfa, fk, hfk, ft, hft, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨x1, b, rfl, hx1, hb⟩ := argBits_cons hb
-  obtain ⟨x2, b, rfl, hx2, hb⟩ := argBits_cons hb
-  obtain ⟨x3, b, rfl, hx3, hb⟩ := argBits_cons hb
-  obtain ⟨x4, b, rfl, hx4, hb⟩ := argBits_cons hb
-  obtain ⟨x5, b, rfl, hx5, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x1, b, rfl, hx1, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x2, b, rfl, hx2, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x3, b, rfl, hx3, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x4, b, rfl, hx4, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x5, b, rfl, hx5, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hx1 hva
   obtain rfl := known_bits hx2 hvk
   obtain rfl := known_bits hx3 hfa
@@ -760,9 +760,9 @@ theorem row_renderPipelineGetBindGroupLayout {p idx : AV} (hS : S.holds w) (hl :
     WgOk .renderPipelineGetBindGroupLayout bits w S' av := by
   simp only [wgRow, wgR_renderPipelineGetBindGroupLayout, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨pi, ps⟩, hp, k, hk, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hy hk
   obtain ⟨d, hgd, -, hfd, -⟩ := wgoArg_holds hS hl hx hp
   split at h
@@ -779,9 +779,9 @@ theorem row_instanceCreateSurface {i win : AV} (hS : S.holds w) (hl : w.wg.lost 
     WgOk .instanceCreateSurface bits w S' av := by
   simp only [wgRow, wgR_instanceCreateSurface, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, si⟩, hi, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨d, hgd, -⟩ := wgoArg_holds hS hl hx hi
   split at h
   · split at h
@@ -949,8 +949,8 @@ theorem row_deviceCreateCommandEncoder {a : AV} (hS : S.holds w) (hl : w.wg.lost
     WgOk .deviceCreateCommandEncoder bits w S' av := by
   simp only [wgRow, wgR_deviceCreateCommandEncoder, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
   split at h
   · rename_i hn
@@ -967,8 +967,8 @@ theorem row_encoderBeginComputePass {e : AV} (hS : S.holds w) (hl : w.wg.lost = 
     WgOk .encoderBeginComputePass bits w S' av := by
   simp only [wgRow, wgR_encoderBeginComputePass, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨se, hse, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true, beq_iff_eq] at hc
@@ -994,10 +994,10 @@ theorem row_encoderBeginRenderPass {e v ld : AV} (hS : S.holds w) (hl : w.wg.los
     WgOk .encoderBeginRenderPass bits w S' av := by
   simp only [wgRow, wgR_encoderBeginRenderPass, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨se, hse, sv, hsv, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true, beq_iff_eq] at hc
@@ -1024,8 +1024,8 @@ theorem row_textureCreateView {t : AV} (hS : S.holds w) (hl : w.wg.lost = false)
     (h : wgRow S .textureCreateView [t] = some (S', av)) : WgOk .textureCreateView bits w S' av := by
   simp only [wgRow, wgR_textureCreateView, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨st, hst', h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   split at h
   · rename_i hn
     cases h
@@ -1042,8 +1042,8 @@ theorem row_encoderFinish {e : AV} (hS : S.holds w) (hl : w.wg.lost = false) (hb
     (h : wgRow S .encoderFinish [e] = some (S', av)) : WgOk .encoderFinish bits w S' av := by
   simp only [wgRow, wgR_encoderFinish, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨se, hse, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true, beq_iff_eq] at hc
@@ -1084,9 +1084,9 @@ theorem row_computePassSetPipeline {p q : AV} (hS : S.holds w) (hl : w.wg.lost =
     (h : wgRow S .computePassSetPipeline [p, q] = some (S', av)) : WgOk .computePassSetPipeline bits w S' av := by
   simp only [wgRow, wgR_computePassSetPipeline, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, ⟨qi, qs⟩, hq, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1112,10 +1112,10 @@ theorem row_computePassSetBindGroup {p idx g : AV} (hS : S.holds w) (hl : w.wg.l
     WgOk .computePassSetBindGroup bits w S' av := by
   simp only [wgRow, wgR_computePassSetBindGroup, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, ⟨gi, gs⟩, hg, k, hk, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hy hk
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
@@ -1138,9 +1138,9 @@ theorem row_renderPassSetPipeline {p q : AV} (hS : S.holds w) (hl : w.wg.lost = 
     (h : wgRow S .renderPassSetPipeline [p, q] = some (S', av)) : WgOk .renderPassSetPipeline bits w S' av := by
   simp only [wgRow, wgR_renderPassSetPipeline, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, ⟨qi, qs⟩, hq, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1166,10 +1166,10 @@ theorem row_renderPassSetBindGroup {p idx g : AV} (hS : S.holds w) (hl : w.wg.lo
     WgOk .renderPassSetBindGroup bits w S' av := by
   simp only [wgRow, wgR_renderPassSetBindGroup, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, ⟨gi, gs⟩, hg, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨z, b, rfl, hz, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨z, b, rfl, hz, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1217,8 +1217,8 @@ theorem row_computePassEnd {p : AV} (hS : S.holds w) (hl : w.wg.lost = false) (h
     (h : wgRow S .computePassEnd [p] = some (S', av)) : WgOk .computePassEnd bits w S' av := by
   simp only [wgRow, wgR_computePassEnd, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1239,8 +1239,8 @@ theorem row_renderPassEnd {p : AV} (hS : S.holds w) (hl : w.wg.lost = false) (hb
     (h : wgRow S .renderPassEnd [p] = some (S', av)) : WgOk .renderPassEnd bits w S' av := by
   simp only [wgRow, wgR_renderPassEnd, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1333,11 +1333,11 @@ theorem row_computePassDispatch {p gx gy gz : AV} (hS : S.holds w) (hl : w.wg.lo
     (h : wgRow S .computePassDispatch [p, gx, gy, gz] = some (S', av)) : WgOk .computePassDispatch bits w S' av := by
   simp only [wgRow, wgR_computePassDispatch, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y1, b, rfl, hy1, hb⟩ := argBits_cons hb
-  obtain ⟨y2, b, rfl, hy2, hb⟩ := argBits_cons hb
-  obtain ⟨y3, b, rfl, hy3, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y1, b, rfl, hy1, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y2, b, rfl, hy2, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y3, b, rfl, hy3, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1388,13 +1388,13 @@ theorem row_encoderCopyBufferToBuffer {e src so dst dof n : AV} (hS : S.holds w)
     WgOk .encoderCopyBufferToBuffer bits w S' av := by
   simp only [wgRow, wgR_encoderCopyBufferToBuffer, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, ⟨si, ss⟩, hsrc, ⟨di, ds⟩, hdst, k1, hk1, k2, hk2, nn, hnn, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨x1, b, rfl, hx1, hb⟩ := argBits_cons hb
-  obtain ⟨x2, b, rfl, hx2, hb⟩ := argBits_cons hb
-  obtain ⟨x3, b, rfl, hx3, hb⟩ := argBits_cons hb
-  obtain ⟨x4, b, rfl, hx4, hb⟩ := argBits_cons hb
-  obtain ⟨x5, b, rfl, hx5, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x1, b, rfl, hx1, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x2, b, rfl, hx2, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x3, b, rfl, hx3, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x4, b, rfl, hx4, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x5, b, rfl, hx5, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hx2 hk1
   obtain rfl := known_bits hx4 hk2
   obtain ⟨-, hnh, hna⟩ := num_holds hx5 hnn
@@ -1435,12 +1435,12 @@ theorem row_renderPassDraw {p a1 a2 a3 a4 : AV} (hS : S.holds w) (hl : w.wg.lost
     (h : wgRow S .renderPassDraw [p, a1, a2, a3, a4] = some (S', av)) : WgOk .renderPassDraw bits w S' av := by
   simp only [wgRow, wgR_renderPassDraw, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨x1, b, rfl, -, hb⟩ := argBits_cons hb
-  obtain ⟨x2, b, rfl, -, hb⟩ := argBits_cons hb
-  obtain ⟨x3, b, rfl, -, hb⟩ := argBits_cons hb
-  obtain ⟨x4, b, rfl, -, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x1, b, rfl, -, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x2, b, rfl, -, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x3, b, rfl, -, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x4, b, rfl, -, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨i, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1467,12 +1467,12 @@ theorem row_surfaceConfigure {sh dv fmt wd ht : AV} (hS : S.holds w) (hl : w.wg.
     (h : wgRow S .surfaceConfigure [sh, dv, fmt, wd, ht] = some (S', av)) : WgOk .surfaceConfigure bits w S' av := by
   simp only [wgRow, wgR_surfaceConfigure, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨si, ss⟩, hs, ⟨ii, sc⟩, hi, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨x1, b, rfl, hx1, hb⟩ := argBits_cons hb
-  obtain ⟨x2, b, rfl, hx2, hb⟩ := argBits_cons hb
-  obtain ⟨x3, b, rfl, hx3, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x1, b, rfl, hx1, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x2, b, rfl, hx2, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x3, b, rfl, hx3, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨d, hgd, hdi, hf, hks⟩ := wgoArg_holds hS hl hx hs
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hy hi
   cases ss <;> simp only [WgShape.kind, reduceCtorEq] at hks
@@ -1515,8 +1515,8 @@ theorem row_surfaceConfigure {sh dv fmt wd ht : AV} (hS : S.holds w) (hl : w.wg.
 theorem row_release {o : WgObj} {hh : AV} (hS : S.holds w) (hl : w.wg.lost = false) (hb : ArgBits Γ w [hh] bits)
     (h : wgRow S (.release o) [hh] = some (S', av)) : WgOk (.release o) bits w S' av := by
   simp only [wgRow, wgR_release] at h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   cases hp : wgoArg S hh o with
   | some p =>
       obtain ⟨i, s0⟩ := p
@@ -1559,9 +1559,9 @@ theorem row_queueSubmit {q cb : AV} (hS : S.holds w) (hl : w.wg.lost = false) (h
     (h : wgRow S .queueSubmit [q, cb] = some (S', av)) : WgOk .queueSubmit bits w S' av := by
   simp only [wgRow, wgR_queueSubmit, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨qi, qs⟩, hq, s0, hs0, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   split at h
   · rename_i hc
     simp only [beq_iff_eq] at hc; subst hc
@@ -1602,12 +1602,12 @@ theorem row_queueWriteBuffer {q bf off src n : AV} (hS : S.holds w) (hl : w.wg.l
     (h : wgRow S .queueWriteBuffer [q, bf, off, src, n] = some (S', av)) : WgOk .queueWriteBuffer bits w S' av := by
   simp only [wgRow, wgR_queueWriteBuffer, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨qi, qs⟩, hq, ⟨bi, bs⟩, hbf, k1, hk1, nn, hnn, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨x1, b, rfl, hx1, hb⟩ := argBits_cons hb
-  obtain ⟨x2, b, rfl, hx2, hb⟩ := argBits_cons hb
-  obtain ⟨x3, b, rfl, hx3, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x1, b, rfl, hx1, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x2, b, rfl, hx2, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x3, b, rfl, hx3, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hx1 hk1
   obtain ⟨-, hnh, hna⟩ := num_holds hx3 hnn
   obtain ⟨dq, hgq, -⟩ := wgoArg_holds hS hl hx hq
@@ -1622,8 +1622,8 @@ theorem row_queueWriteBuffer {q bf off src n : AV} (hS : S.holds w) (hl : w.wg.l
     simp only [Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hc1, hm⟩ := or_not_false hc
-    obtain ⟨r, o, hd, hp, hs, hz, hn⟩ := memB_spec hS hx2 hx3 hm
-    obtain ⟨bytes, hbytes⟩ := Option.isSome_iff_exists.mp (Contracts.copyOut_isSome hd hp hs hz hn)
+    obtain ⟨r, o, hd, hp, hs, hn⟩ := memB_spec hS hx2 hx3 hm
+    obtain ⟨bytes, hbytes⟩ := Option.isSome_iff_exists.mp (Contracts.copyOut_isSome hd hp hs hn)
     have hc' := hc1
     simp only [Bool.or_eq_true, not_or, bne_iff_ne, ne_eq, Decidable.not_not, decide_eq_true_eq, Nat.not_lt]
       at hc'
@@ -1639,12 +1639,12 @@ theorem row_bufferRead {dv bf off dst n : AV} (hS : S.holds w) (hl : w.wg.lost =
     (h : wgRow S .bufferRead [dv, bf, off, dst, n] = some (S', av)) : WgOk .bufferRead bits w S' av := by
   simp only [wgRow, wgR_bufferRead, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨ii, sc⟩, hi, ⟨bi, bs⟩, hbf, k1, hk1, nn, hnn, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain ⟨y, b, rfl, hy, hb⟩ := argBits_cons hb
-  obtain ⟨x1, b, rfl, hx1, hb⟩ := argBits_cons hb
-  obtain ⟨x2, b, rfl, hx2, hb⟩ := argBits_cons hb
-  obtain ⟨x3, b, rfl, hx3, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨y, b, rfl, hy, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x1, b, rfl, hx1, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x2, b, rfl, hx2, hb⟩ := ArgBits.cons_inv hb
+  obtain ⟨x3, b, rfl, hx3, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain rfl := known_bits hx1 hk1
   obtain ⟨hnl, hnh, hna⟩ := num_holds hx3 hnn
   obtain ⟨hg, -⟩ := wgDev_holds hS hl hx hi
@@ -1659,13 +1659,13 @@ theorem row_bufferRead {dv bf off dst n : AV} (hS : S.holds w) (hl : w.wg.lost =
     simp only [Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     obtain ⟨hc1, hm⟩ := or_not_false hc
-    obtain ⟨r, o, hd, hp, hs, hz, hn⟩ := memB_spec hS hx2 hx3 hm
+    obtain ⟨r, o, hd, hp, hs, hn⟩ := memB_spec hS hx2 hx3 hm
     have hc' := hc1
     simp only [Bool.or_eq_true, not_or, bne_iff_ne, ne_eq, Decidable.not_not, decide_eq_true_eq, Nat.not_lt,
       beq_iff_eq] at hc'
     have hz0 : (ByteArray.mk (Array.replicate x3.toNat 0)).size = x3.toNat := by simp [ByteArray.size]
     obtain ⟨m0, hm0⟩ := Option.isSome_iff_exists.mp
-      (Contracts.copyIn_isSome (ByteArray.mk (Array.replicate x3.toNat 0)) hd hp (by rw [hz0]; exact hs) hz
+      (Contracts.copyIn_isSome (ByteArray.mk (Array.replicate x3.toNat 0)) hd hp (by rw [hz0]; exact hs)
         (by rw [hz0]; exact hn))
     have hdec : wgDecode .bufferRead [x, y, x1, x2, x3] w = some (.read bi x1.toNat x3.toNat x2) := by
       simp only [wgDecode, wgDRead, hg, hgd, Option.bind_eq_bind, Option.bind_some]
@@ -1677,7 +1677,7 @@ theorem row_bufferRead {dv bf off dst n : AV} (hS : S.holds w) (hl : w.wg.lost =
       simp only [WgState.bytes, WgState.data?, hdi, Option.map_some, ByteArray.size_extract]
       omega
     obtain ⟨m, hm'⟩ := Option.isSome_iff_exists.mp
-      (Contracts.copyIn_isSome ((w.wg.bytes bi).extract x1.toNat (x1.toNat + x3.toNat)) hd hp (by rw [hsz]; exact hs) hz
+      (Contracts.copyIn_isSome ((w.wg.bytes bi).extract x1.toNat (x1.toNat + x3.toNat)) hd hp (by rw [hsz]; exact hs)
         (by rw [hsz]; exact hn))
     have hcall : wgpuCall .bufferRead [x, y, x1, x2, x3] w = some (some (ofInt .i32 0), { w with mem := m }) := by
       simp [wgpuCall, hl, hdec, wgEffect, hgd, hm']
@@ -1689,8 +1689,8 @@ theorem row_surfaceGetCurrentTexture {sh : AV} (hS : S.holds w) (hl : w.wg.lost 
     (h : wgRow S .surfaceGetCurrentTexture [sh] = some (S', av)) : WgOk .surfaceGetCurrentTexture bits w S' av := by
   simp only [wgRow, wgR_surfaceGetCurrentTexture, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨⟨si, ss⟩, hs, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true, beq_iff_eq] at hc
@@ -1759,8 +1759,8 @@ theorem row_surfacePresent {t : AV} (hS : S.holds w) (hl : w.wg.lost = false) (h
     (h : wgRow S .surfacePresent [t] = some (S', av)) : WgOk .surfacePresent bits w S' av := by
   simp only [wgRow, wgR_surfacePresent, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
   obtain ⟨s0, hs0, h⟩ := h
-  obtain ⟨x, b, rfl, hx, hb⟩ := argBits_cons hb
-  obtain rfl := argBits_nil hb
+  obtain ⟨x, b, rfl, hx, hb⟩ := ArgBits.cons_inv hb
+  obtain rfl := ArgBits.nil_inv hb
   obtain ⟨ti, d, hgd, -, hdi, hkd, hone, hf⟩ := wg1Arg_holds hS hl hx hs0
   have hks := shape_kind hf hkd
   cases s0 <;> simp only [WgShape.kind, reduceCtorEq] at hks

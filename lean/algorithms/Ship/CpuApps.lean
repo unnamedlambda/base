@@ -7,7 +7,7 @@ import Demo.Sat
 
 Each app reads its input file into its own memory, computes, and writes its
 answer file, for any lengths of data and output the caller hands over. The
-start is memory not frozen and the arena the artifact asks for: the file
+start is the arena the artifact asks for: the file
 names are read from inside it, and every read and write stays in it — a read
 that failed or ran past its region computes nothing, and an answer is written
 only when it fits the region it is written from. The histogram's and SHA-256's are
@@ -24,7 +24,7 @@ namespace CpuAppsSafe
 -- Sat
 
 abbrev SatMain : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena Sat.totalMemory]
+  [.room .arena Sat.totalMemory]
 
 theorem Sat_fine : Fine (emitGo (fnBody ptrParams (Sat.mainCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩

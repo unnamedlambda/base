@@ -34,7 +34,7 @@ def sizes (k : KSpec) : List Nat := k.args.map fun _ => 8
 
 /-- What `main` starts from. -/
 def loadTS (a : App) : TState :=
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .devSeq,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .devSeq,
    .retained 0, .nbufs 0, .nmods 0, .nfuncs 0, .room .arena a.memSize,
    .text (at_ a.NAME) (some "main") 5 []] ++
   (if a.blas then [.part (.has .cublas) true, .nblas 0] else []) ++
@@ -49,7 +49,7 @@ def loadTS (a : App) : TState :=
 /-- What the other entry points start from: what `main` leaves, its
     allocations of the sizes `szs`. -/
 def runTSWith (a : App) (szs : List Nat) : TState :=
-  [.part (.has .cuda) true, .part .capturing false, .part .frozen false, .part .idle true, .part .cuda true,
+  [.part (.has .cuda) true, .part .capturing false, .part .idle true, .part .cuda true,
    .devSeq, .oracles, .room .arena a.memSize] ++
   (if a.blas then [.part (.has .cublas) true, .blasOn 0 0, .cell (at_ a.BLAS) (drvHandle kBlas 0)] else []) ++
   szs.zipIdx.flatMap (fun (n, i) =>

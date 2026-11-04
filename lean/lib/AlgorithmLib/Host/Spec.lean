@@ -9,23 +9,11 @@ import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 /-!
-# One contract per entry point
+# Frames
 
-What a foreign call does is stated in three places, each for a reason:
-
-* `Ffi.sig` — the ABI: parameter and result types, and so the id. Every entry
-  point has one.
-* `frame` — which memory the call may write. Every entry point has one.
-* `Sem.callFfi` — what the call computes: `callBits`, one transcription of
-  `base/src/ffi/` per entry point, checked by the conformance corpora. Every
-  entry point but `threadSpawn`, whose callee is one of the program's own
-  functions, has one.
-
-`Ffi.spec` gathers the three into one value, and `callFfi_respects_frame`
-checks two of them against each other: every contract writes only inside its
-declared frame, so no frame is an assumption. `Host.Lifecycle` adds when a call
-answers and what it leaves of a typestate, and `Host.Contract` is the table
-(`Callee.contract`).
+What a frame lets a call write (`Frame.allows`), checked against a call's
+argument bits (`Frame.mayWrite_sound`), and the facts about the base
+functions' models that the proofs of their frames read.
 -/
 
 namespace AlgorithmLib.HProg
@@ -111,52 +99,8 @@ theorem Frame.mayWrite_sound {fr : Frame} {args : List UInt64} {x : UInt64} (h :
   | anywhere => cases h
 
 -- ---------------------------------------------------------------------------
--- The table
+-- The models' memory
 -- ---------------------------------------------------------------------------
-
-/-- The entry points with an executable contract that may write host memory:
-    the libm shims, the contexts' slots, and the LMDB context and scan. -/
-def hostTouching : List IR.Ffi :=
-  [.sinf, .cosf, .powf, .lmdbInit, .lmdbCleanup, .lmdbCursorScan,
-   .threadInit, .threadCleanup, .threadJoin]
-
-/-- The entry points with an executable contract that change only state the
-    program cannot address: the LMDB context and what its directories hold. -/
-def offHost : List IR.Ffi :=
-  [.lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn]
-
-/-- The entry points with an executable contract: the families the corpora run
-    through the real symbols. -/
-def contracted : List IR.Ffi := hostTouching ++ offHost
-
-/-- Everything known about one entry point. -/
-structure Spec where
-  /-- Parameter types and result type: the ABI, and so the id. -/
-  sig : List IR.ClifTy × Option IR.ClifTy
-  /-- The memory a call may write. -/
-  frame : Frame
-  /-- What a call computes, where the model says. -/
-  run? : Option (List V → World → Option (Option V × World))
-
-/-- **The contract table.** -/
-def _root_.AlgorithmLib.IR.Ffi.spec (f : IR.Ffi) : Spec where
-  sig := f.sig
-  frame := frame f
-  run? := if f ∈ contracted then some (callFfi f) else none
-
-/-- An entry point outside the table has no behavior in the model: calling it
-    is stuck, never a guess. -/
-theorem callBits_uncontracted (f : IR.Ffi) (hf : f ∉ contracted) (bits : List UInt64)
-    (w : World) : callBits f bits w = none := by
-  unfold callBits
-  cases f <;> simp_all [contracted, hostTouching, offHost]
-
-theorem callFfi_uncontracted (f : IR.Ffi) (hf : f ∉ contracted) (args : List V) (w : World) :
-    callFfi f args w = none := by
-  unfold callFfi
-  cases args.mapM asBits with
-  | none => rfl
-  | some bits => exact callBits_uncontracted f hf bits w
 
 /-- A count the runtime returns as `i64` reads back as itself. -/
 theorem asBits_ofInt_i64_nat (n : Nat) : asBits (ofInt .i64 (n : Int)) = some (UInt64.ofNat n) := by
@@ -176,37 +120,6 @@ theorem size_toByteArray_map_range (g : Nat → UInt8) (n : Nat) :
     ((List.range n).map g).toByteArray.size = n := by
   simp [List.size_toByteArray]
 
-theorem leBytes_size (n x : Nat) : (leBytes n x).size = n := size_toByteArray_map_range _ n
-
-theorem lmdbScanBytes_fold_size (rows : LmdbTable) (acc : ByteArray) :
-    (rows.foldl (fun acc r => acc ++ leBytes 2 r.1.size ++ leBytes 2 r.2.size ++ r.1 ++ r.2) acc).size
-      = acc.size + (rows.map fun r => 4 + r.1.size + r.2.size).sum := by
-  induction rows generalizing acc with
-  | nil => simp
-  | cons r rs ih =>
-      simp only [List.foldl_cons, ih, ByteArray.size_append, leBytes_size, List.map_cons, List.sum_cons]
-      omega
-
-theorem lmdbFit_sum (room : Nat) (rows : LmdbTable) :
-    ((lmdbFit room rows).map fun r => 4 + r.1.size + r.2.size).sum ≤ room := by
-  induction rows generalizing room with
-  | nil => simp [lmdbFit]
-  | cons r rs ih =>
-      simp only [lmdbFit]
-      split
-      · have := ih (room - (4 + r.1.size + r.2.size))
-        simp only [List.map_cons, List.sum_cons]
-        omega
-      · simp
-
-/-- **A scan writes no more than its room**: the count and the rows that fit. -/
-theorem lmdbScanBytes_fit (room : Nat) (rows : LmdbTable) :
-    (lmdbScanBytes (lmdbFit room rows)).size ≤ 4 + room := by
-  unfold lmdbScanBytes
-  rw [lmdbScanBytes_fold_size, leBytes_size]
-  have := lmdbFit_sum room rows
-  omega
-
 /-- A length the runtime reads as a positive `i64` is at least one. -/
 theorem pos_of_asI64 {x : UInt64} (h : ¬ asI64 x ≤ 0) : 1 ≤ x.toNat := by
   rcases Nat.eq_zero_or_pos x.toNat with hz | hz
@@ -223,66 +136,6 @@ theorem devOnly_mem {w : World} {k : Option (Option V × Dev)} {r : Option V} {w
   simp only [Option.some.injEq, Prod.mk.injEq] at h
   obtain ⟨-, rfl⟩ := h
   intro reg; cases reg <;> rfl
-
-/-- The contracts in `offHost` leave host memory as it was. -/
-theorem ffiLmdbOpen_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiLmdbOpen bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiLmdbOpen at h
-  split at h
-  · split at h
-    · cases h
-    · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-      · split at h
-        · cases h
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-  · cases h
-
-theorem ffiLmdbBeginWriteTxn_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiLmdbBeginWriteTxn bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiLmdbBeginWriteTxn at h
-  split at h
-  · split at h
-    · cases h
-    · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-    · split at h
-      · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-  · cases h
-
-theorem ffiLmdbPut_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiLmdbPut bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiLmdbPut at h
-  split at h
-  · split at h
-    · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-    · split at h
-      · cases h
-      · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-      · split at h
-        · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-        · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          split at h
-          · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-          · split at h <;> (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
-  · cases h
-
-theorem ffiLmdbCommitWriteTxn_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiLmdbCommitWriteTxn bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiLmdbCommitWriteTxn at h
-  split at h
-  · split at h
-    · cases h
-    · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-    · split at h
-      · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-      · split at h
-        · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-  · cases h
 
 theorem le64_size (x : UInt64) : (le64 x).size = 8 := by
   simp [le64]
@@ -398,7 +251,7 @@ theorem asyncCopy_region {w : World} {p : Nat} {ha : UInt64} {n : Nat} {wr : Boo
     {rs ws : List Nat} {k : Race → Option (Dev × Mem)} {ret : Option V} {w' : World}
     (h : asyncCopy w p ha n wr rs ws k = some (ret, w')) :
     ∃ r d m, k r = some (d, m) ∧ (∀ reg, w'.mem.region reg = m.region reg) ∧
-      w'.mem.pinnedLive = m.pinnedLive ∧ w'.mem.frozen = m.frozen ∧
+      w'.mem.pinnedLive = m.pinnedLive ∧
       ∀ b ∈ w.mem.busy, b ∈ w'.mem.busy := by
   unfold asyncCopy at h
   split at h
@@ -407,119 +260,11 @@ theorem asyncCopy_region {w : World} {p : Nat} {ha : UInt64} {n : Nat} {wr : Boo
     obtain ⟨⟨d, m⟩, hk, h⟩ := Option.bind_eq_some_iff.mp h
     simp only [Option.some.injEq, Prod.mk.injEq] at h
     obtain ⟨-, rfl⟩ := h
-    refine ⟨r, d, m, hk, fun reg => by cases reg <;> rfl, rfl, rfl, ?_⟩
+    refine ⟨r, d, m, hk, fun reg => by cases reg <;> rfl, rfl, ?_⟩
     intro b hb
     dsimp only
     split
     · exact List.mem_cons_of_mem _ hb
     · exact hb
-
-set_option maxHeartbeats 2000000 in
-set_option maxHeartbeats 8000000 in
-/-- **Every executable contract writes only inside its frame.**
-
-    A successful call changes the value of no byte its frame does not name.
-    Over the entry points with a contract this is a theorem about the
-    model; over the rest it holds because they have no behavior to violate it
-    with (`callFfi_uncontracted`).
--/
-theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : Option V) (w' : World)
-    (h : callFfi f args w = some (ret, w'))
-    (bits : List UInt64) (hb : args.mapM asBits = some bits)
-    (a : UInt64) (hout : ¬ (frame f).allows bits (ret.bind asBits) a) :
-    Unchanged w.mem w'.mem a := by
-  by_cases hc : f ∈ contracted
-  case neg =>
-    have e := callFfi_uncontracted f hc args w
-    rw [h] at e; cases e
-  unfold callFfi at h; rw [hb, Option.bind_some] at h
-  -- and every LMDB contract that only changes the store
-  by_cases hst : f ∈ offHost
-  case pos =>
-    simp only [offHost, List.mem_cons, List.not_mem_nil, or_false] at hst
-    rcases hst with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
-    · exact Unchanged.of_eq (by rw [ffiLmdbOpen_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiLmdbBeginWriteTxn_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiLmdbPut_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiLmdbCommitWriteTxn_mem (bits := bits) (w := w) h])
-  have hc' : f ∈ hostTouching := by
-    simp only [contracted, List.mem_append] at hc
-    exact hc.resolve_right hst
-  simp only [hostTouching, List.mem_cons, List.not_mem_nil, or_false] at hc'
-  rcases hc' with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
-  all_goals (delta callBits at h; dsimp only at h; simp only [ffiSinf, ffiCosf, ffiPowf, ffiLmdbInit, ffiLmdbCleanup, ffiLmdbCursorScan, ffiThreadInit, ffiThreadCleanup, ffiThreadJoin] at h)
-  all_goals (split at h <;> (try contradiction))
-  all_goals (simp only [frame, Frame.allows, ctxSlot, List.getD, List.getElem?_cons_zero,
-    List.getElem?_cons_succ, Option.getD_some] at hout)
-  all_goals first
-    | exact absurd trivial hout
-    | skip
-  all_goals first
-    -- a pure answer: sinf, cosf, powf, and the paths that refuse
-    | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
-    | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
-    -- a context slot written: the inits and cleanups
-    | (obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-       simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-       exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩)))
-    -- threadCleanup
-    | (obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-       have hthaw : ∀ reg, ({ w.mem with frozen := false } : Mem).region reg = w.mem.region reg := by
-         intro reg; cases reg <;> rfl
-       split at h
-       · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-         exact Unchanged.of_region hthaw a
-       · split at h
-         · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-           simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-           intro x y hx hy
-           have e := Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩)
-           rw [e] at hy
-           exact Mem.load_agree hthaw hx hy
-         · cases h)
-    -- threadJoin
-    | (split at h
-       · cases h
-       · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-       · split at h
-         · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-           exact Unchanged.of_region (fun reg => by cases reg <;> rfl) a
-         · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
-    -- every other: walk the model's branches and binds, then close by the
-    -- memory it leaves: the same, one store into a context slot, or a copy the
-    -- frame allows
-    | (repeat' (first
-         | contradiction
-         | (split at h)
-         | (rw [Option.bind_eq_some_iff] at h; obtain ⟨_, hbind, h⟩ := h)
-         | (simp only [Option.bind_eq_bind] at h; rw [Option.bind_eq_some_iff] at h; obtain ⟨_, hbind, h⟩ := h))
-       all_goals first
-         | (simp only [cudaFail, lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            exact Unchanged.refl _ _)
-         | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            first
-              | exact Unchanged.refl _ _
-              | exact Unchanged.of_eq (Mem.store_other hbind a (fun i hi e => hout ⟨i, hi, e⟩))
-              | (apply Unchanged.of_eq; apply copyIn_other hbind; intro i hi e
-                 refine hout ⟨i, ?_, e⟩
-                 simp only [Bool.or_eq_true, bne_iff_ne, ne_eq, not_or, Decidable.not_not,
-                   ByteArray.size_extract, decide_eq_true_eq, gt_iff_lt, Nat.not_lt, leBytes_size] at *
-                 omega)
-              | (apply Unchanged.of_eq; apply copyIn_other hbind; intro i hi e
-                 refine hout ⟨i, Nat.lt_of_lt_of_le hi (Nat.le_trans (lmdbScanBytes_fit _ _) ?_), e⟩
-                 simp only [Nat.not_lt] at *
-                 omega)))
-
-/-- The table's two statements about one entry point agree: what `run?` does,
-    `frame` permits. -/
-theorem spec_frame_sound (f : IR.Ffi) {run : List V → World → Option (Option V × World)}
-    (hr : f.spec.run? = some run) (args : List V) (w : World) (ret : Option V) (w' : World)
-    (h : run args w = some (ret, w')) (bits : List UInt64) (hb : args.mapM asBits = some bits)
-    (a : UInt64) (hout : ¬ f.spec.frame.allows bits (ret.bind asBits) a) :
-    Unchanged w.mem w'.mem a := by
-  simp only [IR.Ffi.spec] at hr hout
-  split at hr
-  · cases hr; exact callFfi_respects_frame f args w ret w' h bits hb a hout
-  · cases hr
 
 end AlgorithmLib.HProg

@@ -122,8 +122,8 @@ theorem holds_afterOp {S : TState} {w : World} {q : Nat} {r : Race} {out : Nat} 
   · obtain ⟨hf1, hdq⟩ := List.mem_filter.mp hf0
     obtain ⟨hf, hk'⟩ := List.mem_filter.mp hf1
     have hk2 := sizes_keep (d := w.dev) (d' := Dev.put { w.dev with race := r } out (some nb))
-      (put_size _ _ _) hsizes
-    exact holds_devKeep (d := Dev.put { w.dev with race := r } out (some nb)) (hS f hf) hk' rfl rfl rfl rfl rfl rfl (put_size _ _ _) rfl rfl hk2.1
+      (Dev.put_bufs_size _ _ _) hsizes
+    exact holds_devKeep (d := Dev.put { w.dev with race := r } out (some nb)) (hS f hf) hk' rfl rfl rfl rfl rfl rfl (Dev.put_bufs_size _ _ _) rfl rfl hk2.1
       (fun j n _ => hk2.2 j n) (hlive := fun _ => LiveKept.of_sizes hk2.2)
       (fun e => by
         subst e
@@ -461,9 +461,9 @@ theorem argBits_eq_bits {Γ : Env} {w : World} :
     ∀ {as : List AV} {xs bits : List UInt64}, ArgBits Γ w as bits → as.mapM AV.bits = some xs → bits = xs
   | [], xs, bits, hb, h => by
       simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h
-      subst h; exact argBits_nil hb
+      subst h; exact ArgBits.nil_inv hb
   | a :: as, xs, bits, hb, h => by
-      obtain ⟨x, xs', rfl, hx, hb⟩ := argBits_cons hb
+      obtain ⟨x, xs', rfl, hx, hb⟩ := ArgBits.cons_inv hb
       rw [List.mapM_cons] at h
       obtain ⟨y, hy, h⟩ := Option.bind_eq_some_iff.mp h
       obtain ⟨ys, hys, h⟩ := Option.bind_eq_some_iff.mp h
@@ -622,19 +622,19 @@ theorem blasRow_sound {S S' T : TState} {w : World} {Γ : Env} {f : CublasFn} {a
   · split at h
     · rename_i hx px qx eh ep eq
       have hb0 := hb
-      obtain ⟨y0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨y1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain ⟨y2, b, rfl, h2, hb⟩ := argBits_cons hb
-      obtain ⟨y3, b, rfl, h3, hb⟩ := argBits_cons hb
-      obtain ⟨y4, b, rfl, h4, hb⟩ := argBits_cons hb
-      obtain ⟨y5, b, rfl, h5, hb⟩ := argBits_cons hb
-      obtain ⟨y6, b, rfl, h6, hb⟩ := argBits_cons hb
-      obtain ⟨y7, b, rfl, h7, hb⟩ := argBits_cons hb
-      obtain ⟨y8, b, rfl, h8, hb⟩ := argBits_cons hb
-      obtain ⟨y9, b, rfl, h9, hb⟩ := argBits_cons hb
-      obtain ⟨y10, b, rfl, h10, hb⟩ := argBits_cons hb
-      obtain ⟨y11, b, rfl, h11, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨y0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y3, b, rfl, h3, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y4, b, rfl, h4, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y5, b, rfl, h5, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y6, b, rfl, h6, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y7, b, rfl, h7, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y8, b, rfl, h8, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y9, b, rfl, h9, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y10, b, rfl, h10, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y11, b, rfl, h11, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain rfl := known_bits h0 eh
       obtain rfl := known_bits h4 ep
       obtain rfl := known_bits h9 eq
@@ -647,21 +647,21 @@ theorem blasRow_sound {S S' T : TState} {w : World} {Γ : Env} {f : CublasFn} {a
   · split at h
     · rename_i hx px qx eh ep eq
       have hb0 := hb
-      obtain ⟨y0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨y1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain ⟨y2, b, rfl, h2, hb⟩ := argBits_cons hb
-      obtain ⟨y3, b, rfl, h3, hb⟩ := argBits_cons hb
-      obtain ⟨y4, b, rfl, h4, hb⟩ := argBits_cons hb
-      obtain ⟨y5, b, rfl, h5, hb⟩ := argBits_cons hb
-      obtain ⟨y6, b, rfl, h6, hb⟩ := argBits_cons hb
-      obtain ⟨y7, b, rfl, h7, hb⟩ := argBits_cons hb
-      obtain ⟨y8, b, rfl, h8, hb⟩ := argBits_cons hb
-      obtain ⟨y9, b, rfl, h9, hb⟩ := argBits_cons hb
-      obtain ⟨y10, b, rfl, h10, hb⟩ := argBits_cons hb
-      obtain ⟨y11, b, rfl, h11, hb⟩ := argBits_cons hb
-      obtain ⟨y12, b, rfl, h12, hb⟩ := argBits_cons hb
-      obtain ⟨y13, b, rfl, h13, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨y0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y3, b, rfl, h3, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y4, b, rfl, h4, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y5, b, rfl, h5, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y6, b, rfl, h6, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y7, b, rfl, h7, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y8, b, rfl, h8, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y9, b, rfl, h9, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y10, b, rfl, h10, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y11, b, rfl, h11, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y12, b, rfl, h12, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y13, b, rfl, h13, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain rfl := known_bits h0 eh
       obtain rfl := known_bits h6 ep
       obtain rfl := known_bits h11 eq
@@ -673,25 +673,25 @@ theorem blasRow_sound {S S' T : TState} {w : World} {Γ : Env} {f : CublasFn} {a
   · split at h
     · rename_i hx px qx eh ep eq
       have hb0 := hb
-      obtain ⟨y0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨y1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain ⟨y2, b, rfl, h2, hb⟩ := argBits_cons hb
-      obtain ⟨y3, b, rfl, h3, hb⟩ := argBits_cons hb
-      obtain ⟨y4, b, rfl, h4, hb⟩ := argBits_cons hb
-      obtain ⟨y5, b, rfl, h5, hb⟩ := argBits_cons hb
-      obtain ⟨y6, b, rfl, h6, hb⟩ := argBits_cons hb
-      obtain ⟨y7, b, rfl, h7, hb⟩ := argBits_cons hb
-      obtain ⟨y8, b, rfl, h8, hb⟩ := argBits_cons hb
-      obtain ⟨y9, b, rfl, h9, hb⟩ := argBits_cons hb
-      obtain ⟨y10, b, rfl, h10, hb⟩ := argBits_cons hb
-      obtain ⟨y11, b, rfl, h11, hb⟩ := argBits_cons hb
-      obtain ⟨y12, b, rfl, h12, hb⟩ := argBits_cons hb
-      obtain ⟨y13, b, rfl, h13, hb⟩ := argBits_cons hb
-      obtain ⟨y14, b, rfl, h14, hb⟩ := argBits_cons hb
-      obtain ⟨y15, b, rfl, h15, hb⟩ := argBits_cons hb
-      obtain ⟨y16, b, rfl, h16, hb⟩ := argBits_cons hb
-      obtain ⟨y17, b, rfl, h17, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨y0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y3, b, rfl, h3, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y4, b, rfl, h4, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y5, b, rfl, h5, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y6, b, rfl, h6, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y7, b, rfl, h7, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y8, b, rfl, h8, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y9, b, rfl, h9, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y10, b, rfl, h10, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y11, b, rfl, h11, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y12, b, rfl, h12, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y13, b, rfl, h13, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y14, b, rfl, h14, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y15, b, rfl, h15, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y16, b, rfl, h16, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y17, b, rfl, h17, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain rfl := known_bits h0 eh
       obtain rfl := known_bits h6 ep
       obtain rfl := known_bits h13 eq
@@ -703,26 +703,26 @@ theorem blasRow_sound {S S' T : TState} {w : World} {Γ : Env} {f : CublasFn} {a
   · split at h
     · rename_i hx px qx eh ep eq
       have hb0 := hb
-      obtain ⟨y0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨y1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain ⟨y2, b, rfl, h2, hb⟩ := argBits_cons hb
-      obtain ⟨y3, b, rfl, h3, hb⟩ := argBits_cons hb
-      obtain ⟨y4, b, rfl, h4, hb⟩ := argBits_cons hb
-      obtain ⟨y5, b, rfl, h5, hb⟩ := argBits_cons hb
-      obtain ⟨y6, b, rfl, h6, hb⟩ := argBits_cons hb
-      obtain ⟨y7, b, rfl, h7, hb⟩ := argBits_cons hb
-      obtain ⟨y8, b, rfl, h8, hb⟩ := argBits_cons hb
-      obtain ⟨y9, b, rfl, h9, hb⟩ := argBits_cons hb
-      obtain ⟨y10, b, rfl, h10, hb⟩ := argBits_cons hb
-      obtain ⟨y11, b, rfl, h11, hb⟩ := argBits_cons hb
-      obtain ⟨y12, b, rfl, h12, hb⟩ := argBits_cons hb
-      obtain ⟨y13, b, rfl, h13, hb⟩ := argBits_cons hb
-      obtain ⟨y14, b, rfl, h14, hb⟩ := argBits_cons hb
-      obtain ⟨y15, b, rfl, h15, hb⟩ := argBits_cons hb
-      obtain ⟨y16, b, rfl, h16, hb⟩ := argBits_cons hb
-      obtain ⟨y17, b, rfl, h17, hb⟩ := argBits_cons hb
-      obtain ⟨y18, b, rfl, h18, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨y0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y3, b, rfl, h3, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y4, b, rfl, h4, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y5, b, rfl, h5, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y6, b, rfl, h6, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y7, b, rfl, h7, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y8, b, rfl, h8, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y9, b, rfl, h9, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y10, b, rfl, h10, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y11, b, rfl, h11, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y12, b, rfl, h12, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y13, b, rfl, h13, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y14, b, rfl, h14, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y15, b, rfl, h15, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y16, b, rfl, h16, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y17, b, rfl, h17, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y18, b, rfl, h18, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain rfl := known_bits h0 eh
       obtain rfl := known_bits h6 ep
       obtain rfl := known_bits h13 eq
@@ -736,30 +736,30 @@ theorem blasRow_sound {S S' T : TState} {w : World} {Γ : Env} {f : CublasFn} {a
   · split at h
     · rename_i hx px qx eh ep eq
       have hb0 := hb
-      obtain ⟨y0, b, rfl, h0, hb⟩ := argBits_cons hb
-      obtain ⟨y1, b, rfl, h1, hb⟩ := argBits_cons hb
-      obtain ⟨y2, b, rfl, h2, hb⟩ := argBits_cons hb
-      obtain ⟨y3, b, rfl, h3, hb⟩ := argBits_cons hb
-      obtain ⟨y4, b, rfl, h4, hb⟩ := argBits_cons hb
-      obtain ⟨y5, b, rfl, h5, hb⟩ := argBits_cons hb
-      obtain ⟨y6, b, rfl, h6, hb⟩ := argBits_cons hb
-      obtain ⟨y7, b, rfl, h7, hb⟩ := argBits_cons hb
-      obtain ⟨y8, b, rfl, h8, hb⟩ := argBits_cons hb
-      obtain ⟨y9, b, rfl, h9, hb⟩ := argBits_cons hb
-      obtain ⟨y10, b, rfl, h10, hb⟩ := argBits_cons hb
-      obtain ⟨y11, b, rfl, h11, hb⟩ := argBits_cons hb
-      obtain ⟨y12, b, rfl, h12, hb⟩ := argBits_cons hb
-      obtain ⟨y13, b, rfl, h13, hb⟩ := argBits_cons hb
-      obtain ⟨y14, b, rfl, h14, hb⟩ := argBits_cons hb
-      obtain ⟨y15, b, rfl, h15, hb⟩ := argBits_cons hb
-      obtain ⟨y16, b, rfl, h16, hb⟩ := argBits_cons hb
-      obtain ⟨y17, b, rfl, h17, hb⟩ := argBits_cons hb
-      obtain ⟨y18, b, rfl, h18, hb⟩ := argBits_cons hb
-      obtain ⟨y19, b, rfl, h19, hb⟩ := argBits_cons hb
-      obtain ⟨y20, b, rfl, h20, hb⟩ := argBits_cons hb
-      obtain ⟨y21, b, rfl, h21, hb⟩ := argBits_cons hb
-      obtain ⟨y22, b, rfl, h22, hb⟩ := argBits_cons hb
-      obtain rfl := argBits_nil hb
+      obtain ⟨y0, b, rfl, h0, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y1, b, rfl, h1, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y2, b, rfl, h2, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y3, b, rfl, h3, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y4, b, rfl, h4, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y5, b, rfl, h5, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y6, b, rfl, h6, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y7, b, rfl, h7, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y8, b, rfl, h8, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y9, b, rfl, h9, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y10, b, rfl, h10, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y11, b, rfl, h11, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y12, b, rfl, h12, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y13, b, rfl, h13, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y14, b, rfl, h14, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y15, b, rfl, h15, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y16, b, rfl, h16, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y17, b, rfl, h17, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y18, b, rfl, h18, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y19, b, rfl, h19, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y20, b, rfl, h20, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y21, b, rfl, h21, hb⟩ := ArgBits.cons_inv hb
+      obtain ⟨y22, b, rfl, h22, hb⟩ := ArgBits.cons_inv hb
+      obtain rfl := ArgBits.nil_inv hb
       obtain rfl := known_bits h0 eh
       obtain rfl := known_bits h6 ep
       obtain rfl := known_bits h15 eq
@@ -832,7 +832,7 @@ theorem sgemvCall_keepsAllocs {w : World} {h trans m n pa A lda x incx pb y incy
   · cases hc
   obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
   obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
-  obtain ⟨d, hk, hd⟩ := devOnly_dev hc
+  obtain ⟨d, hk, hd⟩ := Device.devOnly_dev hc
   rw [hd]
   obtain ⟨d1, hdo, hcu⟩ := Option.bind_eq_some_iff.mp hk
   simp only [cuRes, Option.some.injEq, Prod.mk.injEq] at hcu
@@ -859,7 +859,7 @@ theorem gemmCall_keepsAllocs {w : World} {op : String} {ea eb ec : Nat}
   · cases hc
   obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
   obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
-  obtain ⟨d, hk, hd⟩ := devOnly_dev hc
+  obtain ⟨d, hk, hd⟩ := Device.devOnly_dev hc
   rw [hd]
   obtain ⟨d1, hdo, hcu⟩ := Option.bind_eq_some_iff.mp hk
   simp only [cuRes, Option.some.injEq, Prod.mk.injEq] at hcu
@@ -908,7 +908,7 @@ theorem sgemmBatchedCall_keepsAllocs {w : World} {h ta tb m n k pa PA lda PB ldb
   · cases hc
   obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
   obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
-  obtain ⟨d, hk, hd⟩ := devOnly_dev hc
+  obtain ⟨d, hk, hd⟩ := Device.devOnly_dev hc
   rw [hd]
   obtain ⟨d1, hdo, hcu⟩ := Option.bind_eq_some_iff.mp hk
   simp only [cuRes, Option.some.injEq, Prod.mk.injEq] at hcu

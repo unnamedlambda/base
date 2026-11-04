@@ -11,7 +11,7 @@ import all Init.Data.List.Sort.Basic
 # `Lib.Ht` — the hash table, as CLIF over the C heap
 
 The engine's hash-table entry points (`htInit` … `htGetEntry`), stated in
-`Host.Ffi`, as functions of the program itself. One table per context, keyed
+`Host.LibFn`, as functions of the program itself. One table per context, keyed
 and valued by byte strings; `htCreate` counts handles and the table exists once
 one has been made, as the model says.
 
@@ -329,7 +329,7 @@ def getEntry : StatusBody := do
       pure klen))
 
 /-- The function implementing a hash-table entry point. -/
-def implOf : Ffi → Option Impl
+def implOf : LibFn → Option Impl
   | .htInit => some (.void init)
   | .htCleanup => some (.void cleanup)
   | .htCreate => some (.status create)

@@ -124,7 +124,7 @@ inductive Atomic where
     layouts on each target, so an artifact calls it identically everywhere.
     It is loaded when a program first names it; a library that is not there
     makes its functions absent rather than the program unloadable. The C
-    library, wgpu, the engine's own functions (`base`, the `Ffi` entries) and
+    library, wgpu, the engine's own functions (`base`) and
     its window, CPU, serial and USB libraries are built into it
     (`Lib.builtin`): always there, bound to the functions the engine links. -/
 inductive Lib where
@@ -287,14 +287,12 @@ theorem CpuFn.mem_all (f : CpuFn) : f ∈ CpuFn.all := by cases f <;> simp [CpuF
     whether it has a feature; creating a directory, a file's length and
     setting it, reading a file into memory and writing memory to a file; and
     reading a line of standard
-    input into memory and writing memory to standard output; and starting a
-    thread on one of the program's functions and waiting for it, which the
-    thread library's spawn and join call. -/
+    input into memory and writing memory to standard output. -/
 inductive BaseFn where
   | clockNow | memLock | memUnlock | memAdviseHuge | threadPriority | memWait | memWake
   | nativeLoad | nativeFree | nativeArch | cpuHas
   | fileCreateDirAll | fileSize | fileSetLen | fileReadToPtr | fileWriteFromPtr | stdinReadline
-  | stdoutWrite | threadStart | threadFinish
+  | stdoutWrite
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- The engine's serial library (`base/src/ffi/serial.rs`, over the
@@ -430,8 +428,7 @@ def Ext.symbol : Ext → String
     | .fileCreateDirAll => "cl_file_create_dir_all" | .fileSize => "cl_file_size"
     | .fileSetLen => "cl_file_set_len" | .stdoutWrite => "cl_stdout_write"
     | .fileWriteFromPtr => "cl_file_write_from_ptr" | .stdinReadline => "cl_stdin_read_line"
-    | .fileReadToPtr => "cl_file_read_to_ptr" | .threadStart => "cl_thread_start"
-    | .threadFinish => "cl_thread_finish"
+    | .fileReadToPtr => "cl_file_read_to_ptr"
   | .serial f => "base_serial_" ++ match f with
     | .count => "count" | .name => "name" | .open => "open" | .close => "close"
     | .read => "read" | .write => "write" | .pending => "pending"
@@ -494,6 +491,11 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
   -- Objects, addresses, lengths, counts, sizes, offsets and buffer usages
   -- are `i64`; group indices, workgroup and draw counts, formats and a
   -- surface's size, `i32`; a status `i32`.
+  -- What wgpu answers through a callback is waited for: `requestAdapter`
+  -- answers the instance's high-performance adapter, or `0`;
+  -- `requestDevice` a device, or `0`; `bufferRead` copies the buffer's bytes
+  -- to `dst` through a mapping, answering `0` or `-1`; `errorScopePop` pops
+  -- the innermost error scope, `0` when it caught nothing and `-1` otherwise.
   | .wgpu f => match f with
     | .createInstance => ([], some .i64)
     | .requestAdapter | .requestDevice | .deviceGetQueue | .deviceCreateCommandEncoder
@@ -530,6 +532,12 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
   | .cpu f => match f with
     | .count | .unpin => ([], some .i32)
     | .core | .package | .pin => ([.i32], some .i32)
+  -- Machine code the program carries as data: `nativeLoad` takes the bytes'
+  -- address and length and answers where they now run (0 if they could not
+  -- be placed); `nativeArch` and `cpuHas` (a NUL-terminated feature name)
+  -- decide which bytes to carry in. Running them is not an import: it is a
+  -- call with `Callee.native`. `fileCreateDirAll (path)` makes the directory
+  -- at the path and every one missing on the way.
   | .base f => match f with
     | .clockNow => ([], some .i64)
     | .memLock | .memUnlock | .memAdviseHuge => ([.i64, .i64], some .i32)
@@ -542,8 +550,6 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
     | .cpuHas => ([.i64, .i64], some .i32)
     | .fileCreateDirAll | .fileSize | .stdoutWrite | .stdinReadline => ([.i64, .i64], some .i64)
     | .fileReadToPtr | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
-    | .threadStart => ([.i64, .i64], some .i64)
-    | .threadFinish => ([.i64], some .i64)
     | .fileSetLen => ([.i64, .i64, .i64], some .i64)
   -- A port, a device, a buffer, a length and a count are `i64`s; an index,
   -- a baud rate, a timeout, an interface, an endpoint and the fields of a
@@ -598,27 +604,18 @@ structure LoadOp where
   aligned : Bool := false
   deriving Repr, BEq
 
-/-- One runtime entry point. -/
-inductive Ffi where
-  | lmdbInit | lmdbOpen | lmdbBeginWriteTxn | lmdbPut | lmdbCommitWriteTxn
-  | lmdbCursorScan | lmdbCleanup
+/-- **A function of a library linked into a program** (`Lib.Ht`, `Lib.Math`),
+    called by name until `Link.link` points the call at the function. -/
+inductive LibFn where
   | htCreate | htLookup | htInsert | htIncrement | htCount | htGetEntry
   | htCleanup | htInit
   | sinf | cosf | powf
-  | threadInit | threadSpawn | threadJoin | threadCleanup
   deriving Repr, DecidableEq, Inhabited, Lean.ToExpr
 
-namespace Ffi
+namespace LibFn
 
-/-- The C symbol the JIT resolves. -/
-def cname : Ffi → String
-  | .lmdbInit => "cl_lmdb_init"
-  | .lmdbOpen => "cl_lmdb_open"
-  | .lmdbBeginWriteTxn => "cl_lmdb_begin_write_txn"
-  | .lmdbPut => "cl_lmdb_put"
-  | .lmdbCommitWriteTxn => "cl_lmdb_commit_write_txn"
-  | .lmdbCursorScan => "cl_lmdb_cursor_scan"
-  | .lmdbCleanup => "cl_lmdb_cleanup"
+/-- The function's name. -/
+def cname : LibFn → String
   | .htCreate => "ht_create"
   | .htLookup => "ht_lookup"
   | .htInsert => "ht_insert"
@@ -630,20 +627,9 @@ def cname : Ffi → String
   | .sinf => "cl_sinf"
   | .cosf => "cl_cosf"
   | .powf => "cl_powf"
-  | .threadInit => "cl_thread_init"
-  | .threadSpawn => "cl_thread_spawn"
-  | .threadJoin => "cl_thread_join"
-  | .threadCleanup => "cl_thread_cleanup"
 
-/-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
-def sig : Ffi → List ClifTy × Option ClifTy
-  | .lmdbInit => ([.i64], none)
-  | .lmdbOpen => ([.i64, .i64, .i32], some .i32)
-  | .lmdbBeginWriteTxn => ([.i64, .i32], some .i32)
-  | .lmdbPut => ([.i64, .i32, .i64, .i32, .i64, .i32], some .i32)
-  | .lmdbCommitWriteTxn => ([.i64, .i32], some .i32)
-  | .lmdbCursorScan => ([.i64, .i32, .i64, .i32, .i32, .i64, .i64], some .i32)
-  | .lmdbCleanup => ([.i64], none)
+/-- Parameters and result, as the library's function takes them. -/
+def sig : LibFn → List ClifTy × Option ClifTy
   | .htCreate => ([.i64], some .i32)
   | .htLookup => ([.i64, .i64, .i32, .i64], some .i32)
   | .htInsert => ([.i64, .i64, .i32, .i64, .i32], none)
@@ -655,98 +641,51 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .sinf => ([.f32], some .f32)
   | .cosf => ([.f32], some .f32)
   | .powf => ([.f32, .f32], some .f32)
-  | .threadInit => ([.i64], none)
-  | .threadSpawn => ([.i64, .i64, .i64], some .i64)
-  | .threadJoin => ([.i64, .i64], some .i64)
-  | .threadCleanup => ([.i64], none)
-  -- ffi/native.rs: machine code the program carries as data. `load` takes the
-  -- bytes' address and length and answers where they now run (0 if they could
-  -- not be placed); `arch` and `cpuHas` (a NUL-terminated feature name) decide
-  -- which bytes to carry in. Running them is not an import: it is a call with
-  -- `Callee.native`.
-  -- `(path)`: the directory at the path, and every one missing on the way;
-  -- `0`, or `-1` when that cannot be done.
-  -- `(fn, arg)`: function `fn` of the program run on `arg` on a new thread,
-  -- answered as a handle, or `-1`; `(handle)`: that thread waited for and the
-  -- handle released, once: `0`, or `-1`.
-  -- The performance controls: lock `(ptr, len)` in physical memory, unlock
-  -- it, ask for huge pages under it, and raise (`1`) or lower (`-1`) the
-  -- calling thread's priority a step, or reset it (`0`). Each answers `0`,
-  -- or `-1` when the system declines; none changes what memory holds.
-  -- ffi/sync.rs: `(addr, expected, timeout)` sleeps while the 32-bit word at
-  -- `addr` holds `expected`, until a wake on `addr`, the timeout in
-  -- nanoseconds (none if negative), or for no reason: `0` woken, `1` the word
-  -- did not hold it, `2` timed out, `-1` an address not 4-byte aligned.
-  -- `(addr, count)` wakes up to `count` waiters there (all if negative),
-  -- answering how many; `()` reads a clock that never goes backwards, in
-  -- nanoseconds. None changes what memory holds.
-  -- What wgpu answers through a callback, waited for: `(instance)` its
-  -- high-performance adapter, or `0`; `(adapter)` a device, or `0`;
-  -- `(device, buffer, offset, dst, size)` the buffer's bytes copied to `dst`
-  -- through a mapping, `0` or `-1`; `(device)` the innermost error scope
-  -- popped, `0` when it caught nothing and `-1` otherwise.
 
-def params (f : Ffi) : List ClifTy := f.sig.1
-def result (f : Ffi) : Option ClifTy := f.sig.2
+def params (f : LibFn) : List ClifTy := f.sig.1
+def result (f : LibFn) : Option ClifTy := f.sig.2
 
-/-- Every entry point, in the order that fixes the ids. -/
-def all : List Ffi :=
-  [.lmdbInit, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn,
-   .lmdbCursorScan, .lmdbCleanup,
-   .htCreate, .htLookup, .htInsert, .htIncrement, .htCount, .htGetEntry,
+/-- Every library function, in the order that fixes the ids. -/
+def all : List LibFn :=
+  [.htCreate, .htLookup, .htInsert, .htIncrement, .htCount, .htGetEntry,
    .htCleanup, .htInit,
-   .sinf, .cosf, .powf,
-   .threadInit, .threadSpawn, .threadJoin, .threadCleanup]
+   .sinf, .cosf, .powf]
 
-/-- The registry of entry points: `all` misses none and repeats none, so the
-    ids below are a numbering of `Ffi` and not merely of a list beside it. -/
-instance : Enum Ffi where
+/-- The registry of library functions: `all` misses none and repeats none, so
+    the ids below are a numbering of `LibFn` and not merely of a list beside
+    it. -/
+instance : Enum LibFn where
   all := all
   complete f := by cases f <;> decide
   nodup := by decide
 
 /-- `f`'s position in `all`. -/
-def id (f : Ffi) : Nat := all.idxOf f
+def id (f : LibFn) : Nat := all.idxOf f
 
-/-- Distinct entry points carry distinct ids. -/
-theorem id_injective {f g : Ffi} (h : f.id = g.id) : f = g := Enum.index_injective h
-
-/-- The entry point a name resolves to, if it is one. -/
-def ofCname (s : String) : Option Ffi := all.find? (·.cname == s)
-
-/-- **Entry points that are functions of the program.** A library written in
-    CLIF implements each over the C and vendor libraries, and a call to one is
-    a call to that function: the entry point has no meaning of its own. -/
-def inLib : Ffi → Bool
-  | .htCreate | .htLookup | .htInsert | .htIncrement | .htCount | .htGetEntry | .htCleanup | .htInit => true
-  | _ => false
+/-- Distinct library functions carry distinct ids. -/
+theorem id_injective {f g : LibFn} (h : f.id = g.id) : f = g := Enum.index_injective h
 
 /-- Where the library function for `f` sits among a program's functions,
     past every index a program gives its own. -/
-def libSlot (f : Ffi) : Nat := 2 ^ 32 + f.id
+def libSlot (f : LibFn) : Nat := 2 ^ 32 + f.id
 
-/-- **Entry points the engine answers**, by their contracts: every one but
-    the thread spawn, which runs a function of the program, and those a
-    library implements. -/
-def engine (f : Ffi) : Bool := f != .threadSpawn && !f.inLib
-
-end Ffi
+end LibFn
 
 /-- What a call names.
 
-    Each arm is the identity its owner gives it: an import is named by the
-    engine's own entry point, a defined function by its place in this artifact,
-    which is closed. Machine code the program placed itself has no name at
-    all: its address is a value, the call's first argument. Nothing here is an
-    index into a table this format invented, which is what a call carrying a
-    position into a per-function callee list was.
+    Each arm is the identity its owner gives it: a library function by its
+    name, a C library's function by its symbol, a defined function by its
+    place in this artifact, which is closed. Machine code the program placed
+    itself has no name at all: its address is a value, the call's first
+    argument. Nothing here is an index into a table this format invented.
 
-    An import that the engine does not provide is unrepresentable rather than
-    refused at load: `Ffi` is the only way to name one. -/
+    A function no library provides is unrepresentable rather than refused at
+    load: `LibFn` and `Ext` are the only ways to name one. -/
 inductive Callee where
-  /-- A function of the engine's own, `Lib.base`'s `cname`, called at the
-      signature `Ffi.sig` states, as any built-in library's is. -/
-  | ffi (f : Ffi)
+  /-- A function of a library linked into the program, at the signature
+      `LibFn.sig` states; `Link.link` points it at the function before an
+      artifact is written. -/
+  | lib (f : LibFn)
   /-- Another function of this same program, by its `u0:N` position. -/
   | local (index : Nat)
   /-- Machine code at the address in the call's first argument --- one
@@ -961,7 +900,7 @@ structure Primitive where
 
 /-- The primitive a callee is, if it is one. -/
 def Callee.primitive? : Callee → Option Primitive
-  | .ffi f => some ⟨Lib.base.name, f.cname, f.sig⟩
+  | .lib f => some ⟨Lib.base.name, f.cname, f.sig⟩
   | .ext e => some ⟨e.lib.name, e.symbol, e.sig⟩
   | _ => none
 
@@ -973,7 +912,7 @@ def Atomic.answers : Atomic → Bool
 /-- Whether calling `c` answers a value, given whether each function of the
     artifact does. -/
 def Callee.answers (fns : List Bool) : Callee → Bool
-  | .ffi f => f.sig.2.isSome
+  | .lib f => f.sig.2.isSome
   | .ext e => e.sig.2.isSome
   | .local k => fns.getD k false
   | .native => true

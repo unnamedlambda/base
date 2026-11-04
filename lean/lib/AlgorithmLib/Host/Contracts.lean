@@ -8,29 +8,17 @@ import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 /-!
-# `Host.Contracts` — every entry point's contract, in one vocabulary
+# `Host.Contracts` — when the engine's base functions and the device answer
 
-`callBits` is the one reading of the Rust entry points: for each `Ffi` callee it
-says, over the argument bits and the world, what the call answers or that it
-refuses. This module states, for each of them, a precondition under which it
-answers, and proves it. `Pre f bits w` is that precondition and `pre_safe` the
-proof; a frontend that establishes `Pre` before every call has shown that no
-call it makes is misused, whichever subsystem it touches.
-
-The vocabulary is shared across subsystems:
+The facts the base functions' and the device driver's preconditions are stated
+in, and the proofs that each model answers under them (`ExtContracts` reads
+them into its rows):
 
 * memory: `CStr` (a readable C string), `Slot8` (an eight-byte slot the
-  program may write), `Load8`, `Readable`, `Writable`;
-* context arguments: `CtxOk`, `LmdbOk`, `ThreadOk` --- the
-  handle is either zero (the call answers with an error code) or the live one;
+  program may write), `Load8`, `Readable`, `Writable`, `Field`;
 * the device: `Ready` from `DevSpec` (the race vocabulary), `VendorKeeps`,
-  `KeepsSize`, `SgemvOk`, `GemmOk`, `GraphRuns`, `ElapsedOk`, `PinnedRoom`;
-* the counts a call copies: `readCountPtr`, `scanRows`, and
-  `batchedRun`, the batched GEMM's own walk over its pointer arrays.
-
-A precondition is weak where the entry point is forgiving: most calls given a
-zero handle answer with an error code, and their preconditions ask nothing
-more of them then.
+  `SgemvOk`, `GemmOk`, `PinnedRoom`;
+* the counts a call copies: `readCountPtr`.
 -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
@@ -69,10 +57,6 @@ theorem bind_some {α β : Type} {x : Option α} {f : α → Option β} (h : x.i
 /-- The same, for a bind already unfolded to `Option.bind`. -/
 theorem obind_some {α β : Type} {x : Option α} {f : α → Option β} (h : x.isSome = true)
     (hf : ∀ a, x = some a → (f a).isSome = true) : (x.bind f).isSome = true := bind_some h hf
-
-theorem sinf_safe (x : UInt64) (w : World) : (ffiSinf [x] w).isSome = true := rfl
-theorem cosf_safe (x : UInt64) (w : World) : (ffiCosf [x] w).isSome = true := rfl
-theorem powf_safe (b e : UInt64) (w : World) : (ffiPowf [b, e] w).isSome = true := rfl
 
 /-- How many bytes a read through raw pointers copies out of `c`. -/
 def readCountPtr (c : ByteArray) (fileOff size : UInt64) : Nat :=
@@ -142,131 +126,6 @@ theorem stdoutWrite_safe {w : World} {src size : UInt64}
   split
   · rfl
   · next h => exact bind_some (hr h) fun _ _ => rfl
-
--- LMDB
-
-/-- The LMDB context argument is null or the live context. -/
-def LmdbOk (w : World) (ctx : UInt64) : Prop := ctx = 0 ∨ (ctx = lmdbCtx ∧ w.lmdb.live = true)
-
-theorem lmdbCtxOk_of {w : World} {ctx : UInt64} (h : LmdbOk w ctx) : ∃ b, lmdbCtxOk w ctx = some b := by
-  unfold lmdbCtxOk
-  rcases h with rfl | ⟨rfl, hl⟩
-  · exact ⟨false, rfl⟩
-  · exact ⟨true, by simp [hl, show lmdbCtx ≠ 0 by decide]⟩
-
-theorem lmdbInit_safe {w : World} {slot : UInt64} (hl : w.lmdb.live = false) (h : Slot8 w.mem slot) :
-    (ffiLmdbInit [slot] w).isSome = true := by
-  unfold ffiLmdbInit; dsimp only
-  rw [if_neg (by simp [hl])]
-  exact bind_some (h _) fun _ _ => rfl
-
-/-- The slot a cleanup reads holds null or the live context. -/
-def LmdbSlotOk (w : World) (slot : UInt64) : Prop :=
-  ∀ c, w.mem.load slot 8 = some c → c = 0 ∨ (c = lmdbCtx ∧ w.lmdb.live = true)
-
-theorem lmdbCleanup_safe {w : World} {slot : UInt64} (hr : Load8 w.mem slot) (hc : LmdbSlotOk w slot)
-    (hs : Slot8 w.mem slot) :
-    (ffiLmdbCleanup [slot] w).isSome = true := by
-  unfold ffiLmdbCleanup; dsimp only
-  refine bind_some hr fun c e => ?_
-  rcases hc c e with rfl | ⟨rfl, hl⟩
-  · rfl
-  · simp only [show (lmdbCtx == 0) = false by decide, hl, beq_self_eq_true, Bool.and_self, if_true,
-      Bool.false_eq_true, if_false]
-    exact bind_some (hs _) fun _ _ => rfl
-
-theorem lmdbOpen_safe {w : World} {ctx pathPtr x : UInt64} (hc : LmdbOk w ctx)
-    (hp : ctx ≠ 0 → CStr w.mem pathPtr)
-    (hnew : ∀ p, readCStr w.mem pathPtr = some p → w.lmdb.envs.any (·.path == p) = false) :
-    (ffiLmdbOpen [ctx, pathPtr, x] w).isSome = true := by
-  unfold ffiLmdbOpen; dsimp only
-  obtain ⟨b, hb⟩ := lmdbCtxOk_of hc
-  rw [hb]
-  cases b with
-  | false => rfl
-  | true =>
-      dsimp only
-      have h0 : ctx ≠ 0 := by
-        intro h0; subst h0; simp [lmdbCtxOk] at hb
-      refine bind_some (hp h0) fun p e => ?_
-      dsimp only
-      split
-      · rfl
-      · rw [if_neg (by simp [hnew p e])]; rfl
-
-theorem lmdbBeginWriteTxn_safe {w : World} {ctx handle : UInt64} (hc : LmdbOk w ctx) :
-    (ffiLmdbBeginWriteTxn [ctx, handle] w).isSome = true := by
-  unfold ffiLmdbBeginWriteTxn; dsimp only
-  obtain ⟨b, hb⟩ := lmdbCtxOk_of hc
-  rw [hb]
-  cases b with
-  | false => rfl
-  | true => dsimp only; split <;> rfl
-
-theorem lmdbPut_safe {w : World} {ctx handle keyPtr keyLen valPtr valLen : UInt64} (hc : LmdbOk w ctx)
-    (hr : ctx ≠ 0 → Readable w.mem keyPtr (asI32 keyLen).toNat ∧ Readable w.mem valPtr (asI32 valLen).toNat) :
-    (ffiLmdbPut [ctx, handle, keyPtr, keyLen, valPtr, valLen] w).isSome = true := by
-  unfold ffiLmdbPut; dsimp only
-  split
-  · rfl
-  · obtain ⟨b, hb⟩ := lmdbCtxOk_of hc
-    rw [hb]
-    cases b with
-    | false => rfl
-    | true =>
-        dsimp only
-        have h0 : ctx ≠ 0 := by
-          intro h0; subst h0; simp [lmdbCtxOk] at hb
-        split
-        · rfl
-        · exact bind_some (hr h0).1 fun _ _ => bind_some (hr h0).2 fun _ _ => by
-            split
-            · rfl
-            · split <;> rfl
-
-theorem lmdbCommitWriteTxn_safe {w : World} {ctx handle : UInt64} (hc : LmdbOk w ctx) :
-    (ffiLmdbCommitWriteTxn [ctx, handle] w).isSome = true := by
-  unfold ffiLmdbCommitWriteTxn; dsimp only
-  obtain ⟨b, hb⟩ := lmdbCtxOk_of hc
-  rw [hb]
-  cases b with
-  | false => rfl
-  | true => dsimp only; split <;> (try split) <;> rfl
-
-/-- A scan: the start key, when there is one, can be read and is one LMDB
-    accepts, and there is room for as many bytes as the caller says. -/
-theorem lmdbCursorScan_safe {w : World} {ctx handle keyPtr keyLen maxEntries resultPtr cap : UInt64}
-    (hc : LmdbOk w ctx)
-    (hw : ctx ≠ 0 → ∀ n, n ≤ cap.toNat → Writable w.mem resultPtr n)
-    (hkey : ctx ≠ 0 → 0 < asI32 keyLen → ∃ k, readBytes w.mem keyPtr (asI32 keyLen).toNat = some k ∧
-      lmdbKeyOk k = true) :
-    (ffiLmdbCursorScan [ctx, handle, keyPtr, keyLen, maxEntries, resultPtr, cap] w).isSome = true := by
-  unfold ffiLmdbCursorScan; dsimp only
-  obtain ⟨b, hb⟩ := lmdbCtxOk_of hc
-  rw [hb]
-  cases b with
-  | false => rfl
-  | true =>
-      dsimp only
-      have h0 : ctx ≠ 0 := by
-        intro h0; subst h0; simp [lmdbCtxOk] at hb
-      split
-      · rfl
-      · rename_i hcap
-        have hfit : ∀ rows, (lmdbScanBytes (lmdbFit (cap.toNat - 4) rows)).size ≤ cap.toNat := fun rows => by
-          have := lmdbScanBytes_fit (cap.toNat - 4) rows; omega
-        split
-        · exact bind_some (hw h0 4 (by omega) _ (by decide)) fun _ _ => rfl
-        · split
-          · next hk =>
-            obtain ⟨k, hk', hok⟩ := hkey h0 hk
-            refine bind_some (by simp [hk']) fun y ey => ?_
-            simp [hk'] at ey; subst ey
-            rw [if_neg (by simp [hok])]
-            exact bind_some (hw h0 _ (hfit _) _ rfl) fun _ _ => rfl
-          · refine bind_some rfl fun y ey => ?_
-            cases ey
-            exact bind_some (hw h0 _ (hfit _) _ rfl) fun _ _ => rfl
 
 -- CUDA: pinned memory, memory info, events, graphs
 
@@ -406,156 +265,5 @@ theorem fileSetLen_safe {w : World} {path cap len : UInt64} (hp : Field w.mem pa
   exact bind_some (readField_isSome hp) fun _ _ => by split <;> (try split) <;> rfl
 
 -- threads
-
-/-- The thread context argument is null or the live context. -/
-def ThreadOk (w : World) (ctx : UInt64) : Prop := ctx = 0 ∨ (ctx = threadCtx ∧ w.thread.live = true)
-
-theorem threadInit_safe {w : World} {slot : UInt64} (hl : w.thread.live = false) (h : Slot8 w.mem slot) :
-    (ffiThreadInit [slot] w).isSome = true := by
-  unfold ffiThreadInit; dsimp only
-  rw [if_neg (by simp [hl])]
-  exact bind_some (h _) fun _ _ => rfl
-
-/-- The slot a thread cleanup reads holds null or the live context, read and
-    written with memory unfrozen. -/
-def ThreadSlotOk (w : World) (slot : UInt64) : Prop :=
-  (∀ c, ({ w.mem with frozen := false } : Mem).load slot 8 = some c →
-    c = 0 ∨ (c = threadCtx ∧ w.thread.live = true)) ∧
-  Load8 { w.mem with frozen := false } slot ∧ Slot8 { w.mem with frozen := false } slot
-
-theorem threadCleanup_safe {w : World} {slot : UInt64} (h : ThreadSlotOk w slot) :
-    (ffiThreadCleanup [slot] w).isSome = true := by
-  unfold ffiThreadCleanup; dsimp only
-  refine bind_some h.2.1 fun c e => ?_
-  rcases h.1 c e with rfl | ⟨rfl, hl⟩
-  · rfl
-  · simp only [show (threadCtx == 0) = false by decide, hl, beq_self_eq_true, Bool.and_self, if_true,
-      Bool.false_eq_true, if_false]
-    exact bind_some (h.2.2 _) fun _ _ => rfl
-
-theorem threadJoin_safe {w : World} {ctx h : UInt64} (hc : ThreadOk w ctx) :
-    (ffiThreadJoin [ctx, h] w).isSome = true := by
-  unfold ffiThreadJoin; dsimp only
-  unfold threadCtxOk
-  rcases hc with rfl | ⟨rfl, hl⟩
-  · rfl
-  · simp only [show (threadCtx == 0) = false by decide, hl, beq_self_eq_true, Bool.and_self, if_true,
-      Bool.false_eq_true, if_false]
-    split <;> rfl
-
-/-- **When each entry point answers.** Stated over the argument bits and the
-    world, in the vocabulary above. A call with the wrong number of arguments has
-    none, and neither has `threadSpawn`, whose callee is a local function the
-    program logic answers for. -/
-def Pre : IR.Ffi → List UInt64 → World → Prop
-  | .sinf => fun bits w => match bits with
-    | [_x] => True
-    | _ => False
-  | .cosf => fun bits w => match bits with
-    | [_x] => True
-    | _ => False
-  | .powf => fun bits w => match bits with
-    | [_b, _e] => True
-    | _ => False
-  | .htInit | .htCleanup | .htCreate | .htCount | .htLookup | .htInsert | .htIncrement | .htGetEntry =>
-      fun _ _ => False
-  | .lmdbInit => fun bits w => match bits with
-    | [slot] => (w.lmdb.live = false) ∧ (Slot8 w.mem slot)
-    | _ => False
-  | .lmdbCleanup => fun bits w => match bits with
-    | [slot] => (Load8 w.mem slot) ∧ (LmdbSlotOk w slot) ∧ (Slot8 w.mem slot)
-    | _ => False
-  | .lmdbOpen => fun bits w => match bits with
-    | [ctx, pathPtr, _x] => (LmdbOk w ctx) ∧ (ctx ≠ 0 → CStr w.mem pathPtr) ∧ (∀ p, readCStr w.mem pathPtr = some p → w.lmdb.envs.any (·.path == p) = false)
-    | _ => False
-  | .lmdbBeginWriteTxn => fun bits w => match bits with
-    | [ctx, _handle] => (LmdbOk w ctx)
-    | _ => False
-  | .lmdbPut => fun bits w => match bits with
-    | [ctx, _handle, keyPtr, keyLen, valPtr, valLen] => (LmdbOk w ctx) ∧ (ctx ≠ 0 → Readable w.mem keyPtr (asI32 keyLen).toNat ∧ Readable w.mem valPtr (asI32 valLen).toNat)
-    | _ => False
-  | .lmdbCommitWriteTxn => fun bits w => match bits with
-    | [ctx, _handle] => (LmdbOk w ctx)
-    | _ => False
-  | .lmdbCursorScan => fun bits w => match bits with
-    | [ctx, _handle, keyPtr, keyLen, _maxEntries, resultPtr, cap] => (LmdbOk w ctx) ∧ (ctx ≠ 0 → ∀ n, n ≤ cap.toNat → Writable w.mem resultPtr n) ∧ (ctx ≠ 0 → 0 < asI32 keyLen → ∃ k, readBytes w.mem keyPtr (asI32 keyLen).toNat = some k ∧ lmdbKeyOk k = true)
-    | _ => False
-  | .threadInit => fun bits w => match bits with
-    | [slot] => (w.thread.live = false) ∧ (Slot8 w.mem slot)
-    | _ => False
-  | .threadCleanup => fun bits w => match bits with
-    | [slot] => (ThreadSlotOk w slot)
-    | _ => False
-  | .threadJoin => fun bits w => match bits with
-    | [ctx, _hd] => (ThreadOk w ctx)
-    | _ => False
-  | .threadSpawn => fun _ _ => False
-
-/-- **Every entry point answers under its precondition**: whatever the call,
-    `Pre` is enough for the model not to refuse it. -/
-theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w) :
-    (callBits f bits w).isSome = true := by
-  cases f
-  case sinf =>
-    simp only [Pre] at h; split at h
-    · apply sinf_safe _ _
-    · exact h.elim
-  case cosf =>
-    simp only [Pre] at h; split at h
-    · apply cosf_safe _ _
-    · exact h.elim
-  case powf =>
-    simp only [Pre] at h; split at h
-    · apply powf_safe _ _ _
-    · exact h.elim
-  case htInit => exact (h : False).elim
-  case htCleanup => exact (h : False).elim
-  case htCreate => exact (h : False).elim
-  case htCount => exact (h : False).elim
-  case htLookup => exact (h : False).elim
-  case htInsert => exact (h : False).elim
-  case htIncrement => exact (h : False).elim
-  case htGetEntry => exact (h : False).elim
-  case lmdbInit =>
-    simp only [Pre] at h; split at h
-    · apply lmdbInit_safe h.1 h.2
-    · exact h.elim
-  case lmdbCleanup =>
-    simp only [Pre] at h; split at h
-    · apply lmdbCleanup_safe h.1 h.2.1 h.2.2
-    · exact h.elim
-  case lmdbOpen =>
-    simp only [Pre] at h; split at h
-    · apply lmdbOpen_safe (x := 0) h.1 h.2.1 h.2.2
-    · exact h.elim
-  case lmdbBeginWriteTxn =>
-    simp only [Pre] at h; split at h
-    · apply lmdbBeginWriteTxn_safe h
-    · exact h.elim
-  case lmdbPut =>
-    simp only [Pre] at h; split at h
-    · apply lmdbPut_safe h.1 h.2
-    · exact h.elim
-  case lmdbCommitWriteTxn =>
-    simp only [Pre] at h; split at h
-    · apply lmdbCommitWriteTxn_safe h
-    · exact h.elim
-  case lmdbCursorScan =>
-    simp only [Pre] at h; split at h
-    · apply lmdbCursorScan_safe h.1 h.2.1 h.2.2
-    · exact h.elim
-  case threadInit =>
-    simp only [Pre] at h; split at h
-    · apply threadInit_safe h.1 h.2
-    · exact h.elim
-  case threadCleanup =>
-    simp only [Pre] at h; split at h
-    · apply threadCleanup_safe h
-    · exact h.elim
-  case threadJoin =>
-    simp only [Pre] at h; split at h
-    · apply threadJoin_safe h
-    · exact h.elim
-  case threadSpawn => exact h.elim
 
 end AlgorithmLib.HProg.Contracts

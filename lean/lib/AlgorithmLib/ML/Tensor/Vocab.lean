@@ -3,6 +3,8 @@ public import AlgorithmLib.ML.Kernel.Rewrite
 meta import AlgorithmLib.ML.Kernel.Rewrite
 public import AlgorithmLib.ML.Kernel.Library
 meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.Core.ClifData
+meta import AlgorithmLib.Core.ClifData
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -166,25 +168,18 @@ inductive VendorKernel where
   | cudaGraphLaunch
   deriving Repr, DecidableEq
 
-/-- **The FFI symbol codegen emits.**  One per constructor, and every one of
-    them is a symbol `base/src/jit.rs` registers — which is the check a free
-    string could not make. -/
+/-- **The vendor function the call is**, by its symbol: what a device write's
+    record names (`ML.LaunchRec.fnName`). -/
 def VendorKernel.symbol : VendorKernel → String
-  | .cublasSgemv                      => "cl_cublas_sgemv"
-  | .cublasSgemvOnStream              => "cl_cublas_sgemv_on_stream"
-  | .cublasSgemm                      => "cl_cublas_sgemm"
-  | .cublasSgemmStridedBatched        => "cl_cublas_sgemm_strided_batched"
-  | .cublasSgemmStridedBatchedOnStream =>
-      "cl_cublas_sgemm_strided_batched_on_stream"
-  | .cublasSgemmAt1                    => "cl_cublas_sgemm_strided_batched"
-  | .cublasSgemmAt1OnStream            =>
-      "cl_cublas_sgemm_strided_batched_on_stream"
-  | .cublasSgemmBatchedOnStream        => "cl_cublas_sgemm_batched_on_stream"
-  | .cublasPtrArray                    => "cl_cublas_ptr_array"
-  | .cublasGemmExBf16                  => "cl_cublas_gemm_ex_bf16"
-  | .cublasGemmStridedBatchedExBf16    => "cl_cublas_gemm_strided_batched_ex_bf16"
-  | .uploadPtr                        => "cl_cuda_upload_ptr"
-  | .cudaGraphLaunch                  => "cl_cuda_graph_launch"
+  | .cublasSgemv | .cublasSgemvOnStream => (IR.Ext.cublas .sgemv).symbol
+  | .cublasSgemm => (IR.Ext.cublas .sgemm).symbol
+  | .cublasSgemmStridedBatched | .cublasSgemmStridedBatchedOnStream
+  | .cublasSgemmAt1 | .cublasSgemmAt1OnStream => (IR.Ext.cublas .sgemmStridedBatched).symbol
+  | .cublasSgemmBatchedOnStream => (IR.Ext.cublas .sgemmBatched).symbol
+  | .cublasPtrArray | .uploadPtr => (IR.Ext.cuda .memcpyHtoD).symbol
+  | .cublasGemmExBf16 => (IR.Ext.cublas .gemmEx).symbol
+  | .cublasGemmStridedBatchedExBf16 => (IR.Ext.cublas .gemmStridedBatchedEx).symbol
+  | .cudaGraphLaunch => (IR.Ext.cuda .graphLaunch).symbol
 
 /-- **Which stated propositions the call's correctness rests on.**
 

@@ -15,7 +15,7 @@ import AlgorithmLib.Surface.Layout
 import AlgorithmLib.Surface.Link
 import AlgorithmLib.Surface.Drv
 import AlgorithmLib.Host.Driver
-open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
+open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 
 /-!
   # A CIFAR-10 classifier, trained end to end on proven kernels
@@ -541,9 +541,6 @@ theorem steps_cover : fwdSteps ++ bwdSteps = List.range NSLOT := by decide
     every operand, `lda = k if transa else m`, `ldb = n if transb else k`,
     `ldc = m`, which is exactly what these five need. -/
 
-def F32_ONE : Nat := 0x3F800000
-def F32_ZERO : Nat := 0
-
 /-- `C ← op(A)·op(B)`, one GEMM. -/
 def gemmStep (base : V .i64) (tA tB m n k aBuf bBuf cBuf : Nat) : Prog V L Unit :=
   app.sgemm base tA tB m n k aBuf bBuf cBuf
@@ -919,7 +916,7 @@ theorem bwdPipeline_runs (st : WSt) :
 def ROOT : Nat := 4
 
 /-- The bind array slot `i` launches with. -/
-def mlpBufs (i : Nat) : List AlgorithmLib.Clif.BufDesc := appBufs app i
+def mlpBufs (i : Nat) : List AlgorithmLib.ML.BufDesc := appBufs app i
 
 /-- The launches of the kernels `slots` names, in order. That every run of
     the shipped `runSeq fwdSteps` and `runSeq bwdSteps` makes exactly these
@@ -1029,7 +1026,7 @@ theorem bwdBlasPlan_exclusive : bwdBlasPlan.Exclusive := Plan.ofSteps_exclusive 
 theorem blas_declared :
     fwdBlasPlan.declaredCount + bwdBlasPlan.declaredCount = 5
       ∧ fwdBlasPlan.declaredNames ++ bwdBlasPlan.declaredNames
-          = List.replicate 5 "cl_cublas_sgemm_strided_batched" := ⟨rfl, rfl⟩
+          = List.replicate 5 (IR.Ext.cublas .sgemmStridedBatched).symbol := ⟨rfl, rfl⟩
 
 /-- **What this configuration bills, read off the plan** — the laws it rests
     on, and how many of its steps rest on no stated law at all.
@@ -1096,39 +1093,22 @@ theorem blas_plans_run (R : Realisation) (hR : Honours R) (st : WSt) :
     different buffers are different steps, and the operands' slots are what
     tell them apart. -/
 
-/-- A GEMM call's arguments, as `Drv.App.sgemm` passes them: the handle and
-    the three operands from their slots, the scalars `1` and `0`, and the rest
-    immediates. -/
-def gemmArgs : (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) →
-    List AlgorithmLib.Clif.BufDesc
-  | (tA, tB, m, n, k, a, b, c) =>
-      [.near (Int.ofNat app.BLAS), .const tA, .const tB, .const m, .const n, .const k, .const F32_ONE,
-       .near (Int.ofNat (app.bufSlot a)), .const (if tA = 1 then k else m),
-       .near (Int.ofNat (app.bufSlot b)), .const (if tB = 1 then n else k),
-       .const F32_ZERO, .near (Int.ofNat (app.bufSlot c)), .const m]
-
-/-- A vendor call carries no slot, arity, bind offset or geometry — its record
-    is its name and its arguments. -/
-def gemmRec : AlgorithmLib.Clif.LaunchRec :=
-  { fnName := "cublasSgemm", kernelOff := none, nBufs := none
-    bindOff := none, gridX := none, blockX := none }
+/-- A GEMM call's arguments, as a pipeline reads them off the call
+    `Drv.App.sgemm` makes. -/
+def gemmArgs (t : ML.Gemm) : List AlgorithmLib.ML.BufDesc := (ML.appGemm app t).2.args
 
 /-- The device writes `runMixed steps` makes, in its order. -/
-def mixedOps (steps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
-    : List DeviceOp :=
-  steps.map (fun st => match st with
-    | .inl i => appLaunch app i
-    | .inr t => (gemmRec, { bufs := none, args := gemmArgs t }))
+def mixedOps (steps : List (Sum Nat ML.Gemm)) : List DeviceOp := steps.map (ML.appStep app)
 
 /-- **Which vendor call is which step.**  Keyed on the arguments, so a GEMM
     bound to the wrong buffers matches nothing rather than matching a step
     proven about different ones. -/
 noncomputable def blasDeclared : List DeclaredBinding :=
-  [ ⟨"cublasSgemm", gemmArgs gemmFwd[0]!, gemmDecl fwd1Stage.val⟩
-  , ⟨"cublasSgemm", gemmArgs gemmFwd[1]!, gemmDecl fwd2Stage.val⟩
-  , ⟨"cublasSgemm", gemmArgs gemmBwd[0]!, gemmDecl dw2Stage.val⟩
-  , ⟨"cublasSgemm", gemmArgs gemmBwd[1]!, gemmDecl dhStage.val⟩
-  , ⟨"cublasSgemm", gemmArgs gemmBwd[2]!, gemmDecl dw1Stage.val⟩ ]
+  [ ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmFwd[0]!, gemmDecl fwd1Stage.val⟩
+  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmFwd[1]!, gemmDecl fwd2Stage.val⟩
+  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmBwd[0]!, gemmDecl dw2Stage.val⟩
+  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmBwd[1]!, gemmDecl dhStage.val⟩
+  , ⟨(IR.Ext.cublas .sgemm).symbol, gemmArgs gemmBwd[2]!, gemmDecl dw1Stage.val⟩ ]
 
 /-- …and they are the plan — five declared steps and four proven ones, in the
     order the driver issues them. -/
@@ -2187,23 +2167,20 @@ def qReplayFn (k : Nat) : Prog V L Unit := do
 
 /-! ### The replay, in the plan -/
 
-/-- The arguments a replay is handed: the executable the capture stored, and
-    the stream it was captured on. -/
-def qGraphArgs : List AlgorithmLib.Clif.BufDesc :=
-  [.near (Int.ofNat QEXEC_OFF), .near (Int.ofNat QSTREAM_OFF)]
+/-- **A replay's record**: the executable graph `capture` instantiated and the
+    stream it made, the first of each the program makes. -/
+def qReplayOp : DeviceOp :=
+  ML.graphOp qApp [HProg.Sem.drvHandle HProg.Sem.kExec 0, HProg.Sem.drvHandle HProg.Sem.kStream 0]
 
-/-- The record a replay leaves: a device write with no slot and no geometry,
-    identified by its arguments. -/
-def qGraphRec : AlgorithmLib.Clif.LaunchRec :=
-  { fnName := "cuGraphLaunch", kernelOff := none, nBufs := none,
-    bindOff := none, gridX := none, blockX := none }
+/-- What a replay is handed, as the plan keys it. -/
+def qGraphArgs : List AlgorithmLib.ML.BufDesc := qReplayOp.2.args
 
 /-- **Which declared step a `cuGraphLaunch` here is**: the replay of the
     sequence `qwen_capture_records_the_run` proves was captured.  Keyed on the
     arguments, so a replay of a *different* executable matches nothing rather
     than matching this one. -/
 noncomputable def qDeclared : List DeclaredBinding :=
-  [⟨"cuGraphLaunch", qGraphArgs, graphStep qwenStages⟩]
+  [⟨(IR.Ext.cuda .graphLaunch).symbol, qGraphArgs, graphStep qwenStages⟩]
 
 /-- `k` replays: `k` assumed steps, each denoting the captured pipeline. -/
 noncomputable def qReplayPlan (k : Nat) : Plan :=
@@ -2220,24 +2197,24 @@ noncomputable def qReplayPlan (k : Nat) : Plan :=
     theorem. -/
 theorem qwen_replay_realises (k : Nat) :
     planOf? qTable qDeclared none
-        (List.replicate k (qGraphRec, { args := qGraphArgs })) = some (qReplayPlan k) := by
+        (List.replicate k qReplayOp) = some (qReplayPlan k) := by
   have hsteps : ∀ n : Nat,
-      stepsOf? qTable qDeclared none (List.replicate n (qGraphRec, { args := qGraphArgs }))
+      stepsOf? qTable qDeclared none (List.replicate n qReplayOp)
         = some (List.replicate n (PStep.declared (graphStep qwenStages))) := by
     intro n
     induction n with
     | zero => rfl
     | succ n ih =>
-        show (match stepOf? qTable qDeclared none (qGraphRec, { args := qGraphArgs }) with
+        show (match stepOf? qTable qDeclared none qReplayOp with
               | none => none
               | some t =>
                   (stepsOf? qTable qDeclared none
-                    (List.replicate n (qGraphRec, { args := qGraphArgs }))).map (t :: ·)) = _
-        rw [show stepOf? qTable qDeclared none (qGraphRec, { args := qGraphArgs })
+                    (List.replicate n qReplayOp)).map (t :: ·)) = _
+        rw [show stepOf? qTable qDeclared none qReplayOp
               = some (PStep.declared (graphStep qwenStages)) from rfl, ih]
         rfl
   show (stepsOf? qTable qDeclared none
-          (List.replicate k (qGraphRec, { args := qGraphArgs }))).map Plan.mk = _
+          (List.replicate k qReplayOp)).map Plan.mk = _
   rw [hsteps k]
   rfl
 

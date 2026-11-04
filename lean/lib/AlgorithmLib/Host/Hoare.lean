@@ -760,17 +760,6 @@ theorem bindAt_get? (Γ : Env) (n : Nat) (vs : List V) (i : Nat) :
   · rw [if_neg h1, if_neg (by omega)]
     congr 1; omega
 
-theorem bindAt_lt {Γ : Env} {n i : Nat} {vs : List V} (hi : i < n) (hs : i < Γ.size) :
-    (bindAt Γ n vs)[i]? = Γ[i]? := by
-  rw [bindAt_get?]; simp [hi, hs]
-
-theorem bindAt_size {Γ : Env} {n : Nat} {vs : List V} (hn : Γ.size ≤ n) :
-    (bindAt Γ n vs).size = n + vs.length := by
-  simp [bindAt]; omega
-
-theorem bindAt_at {Γ : Env} {n j : Nat} {vs : List V} : (bindAt Γ n vs)[n + j]? = vs[j]? := by
-  rw [bindAt_get?, if_neg (by omega)]; congr 1; omega
-
 -- ---------------------------------------------------------------------------
 -- Walking a straight run
 --

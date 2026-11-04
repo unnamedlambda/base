@@ -50,17 +50,17 @@ def fillTable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} :
   let base ← basePtr
   let n ← load64 (← dataPtr)
   let slot ← iaddImm base 0
-  ffiVoid .htInit %[slot]
+  callLibVoid .htInit %[slot]
   let c ← load64 slot
-  let _ ← ffi .htCreate %[c]
+  let _ ← callLib .htCreate %[c]
   let key ← iaddImm base 0x40
   let val ← iaddImm base 0x80
   let eight ← iconst32 8
   forLoop n fun i => do
     storeI64 i key
     storeI64 i val
-    ffiVoid .htInsert %[c, key, eight, val, eight]
-  ffiVoid .htCleanup %[slot]
+    callLibVoid .htInsert %[c, key, eight, val, eight]
+  callLibVoid .htCleanup %[slot]
 
 /-- A sum over as many trips as the input says, into the output: a loop that
     carries an accumulator. -/
@@ -77,7 +77,7 @@ def sumTrips {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} : 
     holding the slot and the scratch, the input its count, the output its
     answer. -/
 abbrev Scratch : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .part .idle true, .room .arena 0xC0, .room .data 8,
+  Contracts.TState.holds [.part .idle true, .room .arena 0xC0, .room .data 8,
     .room .out 8]
 
 theorem fillTable_fine : Fine (emitGo (fnBody ptrParams (fillTable (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
@@ -114,11 +114,10 @@ def usbSession {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type} 
       ext (.usb .release) %[i]
     ext (.usb .close) %[d]
 
-/-- Where it may start: memory not frozen, and room in the output for the
-    descriptor. Nothing about USB is asked: the device may not be there, or
+/-- Where it may start: room in the output for the descriptor. Nothing about USB is asked: the device may not be there, or
     may refuse to open. -/
 abbrev OutRoom : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .room .out 18]
+  Contracts.TState.holds [.room .out 18]
 
 theorem usbSession_fine : Fine (emitGo (fnBody ptrParams (usbSession (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
@@ -158,7 +157,7 @@ def heapSession {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 
 /-- Room in the output for the sixteen bytes. -/
 abbrev OutRoom16 : World → Prop :=
-  Contracts.TState.holds [.part .frozen false, .room .out 16]
+  Contracts.TState.holds [.room .out 16]
 
 theorem heapSession_fine : Fine (emitGo (fnBody ptrParams (heapSession (V := Slot) (L := Lvl))) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩

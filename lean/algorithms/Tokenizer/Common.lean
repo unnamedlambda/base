@@ -115,9 +115,9 @@ def loadTokenizerM (c : TokMem) : Prog V L Unit := do
   let bufP ← load64 (← absAddr ptr c.bufPtr)
   let zero64 ← iconst64 0
   let _ ← ext (.base .fileReadToPtr) %[pathP, pathC, bufP, zero64, bytes64]
-  ffiVoid .htInit %[ptr]
+  callLibVoid .htInit %[ptr]
   let htCtx ← load64At ptr c.htCtx
-  let _ ← ffi .htCreate %[htCtx]
+  let _ ← callLib .htCreate %[htCtx]
   let nMerges ← uload32_64 (← iaddImm bufP HDR_MERGES)
   let mergeBase ← iaddImm bufP MERGE_OFF
   let keyAddr ← iaddImm ptr c.htKey
@@ -135,7 +135,7 @@ def loadTokenizerM (c : TokMem) : Prog V L Unit := do
     storeI32 tokB (← iaddImm keyAddr 4)
     storeI32 rank32 valAddr
     storeI32 result (← iaddImm valAddr 4)
-    ffiVoid .htInsert %[htCtx, keyAddr, keyLen8, valAddr, valLen8]
+    callLibVoid .htInsert %[htCtx, keyAddr, keyLen8, valAddr, valLen8]
 
 /-- **Every byte its own token, before any merging.**
 
@@ -192,7 +192,7 @@ def tokenizeBpeM (c : TokMem) : Prog V L Unit := do
           let tokB ← load32 (← iadd tokBuf (← iaddImm iOff 4))
           storeI32 tokA keyAddr
           storeI32 tokB (← iaddImm keyAddr 4)
-          let found ← ffi .htLookup %[htCtx, keyAddr, keyLen8, valAddr]
+          let found ← callLib .htLookup %[htCtx, keyAddr, keyLen8, valAddr]
           let nextI ← iaddImm i 1
           when .slt found zero32 (continueWith scan %[nextI, r, p])
           let rank ← load32 valAddr
@@ -205,7 +205,7 @@ def tokenizeBpeM (c : TokMem) : Prog V L Unit := do
       let dB ← load32 (← iadd tokBuf (← iaddImm dOff 4))
       storeI32 dA keyAddr
       storeI32 dB (← iaddImm keyAddr 4)
-      let _ ← ffi .htLookup %[htCtx, keyAddr, keyLen8, valAddr]
+      let _ ← callLib .htLookup %[htCtx, keyAddr, keyLen8, valAddr]
       let resT ← load32 (← iaddImm valAddr 4)
       storeI32 resT (← iadd tokBuf dOff)
       let _ ← wloop1 (← iaddImm bestPos 1)

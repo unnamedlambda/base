@@ -22,7 +22,7 @@ The arguments are typed: a buffer id is an `i32` because the signature says
 so, and passing an `i64` where one belongs is a type error at the line that
 writes it rather than a `wf` failure about a slot number.
 
-No callee table is threaded. `Ffi` carries the id and the signature, so
+No callee table is threaded. `LibFn` carries the id and the signature, so
 `Prog.compileProg` derives the declarations a body needs from the calls it
 makes.
 -/
@@ -49,9 +49,9 @@ def ctxPtr (ptr : V .i64) (slotOffset : Nat) : Prog V L (V .i64) := do
 
 /-- `init` takes the *slot* --- it writes the context there. Every subsystem's
     `init` and `cleanup` has this one signature, which the index states. -/
-def initAt (f : Ffi) (hp : f.params = [ClifTy.i64] := by rfl)
+def initAt (f : LibFn) (hp : f.params = [ClifTy.i64] := by rfl)
     (ptr : V .i64) (slotOffset : Nat) : Prog V L Unit := do
-  ffiVoid f (hp ▸ %[← ctxSlotPtr ptr slotOffset])
+  callLibVoid f (hp ▸ %[← ctxSlotPtr ptr slotOffset])
 
 -- ---------------------------------------------------------------------------
 -- Hash table
@@ -74,37 +74,37 @@ def htCleanup (ptr : V .i64) (slotOffset : Nat := ContextSlots.ht) : Prog V L Un
 /-- Allocate the table itself. The context must already hold one. -/
 def htCreate (ptr : V .i64) (slotOffset : Nat := ContextSlots.ht) :
     Prog V L (V .i32) := do
-  ffi .htCreate %[← htCtxPtr ptr slotOffset]
+  callLib .htCreate %[← htCtxPtr ptr slotOffset]
 
 /-- Look `key` up and write the value to `resultOff`; the result says whether
     it was found. Both offsets are relative to the base pointer. -/
 def htLookup (ptr keyOff : V .i64) (keyLen : V .i32) (resultOff : V .i64)
     (slotOffset : Nat := ContextSlots.ht) : Prog V L (V .i32) := do
   let c ← htCtxPtr ptr slotOffset
-  ffi .htLookup %[c, ← iadd ptr keyOff, keyLen, ← iadd ptr resultOff]
+  callLib .htLookup %[c, ← iadd ptr keyOff, keyLen, ← iadd ptr resultOff]
 
 def htInsert (ptr keyOff : V .i64) (keyLen : V .i32) (valOff : V .i64)
     (valLen : V .i32) (slotOffset : Nat := ContextSlots.ht) : Prog V L Unit := do
   let c ← htCtxPtr ptr slotOffset
-  ffiVoid .htInsert %[c, ← iadd ptr keyOff, keyLen, ← iadd ptr valOff, valLen]
+  callLibVoid .htInsert %[c, ← iadd ptr keyOff, keyLen, ← iadd ptr valOff, valLen]
 
 /-- Add `addend` to `key`'s value, inserting it if absent; the result is the
     value after the addition. -/
 def htIncrement (ptr keyOff : V .i64) (keyLen : V .i32) (addend : V .i64)
     (slotOffset : Nat := ContextSlots.ht) : Prog V L (V .i64) := do
   let c ← htCtxPtr ptr slotOffset
-  ffi .htIncrement %[c, ← iadd ptr keyOff, keyLen, addend]
+  callLib .htIncrement %[c, ← iadd ptr keyOff, keyLen, addend]
 
 def htCount (ptr : V .i64) (slotOffset : Nat := ContextSlots.ht) :
     Prog V L (V .i32) := do
-  ffi .htCount %[← htCtxPtr ptr slotOffset]
+  callLib .htCount %[← htCtxPtr ptr slotOffset]
 
 /-- The `index`th entry, written to `keyOutOff` and `valOutOff`. Iterating to
     `htCount` is how a program reads the table back out. -/
 def htGetEntry (ptr : V .i64) (index : V .i32) (keyOutOff valOutOff : V .i64)
     (slotOffset : Nat := ContextSlots.ht) : Prog V L (V .i32) := do
   let c ← htCtxPtr ptr slotOffset
-  ffi .htGetEntry %[c, index, ← iadd ptr keyOutOff, ← iadd ptr valOutOff]
+  callLib .htGetEntry %[c, index, ← iadd ptr keyOutOff, ← iadd ptr valOutOff]
 
 -- ---------------------------------------------------------------------------
 -- Files

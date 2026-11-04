@@ -6,23 +6,26 @@ import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 /-!
-# `Host.OpAgree` — the evaluator answers where the checker accepts
+# `Host.OpAgree` — the semantics answers where the table types
 
 `Op.check` is the one table of which operations apply to which operand types
-and what they yield; `evalOp` computes them. For an environment whose values
-are shaped as their types say (`EnvShaped`) and a type environment that types
-its slots as those values (`Types`):
+and what they yield: the emitted body is checked by it, and the checker types
+operations by it. `evalOp` computes them. For an environment whose values are
+shaped as their types say (`EnvShaped`) and types that type its slots as those
+values (`Types`):
 
-* `evalOp_typed` — where the checker accepts an operation at type `t`, a value
-  the evaluator gives has type `t` and is shaped as `t` says;
-* `evalOp_defined` — where the checker accepts, the evaluator answers, unless
+* `evalOp_typed` — where the table types an operation at `t`, a value the
+  evaluator gives has type `t` and is shaped as `t` says;
+* `evalOp_defined` — where the table types it, the evaluator answers, unless
   the operation is one that traps (`Op.mayTrap`: a division, or a load, whose
   address may be unmapped);
-* `check_of_evalOp` — where the evaluator answers, the checker accepts and at
-  the answer's type, for an operation used as the checker asks of it
-  (`Op.Strict`). The evaluator alone asks less in three places: a constant's
-  type, a load's address and widening, and a vector's reinterpretation; a body
-  that passes `wf` meets none of them.
+* `check_of_evalOp` — where the evaluator answers, the table types it and at
+  the answer's type, for an operation used as the table asks (`Op.Strict`).
+  The evaluator alone asks less in three places: a constant's type, a load's
+  address and widening, and a vector's reinterpretation; a body that passes
+  `wf` meets none of them;
+* `evalOp_answers` — the first two asking only of the operation's operands:
+  what the checker uses (`Check.absOp`).
 -/
 
 namespace AlgorithmLib.HProg.Sem
@@ -40,7 +43,7 @@ def V.Shaped : V → Prop
 def EnvShaped (Γ : Env) : Prop := ∀ (r : Nat) (v : V), Γ[r]? = some v → v.Shaped
 
 /-- `Δ` gives each slot the type of the value `Γ` holds there. -/
-def Types (Δ : TyEnv) (Γ : Env) : Prop := ∀ r, Δ.get r = (Γ[r]?).map V.ty
+def Types (Δ : R → Option ClifTy) (Γ : Env) : Prop := ∀ r, Δ r = (Γ[r]?).map V.ty
 
 /-- The operations whose answer depends on more than their operands' types: a
     division by zero or out of range traps, and a load reads memory. -/
@@ -70,7 +73,7 @@ theorem V.Shaped.cases {v : V} (h : v.Shaped) :
       cases t <;> simp_all [ClifTy.lanes]
 
 /-- What the three claims say of one operation. -/
-def Agree (m : Mem) (Δ : TyEnv) (Γ : Env) (o : Op) : Prop :=
+def Agree (m : Mem) (Δ : R → Option ClifTy) (Γ : Env) (o : Op) : Prop :=
   (∀ t, o.check Δ = some t → ∀ v, evalOp m Γ o = some v → v.ty = t ∧ v.Shaped) ∧
   (∀ t, o.check Δ = some t → o.mayTrap = false → (evalOp m Γ o).isSome = true) ∧
   (∀ v, evalOp m Γ o = some v → o.Strict Γ → o.check Δ = some v.ty)
@@ -111,13 +114,13 @@ macro "agree_simp" : tactic => `(tactic| (
     ClifTy.width, bind, Option.bind, *]
   all_goals try decide))
 
-variable {m : Mem} {Δ : TyEnv} {Γ : Env}
+variable {m : Mem} {Δ : R → Option ClifTy} {Γ : Env}
 
 /-- An integer operation of two operands of one integer type, total: the
     family `iadd`, `isub` and `imul` are. -/
 theorem agree_intBin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
     (h : UInt64 → UInt64 → UInt64)
-    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && ta.isInt) ta))
+    (hc : o.check Δ = (do let ta ← Δ a; let tb ← Δ b; need (ta == tb && ta.isInt) ta))
     (he : evalOp m Γ o = bin Γ a b fun t x y => some (norm t (h x y)))
     (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
   unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get, bin]; rw [hΔ a, hΔ b]
@@ -126,7 +129,7 @@ theorem agree_intBin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
 /-- A bitwise operation on two integers or two vectors of one type. -/
 theorem agree_bitwise (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
     (h : UInt64 → UInt64 → UInt64)
-    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && (ta.isInt || ta.isVec)) ta))
+    (hc : o.check Δ = (do let ta ← Δ a; let tb ← Δ b; need (ta == tb && (ta.isInt || ta.isVec)) ta))
     (he : evalOp m Γ o = (do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => h x y)))
     (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
   unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get]; rw [hΔ a, hΔ b]
@@ -135,7 +138,7 @@ theorem agree_bitwise (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R
 /-- A float operation on two floats or two float vectors of one type. -/
 theorem agree_floatBin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
     (f32op : Float32 → Float32 → Float32) (f64op : Float → Float → Float)
-    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta))
+    (hc : o.check Δ = (do let ta ← Δ a; let tb ← Δ b; need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta))
     (he : evalOp m Γ o = (do zipF (← get Γ a) (← get Γ b) f32op f64op))
     (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
   unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get]; rw [hΔ a, hΔ b]
@@ -144,7 +147,7 @@ theorem agree_floatBin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : 
 /-- A float operation on the raw bits of two floats or float vectors of one type. -/
 theorem agree_floatBits (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
     (f : ClifTy → UInt64 → UInt64 → UInt64)
-    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta))
+    (hc : o.check Δ = (do let ta ← Δ a; let tb ← Δ b; need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta))
     (he : evalOp m Γ o = (do zipBits (← get Γ a) (← get Γ b) f))
     (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
   unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get]; rw [hΔ a, hΔ b]
@@ -153,7 +156,7 @@ theorem agree_floatBits (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b :
 /-- A shift: an integer, by an integer of any width. -/
 theorem agree_shift (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
     (g : ClifTy → UInt64 → UInt64 → UInt64)
-    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta.isInt && tb.isInt) ta))
+    (hc : o.check Δ = (do let ta ← Δ a; let tb ← Δ b; need (ta.isInt && tb.isInt) ta))
     (he : evalOp m Γ o = shiftBin Γ a b fun t x y => some (norm t (g t x y)))
     (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
   unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get, shiftBin]; rw [hΔ a, hΔ b]
@@ -162,7 +165,7 @@ theorem agree_shift (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
 /-- A unary integer operation, at the operand's type. -/
 theorem agree_intUn (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a : R}
     (g : ClifTy → UInt64 → UInt64)
-    (hc : o.check Δ = (do let ta ← Δ.get a; need ta.isInt ta))
+    (hc : o.check Δ = (do let ta ← Δ a; need ta.isInt ta))
     (he : evalOp m Γ o = un Γ a (·.isInt) fun t x => some (norm t (g t x)))
     (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
   unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get, un]; rw [hΔ a]
@@ -448,7 +451,11 @@ theorem agree_bitselect (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c a b : R) :
 set_option maxHeartbeats 8000000 in
 theorem agree_fma (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c a b : R) : Agree m Δ Γ (.fma c a b) := by
   agree_unfold; rw [hΔ c, hΔ a, hΔ b]
-  slot c with hc <;> slot a with ha <;> slot b with hb <;> agree_simp
+  -- the few definitions fma's two readings use, not `agree_simp`'s whole set:
+  -- 729 operand shapes make every lemma in the set count
+  slot c with hc <;> slot a with ha <;> slot b with hb <;>
+    simp [need, V.ty, V.Shaped, ClifTy.isFloat, ClifTy.isFloatVec, ClifTy.lanes, bind, Option.bind, *] <;>
+    try decide
 
 theorem agree_bitcast (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (ty : ClifTy) (a : R) : Agree m Δ Γ (.bitcast ty a) := by
   agree_unfold; rw [hΔ a]
@@ -593,5 +600,93 @@ theorem evalOp_isSome_iff (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} (hn 
   · intro h
     obtain ⟨t, ht⟩ := Option.isSome_iff_exists.mp h
     exact evalOp_defined hΔ hΓ ht hn
+
+/-- An operation other than a load reads its operands and nothing else. -/
+theorem evalOp_congr (m₁ m₂ : Mem) (Γ₁ Γ₂ : Env) (o : Op) (hl : ∀ op p, o ≠ .load op p)
+    (h : ∀ r ∈ o.regs, Γ₁[r]? = Γ₂[r]?) : evalOp m₁ Γ₁ o = evalOp m₂ Γ₂ o := by
+  cases o with
+  | load op p => exact absurd rfl (hl op p)
+  | iconst | fconst | memory | funcAddr => rfl
+  | iadd a b | isub a b | imul a b | udiv a b | ishl a b | ushr a b | band a b | bandNot a b
+  | bor a b | bxor a b | icmp _ a b | fadd a b | fsub a b | fmul a b | fmax a b | fmin a b
+  | fcmp _ a b | ibin _ a b | ishift _ a b | fbin _ a b =>
+    have ha := h a (by simp [Op.regs]); have hb := h b (by simp [Op.regs])
+    simp only [evalOp, bin, shiftBin, Sem.get, ha, hb]
+  | ineg a | ctz a | popcnt a | ireduce32 a | uextend64 a | sextend64 a | fneg a | fpromote a
+  | vhighBits a | fcvtFromSint _ a | fcvtToUint _ a | splat _ a | extractlane a _ | bitcast _ a
+  | iun _ a | fun1 _ a | fconv _ _ a | iext _ _ a =>
+    have ha := h a (by simp [Op.regs])
+    simp only [evalOp, un, Sem.get, ha]
+  | select c a b | bitselect c a b | fma c a b =>
+    have hc := h c (by simp [Op.regs]); have ha := h a (by simp [Op.regs])
+    have hb := h b (by simp [Op.regs])
+    simp only [evalOp, Sem.get, hc, ha, hb]
+
+/-- `Op.check` reads its operands' types and nothing else. -/
+theorem check_congr {g₁ g₂ : R → Option ClifTy} (o : Op) (h : ∀ r ∈ o.regs, g₁ r = g₂ r) :
+    o.check g₁ = o.check g₂ := by
+  cases o with
+  | iconst | fconst | memory | funcAddr => rfl
+  | iadd a b | isub a b | imul a b | udiv a b | ishl a b | ushr a b | band a b | bandNot a b
+  | bor a b | bxor a b | icmp _ a b | fadd a b | fsub a b | fmul a b | fmax a b | fmin a b
+  | fcmp _ a b | ibin _ a b | ishift _ a b | fbin _ a b =>
+    have ha := h a (by simp [Op.regs]); have hb := h b (by simp [Op.regs])
+    simp only [Op.check, ha, hb]
+  | ineg a | ctz a | popcnt a | ireduce32 a | uextend64 a | sextend64 a | fneg a | fpromote a
+  | vhighBits a | fcvtFromSint _ a | fcvtToUint _ a | splat _ a | extractlane a _ | bitcast _ a
+  | iun _ a | fun1 _ a | fconv _ _ a | iext _ _ a | load _ a =>
+    have ha := h a (by simp [Op.regs])
+    simp only [Op.check, ha]
+  | select c a b | bitselect c a b | fma c a b =>
+    have hc := h c (by simp [Op.regs]); have ha := h a (by simp [Op.regs])
+    have hb := h b (by simp [Op.regs])
+    simp only [Op.check, hc, ha, hb]
+
+/-- Where `Op.check` gives a type, it found one for every operand. -/
+theorem check_regs {g : R → Option ClifTy} {o : Op} {t : ClifTy} (h : o.check g = some t) :
+    ∀ r ∈ o.regs, (g r).isSome = true := by
+  intro r hr
+  cases hg : g r with
+  | some _ => rfl
+  | none =>
+      exfalso
+      cases o <;> simp only [Op.regs, List.mem_cons, List.not_mem_nil, or_false] at hr <;>
+        (try rcases hr with rfl | rfl | rfl) <;> (try subst hr) <;> simp_all [Op.check]
+
+/-- **The semantics answers where the table types**: an operation that cannot
+    trap, typed `t` by `Op.check` over types `g` that its operands' values
+    have, answers a value of type `t`, shaped as `t` says. Only the operands
+    are asked of: the rest of the environment may hold anything. -/
+theorem evalOp_answers {m : Mem} {Γ : Env} {g : R → Option ClifTy} {o : Op} {t : ClifTy}
+    (hn : o.mayTrap = false) (hc : o.check g = some t)
+    (hg : ∀ r ∈ o.regs, ∀ u, g r = some u → ∃ v, Γ[r]? = some v ∧ v.ty = u ∧ v.Shaped) :
+    ∃ v, evalOp m Γ o = some v ∧ v.ty = t ∧ v.Shaped := by
+  classical
+  let Γ' : Env := Γ.mapIdx fun i v => if i ∈ o.regs then v else .sc .i64 0
+  have hreg : ∀ r ∈ o.regs, Γ'[r]? = Γ[r]? := by
+    intro r hr
+    simp only [Γ', Array.getElem?_mapIdx]
+    cases Γ[r]? <;> simp [hr]
+  have hsh : EnvShaped Γ' := by
+    intro r v hv
+    by_cases hr : r ∈ o.regs
+    · rw [hreg r hr] at hv
+      obtain ⟨u, hu⟩ := Option.isSome_iff_exists.mp (check_regs hc r hr)
+      obtain ⟨v', hv', -, hs⟩ := hg r hr u hu
+      rw [hv] at hv'; cases hv'; exact hs
+    · simp only [Γ', Array.getElem?_mapIdx, hr, if_false] at hv
+      obtain ⟨_, -, rfl⟩ := Option.map_eq_some_iff.mp hv
+      rfl
+  have hc' : o.check (fun r => (Γ'[r]?).map V.ty) = some t := by
+    rw [check_congr o (g₂ := g) (fun r hr => ?_)]
+    · exact hc
+    · obtain ⟨u, hu⟩ := Option.isSome_iff_exists.mp (check_regs hc r hr)
+      obtain ⟨v, hv, hvt, -⟩ := hg r hr u hu
+      rw [hreg r hr, hv, hu]; simp [hvt]
+  have hnl : ∀ op p, o ≠ .load op p := by intro op p e; subst e; simp [Op.mayTrap] at hn
+  obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp (evalOp_defined (m := m) (fun _ => rfl) hsh hc' hn)
+  refine ⟨v, ?_, evalOp_typed (fun _ => rfl) hsh hc' hv⟩
+  rw [evalOp_congr m m Γ Γ' o hnl (fun r hr => (hreg r hr).symm)]
+  exact hv
 
 end AlgorithmLib.HProg.Sem

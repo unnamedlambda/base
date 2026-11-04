@@ -144,13 +144,13 @@ theorem calloc_answer {vs : List V} {n sz x : UInt64} {w w' : World} (hb : vs.ma
 /-- Bytes inside a live block, with no copy in flight and no worker running,
     can be read. -/
 theorem Blk.load {w : World} {x : UInt64} {n : Nat} (h : Blk w x n) {j k : Nat} (hjk : j + k ≤ n) (hk : 0 < k)
-    (hz : w.mem.frozen = false) (hb : w.mem.busy = []) : (w.mem.load (x + UInt64.ofNat j) k).isSome = true := by
+    (hb : w.mem.busy = []) : (w.mem.load (x + UInt64.ofNat j) k).isSome = true := by
   obtain ⟨off, m, hat, hn, hm, hsz, h36, hlv⟩ := h
   obtain ⟨hd, -⟩ := heapAt_decode hat
   have hd' := Sem.decodeAddr_add (i := j) hd (by rw [Sem.regionSpan_toNat]; omega)
   unfold Mem.load
   rw [hd']
-  simp only [Option.bind_eq_bind, Option.bind_some, Mem.region, Mem.readable, hz, hb]
+  simp only [Option.bind_eq_bind, Option.bind_some, Mem.region, Mem.readable, hb]
   have hany : (w.mem.pinnedLive.any fun x => decide (x.1 ≤ off + j) && decide (off + j + k ≤ x.1 + x.2)) = true :=
     List.any_eq_true.mpr ⟨(off, m), hlv, by simp; omega⟩
   rw [if_neg (by simp [hany]; omega)]
@@ -158,14 +158,14 @@ theorem Blk.load {w : World} {x : UInt64} {n : Nat} (h : Blk w x n) {j k : Nat} 
 
 /-- …and written. -/
 theorem Blk.store {w : World} {x : UInt64} {n : Nat} (h : Blk w x n) {j k : Nat} (hjk : j + k ≤ n) (hk : 0 < k)
-    (hz : w.mem.frozen = false) (hb : w.mem.busy = []) (v : UInt64) :
+    (hb : w.mem.busy = []) (v : UInt64) :
     (w.mem.store (x + UInt64.ofNat j) k v).isSome = true := by
   obtain ⟨off, m, hat, hn, hm, hsz, h36, hlv⟩ := h
   obtain ⟨hd, -⟩ := heapAt_decode hat
   have hd' := Sem.decodeAddr_add (i := j) hd (by rw [Sem.regionSpan_toNat]; omega)
   unfold Mem.store
   rw [hd']
-  simp only [Option.bind_eq_bind, Option.bind_some, Mem.region, Mem.reachable, hz, hb]
+  simp only [Option.bind_eq_bind, Option.bind_some, Mem.region, Mem.reachable, hb]
   have hany : (w.mem.pinnedLive.any fun x => decide (x.1 ≤ off + j) && decide (off + j + k ≤ x.1 + x.2)) = true :=
     List.any_eq_true.mpr ⟨(off, m), hlv, by simp; omega⟩
   rw [if_neg (by simp [hany]; omega)]
@@ -221,7 +221,7 @@ theorem load_of {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
   rfl
 
 theorem readable_off_pinned {m : Mem} {r : Region} (hr : r ≠ .pinned) (off n : Nat) :
-    m.readable r off n = !m.frozen := by
+    m.readable r off n = true := by
   cases r <;> simp_all (config := { decide := true }) [Mem.readable]
 
 theorem foldr_bytes_congr {bs bs' : ByteArray} {off : Nat} : ∀ (l : List Nat) (init : UInt64),
@@ -260,7 +260,7 @@ theorem foldl_set_size (off : Nat) (x : Nat → UInt8) : ∀ (l : List Nat) (bs 
   | [], _ => rfl
   | i :: l, bs => by
       simp only [List.foldl_cons]
-      rw [foldl_set_size off x l, ByteArray.size_set!_eq]
+      rw [foldl_set_size off x l, Sem.set!_size]
 
 theorem store_sizes {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.store a n v = some m')
     (r : Region) : (m'.region r).size = (m.region r).size := by
@@ -272,7 +272,7 @@ theorem store_sizes {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} (h : m.stor
   · cases h
     by_cases e : r0 = r
     · subst e
-      rw [Mem.region_setRegion_self]
+      rw [Sem.region_setRegion_self]
       exact foldl_set_size off (fun i => ((v >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8) _ _
     · rw [Mem.region_setRegion_ne _ _ _ _ e]
 
@@ -286,25 +286,23 @@ theorem bytesAt_congr {bs bs' : ByteArray} {off n : Nat}
     (h : ∀ i, i < n → bs'.get! (off + i) = bs.get! (off + i)) : bytesAt bs' off n = bytesAt bs off n :=
   foldr_bytes_congr _ _ (fun i hi => h i (List.mem_range.mp hi))
 
-/-- **A load survives a step that changes none of its bytes**, keeps its
-    region's size, and leaves memory unfrozen, outside pinned memory. -/
+/-- **A load survives a step that changes none of its bytes** and keeps its
+    region's size, outside pinned memory. -/
 theorem load_kept {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned)
     (hbytes : ∀ i, i < n → decodeAddr (a + UInt64.ofNat i) = some (r, off + i))
-    (h : m.load a n = some v) (hz : m'.frozen = false) (hsz : m'.sizes r = m.sizes r)
+    (h : m.load a n = some v) (hsz : m'.sizes r = m.sizes r)
     (hu : ∀ i, i < n → Unchanged m m' (a + UInt64.ofNat i)) : m'.load a n = some v := by
   obtain ⟨hs, hr, rfl⟩ := load_some hd h
   have hs' : off + n ≤ (m'.region r).size := by
     have : (m'.region r).size = (m.region r).size := hsz
     omega
-  rw [load_of hd hs' (by rw [readable_off_pinned hp, hz]; rfl)]
+  rw [load_of hd hs' (readable_off_pinned hp _ _)]
   congr 1
   apply bytesAt_congr
   intro i hi
-  have hz0 : m.frozen = false := by
-    rw [readable_off_pinned hp] at hr; simpa using hr
-  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega) (by rw [readable_off_pinned hp, hz0]; rfl)
-  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega) (by rw [readable_off_pinned hp, hz]; rfl)
+  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
+  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
   have e := hu i hi _ _ h1 h1'
   simp [bytesAt] at e
   exact (UInt8.toUInt64_inj.mp e).symm
@@ -313,13 +311,13 @@ theorem load_kept {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64} {r : Region} 
     the same. -/
 theorem bytes_kept {m m' : Mem} {a : UInt64} {k : Nat} {r : Region} {off : Nat}
     (hp : r ≠ .pinned) (hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i))
-    (hs : off + k ≤ (m.region r).size) (hz : m.frozen = false) (hz' : m'.frozen = false)
+    (hs : off + k ≤ (m.region r).size)
     (hsz : m'.sizes r = m.sizes r) (hu : ∀ i, i < k → Unchanged m m' (a + UInt64.ofNat i)) :
     ∀ i, i < k → (m'.region r).get! (off + i) = (m.region r).get! (off + i) := by
   intro i hi
   have hs' : (m'.region r).size = (m.region r).size := hsz
-  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega) (by rw [readable_off_pinned hp, hz]; rfl)
-  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega) (by rw [readable_off_pinned hp, hz']; rfl)
+  have h1 := load_of (m := m) (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
+  have h1' := load_of (m := m') (n := 1) (hbytes i hi) (by omega) (readable_off_pinned hp _ _)
   have e := hu i hi _ _ h1 h1'
   simp [bytesAt] at e
   exact (UInt8.toUInt64_inj.mp e).symm
@@ -390,13 +388,6 @@ theorem strSpan_decode {m : Mem} {a : UInt64} {r : Region} {off k : Nat}
       obtain ⟨rfl, rfl, -⟩ := h
       rfl
 
-theorem ByteArray.get!_set!_same (b : ByteArray) (i : Nat) (v : UInt8) (h : i < b.size) :
-    (b.set! i v).get! i = v := by
-  cases b with | mk bs =>
-  simp [ByteArray.set!, ByteArray.get!, Array.set!_eq_setIfInBounds, getElem!_def]
-  simp [ByteArray.size] at h
-  simp [h]
-
 theorem foldl_set!_at (off : Nat) (v : UInt64) : ∀ (n : Nat) (b : ByteArray) (j : Nat), j < n →
     off + n ≤ b.size →
     ((List.range n).foldl (fun (b : ByteArray) i => b.set! (off + i) (byteOfV v i)) b).get! (off + j)
@@ -409,8 +400,8 @@ theorem foldl_set!_at (off : Nat) (v : UInt64) : ∀ (n : Nat) (b : ByteArray) (
         intro i hi; have := List.mem_range.mp hi; omega)).2
       by_cases e : j = n
       · subst e
-        exact ByteArray.get!_set!_same _ _ _ (by rw [hsz]; omega)
-      · rw [ByteArray.get!_set!_of_ne _ _ _ _ (by omega)]
+        exact Sem.get!_set!_same _ _ _ (by rw [hsz]; omega)
+      · rw [Sem.get!_set!_ne _ _ _ _ (by omega)]
         exact foldl_set!_at off v n b j (by omega) (by omega)
 
 theorem byte_toNat (v : UInt64) (j : Nat) (hj : j < 8) :
@@ -439,17 +430,6 @@ theorem reassemble8 (v : UInt64) :
 theorem load_store8 {m m' : Mem} {a v : UInt64} {r : Region} {off : Nat}
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (h : m.store a 8 v = some m') :
     m'.load a 8 = some v := by
-  have hz : m'.frozen = false := by
-    have e := (Mem.store_meta h).2.2
-    unfold Mem.store at h
-    simp only [hd, Option.bind_eq_bind, Option.bind_some] at h
-    split at h
-    · cases h
-    · rename_i hc
-      simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.not_eq_eq_eq_not, Bool.not_true, not_or,
-        Bool.not_eq_false] at hc
-      have := hc.2
-      cases r <;> simp_all [Mem.reachable]
   have hsz : (m'.region r).size = (m.region r).size := store_sizes h r
   unfold Mem.store at h
   simp only [hd, Option.bind_eq_bind, Option.bind_some] at h
@@ -459,9 +439,9 @@ theorem load_store8 {m m' : Mem} {a v : UInt64} {r : Region} {off : Nat}
     simp only [Bool.or_eq_true, decide_eq_true_eq, not_or] at hc
     injection h with h
     subst h
-    rw [load_of hd (by rw [hsz]; omega) (by rw [readable_off_pinned hp, hz]; rfl)]
+    rw [load_of hd (by rw [hsz]; omega) (readable_off_pinned hp _ _)]
     congr 1
-    rw [Mem.region_setRegion_self]
+    rw [Sem.region_setRegion_self]
     unfold bytesAt
     refine (foldr_fun_congr _ (fun i => (byteOfV v i).toUInt64) _ _ fun j hj => ?_).trans (reassemble8 v)
     exact congrArg UInt8.toUInt64 (foldl_set!_at off v 8 _ j (List.mem_range.mp hj) (by omega))
@@ -476,9 +456,9 @@ namespace AlgorithmLib.LibSpec
 /-- The eight bytes at `j` in the block `s` starts. -/
 def fld (w : World) (s : UInt64) (j : Nat) : Option UInt64 := w.mem.load (s + UInt64.ofNat j) 8
 
-/-- A world with no worker running and no copy in flight: a heap block's
-    bytes can be read and written. -/
-def Calm (w : World) : Prop := w.mem.frozen = false ∧ w.mem.busy = []
+/-- A world with no copy in flight: a heap block's bytes can be read and
+    written. -/
+def Calm (w : World) : Prop := w.mem.busy = []
 
 /-- **The bytes `bs` can be read at `p`**: none, wherever `p` is, or a run
     inside one region. -/
@@ -526,5 +506,10 @@ theorem Wrote.ofStore {w w' : World} {p x : UInt64} {n : Nat} (hs : w.mem.store 
 /-- **Two runs in pinned memory are apart**: one ends before the other
     starts. -/
 def Apart (x : UInt64) (n : Nat) (y : UInt64) (k : Nat) : Prop := Before x n y ∨ Before y k x
+
+/-- The big-endian number a run of bytes makes. -/
+def be : List UInt8 → Nat
+  | [] => 0
+  | b :: bs => b.toNat * 256 ^ bs.length + be bs
 
 end AlgorithmLib.LibSpec

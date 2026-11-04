@@ -46,16 +46,12 @@ SHARED_APPS = {"Scan", "Tokenizer"}
 APP_EDGES = {("Host", "Bench"), ("Bench", "Host")}
 # The host proofs a generator must not reach.
 PROOFS = {f"AlgorithmLib.Host.{m}" for m in
-          ["Sem", "Blocks", "Frames", "Sound", "Trust", "OpAgree", "Clif", "ClifCheck", "HostIR",
+          ["Sem", "Blocks", "Frames", "Sound", "Trust", "OpAgree",
            "Hoare", "DevSpec", "Contracts", "Lifecycle", "LaunchSpec"]}
 # Generators that still reach them, and why.
 GENERATOR_EXCEPTIONS = {
-    # `ML.HostBridge` states host-to-kernel facts over `HostIR`, and these
-    # generators prove them beside the emission.
-    "Warp.BackwardWide", "Warp.MlpCifar",
-    "GptOss.Decode", "GptOss.Algorithm",
     # The conformance corpora and the pilots are checked against the semantics.
-    "Host.Pilots", "Host.Corpus", "Host.LmdbCorpus", "Host.NativeCorpus", "Host.LocalCorpus", "Host.ThreadCorpus", "Host.DriverCorpus", "Host.CpuCorpus", "Host.SerialCorpus", "Host.UsbCorpus", "Host.WgpuCorpus",
+    "Host.Pilots", "Host.Corpus", "Host.NativeCorpus", "Host.LocalCorpus", "Host.DriverCorpus", "Host.CpuCorpus", "Host.SerialCorpus", "Host.UsbCorpus", "Host.WgpuCorpus",
 }
 
 IMPORT = re.compile(r"^\s*(?:public\s+)?(?:meta\s+)?import\s+(?:all\s+)?(\S+)", re.M)

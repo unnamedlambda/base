@@ -9,7 +9,7 @@ import all Init.Data.List.Sort.Basic
 # The world a term runs in
 
 Values, memory, the operations `evalOp` defines, and the `World` that holds
-memory, files, standard streams and the devices. `Ffi.lean`
+memory, files, standard streams and the devices. `LibFn.lean`
 says what the foreign calls do to it and `Sem.lean` runs terms over it.
 -/
 
@@ -43,6 +43,14 @@ def widthMask : ClifTy → UInt64
   | _ => 0xffffffffffffffff
 
 def norm (ty : ClifTy) (x : UInt64) : V := .sc ty (x &&& widthMask ty)
+
+theorem and_wide64 (z : UInt64) : z &&& widthMask .i64 = z := by
+  apply UInt64.toNat_inj.mp
+  rw [UInt64.toNat_and, show (widthMask .i64).toNat = 2 ^ 64 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod,
+    Nat.mod_eq_of_lt z.toNat_lt]
+
+theorem norm64 (z : UInt64) : norm .i64 z = .sc .i64 z := by
+  simp only [norm, and_wide64]
 
 /-- The value read as a two's-complement integer of its own width. -/
 def signed (ty : ClifTy) (x : UInt64) : Int :=
@@ -135,9 +143,6 @@ structure Mem where
       has waited for one, it may not write the bytes it covers, nor read them if
       the copy writes them. -/
   busy : List Busy := []
-  /-- A spawned worker has not been joined: the host may touch no memory until
-      it is, because the worker may be reading or writing any of it. -/
-  frozen : Bool := false
   deriving Inhabited
 
 def Mem.region : Mem → Region → ByteArray
@@ -156,14 +161,14 @@ def Mem.setRegion (m : Mem) : Region → ByteArray → Mem
     pinned memory, where they must lie inside one live allocation and clear of
     every copy still in flight. -/
 def Mem.reachable (m : Mem) (r : Region) (off n : Nat) : Bool :=
-  !m.frozen && (r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
-    && m.busy.all (·.clear off n)))
+  r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
+    && m.busy.all (·.clear off n))
 
 /-- Whether they may be read: the same, except that a copy that only reads
     them (an upload) does not stand in the way. -/
 def Mem.readable (m : Mem) (r : Region) (off n : Nat) : Bool :=
-  !m.frozen && (r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
-    && m.busy.all (fun b => !b.writes || b.clear off n)))
+  r != .pinned || (m.pinnedLive.any (fun (o, len) => o ≤ off && off + n ≤ o + len)
+    && m.busy.all (fun b => !b.writes || b.clear off n))
 
 /-- `n` bytes at `a`, little-endian, or `none` if they are not all in one
     region — a load the real program would fault on. -/
@@ -1077,6 +1082,10 @@ def Dev.get? (d : Dev) (id : Int) : Option ByteArray :=
 def Dev.put (d : Dev) (id : Nat) (b : Option ByteArray) : Dev :=
   { d with bufs := d.bufs.setIfInBounds id b }
 
+theorem Dev.put_bufs_size (d : Dev) (id : Nat) (o : Option ByteArray) :
+    (d.put id o).bufs.size = d.bufs.size := by
+  simp [Dev.put]
+
 /-- One dispatch as the host requests it: the pipeline's shader and bindings,
     and the workgroup counts. -/
 structure Dispatch where
@@ -1084,40 +1093,9 @@ structure Dispatch where
   binds : List (Nat × Bool)
   groups : List UInt64
 
-/-- The LMDB context: a Rust allocation, stored and passed, never loaded. -/
-def lmdbCtx : UInt64 := 0x8000000000
-
-/-- What an LMDB database holds, in the order LMDB's default comparison sorts
-    keys: byte by byte, a key before every longer key it begins. -/
-abbrev LmdbTable := List (ByteArray × ByteArray)
-
-/-- One environment the context opened: its directory and, while a write
-    transaction is open on it, what that transaction sees. -/
-structure LmdbEnv where
-  path : String
-  txn : Option LmdbTable := none
-
-/-- The LMDB context as the host observes it: the environments by the handle
-    `cl_lmdb_open` returned, which is their position. -/
-structure Lmdb where
-  live : Bool := false
-  envs : Array LmdbEnv := #[]
-  deriving Inhabited
-
 /-- Where the `k`th piece of loaded machine code lives: outside every region,
     so the program can call it (`Callee.native`) and never load through it. -/
 def nativeAddr (k : Nat) : UInt64 := 0xA000000000 + 0x10000 * UInt64.ofNat k
-
-/-- The thread context: a Rust allocation, stored and passed, never loaded. -/
-def threadCtx : UInt64 := 0xB000000000
-
-/-- The thread context as the host observes it: whether one is live, the handle
-    the next spawn answers, and the one worker spawned and not yet joined. -/
-structure Threads where
-  live : Bool := false
-  next : Nat := 1
-  outstanding : Option Nat := none
-  deriving Inhabited
 
 -- ---------------------------------------------------------------------------
 -- wgpu and the window library, called directly
@@ -1302,10 +1280,6 @@ structure World where
       host-allocation region, which holds every allocation the host makes,
       page-locked or not: these are the ones `free` may release. -/
   heap : List (Nat × Nat) := []
-  lmdb : Lmdb := {}
-  /-- What each LMDB directory holds, committed: the part that outlives the
-      context. -/
-  lmdbDisk : List (String × LmdbTable) := []
   dev : Dev := {}
   /-- **What a kernel computes**: the new contents of the buffers bound to a
       launch, from their contents before it. The model does not run PTX, so
@@ -1335,7 +1309,6 @@ structure World where
   /-- **Time between two completed events**, as the bits of an `f32` count of
       milliseconds, by their ids. -/
   elapsed : Nat → Nat → UInt32 := fun _ _ => 0
-  thread : Threads := {}
   /-- **Whether there is a display**: without one, the window library's event
       loop does not start. -/
   display : Bool := false

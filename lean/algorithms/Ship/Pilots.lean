@@ -21,12 +21,12 @@ namespace PilotsSafe
 
 /-- The caller's data and output, of the lengths it passes. -/
 abbrev Run (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .roomArg .data dl, .roomArg .out ol]
+  [.roomArg .data dl, .roomArg .out ol]
 
 /-- The nested pilot's: the arena its artifact asks for, and the caller's data
     and output of the lengths it passes. -/
 abbrev NestedStart (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena 0x100000, .roomArg .data dl, .roomArg .out ol]
+  [.room .arena 0x100000, .roomArg .data dl, .roomArg .out ol]
 
 ship_entry clampSum : HProgPilots.ClampSum.code under Run dataLen outLen
 

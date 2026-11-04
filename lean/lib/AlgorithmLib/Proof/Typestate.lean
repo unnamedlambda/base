@@ -1,9 +1,9 @@
 module
 public import AlgorithmLib.Proof.ProgHoare
+public import AlgorithmLib.Proof.Rules
 public import AlgorithmLib.Host.DevSpec
 public import AlgorithmLib.Host.Lifecycle
 public import AlgorithmLib.Host.ExtLife
-public import AlgorithmLib.Host.FfiAnswers
 public import AlgorithmLib.Host.Summary
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
@@ -18,16 +18,16 @@ safe when its weakest precondition holds. What a generator writer would
 otherwise have to supply is the loop invariants and the facts each call
 needs. Here both come from one predicate on the world, the *typestate* `W`:
 
-* **Loops.** `wp_forLoop` takes `W` as the loop's invariant: a body that
-  keeps `W` keeps it for any number of trips.
+* **Loops.** `wp_forLoop_keeps` takes `W` as the loop's invariant: a body that
+  keeps `W` keeps it for any number of trips, whatever the bound and even
+  where a trip may fault. A loop whose bound is known and whose invariant
+  counts the trips made is `Proof.Rules`'s `wp_forLoop`.
 * **Calls.** `Moves cfg W f vs W'` is a call's contract in the typestate's
-  terms: from a world in `W`, the call answers into a world in `W'`.
-  `moves_of_pre` derives it for any entry point from its precondition in the
-  contract table and what its answers leave. The standard typestates are lists
-  of facts (`TState`): lifecycle parts, rooms (a region at least so large) and
-  cells (what eight bytes hold). For them the table computes where a call
-  lands (`after`), so `moves_state` has only the precondition left, which the
-  facts give. `Live` is one: the device calls' typestate.
+  terms: from a world in `W`, the call answers into a world in `W'`. The
+  standard typestates are lists of facts (`TState`): lifecycle parts, rooms (a
+  region at least so large) and cells (what eight bytes hold). A C library
+  call lands where its row says (`extAfter`). `Live` is one: the device calls'
+  typestate.
 * **Stores.** A store (of any width, or a byte) keeps every part and room and
   the cells it cannot reach,
   and a known eight-byte value stored to a cell becomes that cell's fact
@@ -36,7 +36,7 @@ needs. Here both come from one predicate on the world, the *typestate* `W`:
   environment: a constant's slot holds that constant, an operation over known
   operands that reads no memory holds what it computes (`evalOp_renumber*`), a
   load from a cell the typestate names holds the cell's value, and the arguments a body starts with are known where the theorem says
-  what they are (`safe_of_wp_entry`). An environment only grows (`Ext`), so what
+  what they are (`safe_of_wp_entry`). An environment only grows (`Extends`), so what
   was bound before a loop or a call is still there after it. A generator reads
   a context handle back from its slot, and the typestate knows what it reads.
 
@@ -69,48 +69,10 @@ def sameInt : List ClifTy → Option ClifTy
   | [t, u] => if t == u && t.isInt then some t else none
   | _ => none
 
-/-- Two operands of one float type: that type. -/
-def sameF : List ClifTy → Option ClifTy
-  | [t, u] => if t == u && isF t then some t else none
-  | _ => none
-
-/-- The scalar type an operation answers over scalar operands of types `ts`, for
-    the operations that answer whatever the operands' bits; `none` for the rest. -/
-def tyOp : Op → List ClifTy → Option ClifTy
-  | .iadd _ _, ts | .isub _ _, ts | .imul _ _, ts => sameInt ts
-  | .band _ _, ts | .bandNot _ _, ts | .bor _ _, ts | .bxor _ _, ts => sameInt ts
-  | .icmp _ _ _, ts => (sameInt ts).map fun _ => .i8
-  | .fadd _ _, ts | .fsub _ _, ts | .fmul _ _, ts => sameF ts
-  | .fmax _ _, ts | .fmin _ _, ts => sameF ts
-  | .fcmp _ _ _, ts => (sameF ts).map fun _ => .i8
-  | .ishl _ _, [t, u] | .ushr _ _, [t, u] | .ishift _ _ _, [t, u] =>
-      if t.isInt && u.isInt then some t else none
-  | .ineg _, [t] | .ctz _, [t] | .popcnt _, [t] => if t.isInt then some t else none
-  | .ireduce32 _, [t] => if t.isInt && decide (t.width > 32) then some .i32 else none
-  | .uextend64 _, [t] | .sextend64 _, [t] =>
-      if t.isInt && decide (t.width < 64) then some .i64 else none
-  | .fneg _, [t] | .fun1 _ _, [t] => if isF t then some t else none
-  | .fpromote _, [t] => if t == .f32 then some .f64 else none
-  | .fcvtFromSint ty _, [t] => if t.isInt && isF ty then some ty else none
-  | .bitcast ty _, [t] => if t.width == ty.width then some ty else none
-  | .iun k _, [t] => if k.admits t then some t else none
-  | .iext k ty _, [t] => if k.admits t ty then some ty else none
-  | .fconv .toSint ty _, [t] => if isF t && ty.isInt && decide (ty.width ≥ 32) then some ty else none
-  | .select _ _ _, [c, a, b] => if c.isInt && a == b then some a else none
-  | _, _ => none
-
 theorem sameInt_eq {ts : List ClifTy} {T : ClifTy} (h : sameInt ts = some T) :
     ts = [T, T] ∧ T.isInt = true := by
   unfold sameInt at h; split at h
   · simp only [Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, beq_iff_eq] at h
-    obtain ⟨⟨rfl, h2⟩, rfl⟩ := h; exact ⟨rfl, h2⟩
-  · cases h
-
-theorem sameF_eq {ts : List ClifTy} {T : ClifTy} (h : sameF ts = some T) :
-    ts = [T, T] ∧ (T = .f32 ∨ T = .f64) := by
-  unfold sameF at h; split at h
-  · simp only [Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, beq_iff_eq,
-      isF, Bool.or_eq_true] at h
     obtain ⟨⟨rfl, h2⟩, rfl⟩ := h; exact ⟨rfl, h2⟩
   · cases h
 
@@ -123,273 +85,6 @@ theorem bin_sound {Γ : Env} {a b : R} {ts : List ClifTy} {T : ClifTy}
   obtain ⟨rfl, hi⟩ := sameInt_eq h
   obtain ⟨⟨x, hx⟩, ⟨y, hy⟩⟩ := args2 hargs
   simpa [bin, get, hx, hy, hi] using hf x y
-
-theorem zipIntBits_sound {Γ : Env} {a b : R} {ts : List ClifTy} {T : ClifTy}
-    {f : ClifTy → UInt64 → UInt64 → UInt64} (hargs : ArgsTy Γ [a, b] ts) (h : sameInt ts = some T) :
-    ∃ z, (do zipIntBits (← get Γ a) (← get Γ b) f) = some (.sc T z) := by
-  obtain ⟨rfl, hi⟩ := sameInt_eq h
-  obtain ⟨⟨x, hx⟩, ⟨y, hy⟩⟩ := args2 hargs
-  simp [get, hx, hy, zipIntBits, hi, norm]
-
-theorem icmp_sound {Γ : Env} {a b : R} {ts : List ClifTy} {T : ClifTy} {c : ICmpCond}
-    (hargs : ArgsTy Γ [a, b] ts) (h : (sameInt ts).map (fun _ => ClifTy.i8) = some T) :
-    ∃ z, (do zipIntCmp c (← get Γ a) (← get Γ b)) = some (.sc T z) := by
-  obtain ⟨U, hU, rfl⟩ := Option.map_eq_some_iff.mp h
-  obtain ⟨rfl, hi⟩ := sameInt_eq hU
-  obtain ⟨⟨x, hx⟩, ⟨y, hy⟩⟩ := args2 hargs
-  simp [get, hx, hy, zipIntCmp, hi, boolV]
-
-theorem zipF_sound {Γ : Env} {a b : R} {ts : List ClifTy} {T : ClifTy} {f g}
-    (hargs : ArgsTy Γ [a, b] ts) (h : sameF ts = some T) :
-    ∃ z, (do zipF (← get Γ a) (← get Γ b) f g) = some (.sc T z) := by
-  obtain ⟨rfl, hT⟩ := sameF_eq h
-  obtain ⟨⟨x, hx⟩, ⟨y, hy⟩⟩ := args2 hargs
-  rcases hT with rfl | rfl <;> simp [get, hx, hy, zipF]
-
-theorem zipBits_sound {Γ : Env} {a b : R} {ts : List ClifTy} {T : ClifTy} {f}
-    (hargs : ArgsTy Γ [a, b] ts) (h : sameF ts = some T) :
-    ∃ z, (do zipBits (← get Γ a) (← get Γ b) f) = some (.sc T z) := by
-  obtain ⟨rfl, hT⟩ := sameF_eq h
-  obtain ⟨⟨x, hx⟩, ⟨y, hy⟩⟩ := args2 hargs
-  rcases hT with rfl | rfl <;> simp [get, hx, hy, zipBits, zipBitsIf, ClifTy.isFloat]
-
-theorem fcmp_sound {Γ : Env} {a b : R} {ts : List ClifTy} {T : ClifTy} {c : FloatCC}
-    (hargs : ArgsTy Γ [a, b] ts) (h : (sameF ts).map (fun _ => ClifTy.i8) = some T) :
-    ∃ z, evalOp m Γ (.fcmp c a b) = some (.sc T z) := by
-  obtain ⟨U, hU, rfl⟩ := Option.map_eq_some_iff.mp h
-  obtain ⟨rfl, hT⟩ := sameF_eq hU
-  obtain ⟨⟨x, hx⟩, ⟨y, hy⟩⟩ := args2 hargs
-  rcases hT with rfl | rfl <;> simp [evalOp, get, hx, hy, boolV]
-
-theorem norm_sc (t : ClifTy) (x : UInt64) : ∃ z, norm t x = .sc t z := ⟨_, rfl⟩
-theorem ofInt_sc (t : ClifTy) (i : Int) : ∃ z, ofInt t i = .sc t z := ⟨_, rfl⟩
-
-theorem args1 {Γ : Env} {a : R} {ts : List ClifTy} (h : ArgsTy Γ [a] ts) :
-    ∃ t, ts = [t] ∧ ∃ x, Γ[a]? = some (.sc t x) := by
-  match ts, h with
-  | [t], ⟨hx, _⟩ => exact ⟨t, rfl, hx⟩
-
-theorem args2' {Γ : Env} {a b : R} {ts : List ClifTy} (h : ArgsTy Γ [a, b] ts) :
-    ∃ t u, ts = [t, u] ∧ (∃ x, Γ[a]? = some (.sc t x)) ∧ ∃ y, Γ[b]? = some (.sc u y) := by
-  match ts, h with
-  | [t, u], ⟨hx, hy, _⟩ => exact ⟨t, u, rfl, hx, hy⟩
-
-theorem args3 {Γ : Env} {a b c : R} {ts : List ClifTy} (h : ArgsTy Γ [a, b, c] ts) :
-    ∃ t u v, ts = [t, u, v] ∧ (∃ x, Γ[a]? = some (.sc t x)) ∧ (∃ y, Γ[b]? = some (.sc u y)) ∧
-      ∃ z, Γ[c]? = some (.sc v z) := by
-  rcases ts with _ | ⟨t, _ | ⟨u, _ | ⟨v, _ | ⟨_, _⟩⟩⟩⟩ <;> simp only [ArgsTy, and_false, and_true] at h
-  exact ⟨t, u, v, rfl, h.1, h.2.1, h.2.2⟩
-
-/-- A saturating conversion answers at the type it converts to. -/
-theorem satToSint_sc (ty : ClifTy) (x : Float) : ∃ z, satToSint ty x = .sc ty z := by
-  unfold satToSint ofInt norm
-  dsimp only
-  repeat' split
-  all_goals exact ⟨_, rfl⟩
-
-set_option linter.unusedSimpArgs false in
-/-- **An operation over scalars of the types `tyOp` asks answers a scalar of the
-    type it names.** One lemma per shape; the cases share their tactic text, so
-    a lemma one case needs is unused in another. -/
-theorem tyOp_sound {m : Mem} {Γ : Env} {o : Op} {ts : List ClifTy} {T : ClifTy}
-    (hargs : ArgsTy Γ o.regs ts) (h : tyOp o ts = some T) : ∃ x, evalOp m Γ o = some (.sc T x) := by
-  cases o with
-  | iadd a b => exact bin_sound hargs h fun _ _ => ⟨_, rfl⟩
-  | isub a b => exact bin_sound hargs h fun _ _ => ⟨_, rfl⟩
-  | imul a b => exact bin_sound hargs h fun _ _ => ⟨_, rfl⟩
-  | band a b => exact zipIntBits_sound hargs h
-  | bandNot a b => exact zipIntBits_sound hargs h
-  | bor a b => exact zipIntBits_sound hargs h
-  | bxor a b => exact zipIntBits_sound hargs h
-  | icmp c a b => exact icmp_sound hargs h
-  | fadd a b => exact zipF_sound hargs h
-  | fsub a b => exact zipF_sound hargs h
-  | fmul a b => exact zipF_sound hargs h
-  | fmax a b => exact zipBits_sound hargs h
-  | fmin a b => exact zipBits_sound hargs h
-  | fcmp c a b => exact fcmp_sound hargs h
-  | ishl a b =>
-      obtain ⟨t, u, rfl, ⟨x, hx⟩, ⟨y, hy⟩⟩ := args2' (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true] at h
-      obtain ⟨⟨h1, h2⟩, rfl⟩ := h
-      simp [evalOp, shiftBin, get, hx, hy, h1, h2, norm]
-  | ushr a b =>
-      obtain ⟨t, u, rfl, ⟨x, hx⟩, ⟨y, hy⟩⟩ := args2' (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true] at h
-      obtain ⟨⟨h1, h2⟩, rfl⟩ := h
-      simp [evalOp, shiftBin, get, hx, hy, h1, h2, norm]
-  | ishift k a b =>
-      obtain ⟨t, u, rfl, ⟨x, hx⟩, ⟨y, hy⟩⟩ := args2' (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true] at h
-      obtain ⟨⟨h1, h2⟩, rfl⟩ := h
-      simp [evalOp, shiftBin, get, hx, hy, h1, h2, norm]
-      cases k <;> exact ⟨_, rfl⟩
-  | ineg a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | ctz a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | popcnt a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | ireduce32 a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | uextend64 a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | sextend64 a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | fneg a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | fun1 k a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | fpromote a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | fcvtFromSint ty a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | bitcast ty a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | iun k a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq] at h
-      obtain ⟨hc, rfl⟩ := h
-      simp only [IUn.admits, Bool.and_eq_true, Bool.or_eq_true, bne_iff_ne, ne_eq,
-        decide_eq_true_eq] at hc
-      cases k <;> simp_all [evalOp, un, get, iunOp, norm, ofInt]
-      exact hc.2.resolve_left (by decide)
-  | iext k ty a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      first
-        | (obtain ⟨hc, rfl⟩ := h
-           first
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt]; done)
-             | (simp [evalOp, un, get, hx, hc, norm, ofInt, iunOp]; split <;> simp_all; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width]; done)
-             | (cases t <;> simp_all [evalOp, get, mapFBits, ofInt, norm, IExt.admits, ClifTy.isInt, ClifTy.width] <;> split <;> simp_all))
-        | (obtain ⟨rfl, rfl⟩ := h; simp [evalOp, get, hx])
-  | select c a b =>
-      obtain ⟨tc, ta, tb, rfl, ⟨x, hx⟩, ⟨y, hy⟩, ⟨z, hz⟩⟩ := args3 (by simpa only [Op.regs] using hargs)
-      simp only [tyOp, Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true,
-        beq_iff_eq] at h
-      obtain ⟨⟨h1, rfl⟩, rfl⟩ := h
-      by_cases hc : isTrue (V.sc tc x) <;> simp [evalOp, get, hx, hy, hz, h1, V.ty, hc]
-  | fconv k ty a =>
-      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
-      cases k <;> simp only [tyOp, reduceCtorEq] at h
-      simp only [Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
-        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
-      obtain ⟨⟨⟨ht | ht, hi⟩, hw⟩, rfl⟩ := h <;> subst ht <;>
-        simp [evalOp, get, hx, hi, hw, satToSint_sc]
-  | _ => simp [tyOp] at h
 
 end AlgorithmLib.HProg.Sem
 
@@ -444,7 +139,7 @@ theorem wp_forM_nil {cfg : Cfg} {d : Nat} {J : Post} {β : Type} (f : β → Pro
     extension of the environment the loop starts from keeps it for every trip,
     and what follows starts from an extension of that environment in `W`. The
     counter, the test and the increment are the loop's own. -/
-theorem wp_forLoop {cfg : Cfg} {d : Nat} {J : Post} {n : Slot .i64} {body : Slot .i64 → Prog Slot Lvl Unit}
+theorem wp_forLoop_keeps {cfg : Cfg} {d : Nat} {J : Post} {n : Slot .i64} {body : Slot .i64 → Prog Slot Lvl Unit}
     {R : Unit → Env → World → Prop} {Γ : Env} {w : World} (W : World → Prop) (hW : W w)
     (hbody : ∀ d' J', J'.faultOk = true → ∀ i δ wb, W wb → wp cfg d' J' (body i) (fun _ _ w' => W w') (Γ ++ δ) wb)
     (hk : ∀ δ w', W w' → R () (Γ ++ δ) w') (hJ : J.faultOk = true) :
@@ -481,7 +176,7 @@ theorem wp_forLoop {cfg : Cfg} {d : Nat} {J : Post} {n : Slot .i64} {body : Slot
     typestate is the invariant; the accumulator may be anything, so the body
     may compute it however it likes, and what follows the loop gets whichever
     value it ends with. -/
-theorem wp_forLoopAcc {cfg : Cfg} {d : Nat} {J : Post} {t : ClifTy} {n : Slot .i64} {acc0 : Slot t}
+theorem wp_forLoopAcc_keeps {cfg : Cfg} {d : Nat} {J : Post} {t : ClifTy} {n : Slot .i64} {acc0 : Slot t}
     {body : Slot .i64 → Slot t → Prog Slot Lvl (Slot t)}
     {R : Slot t → Env → World → Prop} {Γ : Env} {w : World} (W : World → Prop) (hW : W w)
     (hbody : ∀ d' J', J'.faultOk = true → ∀ i a δ wb, W wb → wp cfg d' J' (body i a) (fun _ _ w' => W w') (Γ ++ δ) wb)
@@ -517,54 +212,39 @@ theorem wp_forLoopAcc {cfg : Cfg} {d : Nat} {J : Post} {t : ClifTy} {n : Slot .i
 
 /-- **A call moves a typestate**: from any world in `W`, the call with these
     arguments answers, into a world in `W'`. -/
-def Moves (cfg : Cfg) (W : World → Prop) (f : Ffi) (vs : List V) (W' : World → Prop) : Prop :=
-  ∀ w, W w → ∃ r w', callOf cfg.locals (.ffi f) vs (obsCall w (.ffi f) vs) = some (r, w') ∧ W' w'
+def Moves (cfg : Cfg) (W : World → Prop) (f : LibFn) (vs : List V) (W' : World → Prop) : Prop :=
+  ∀ w, W w → ∃ r w', callOf cfg.locals (.lib f) vs (obsCall w (.lib f) vs) = some (r, w') ∧ W' w'
 
 /-- A call that keeps its typestate. -/
-abbrev Keeps (cfg : Cfg) (W : World → Prop) (f : Ffi) (vs : List V) : Prop := Moves cfg W f vs W
+abbrev Keeps (cfg : Cfg) (W : World → Prop) (f : LibFn) (vs : List V) : Prop := Moves cfg W f vs W
 
 /-- **A call, by its contract.** Whatever the argument slots hold, the call
     moves `W` to `W'`; a call that answers nothing leaves the environment as it
     was. -/
-theorem wp_ffiVoid_moves {cfg : Cfg} {d : Nat} {J : Post} {f : Ffi} {args : Vals Slot f.params}
+theorem wp_callLibVoid_moves {cfg : Cfg} {d : Nat} {J : Post} {f : LibFn} {args : Vals Slot f.params}
     {Q : Unit → Env → World → Prop} {Γ : Env} {w : World} (W W' : World → Prop)
     (hres : f.result.isSome = false)
     (hK : ∀ vs, args.slots.mapM (fun r => Γ[r]?) = some vs → Moves cfg W f vs W') (hW : W w)
     (hQ : ∀ w', W' w' → Q () Γ w') :
-    wp cfg d J (ffiVoid f args) Q Γ w := by
-  simp only [ffiVoid, ffi, wp_bind, wp_call, wp_ret, wp_pure]
+    wp cfg d J (callLibVoid f args) Q Γ w := by
+  simp only [callLibVoid, callLib, wp_bind, wp_call, wp_ret, wp_pure]
   intro vs hvs
   obtain ⟨r, w', hc, hw'⟩ := hK vs hvs w hW
   exact ⟨r, w', hc, by simp only [hres, Bool.false_eq_true, if_false]; exact hQ w' hw'⟩
 
 /-- The same for a call whose answer is dropped: it still binds the next slot. -/
-theorem wp_ffiVoid_moves_res {cfg : Cfg} {d : Nat} {J : Post} {f : Ffi} {args : Vals Slot f.params}
+theorem wp_callLibVoid_moves_res {cfg : Cfg} {d : Nat} {J : Post} {f : LibFn} {args : Vals Slot f.params}
     {Q : Unit → Env → World → Prop} {Γ : Env} {w : World} (W W' : World → Prop)
     (hres : f.result.isSome = true)
     (hK : ∀ vs, args.slots.mapM (fun r => Γ[r]?) = some vs → Moves cfg W f vs W') (hW : W w)
     (hQ : ∀ v w', W' w' → Q () (Γ.push v) w') :
-    wp cfg d J (ffiVoid f args) Q Γ w := by
-  simp only [ffiVoid, ffi, wp_bind, wp_call, wp_ret, wp_pure]
+    wp cfg d J (callLibVoid f args) Q Γ w := by
+  simp only [callLibVoid, callLib, wp_bind, wp_call, wp_ret, wp_pure]
   intro vs hvs
   obtain ⟨r, w', hc, hw'⟩ := hK vs hvs w hW
   exact ⟨r, w', hc, by simp only [hres, if_true]; exact fun v _ => hQ v w' hw'⟩
 
-/-- **A call moves a typestate by its contract.** The call's precondition
-    holds in every world of `W`, and every answer the contract gives from there
-    lands in `W'`. The call itself is `callBits` on its argument bits
-    (`callOf_ffi`), and `pre_safe` says it answers. -/
-theorem moves_of_pre (cfg : Cfg) {W W' : World → Prop} {f : Ffi} {vs : List V} {bits : List UInt64}
-    (hf : f.engine = true) (hb : vs.mapM asBits = some bits)
-    (hobs : ∀ w, W w → W (obsCall w (.ffi f) vs)) (hz : ∀ w, W w → w.mem.frozen = false)
-    (hpre : ∀ w, W w → Contracts.Pre f bits w)
-    (hpost : ∀ w r w', W w → callBits f bits w = some (r, w') → W' w') : Moves cfg W f vs W' := by
-  intro w hw
-  have hw1 := hobs w hw
-  rw [Contracts.callOf_ffi hf _ _ (hz _ hw1), hb]
-  obtain ⟨⟨r, w'⟩, hr⟩ := Option.isSome_iff_exists.mp (Contracts.pre_safe f bits _ (hpre _ hw1))
-  exact ⟨r, w', hr, hpost _ _ _ hw1 hr⟩
-
-open Contracts (Part Fact TState after after_sound afterStore afterStore_sound)
+open Contracts (Part Fact TState afterStore afterStore_sound)
 
 theorem Part.get_obsCall (p : Part) (w : World) (c : Callee) (vs : List V) :
     p.get (obsCall w c vs) = p.get w := by
@@ -593,32 +273,6 @@ theorem TState.holds_obsCall {S : TState} {w : World} {c : Callee} {vs : List V}
   | nwg _ | wgo _ _ => exact this
   | wg1 _ s => cases s <;> exact this
   | wgText _ _ _ => exact this
-
-/-- **The standard typestates move by the table.** From a typestate that has
-    memory unfrozen, a call whose precondition the facts give lands in what
-    the contract table says it leaves, `after f bits S`, computed as `S'`. -/
-theorem moves_state (cfg : Cfg) (S S' : TState) {f : Ffi} {vs : List V} {bits : List UInt64}
-    (hz : S.contains (.part .frozen false) = true) (hf : f.engine = true) (hb : vs.mapM asBits = some bits)
-    (hS' : after f bits S = S') (hpre : ∀ w, S.holds w → Contracts.Pre f bits w) :
-    Moves cfg S.holds f vs S'.holds := by
-  subst hS'
-  exact moves_of_pre cfg hf hb (fun _ h => TState.holds_obsCall h)
-    (fun _ h => Contracts.holds_of_mem h hz) hpre (fun _ _ _ hS h => after_sound hS h)
-
-/-- **The same, landing in fewer facts**: for a call whose table entry only
-    keeps facts, any of them it keeps. What a call keeps is computed; a fact
-    whose keeping does not compute, as over a length the program was answered,
-    is dropped. -/
-theorem moves_state_sub (cfg : Cfg) (S S' : TState) {f : Ffi} {vs : List V} {bits : List UInt64}
-    (hz : S.contains (.part .frozen false) = true) (hf : f.engine = true) (hb : vs.mapM asBits = some bits)
-    (ha : after f bits S = S.filter (Contracts.keeps f bits)) (hsub : S'.Sublist S)
-    (hk : S'.all (Contracts.keeps f bits) = true) (hpre : ∀ w, S.holds w → Contracts.Pre f bits w) :
-    Moves cfg S.holds f vs S'.holds := by
-  intro w hw
-  obtain ⟨r, w', hc, hw'⟩ := moves_state cfg S _ hz hf hb rfl hpre w hw
-  refine ⟨r, w', hc, fun x hx => hw' x ?_⟩
-  rw [ha]
-  exact List.mem_filter.mpr ⟨hsub.subset hx, List.all_eq_true.mp hk x hx⟩
 
 theorem ofInt_nat_val {n : Nat} (h : n < 2 ^ 64) :
     UInt64.ofNat ((n : Int).emod (1 <<< 64)).toNat = UInt64.ofNat n := by
@@ -694,49 +348,44 @@ theorem TState.holds_allIn {S S' : TState} (h : TState.AllIn S' S) {w : World}
       · exact hS _ h.1
       · exact ih h.2 hx
 
-/-- The typestate ordinary device calls need: host memory is not frozen, the
-    context is live, and no stream is being captured. -/
+/-- The typestate ordinary device calls need: the context is live, and no
+    stream is being captured. -/
 abbrev Live : World → Prop :=
-  TState.holds [.part .frozen false, .part .cuda true, .part .capturing false]
+  TState.holds [.part .cuda true, .part .capturing false]
 
 theorem tyBytes_le (ty : ClifTy) : tyBytes ty ≤ 2 ^ 64 := by cases ty <;> decide
 
 export AlgorithmLib.HProg.Contracts (Fits)
 
-/-- Bytes a `room` fact covers. -/
-theorem fits_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
-    (h : Contracts.roomAt S a n = true) : Fits w.mem a n :=
-  Contracts.roomAt_spec hS h
-
 /-- Bytes within a length the program was handed. -/
 theorem fits_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Contracts.Fact.roomArg r x ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Contracts.Fact.roomArg r x ∈ S)
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hb : off + n ≤ x.toNat) :
     Fits w.mem a n :=
-  ⟨r, off, hd, hp, by have := (hS _ hm).1; omega, Contracts.holds_of_mem hS hz,
+  ⟨r, off, hd, hp, by have := (hS _ hm).1; omega,
     by have := (hS _ hm).2; omega⟩
 
 /-- Bytes at a value past an address, within a length the program was handed. -/
 theorem fits_of_roomArg_add {S : TState} {w : World} {b x X : UInt64} {n : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Contracts.Fact.roomArg r X ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Contracts.Fact.roomArg r X ∈ S)
     (hd : decodeAddr b = some (r, off)) (hp : r ≠ .pinned) (hb : off + x.toNat + n ≤ X.toNat)
     (hn : 0 < n) : Fits w.mem (b + x) n := by
   have hx := hS _ hm
   have hd' : decodeAddr (b + x) = some (r, off + x.toNat) := by
     have := Sem.decodeAddr_add (i := x.toNat) hd (by simp only [regionSpan, UInt64.reduceToNat]; have := hx.2; omega)
     rwa [UInt64.ofNat_toNat] at this
-  exact fits_of_roomArg hS hm hz hd' hp (by omega)
+  exact fits_of_roomArg hS hm hd' hp (by omega)
 
 /-- Bytes at a value past an address, within a room the typestate names. -/
 theorem fits_of_room_add {S : TState} {w : World} {b x : UInt64} {n N : Nat} {r : Region} {off : Nat}
-    (hS : S.holds w) (hm : Contracts.Fact.room r N ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Contracts.Fact.room r N ∈ S)
     (hd : decodeAddr b = some (r, off)) (hp : r ≠ .pinned) (hb : off + x.toNat + n ≤ N)
     (hN : N ≤ 2 ^ 36) (hn : 0 < n) : Fits w.mem (b + x) n := by
   have hx : N ≤ w.mem.sizes r := hS _ hm
   have hd' : decodeAddr (b + x) = some (r, off + x.toNat) := by
     have := Sem.decodeAddr_add (i := x.toNat) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
     rwa [UInt64.ofNat_toNat] at this
-  exact ⟨r, off + x.toNat, hd', hp, by omega, Contracts.holds_of_mem hS hz, by omega⟩
+  exact ⟨r, off + x.toNat, hd', hp, by omega, by omega⟩
 
 /-- A place a literal past a sum: the same place as the literal added first. -/
 theorem fits_regroup {m : Mem} {b x c : UInt64} {n : Nat} (h : Fits m (b + c + x) n) :
@@ -744,9 +393,9 @@ theorem fits_regroup {m : Mem} {b x c : UInt64} {n : Nat} (h : Fits m (b + c + x
   rwa [UInt64.add_assoc, UInt64.add_comm x c, ← UInt64.add_assoc]
 
 theorem store_parts {w : World} {m : Mem} {a : UInt64} {n : Nat} {b : UInt64}
-    (hz : m.frozen = w.mem.frozen ∧ m.busy = w.mem.busy)
+    (hz : m.busy = w.mem.busy)
     (p : Part) : p.get { obsStore w a n b with mem := m } = p.get w := by
-  cases p <;> first | rfl | exact hz.1 | (show m.busy.isEmpty = w.mem.busy.isEmpty; rw [hz.2])
+  cases p <;> first | rfl | (show m.busy.isEmpty = w.mem.busy.isEmpty; rw [hz])
 
 /-- **A store, by the typestate.** When the address and the value are both
     known, the typestate keeps what the store cannot reach and learns the cell
@@ -786,7 +435,7 @@ theorem wp_store_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
       | none => rw [hm] at hrun; cases hrun
       | some m =>
           rw [hm] at hrun; cases hrun
-          refine afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+          refine afterStore_sound hS (store_parts (Contracts.store_busy hm)) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
             (fun _ => hm) ?_ ?_ hn
           · intro x hx
             cases st with
@@ -818,7 +467,7 @@ theorem wp_store_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
         | none =>
             rw [← Array.foldlM_toList] at hm
             obtain ⟨hsz, hz⟩ := Contracts.foldl_stores_sizes _
-              (fun _ _ _ h => ⟨Contracts.store_sizes_eq h, Contracts.store_frozen h, Contracts.store_busy h⟩) _ _ _ hm
+              (fun _ _ _ h => ⟨Contracts.store_sizes_eq h, Contracts.store_busy h⟩) _ _ _ hm
             exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz
       · cases hrun
 
@@ -872,16 +521,16 @@ theorem wp_store_unknown {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α �
     (hk : ∀ w', S'.holds w' → wp cfg d J k Q Γ w') : wp cfg d J (.store v a k) Q Γ w :=
   wp_store_state S none (fun _ _ h => by cases h) hS (.inl hJ) (by subst hS'; exact hk)
 
-/-- Lanes stored one after another keep every region's size, the frozen flag and the copies in flight. -/
+/-- Lanes stored one after another keep every region's size and the copies in flight. -/
 theorem foldlM_lane_stores_inv {addr : UInt64} {lw : Nat} : ∀ (l : List (UInt64 × Nat)) (m0 m : Mem),
     l.foldlM (fun mm (p : UInt64 × Nat) => mm.store (addr + UInt64.ofNat (p.2 * lw)) lw p.1) m0 = some m →
-    m.sizes = m0.sizes ∧ m.frozen = m0.frozen ∧ m.busy = m0.busy
-  | [], m0, m, h => by simp at h; subst h; exact ⟨rfl, rfl, rfl⟩
+    m.sizes = m0.sizes ∧ m.busy = m0.busy
+  | [], m0, m, h => by simp at h; subst h; exact ⟨rfl, rfl⟩
   | p :: l, m0, m, h => by
       simp only [List.foldlM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
       obtain ⟨m1, h1, h2⟩ := h
-      obtain ⟨hs, hz, hb⟩ := foldlM_lane_stores_inv l m1 m h2
-      exact ⟨hs.trans (Contracts.store_sizes_eq h1), hz.trans (Contracts.store_frozen h1),
+      obtain ⟨hs, hb⟩ := foldlM_lane_stores_inv l m1 m h2
+      exact ⟨hs.trans (Contracts.store_sizes_eq h1),
         hb.trans (Contracts.store_busy h1)⟩
 
 /-- **A store under default flags, by the typestate**: its width is the
@@ -940,14 +589,14 @@ theorem wp_storeUnaligned_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q 
           rw [hm] at hrun; cases hrun
           cases st with
           | none =>
-              exact Contracts.nonCell_kept hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩
+              exact Contracts.nonCell_kept hS (store_parts (Contracts.store_busy hm)) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩
                 (Contracts.store_sizes_eq hm)
           | some q =>
               obtain ⟨x, t', y⟩ := q
               obtain ⟨⟨t0, ht⟩, hv'⟩ := hst x t' y rfl
               rw [ha] at ht; cases ht
               rw [hv] at hv'; cases hv'
-              exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+              exact afterStore_sound hS (store_parts (Contracts.store_busy hm)) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
                 (fun _ => hm) (fun _ h => by cases h; rfl) (fun _ h => by cases h; rfl) (tyBytes_le _)
 
 theorem wp_storeU_known {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
@@ -1049,7 +698,7 @@ theorem wp_istore8_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α �
       | none => rw [hm] at hrun; simp only [reduceCtorEq] at hrun
       | some m =>
           rw [hm] at hrun; cases hrun
-          exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+          exact afterStore_sound hS (store_parts (Contracts.store_busy hm)) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
             (fun _ => hm) (fun x hx => by
               obtain ⟨t, ht⟩ := ha x hx
               rw [ha'] at ht; cases ht; rfl) (fun _ h => by cases h) (by decide)
@@ -1108,16 +757,6 @@ theorem evalOp_iadd64 {m : Mem} {Γ : Env} {a b : R} {x y : UInt64}
   rw [Nat.and_two_pow_sub_one_eq_mod]
   omega
 
-theorem norm64 (z : UInt64) : norm .i64 z = .sc .i64 z := by
-  simp only [norm, widthMask]
-  congr 1
-  apply UInt64.toNat_inj.mp
-  rw [UInt64.toNat_and]
-  have := z.toNat_lt
-  show z.toNat &&& (2^64 - 1) = z.toNat
-  rw [Nat.and_two_pow_sub_one_eq_mod]
-  omega
-
 /-- The lesser of two 64-bit values is at most each. -/
 theorem umin_bounds (x y : UInt64) :
     (UInt64.ofNat (min x.toNat y.toNat)).toNat ≤ x.toNat ∧ (UInt64.ofNat (min x.toNat y.toNat)).toNat ≤ y.toNat := by
@@ -1146,14 +785,8 @@ def bitrev64 (x : UInt64) : UInt64 :=
   UInt64.ofNat ((List.range 64).foldl
     (fun acc i => if (x &&& widthMask .i64).toNat.testBit i then acc ||| (1 <<< (64 - 1 - i)) else acc) 0)
 
-theorem and_widthMask64 (x : UInt64) : x &&& widthMask .i64 = x := by
-  apply UInt64.toNat_inj.mp
-  rw [UInt64.toNat_and]
-  show x.toNat &&& (2 ^ 64 - 1) = x.toNat
-  rw [Nat.and_two_pow_sub_one_eq_mod, Nat.mod_eq_of_lt (UInt64.toNat_lt x)]
-
 theorem toNat_and_widthMask64 (x : UInt64) : x.toNat &&& (widthMask .i64).toNat = x.toNat := by
-  rw [← UInt64.toNat_and, and_widthMask64]
+  rw [← UInt64.toNat_and, and_wide64]
 
 theorem evalOp_clz64 {m : Mem} {Γ : Env} {a : R} {x : UInt64} (ha : Γ[a]? = some (.sc .i64 x)) :
     evalOp m Γ (.iun .clz a) = some (.sc .i64 (clz64 x)) := by
@@ -1528,28 +1161,11 @@ theorem sound_of_wp_entry_ans {cfg : Cfg} {α : Type} {p : Prog Slot Lvl α} {pa
 -- Environments as variables
 --
 -- The condition generator never carries an environment as a term. Each
--- binding leaves a fresh environment `Γ'` with two facts: `Ext Γ Γ'`, and what
+-- binding leaves a fresh environment `Γ'` with two facts: `Extends Γ Γ'`, and what
 -- `Γ'` holds at the new slot. Proving the rest for every such `Γ'` proves it
 -- for the one the model builds, and a slot's value is found by carrying its
 -- fact forward along `Ext`, so no lookup walks a chain of pushes.
 -- ---------------------------------------------------------------------------
-
-/-- `Γ'` keeps every slot of `Γ`. -/
-def Ext (Γ Γ' : Env) : Prop := Γ.size ≤ Γ'.size ∧ ∀ i, i < Γ.size → Γ'[i]? = Γ[i]?
-
-theorem Ext.push (Γ : Env) (v : V) : Ext Γ (Γ.push v) :=
-  ⟨by simp, fun i hi => by simp [Array.getElem?_push, show i ≠ Γ.size by omega]⟩
-
-theorem Ext.append (Γ δ : Env) : Ext Γ (Γ ++ δ) :=
-  ⟨by simp, fun i hi => Array.getElem?_append_left hi⟩
-
-/-- A slot's value, carried to an environment that keeps it. -/
-theorem Ext.fact {Γ Γ' : Env} {s : Nat} {c : V} (h : Ext Γ Γ') (hs : Γ[s]? = some c) : Γ'[s]? = some c := by
-  have hi : s < Γ.size := by
-    rcases Nat.lt_or_ge s Γ.size with hi | hi
-    · exact hi
-    · rw [Array.getElem?_eq_none hi] at hs; cases hs
-  rw [h.2 s hi, hs]
 
 theorem lookup_nil (Γ : Env) : ([] : List Nat).mapM (fun r => Γ[r]?) = some [] := rfl
 
@@ -1580,37 +1196,36 @@ theorem evalOp_scalar {m : Mem} {Γ : Env} {o : Op} {v : V} (hs : o.scalarResult
 
 theorem wp_op_sc_var {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} (hs : o.erase.scalarResult = true)
     (hJ : J.faultOk = true)
-    (h : ∀ t x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
+    (h : ∀ t x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := ⟨fun _ => hJ, fun v hv => by
   obtain ⟨t, x, rfl⟩ := evalOp_scalar hs hv
-  exact h t x hv _ (Ext.push Γ _) (by simp)⟩
+  exact h t x hv _ (Extends.push Γ _) (by simp)⟩
 
 /-- `wp_op_sc_var`, where the post allows no fault: the operation answers. -/
 theorem wp_op_sc_ok {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} (hs : o.erase.scalarResult = true)
     (hJ : J.faultOk = true ∨ evalOp w.mem Γ o.erase ≠ none)
-    (h : ∀ t x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
+    (h : ∀ t x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := ⟨fun hn => hJ.elim id fun h' => absurd hn h', fun v hv => by
   obtain ⟨t, x, rfl⟩ := evalOp_scalar hs hv
-  exact h t x hv _ (Ext.push Γ _) (by simp)⟩
+  exact h t x hv _ (Extends.push Γ _) (by simp)⟩
 
 /-- An operation that answers a scalar of type `T` when it answers, and answers
     where the post allows no fault: its value, of that type. -/
 theorem wp_op_scT {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} (T : ClifTy)
     (hsc : ∀ v, evalOp w.mem Γ o.erase = some v → ∃ x, v = .sc T x)
     (hJ : J.faultOk = true ∨ evalOp w.mem Γ o.erase ≠ none)
-    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc T x) → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc T x) →
+    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc T x) → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc T x) →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := ⟨fun hn => hJ.elim id fun h' => absurd hn h', fun v hv => by
   obtain ⟨x, rfl⟩ := hsc v hv
-  exact h x hv _ (Ext.push Γ _) (by simp)⟩
+  exact h x hv _ (Extends.push Γ _) (by simp)⟩
 
-/-- An operation `tyOp` types, over operands of the types it asks: its value, of
-    the type it names. -/
+/-- An operation that answers a scalar of type `T`: what follows runs on it. -/
 theorem wp_op_ty {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} (T : ClifTy)
     (hty : ∃ x, evalOp w.mem Γ o.erase = some (.sc T x))
-    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc T x) → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc T x) →
+    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc T x) → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc T x) →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := by
   obtain ⟨x, hx⟩ := hty
@@ -1630,22 +1245,24 @@ theorem evalOp_load_ty {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy} {
 theorem wp_op_load_var {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} {op : LoadOp} {a : R}
     {t : ClifTy} (ho : o.erase = .load op a) (hl : op.ty.lanes = none) (ht : op.ty = t)
     (hJ : J.faultOk = true)
-    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
+    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := ⟨fun _ => hJ, fun v hv => by
   have hs : o.erase.scalarResult = true := by rw [ho]; simp [Op.scalarResult, hl]
   obtain ⟨t', x, rfl⟩ := evalOp_scalar hs hv
   have := evalOp_load_ty hl (ho ▸ hv)
   subst ht; subst this
-  exact h x hv _ (Ext.push Γ _) (by simp)⟩
+  exact h x hv _ (Extends.push Γ _) (by simp)⟩
 
-/-- How many bytes a scalar load reads. -/
+/-- How many bytes a load reads: a vector's lanes for a vector. -/
 def loadBytes (op : LoadOp) : Nat :=
   match op.kind with
   | .uload8 | .sload8 => 1
   | .uload16 | .sload16 => 2
   | .uload32 | .sload32 => 4
-  | .plain => tyBytes op.ty
+  | .plain => match op.ty.lanes with
+    | some (l, n) => n * tyBytes l
+    | none => tyBytes op.ty
 
 /-- A scalar load from an address whose bytes are there answers. -/
 theorem evalOp_load_some {m : Mem} {Γ : Env} {op : LoadOp} {a : R} {t : ClifTy} {x : UInt64}
@@ -1663,7 +1280,7 @@ theorem wp_op_load_at {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} 
     {t : ClifTy} (ho : o.erase = .load op a) (hl : op.ty.lanes = none) (ht : op.ty = t)
     {t' : ClifTy} {x : UInt64} (ha : Γ[a]? = some (.sc t' x))
     (hJ : J.faultOk = true ∨ Fits w.mem x (loadBytes op))
-    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
+    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc t x) → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := ⟨fun hn => hJ.elim id fun hsp =>
     absurd (ho ▸ hn) (evalOp_load_some hl ha hsp.load), fun v hv => by
@@ -1671,7 +1288,7 @@ theorem wp_op_load_at {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} 
   obtain ⟨t', x, rfl⟩ := evalOp_scalar hs hv
   have := evalOp_load_ty hl (ho ▸ hv)
   subst ht; subst this
-  exact h x hv _ (Ext.push Γ _) (by simp)⟩
+  exact h x hv _ (Extends.push Γ _) (by simp)⟩
 
 /-- A byte read is below 256. -/
 theorem load1_lt {m : Mem} {a b : UInt64} (h : m.load a 1 = some b) : b.toNat < 256 := by
@@ -1707,82 +1324,102 @@ theorem wp_op_uload8_at {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α
     (hk8 : op.kind = .uload8)
     {t' : ClifTy} {x : UInt64} (ha : Γ[a]? = some (.sc t' x))
     (hJ : J.faultOk = true ∨ Fits w.mem x (loadBytes op))
-    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc t x) → x.toNat < 256 → ∀ Γ', Ext Γ Γ' →
+    (h : ∀ x, evalOp w.mem Γ o.erase = some (.sc t x) → x.toNat < 256 → ∀ Γ', Extends Γ Γ' →
       Γ'[Γ.size]? = some (.sc t x) → wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w :=
   wp_op_load_at ho hl ht ha hJ fun x hv => h x hv (evalOp_uload8_lt hk8 (ho ▸ hv))
 
 theorem wp_op_var {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} (hJ : J.faultOk = true)
-    (h : ∀ v, evalOp w.mem Γ o.erase = some v → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some v →
+    (h : ∀ v, evalOp w.mem Γ o.erase = some v → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some v →
       wp cfg d J (k Γ.size) Q Γ' w) :
-    wp cfg d J (.op o k) Q Γ w := ⟨fun _ => hJ, fun v hv => h v hv _ (Ext.push Γ v) (by simp)⟩
+    wp cfg d J (.op o k) Q Γ w := ⟨fun _ => hJ, fun v hv => h v hv _ (Extends.push Γ v) (by simp)⟩
 
 theorem wp_iconst_var {ty} {k : Int} {hk : ty.isInt = true} {c : Slot ty → Prog Slot Lvl α}
-    (h : ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (ofInt ty k) → wp cfg d J (c Γ.size) Q Γ' w) :
+    (h : ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (ofInt ty k) → wp cfg d J (c Γ.size) Q Γ' w) :
     wp cfg d J (.op (.iconst ty k hk) c) Q Γ w := by
-  rw [wp_iconst]; exact h _ (Ext.push Γ _) (by simp)
+  rw [wp_iconst]; exact h _ (Extends.push Γ _) (by simp)
 
 /-- A constant computed by a term, taken as the number it computes. -/
 theorem wp_iconst_lit {ty} {k k' : Int} {hk : ty.isInt = true} {c : Slot ty → Prog Slot Lvl α}
     (he : k = k')
-    (h : ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (ofInt ty k') → wp cfg d J (c Γ.size) Q Γ' w) :
+    (h : ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (ofInt ty k') → wp cfg d J (c Γ.size) Q Γ' w) :
     wp cfg d J (.op (.iconst ty k hk) c) Q Γ w := by
   subst he; exact wp_iconst_var h
 
 theorem wp_forLoop_var {n : Slot .i64} {body : Slot .i64 → Prog Slot Lvl Unit}
     {R : Unit → Env → World → Prop} (W : World → Prop) (hW : W w)
-    (hbody : ∀ d' J', J'.faultOk = true → ∀ i Γb wb, Ext Γ Γb → W wb → wp cfg d' J' (body i) (fun _ _ w' => W w') Γb wb)
-    (hk : ∀ Γ' w', Ext Γ Γ' → W w' → R () Γ' w') (hJ : J.faultOk = true) :
+    (hbody : ∀ d' J', J'.faultOk = true → ∀ i Γb wb, Extends Γ Γb → W wb → wp cfg d' J' (body i) (fun _ _ w' => W w') Γb wb)
+    (hk : ∀ Γ' w', Extends Γ Γ' → W w' → R () Γ' w') (hJ : J.faultOk = true) :
     wp cfg d J (forLoop n body) R Γ w :=
-  wp_forLoop W hW (fun d' J' hJ' i δ wb h => hbody d' J' hJ' i _ wb (Ext.append Γ δ) h)
-    (fun δ w' h => hk _ w' (Ext.append Γ δ) h) hJ
+  wp_forLoop_keeps W hW (fun d' J' hJ' i δ wb h => hbody d' J' hJ' i _ wb (Extends.append Γ δ) h)
+    (fun δ w' h => hk _ w' (Extends.append Γ δ) h) hJ
 
 theorem wp_forLoopAcc_var {t : ClifTy} {n : Slot .i64} {acc0 : Slot t}
     {body : Slot .i64 → Slot t → Prog Slot Lvl (Slot t)} {R : Slot t → Env → World → Prop}
     (W : World → Prop) (hW : W w)
-    (hbody : ∀ d' J', J'.faultOk = true → ∀ i a Γ' wb, Ext Γ Γ' → W wb → wp cfg d' J' (body i a) (fun _ _ w' => W w') Γ' wb)
-    (hk : ∀ a Γ' w', Ext Γ Γ' → W w' → R a Γ' w') (hJ : J.faultOk = true) :
+    (hbody : ∀ d' J', J'.faultOk = true → ∀ i a Γ' wb, Extends Γ Γ' → W wb → wp cfg d' J' (body i a) (fun _ _ w' => W w') Γ' wb)
+    (hk : ∀ a Γ' w', Extends Γ Γ' → W w' → R a Γ' w') (hJ : J.faultOk = true) :
     wp cfg d J (forLoopAcc n acc0 body) R Γ w :=
-  wp_forLoopAcc W hW (fun d' J' hJ' i a δ wb h => hbody d' J' hJ' i a _ wb (Ext.append Γ δ) h)
-    (fun a δ w' h => hk a _ w' (Ext.append Γ δ) h) hJ
+  wp_forLoopAcc_keeps W hW (fun d' J' hJ' i a δ wb h => hbody d' J' hJ' i a _ wb (Extends.append Γ δ) h)
+    (fun a δ w' h => hk a _ w' (Extends.append Γ δ) h) hJ
 
-theorem wp_ffiVoid_var {f : Ffi} {args : Vals Slot f.params} {Q : Unit → Env → World → Prop}
+theorem wp_callLibVoid_var {f : LibFn} {args : Vals Slot f.params} {Q : Unit → Env → World → Prop}
     (W W' : World → Prop) (hres : f.result.isSome = false) {cs : List V}
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
     (hQ : ∀ w', W' w' → Q () Γ w') :
-    wp cfg d J (ffiVoid f args) Q Γ w :=
-  wp_ffiVoid_moves W W' hres (fun vs hvs => by rw [hcs] at hvs; cases hvs; exact hK) hW hQ
+    wp cfg d J (callLibVoid f args) Q Γ w :=
+  wp_callLibVoid_moves W W' hres (fun vs hvs => by rw [hcs] at hvs; cases hvs; exact hK) hW hQ
 
-theorem wp_ffiVoid_res_var {f : Ffi} {args : Vals Slot f.params} {Q : Unit → Env → World → Prop}
+theorem wp_callLibVoid_res_var {f : LibFn} {args : Vals Slot f.params} {Q : Unit → Env → World → Prop}
     (W W' : World → Prop) (hres : f.result.isSome = true) {cs : List V}
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
-    (hQ : ∀ v w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some v → W' w' → Q () Γ' w') :
-    wp cfg d J (ffiVoid f args) Q Γ w :=
-  wp_ffiVoid_moves_res W W' hres (fun vs hvs => by rw [hcs] at hvs; cases hvs; exact hK) hW
-    (fun v w' h => hQ v w' _ (Ext.push Γ v) (by simp) h)
+    (hQ : ∀ v w' Γ', Extends Γ Γ' → Γ'[Γ.size]? = some v → W' w' → Q () Γ' w') :
+    wp cfg d J (callLibVoid f args) Q Γ w :=
+  wp_callLibVoid_moves_res W W' hres (fun vs hvs => by rw [hcs] at hvs; cases hvs; exact hK) hW
+    (fun v w' h => hQ v w' _ (Extends.push Γ v) (by simp) h)
 
 /-- **A call whose answer is bound**, by its contract: what follows gets the
     answer's slot, holding whatever the call answered. -/
-theorem wp_call_res_var {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
+theorem wp_call_res_var {f : LibFn} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {Q : α → Env → World → Prop}
     (W W' : World → Prop) (hres : f.result.isSome = true) {cs : List V}
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
-    (hQ : ∀ v w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some v → W' w' →
+    (hQ : ∀ v w' Γ', Extends Γ Γ' → Γ'[Γ.size]? = some v → W' w' →
       wp cfg d J (k (resSlot f.result Γ.size)) Q Γ' w') :
     wp cfg d J (.call f args k) Q Γ w := by
   rw [wp_call]
   intro vs hvs
   rw [hcs] at hvs; cases hvs
   obtain ⟨r, w', hc, hw'⟩ := hK w hW
-  exact ⟨r, w', hc, by simp only [hres, if_true]; exact fun v _ => hQ v w' _ (Ext.push Γ v) (by simp) hw'⟩
+  exact ⟨r, w', hc, by simp only [hres, if_true]; exact fun v _ => hQ v w' _ (Extends.push Γ v) (by simp) hw'⟩
 
-/-- The same, knowing the answer is a scalar: every entry point but the thread
-    spawn answers one, so what follows may pass it on with known bits. -/
-theorem wp_call_res_sc {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
+/-- What a library function's call answers, when it answers, is a scalar of the
+    type its signature gives (`libAnswer`). -/
+theorem callOf_lib_scalar {f : LibFn} {lc : Locals} {vs : List V} {w : World} {v : V} {w' : World}
+    (h : callOf lc (.lib f) vs w = some (some v, w')) : ∃ x, v = .sc (f.result.getD .i64) x := by
+  simp only [callOf] at h
+  cases hl : lc f.libSlot (vs.map normV) w with
+  | error _ => simp [hl, Except.toOption] at h
+  | ok p =>
+      obtain ⟨r, w1⟩ := p
+      simp only [hl, Except.toOption, Option.map_some, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨h1, -⟩ := h
+      unfold libAnswer at h1
+      split at h1
+      · cases hr : f.result with
+        | none => simp [hr] at h1
+        | some t =>
+            simp only [hr, Option.map_some, Option.some.injEq] at h1
+            subst h1; exact ⟨_, rfl⟩
+      · cases h1
+
+/-- The same, knowing the answer is a scalar: a library function answers one,
+    so what follows may pass it on with known bits. -/
+theorem wp_call_res_sc {f : LibFn} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {Q : α → Env → World → Prop}
-    (W W' : World → Prop) {t0 : ClifTy} (ht : f.result = some t0) (hf : f.engine = true) {cs : List V}
+    (W W' : World → Prop) {t0 : ClifTy} (ht : f.result = some t0) {cs : List V}
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
-    (hQ : ∀ x w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t0 x) → W' w' →
+    (hQ : ∀ x w' Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc t0 x) → W' w' →
       wp cfg d J (k (resSlot f.result Γ.size)) Q Γ' w') :
     wp cfg d J (.call f args k) Q Γ w := by
   rw [wp_call]
@@ -1792,30 +1429,13 @@ theorem wp_call_res_sc {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.re
   refine ⟨r, w', hc, ?_⟩
   simp only [ht, Option.isSome_some, if_true]
   intro v hv; subst hv
-  obtain ⟨x, rfl⟩ := Contracts.callOf_ffi_scalar hf hc
+  obtain ⟨x, rfl⟩ := callOf_lib_scalar hc
   have ht' : f.result.getD .i64 = t0 := by rw [ht]; rfl
   rw [ht']
-  exact hQ x w' _ (Ext.push Γ _) (by simp) hw'
-
-/-- A call that answers went through the table on its argument bits. -/
-theorem callOf_ffi_bits {f : Ffi} (hf : f.engine = true) {lc : Locals} {vs : List V} {w : World}
-    {v : V} {w' : World} (h : callOf lc (.ffi f) vs w = some (some v, w')) :
-    ∃ bits, vs.mapM asBits = some bits ∧ Sem.callBits f bits w = some (some v, w') := by
-  have hf' : (f == .threadSpawn) = false ∧ f.inLib = false := by
-    simpa [Ffi.engine, bne, Bool.and_eq_true] using hf
-  have hs := hf'.1
-  have hl := hf'.2
-  simp only [callOf, hs, hl, if_false, Bool.false_eq_true, callImport, Contracts.ofCname_cname, bind, Option.bind,
-    callFfi] at h
-  split at h
-  · cases h
-  · split at h
-    · cases h
-    · rename_i bits hb
-      exact ⟨bits, hb, h⟩
+  exact hQ x w' _ (Extends.push Γ _) (by simp) hw'
 
 /-- The same for a call that answers nothing. -/
-theorem wp_call_var {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
+theorem wp_call_var {f : LibFn} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {Q : α → Env → World → Prop}
     (W W' : World → Prop) (hres : f.result.isSome = false) {cs : List V}
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
@@ -1831,13 +1451,13 @@ theorem wp_call_var {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.resul
 theorem wp_op_val {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
     {Γ : Env} {w : World} {ty : ClifTy} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} (c : V)
     (hc : evalOp w.mem Γ o.erase = some c)
-    (h : ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some c → wp cfg d J (k Γ.size) Q Γ' w) :
+    (h : ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some c → wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := by
   rw [wp_op]
   refine ⟨fun hn => (by rw [hc] at hn; cases hn), ?_⟩
   intro v hv
   rw [hc] at hv; cases hv
-  exact h _ (Ext.push Γ _) (by simp)
+  exact h _ (Extends.push Γ _) (by simp)
 
 /-- An operation over a value of a type not known and a 64-bit one: where it
     is defined, it is the 64-bit operation. -/
@@ -1849,14 +1469,14 @@ theorem wp_op_left64 {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → En
     (ha : Γ[a]? = some (.sc t x)) (hb : Γ[b]? = some (.sc .i64 y))
     (hc : Γ[a]? = some (.sc .i64 x) → evalOp w.mem Γ o.erase = some (.sc .i64 r))
     (hJ : J.faultOk = true)
-    (h : ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc .i64 r) → wp cfg d J (k Γ.size) Q Γ' w) :
+    (h : ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc .i64 r) → wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := by
   rw [wp_op]
   refine ⟨fun _ => hJ, ?_⟩
   intro v hv
   obtain rfl := left_i64 o.erase ho ha hb hv
   rw [hc ha] at hv; cases hv
-  exact h _ (Ext.push Γ _) (by simp)
+  exact h _ (Extends.push Γ _) (by simp)
 
 /-- `wp_op_left64`, the value of a type not known on the right. -/
 theorem wp_op_right64 {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
@@ -1867,14 +1487,14 @@ theorem wp_op_right64 {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → E
     (ha : Γ[a]? = some (.sc .i64 x)) (hb : Γ[b]? = some (.sc t y))
     (hc : Γ[b]? = some (.sc .i64 y) → evalOp w.mem Γ o.erase = some (.sc .i64 r))
     (hJ : J.faultOk = true)
-    (h : ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc .i64 r) → wp cfg d J (k Γ.size) Q Γ' w) :
+    (h : ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc .i64 r) → wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := by
   rw [wp_op]
   refine ⟨fun _ => hJ, ?_⟩
   intro v hv
   obtain rfl := right_i64 o.erase ho ha hb hv
   rw [hc hb] at hv; cases hv
-  exact h _ (Ext.push Γ _) (by simp)
+  exact h _ (Extends.push Γ _) (by simp)
 
 /-- A 64-bit widening of an integer: its bits under the source's mask, where
     it is defined. -/
@@ -1882,7 +1502,7 @@ theorem wp_op_uext64 {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → En
     {Γ : Env} {w : World} {ty : ClifTy} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α}
     {a : R} {t : ClifTy} {x : UInt64} (ho : o.erase = .uextend64 a) (ha : Γ[a]? = some (.sc t x))
     (hJ : J.faultOk = true ∨ (t.isInt && decide (t.width < 64)) = true)
-    (h : ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc .i64 (x &&& widthMask t)) → wp cfg d J (k Γ.size) Q Γ' w) :
+    (h : ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc .i64 (x &&& widthMask t)) → wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := by
   rw [wp_op]
   refine ⟨fun hn => hJ.elim id fun hi => ?_, ?_⟩
@@ -1893,7 +1513,7 @@ theorem wp_op_uext64 {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → En
   rw [ho] at hv
   simp only [evalOp, un, Sem.get, ha, Option.bind_eq_bind, Option.bind_some] at hv
   split at hv
-  · cases hv; exact h _ (Ext.push Γ _) (by simp)
+  · cases hv; exact h _ (Extends.push Γ _) (by simp)
   · cases hv
 
 /-- A 64-bit sign extension of an integer, where it is defined. -/
@@ -1901,7 +1521,7 @@ theorem wp_op_sext64 {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → En
     {Γ : Env} {w : World} {ty : ClifTy} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α}
     {a : R} {t : ClifTy} {x : UInt64} (ho : o.erase = .sextend64 a) (ha : Γ[a]? = some (.sc t x))
     (hJ : J.faultOk = true ∨ (t.isInt && decide (t.width < 64)) = true)
-    (h : ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (ofInt .i64 (signed t x)) → wp cfg d J (k Γ.size) Q Γ' w) :
+    (h : ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (ofInt .i64 (signed t x)) → wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w := by
   rw [wp_op]
   refine ⟨fun hn => hJ.elim id fun hi => ?_, ?_⟩
@@ -1912,7 +1532,7 @@ theorem wp_op_sext64 {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → En
   rw [ho] at hv
   simp only [evalOp, un, Sem.get, ha, Option.bind_eq_bind, Option.bind_some] at hv
   split at hv
-  · cases hv; exact h _ (Ext.push Γ _) (by simp)
+  · cases hv; exact h _ (Extends.push Γ _) (by simp)
   · cases hv
 
 end vars
@@ -1937,7 +1557,7 @@ theorem wp_ext_res {e : IR.Ext} {args : Vals Slot e.sig.1} {k : ResV Slot e.sig.
     (hS' : S.filter Contracts.Fact.plain = S')
     (hS : S.holds w) (hh : ∀ p ∈ hs, Fact.held p.1 p.2 ∈ S)
     (hr : rs.all (fun q => roomAt S' q.1 q.2) = true)
-    (hQ : ∀ t x w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
+    (hQ : ∀ t x w' Γ', Extends Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
       TState.holds (extAfter e bits (some x) S) w' → wp cfg d J (k (resSlot e.sig.2 Γ.size)) Q Γ' w') :
     wp cfg d J (.callLocal ⟨.ext e⟩ args k) Q Γ w := by
   rw [wp_callLocal]
@@ -1956,7 +1576,7 @@ theorem wp_ext_res {e : IR.Ext} {args : Vals Slot e.sig.1} {k : ResV Slot e.sig.
   simp only [hres, if_true]
   intro v hv; subst hv
   obtain ⟨t, x, rfl⟩ := Contracts.lib_scalar ha hc hb
-  exact hQ t x w' _ (Ext.push Γ _) (by simp) (Contracts.extAfter_sound hS0 hb hc)
+  exact hQ t x w' _ (Extends.push Γ _) (by simp) (Contracts.extAfter_sound hS0 hb hc)
 
 open Contracts (Held extNeeds extAfter extKeeps roomAt) in
 /-- The same for a call that answers nothing. -/
@@ -2037,26 +1657,10 @@ theorem triple_of_wp_entry {cfg : Cfg} {p : Body} {params : List ClifTy} (W W' :
     (fun Γ w' ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs], rfl, hw⟩)
 
 /-- The branch an environment takes keeps what it had. -/
-theorem Ext.bindAt_push (Γ : Env) (v : V) {ne : Nat} (h : Γ.size + 1 ≤ ne) : Ext Γ (bindAt (Γ.push v) ne []) := by
+theorem Extends.bindAt_push (Γ : Env) (v : V) {ne : Nat} (h : Γ.size + 1 ≤ ne) : Extends Γ (Sem.bindAt (Γ.push v) ne []) := by
   have e : Γ.push v = Γ ++ #[v] := by simp
   rw [e, bindAt_append _ (by omega)]
-  exact Ext.append _ _
-
-theorem Ext.refl (Γ : Env) : Ext Γ Γ := ⟨Nat.le_refl _, fun _ _ => rfl⟩
-
-theorem Ext.trans {Γ Γ' Γ'' : Env} (h : Ext Γ Γ') (h' : Ext Γ' Γ'') : Ext Γ Γ'' :=
-  ⟨Nat.le_trans h.1 h'.1, fun i hi => by rw [h'.2 i (Nat.lt_of_lt_of_le hi h.1), h.2 i hi]⟩
-
-/-- Binding carries past what an environment keeps still keeps it. -/
-theorem Ext.carry {Γ Γb : Env} {n : Nat} (vs : List V) (h : Ext Γ Γb) (hn : Γ.size ≤ n) :
-    Ext Γ (bindAt Γb n vs) := by
-  refine ⟨by simp [bindAt]; omega, fun i hi => ?_⟩
-  have hb : i < Γb.size := Nat.lt_of_lt_of_le hi h.1
-  rw [← h.2 i hi]
-  simp only [bindAt]
-  rw [Array.getElem?_append_left (by simp; omega), Array.getElem?_append_left (by simp; omega)]
-  simp only [Array.take, Array.getElem?_extract]
-  rw [if_pos (by simp only [Nat.sub_zero, Nat.lt_min]; omega), Nat.zero_add]
+  exact Extends.append _ _
 
 /-- An unsigned comparison that held: the first operand was below the second. -/
 theorem icmp_ult_true {m : Mem} {Γ : Env} {a b : R} {x y : UInt64} {t : ClifTy} {f : UInt64}
@@ -2069,15 +1673,6 @@ theorem icmp_ult_true {m : Mem} {Γ : Env} {a b : R} {x y : UInt64} {t : ClifTy}
   split at hf
   · simpa using ‹decide (x < y) = true›
   · simp at hf
-
-/-- A loop's carries sit from the slot they are bound at. -/
-theorem bindAt_get_carry (Γ : Env) (n : Nat) (cs : List V) (i : Nat) :
-    (bindAt Γ n cs)[n + i]? = cs[i]? := by
-  have hs : (Γ.take n ++ Array.replicate (n - Γ.size) (default : V)).size = n := by
-    simp [Array.take, Array.size_extract]; omega
-  simp only [bindAt]
-  rw [Array.getElem?_append_right (by omega)]
-  simp [hs]
 
 /-- A comparison of two 64-bit values answers. -/
 theorem icmp_i64_some {m : Mem} {Γ : Env} {a b : R} {x y : UInt64} (c : ICmpCond)
@@ -2096,11 +1691,11 @@ theorem wp_forLoopAcc_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     {R : Slot .i64 → Env → World → Prop} (W : World → Prop) (hW : W w) (N A0 S : Nat) {nv a0 : UInt64}
     (hn : Γ[n]? = some (.sc .i64 nv)) (hN : nv.toNat ≤ N) (ha : Γ[acc0]? = some (.sc .i64 a0))
     (hA : a0.toNat ≤ A0) (hfit : A0 + N * S < 2 ^ 64)
-    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i a Γb wb x y, Ext Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) →
+    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i a Γb wb x y, Extends Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) →
       Γb[a]? = some (.sc .i64 y) → x.toNat < N → y.toNat + S < 2 ^ 64 → y.toNat ≤ A0 + x.toNat * S →
       wp cfg d' J' (body i a)
-        (fun r Γ2 w2 => Ext Γb Γ2 ∧ W w2 ∧ ∃ z, Γ2[r]? = some (.sc .i64 z) ∧ z.toNat ≤ y.toNat + S) Γb wb)
-    (hk : ∀ r Γ' w' z, Ext Γ Γ' → W w' → Γ'[r]? = some (.sc .i64 z) → z.toNat ≤ A0 + N * S → R r Γ' w') :
+        (fun r Γ2 w2 => Extends Γb Γ2 ∧ W w2 ∧ ∃ z, Γ2[r]? = some (.sc .i64 z) ∧ z.toNat ≤ y.toNat + S) Γb wb)
+    (hk : ∀ r Γ' w' z, Extends Γ Γ' → W w' → Γ'[r]? = some (.sc .i64 z) → z.toNat ≤ A0 + N * S → R r Γ' w') :
     wp cfg d J (forLoopAcc n acc0 body) R Γ w := by
   simp only [forLoopAcc, wloop2, wloop, wloopL, iconst64, iconst, iaddImm, op, wp_bind, wp_op, wp_ret,
     wp_pure, Op'.erase, evalOp, reduceCtorEq, false_implies, true_and, forall_eq', Option.some.injEq]
@@ -2114,14 +1709,14 @@ theorem wp_forLoopAcc_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     · exact h
     · rw [Array.getElem?_eq_none h] at hn; cases hn
   let Γp := Γ.push (V.sc .i64 0)
-  have hEp : Ext Γ Γp := Ext.push Γ _
+  have hEp : Extends Γ Γp := Extends.push Γ _
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γp ∧ W w ∧ ∃ i a, cs = [.sc .i64 i, .sc .i64 a] ∧ i.toNat ≤ N ∧
       a.toNat ≤ A0 + i.toNat * S,
     fun Γ0 cs a' Γh wh => (Γ0 = Γp ∧ W wh ∧ ∃ i a, cs = [.sc .i64 i, .sc .i64 a] ∧ i.toNat ≤ N ∧
       a.toNat ≤ A0 + i.toNat * S) ∧ Γh = bindAt Γ0 Γ0.size cs ∧
       a' = (contIfULt Γ0.size n, ((Γ0.size + 1 : Slot .i64) ::ᵥ Vals.nil), ()),
-    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Ext Γ Γb ∧ ∃ z, vs = [.sc .i64 z] ∧ z.toNat ≤ A0 + N * S,
+    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Extends Γ Γb ∧ ∃ z, vs = [.sc .i64 z] ∧ z.toNat ≤ A0 + N * S,
     ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro cs hcs
     have ha' : Γ[acc0] = V.sc .i64 a0 := by
@@ -2136,12 +1731,12 @@ theorem wp_forLoopAcc_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     refine ⟨hI, ?_, ?_⟩ <;> first | trivial | rfl
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨⟨rfl, hw, i, av, rfl, hi, hav⟩, rfl, rfl⟩ _ _ hvs
     refine ⟨rfl, hw, ?_, av, ?_, ?_⟩
-    · exact (hEp.carry (n := Γp.size) _ (by simp [Γp])).trans (Ext.push _ _)
+    · exact (hEp.bindAt (n := Γp.size) (by simp [Γp]) _).trans (Extends.push _ _)
     · have hsz2 : (bindAt Γp Γp.size [V.sc .i64 i, V.sc .i64 av]).size = Γp.size + 2 := by
         simp [bindAt, Array.take]
       have h1 : (Array.push (bindAt Γp Γp.size [V.sc .i64 i, V.sc .i64 av]) (V.sc t f))[Γp.size + 1]? =
           some (.sc .i64 av) := by
-        rw [Array.getElem?_push, if_neg (by omega), bindAt_get_carry]; rfl
+        rw [Array.getElem?_push, if_neg (by omega), bindAt_at]; rfl
       simp only [Vals.slots, List.mapM_cons, List.mapM_nil, h1, Option.bind_eq_bind, Option.bind_some,
         Option.pure_def, Option.some.injEq] at hvs
       exact hvs.symm
@@ -2150,27 +1745,27 @@ theorem wp_forLoopAcc_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
   · rintro nb Γ0 cs a Γ1 t f wb hnb ⟨⟨rfl, hw, i, av, rfl, hi, hav⟩, rfl, rfl⟩ heval hcont
     have hf : (f != 0) = true := by simpa [contIfULt, contIf] using hcont
     simp only [contIfULt, contIf] at heval
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
-    have hn1 := hE1.fact hn
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
+    have hn1 := hE1.get hn
     have hlt : i < nv := icmp_ult_true hi0 hn1 heval hf
     have hiN : i.toNat < N := by have := UInt64.lt_iff_toNat_lt.mp hlt; omega
     have hfit' : av.toNat + S < 2 ^ 64 := by
       have := Nat.mul_le_mul_right S (show i.toNat + 1 ≤ N by omega)
       rw [Nat.add_mul] at this; omega
-    have hEb : Ext Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
+    have hEb : Extends Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
         [.sc .i64 i, .sc .i64 av]) :=
-      (hE1.trans (Ext.push _ _)).carry _ (by have := hE1.1; simp at hnb ⊢; omega)
-    have hib := bindAt_get_carry ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
+      (hE1.trans (Extends.push _ _)).bindAt (by have := hE1.1; simp at hnb ⊢; omega) _
+    have hib := bindAt_at ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
       [.sc .i64 i, .sc .i64 av] 0
-    have hab := bindAt_get_carry ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
+    have hab := bindAt_at ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
       [.sc .i64 i, .sc .i64 av] 1
     simp only [Nat.add_zero, List.getElem?_cons_zero, List.getElem?_cons_succ] at hib hab
     simp only [wp_bind]
     refine wp_mono cfg _ _ _ _ _ ?_ _ _ (hbody _ _ (by simp) nb (nb + 1) _ wb i av hEb hw hib hab hiN hfit' hav)
     rintro r Γ2 w2 ⟨hE2, hw2, z, hz, hzb⟩
-    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Ext.push Γ2 _).fact (hE2.fact hib)
+    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Extends.push Γ2 _).get (hE2.get hib)
     have hc1 : (Γ2.push (.sc .i64 1))[Γ2.size]? = some (.sc .i64 1) := by simp
     have hv'e := evalOp_iadd64 (m := w2.mem) hnb2 hc1
     simp only [wp_op, wp_ret, wp_pure, iadd, op]
@@ -2182,7 +1777,7 @@ theorem wp_forLoopAcc_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     refine ⟨fun h => (by cases h), fun v' hv' nx hnx => ?_⟩
     cases hv'
     have hr : ((Γ2.push (.sc .i64 1)).push (.sc .i64 (i + 1)))[r]? = some (.sc .i64 z) :=
-      (Ext.push _ _).fact ((Ext.push _ _).fact hz)
+      (Extends.push _ _).get ((Extends.push _ _).get hz)
     simp only [Vals.slots, List.mapM_cons, List.mapM_nil, Array.getElem?_push_size, hr, Option.bind_eq_bind,
       Option.bind_some, Option.pure_def, Option.some.injEq] at hnx
     subst hnx
@@ -2194,24 +1789,24 @@ theorem wp_forLoopAcc_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, hw, hEb, z, rfl, hz⟩
     simp only [wp_ret]
     refine hk nE (bindAt Γb nE [.sc .i64 z]) w' z
-      (hEb.carry _ (by have := hEp.1; simp [Γp] at hle this ⊢; omega)) hw ?_ hz
-    simpa using bindAt_get_carry Γb nE [.sc .i64 z] 0
+      (hEb.bindAt (by have := hEp.1; simp [Γp] at hle this ⊢; omega) _) hw ?_ hz
+    simpa using bindAt_at Γb nE [.sc .i64 z] 0
   · rintro Γ0 cs a Γ1 w1 ⟨⟨rfl, -, i, av, rfl, -, -⟩, rfl, rfl⟩ hnone
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
-    exact absurd hnone (icmp_i64_some _ hi0 (hE1.fact hn))
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
+    exact absurd hnone (icmp_i64_some _ hi0 (hE1.get hn))
 
 /-- `wp_forLoopAcc_idx`, the value a 64-bit one throughout. -/
 theorem wp_forLoopAcc_idx64 {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
     {n acc0 : Slot .i64} {body : Slot .i64 → Slot .i64 → Prog Slot Lvl (Slot .i64)}
     {R : Slot .i64 → Env → World → Prop} (W : World → Prop) (hW : W w) (N : Nat) {nv a0 : UInt64}
     (hn : Γ[n]? = some (.sc .i64 nv)) (hN : nv.toNat ≤ N) (ha : Γ[acc0]? = some (.sc .i64 a0))
-    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i a Γb wb x y, Ext Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) →
+    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i a Γb wb x y, Extends Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) →
       Γb[a]? = some (.sc .i64 y) → x.toNat < N →
       wp cfg d' J' (body i a)
-        (fun r Γ2 w2 => Ext Γb Γ2 ∧ W w2 ∧ ∃ z, Γ2[r]? = some (.sc .i64 z)) Γb wb)
-    (hk : ∀ r Γ' w' z, Ext Γ Γ' → W w' → Γ'[r]? = some (.sc .i64 z) → R r Γ' w') :
+        (fun r Γ2 w2 => Extends Γb Γ2 ∧ W w2 ∧ ∃ z, Γ2[r]? = some (.sc .i64 z)) Γb wb)
+    (hk : ∀ r Γ' w' z, Extends Γ Γ' → W w' → Γ'[r]? = some (.sc .i64 z) → R r Γ' w') :
     wp cfg d J (forLoopAcc n acc0 body) R Γ w := by
   simp only [forLoopAcc, wloop2, wloop, wloopL, iconst64, iconst, iaddImm, op, wp_bind, wp_op, wp_ret,
     wp_pure, Op'.erase, evalOp, reduceCtorEq, false_implies, true_and, forall_eq', Option.some.injEq]
@@ -2225,13 +1820,13 @@ theorem wp_forLoopAcc_idx64 {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : Wor
     · exact h
     · rw [Array.getElem?_eq_none h] at hn; cases hn
   let Γp := Γ.push (V.sc .i64 0)
-  have hEp : Ext Γ Γp := Ext.push Γ _
+  have hEp : Extends Γ Γp := Extends.push Γ _
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γp ∧ W w ∧ ∃ i a, cs = [.sc .i64 i, .sc .i64 a] ∧ i.toNat ≤ N,
     fun Γ0 cs a' Γh wh => (Γ0 = Γp ∧ W wh ∧ ∃ i a, cs = [.sc .i64 i, .sc .i64 a] ∧ i.toNat ≤ N) ∧
       Γh = bindAt Γ0 Γ0.size cs ∧
       a' = (contIfULt Γ0.size n, ((Γ0.size + 1 : Slot .i64) ::ᵥ Vals.nil), ()),
-    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Ext Γ Γb ∧ ∃ z, vs = [.sc .i64 z],
+    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Extends Γ Γb ∧ ∃ z, vs = [.sc .i64 z],
     ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro cs hcs
     have ha' : Γ[acc0] = V.sc .i64 a0 := by
@@ -2246,36 +1841,36 @@ theorem wp_forLoopAcc_idx64 {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : Wor
     refine ⟨hI, ?_, ?_⟩ <;> first | trivial | rfl
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨⟨rfl, hw, i, av, rfl, hi⟩, rfl, rfl⟩ _ _ hvs
     refine ⟨rfl, hw, ?_, av, ?_⟩
-    · exact (hEp.carry (n := Γp.size) _ (by simp [Γp])).trans (Ext.push _ _)
+    · exact (hEp.bindAt (n := Γp.size) (by simp [Γp]) _).trans (Extends.push _ _)
     · have hsz2 : (bindAt Γp Γp.size [V.sc .i64 i, V.sc .i64 av]).size = Γp.size + 2 := by
         simp [bindAt, Array.take]
       have h1 : (Array.push (bindAt Γp Γp.size [V.sc .i64 i, V.sc .i64 av]) (V.sc t f))[Γp.size + 1]? =
           some (.sc .i64 av) := by
-        rw [Array.getElem?_push, if_neg (by omega), bindAt_get_carry]; rfl
+        rw [Array.getElem?_push, if_neg (by omega), bindAt_at]; rfl
       simp only [Vals.slots, List.mapM_cons, List.mapM_nil, h1, Option.bind_eq_bind, Option.bind_some,
         Option.pure_def, Option.some.injEq] at hvs
       exact hvs.symm
   · rintro nb Γ0 cs a Γ1 t f wb hnb ⟨⟨rfl, hw, i, av, rfl, hi⟩, rfl, rfl⟩ heval hcont
     have hf : (f != 0) = true := by simpa [contIfULt, contIf] using hcont
     simp only [contIfULt, contIf] at heval
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
-    have hn1 := hE1.fact hn
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
+    have hn1 := hE1.get hn
     have hlt : i < nv := icmp_ult_true hi0 hn1 heval hf
     have hiN : i.toNat < N := by have := UInt64.lt_iff_toNat_lt.mp hlt; omega
-    have hEb : Ext Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
+    have hEb : Extends Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
         [.sc .i64 i, .sc .i64 av]) :=
-      (hE1.trans (Ext.push _ _)).carry _ (by have := hE1.1; simp at hnb ⊢; omega)
-    have hib := bindAt_get_carry ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
+      (hE1.trans (Extends.push _ _)).bindAt (by have := hE1.1; simp at hnb ⊢; omega) _
+    have hib := bindAt_at ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
       [.sc .i64 i, .sc .i64 av] 0
-    have hab := bindAt_get_carry ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
+    have hab := bindAt_at ((bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]).push (.sc t f)) nb
       [.sc .i64 i, .sc .i64 av] 1
     simp only [Nat.add_zero, List.getElem?_cons_zero, List.getElem?_cons_succ] at hib hab
     simp only [wp_bind]
     refine wp_mono cfg _ _ _ _ _ ?_ _ _ (hbody _ _ (by simp) nb (nb + 1) _ wb i av hEb hw hib hab hiN)
     rintro r Γ2 w2 ⟨hE2, hw2, z, hz⟩
-    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Ext.push Γ2 _).fact (hE2.fact hib)
+    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Extends.push Γ2 _).get (hE2.get hib)
     have hc1 : (Γ2.push (.sc .i64 1))[Γ2.size]? = some (.sc .i64 1) := by simp
     have hv'e := evalOp_iadd64 (m := w2.mem) hnb2 hc1
     simp only [wp_op, wp_ret, wp_pure, iadd, op]
@@ -2287,7 +1882,7 @@ theorem wp_forLoopAcc_idx64 {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : Wor
     refine ⟨fun h => (by cases h), fun v' hv' nx hnx => ?_⟩
     cases hv'
     have hr : ((Γ2.push (.sc .i64 1)).push (.sc .i64 (i + 1)))[r]? = some (.sc .i64 z) :=
-      (Ext.push _ _).fact ((Ext.push _ _).fact hz)
+      (Extends.push _ _).get ((Extends.push _ _).get hz)
     simp only [Vals.slots, List.mapM_cons, List.mapM_nil, Array.getElem?_push_size, hr, Option.bind_eq_bind,
       Option.bind_some, Option.pure_def, Option.some.injEq] at hnx
     subst hnx
@@ -2298,13 +1893,13 @@ theorem wp_forLoopAcc_idx64 {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : Wor
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, hw, hEb, z, rfl⟩
     simp only [wp_ret]
     refine hk nE (bindAt Γb nE [.sc .i64 z]) w' z
-      (hEb.carry _ (by have := hEp.1; simp [Γp] at hle this ⊢; omega)) hw ?_
-    simpa using bindAt_get_carry Γb nE [.sc .i64 z] 0
+      (hEb.bindAt (by have := hEp.1; simp [Γp] at hle this ⊢; omega) _) hw ?_
+    simpa using bindAt_at Γb nE [.sc .i64 z] 0
   · rintro Γ0 cs a Γ1 w1 ⟨⟨rfl, -, i, av, rfl, -⟩, rfl, rfl⟩ hnone
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i, .sc .i64 av])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
-    exact absurd hnone (icmp_i64_some _ hi0 (hE1.fact hn))
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i, .sc .i64 av] 0
+    exact absurd hnone (icmp_i64_some _ hi0 (hE1.get hn))
 
 /-- **A counted loop threading a value, whose body sees its trip's bound**:
     `wp_forLoopAcc_bnd` with nothing asked of the value. -/
@@ -2312,9 +1907,9 @@ theorem wp_forLoopAcc_idx {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     {n acc0 : Slot .i64} {body : Slot .i64 → Slot .i64 → Prog Slot Lvl (Slot .i64)}
     {R : Slot .i64 → Env → World → Prop} (W : World → Prop) (hW : W w) (N : Nat) {nv : UInt64} {a0 : V}
     (hn : Γ[n]? = some (.sc .i64 nv)) (hN : nv.toNat ≤ N) (ha : Γ[acc0]? = some a0)
-    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i a Γb wb x, Ext Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) → x.toNat < N →
-      wp cfg d' J' (body i a) (fun r Γ2 w2 => Ext Γb Γ2 ∧ W w2 ∧ ∃ z, Γ2[r]? = some z) Γb wb)
-    (hk : ∀ r Γ' w', Ext Γ Γ' → W w' → R r Γ' w') :
+    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i a Γb wb x, Extends Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) → x.toNat < N →
+      wp cfg d' J' (body i a) (fun r Γ2 w2 => Extends Γb Γ2 ∧ W w2 ∧ ∃ z, Γ2[r]? = some z) Γb wb)
+    (hk : ∀ r Γ' w', Extends Γ Γ' → W w' → R r Γ' w') :
     wp cfg d J (forLoopAcc n acc0 body) R Γ w := by
   simp only [forLoopAcc, wloop2, wloop, wloopL, iconst64, iconst, iaddImm, op, wp_bind, wp_op, wp_ret,
     wp_pure, Op'.erase, evalOp, reduceCtorEq, false_implies, true_and, forall_eq', Option.some.injEq]
@@ -2328,13 +1923,13 @@ theorem wp_forLoopAcc_idx {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     · exact h
     · rw [Array.getElem?_eq_none h] at hn; cases hn
   let Γp := Γ.push (V.sc .i64 0)
-  have hEp : Ext Γ Γp := Ext.push Γ _
+  have hEp : Extends Γ Γp := Extends.push Γ _
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γp ∧ W w ∧ ∃ i a, cs = [.sc .i64 i, a] ∧ i.toNat ≤ N,
     fun Γ0 cs a' Γh wh => (Γ0 = Γp ∧ W wh ∧ ∃ i a, cs = [.sc .i64 i, a] ∧ i.toNat ≤ N) ∧
       Γh = bindAt Γ0 Γ0.size cs ∧
       a' = (contIfULt Γ0.size n, ((Γ0.size + 1 : Slot .i64) ::ᵥ Vals.nil), ()),
-    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Ext Γ Γb ∧ ∃ z, vs = [z],
+    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Extends Γ Γb ∧ ∃ z, vs = [z],
     ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro cs hcs
     have ha' : Γ[acc0] = a0 := by
@@ -2349,36 +1944,36 @@ theorem wp_forLoopAcc_idx {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     refine ⟨hI, ?_, ?_⟩ <;> first | trivial | rfl
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨⟨rfl, hw, i, av, rfl, hi⟩, rfl, rfl⟩ _ _ hvs
     refine ⟨rfl, hw, ?_, av, ?_⟩
-    · exact (hEp.carry (n := Γp.size) _ (by simp [Γp])).trans (Ext.push _ _)
+    · exact (hEp.bindAt (n := Γp.size) (by simp [Γp]) _).trans (Extends.push _ _)
     · have hsz2 : (bindAt Γp Γp.size [V.sc .i64 i, av]).size = Γp.size + 2 := by
         simp [bindAt, Array.take]
       have h1 : (Array.push (bindAt Γp Γp.size [V.sc .i64 i, av]) (V.sc t f))[Γp.size + 1]? =
           some av := by
-        rw [Array.getElem?_push, if_neg (by omega), bindAt_get_carry]; rfl
+        rw [Array.getElem?_push, if_neg (by omega), bindAt_at]; rfl
       simp only [Vals.slots, List.mapM_cons, List.mapM_nil, h1, Option.bind_eq_bind, Option.bind_some,
         Option.pure_def, Option.some.injEq] at hvs
       exact hvs.symm
   · rintro nb Γ0 cs a Γ1 t f wb hnb ⟨⟨rfl, hw, i, av, rfl, hi⟩, rfl, rfl⟩ heval hcont
     have hf : (f != 0) = true := by simpa [contIfULt, contIf] using hcont
     simp only [contIfULt, contIf] at heval
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i, av]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i, av]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i, av])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i, av] 0
-    have hn1 := hE1.fact hn
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i, av] 0
+    have hn1 := hE1.get hn
     have hlt : i < nv := icmp_ult_true hi0 hn1 heval hf
     have hiN : i.toNat < N := by have := UInt64.lt_iff_toNat_lt.mp hlt; omega
-    have hEb : Ext Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i, av]).push (.sc t f)) nb
+    have hEb : Extends Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i, av]).push (.sc t f)) nb
         [.sc .i64 i, av]) :=
-      (hE1.trans (Ext.push _ _)).carry _ (by have := hE1.1; simp at hnb ⊢; omega)
-    have hib := bindAt_get_carry ((bindAt Γp Γp.size [.sc .i64 i, av]).push (.sc t f)) nb
+      (hE1.trans (Extends.push _ _)).bindAt (by have := hE1.1; simp at hnb ⊢; omega) _
+    have hib := bindAt_at ((bindAt Γp Γp.size [.sc .i64 i, av]).push (.sc t f)) nb
       [.sc .i64 i, av] 0
-    have hab := bindAt_get_carry ((bindAt Γp Γp.size [.sc .i64 i, av]).push (.sc t f)) nb
+    have hab := bindAt_at ((bindAt Γp Γp.size [.sc .i64 i, av]).push (.sc t f)) nb
       [.sc .i64 i, av] 1
     simp only [Nat.add_zero, List.getElem?_cons_zero, List.getElem?_cons_succ] at hib hab
     simp only [wp_bind]
     refine wp_mono cfg _ _ _ _ _ ?_ _ _ (hbody _ _ (by simp) nb (nb + 1) _ wb i hEb hw hib hiN)
     rintro r Γ2 w2 ⟨hE2, hw2, z, hz⟩
-    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Ext.push Γ2 _).fact (hE2.fact hib)
+    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Extends.push Γ2 _).get (hE2.get hib)
     have hc1 : (Γ2.push (.sc .i64 1))[Γ2.size]? = some (.sc .i64 1) := by simp
     have hv'e := evalOp_iadd64 (m := w2.mem) hnb2 hc1
     simp only [wp_op, wp_ret, wp_pure, iadd, op]
@@ -2390,7 +1985,7 @@ theorem wp_forLoopAcc_idx {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
     refine ⟨fun h => (by cases h), fun v' hv' nx hnx => ?_⟩
     cases hv'
     have hr : ((Γ2.push (.sc .i64 1)).push (.sc .i64 (i + 1)))[r]? = some z :=
-      (Ext.push _ _).fact ((Ext.push _ _).fact hz)
+      (Extends.push _ _).get ((Extends.push _ _).get hz)
     simp only [Vals.slots, List.mapM_cons, List.mapM_nil, Array.getElem?_push_size, hr, Option.bind_eq_bind,
       Option.bind_some, Option.pure_def, Option.some.injEq] at hnx
     subst hnx
@@ -2401,12 +1996,12 @@ theorem wp_forLoopAcc_idx {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, hw, hEb, z, rfl⟩
     simp only [wp_ret]
     exact hk nE (bindAt Γb nE [z]) w'
-      (hEb.carry _ (by have := hEp.1; simp [Γp] at hle this ⊢; omega)) hw
+      (hEb.bindAt (by have := hEp.1; simp [Γp] at hle this ⊢; omega) _) hw
   · rintro Γ0 cs a Γ1 w1 ⟨⟨rfl, -, i, av, rfl, -⟩, rfl, rfl⟩ hnone
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i, av]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i, av]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i, av])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i, av] 0
-    exact absurd hnone (icmp_i64_some _ hi0 (hE1.fact hn))
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i, av] 0
+    exact absurd hnone (icmp_i64_some _ hi0 (hE1.get hn))
 
 /-- **A counted loop whose body sees its trip's bound.** A limit of at most
     `N` trips: the body sees its trip below `N`, and ends in an environment
@@ -2415,20 +2010,20 @@ theorem wp_forLoop_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
     {n : Slot .i64} {body : Slot .i64 → Prog Slot Lvl Unit}
     {R : Unit → Env → World → Prop} (W : World → Prop) (hW : W w) (N : Nat) {nv : UInt64}
     (hn : Γ[n]? = some (.sc .i64 nv)) (hN : nv.toNat ≤ N)
-    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i Γb wb x, Ext Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) → x.toNat < N →
-      x.toNat < nv.toNat → wp cfg d' J' (body i) (fun _ Γ2 w2 => Ext Γb Γ2 ∧ W w2) Γb wb)
-    (hk : ∀ Γ' w', Ext Γ Γ' → W w' → R () Γ' w') :
+    (hbody : ∀ d' (J' : Post), J'.faultOk = J.faultOk → ∀ i Γb wb x, Extends Γ Γb → W wb → Γb[i]? = some (.sc .i64 x) → x.toNat < N →
+      x.toNat < nv.toNat → wp cfg d' J' (body i) (fun _ Γ2 w2 => Extends Γb Γ2 ∧ W w2) Γb wb)
+    (hk : ∀ Γ' w', Extends Γ Γ' → W w' → R () Γ' w') :
     wp cfg d J (forLoop n body) R Γ w := by
   simp only [forLoop, wloop1, wloop, wloopL, iconst64, iconst, iaddImm, op, wp_bind, wp_op, wp_ret,
     wp_pure, Op'.erase, evalOp, reduceCtorEq, false_implies, true_and, forall_eq', Option.some.injEq]
   rw [show ofInt ClifTy.i64 0 = V.sc .i64 0 from rfl]
   let Γp := Γ.push (V.sc .i64 0)
-  have hEp : Ext Γ Γp := Ext.push Γ _
+  have hEp : Extends Γ Γp := Extends.push Γ _
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γp ∧ W w ∧ ∃ i, cs = [.sc .i64 i] ∧ i.toNat ≤ N,
     fun Γ0 cs a' Γh wh => (Γ0 = Γp ∧ W wh ∧ ∃ i, cs = [.sc .i64 i] ∧ i.toNat ≤ N) ∧
       Γh = bindAt Γ0 Γ0.size cs ∧ a' = (contIfULt Γ0.size n, Vals.nil, ()),
-    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Ext Γ Γb ∧ vs = [],
+    fun Γ0 Γb vs w => Γ0 = Γp ∧ W w ∧ Extends Γ Γb ∧ vs = [],
     ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro cs hcs
     simp only [Vals.slots, List.mapM_cons, List.mapM_nil, Array.getElem?_push_size,
@@ -2440,25 +2035,25 @@ theorem wp_forLoop_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
     refine ⟨hI, ?_, ?_⟩ <;> first | trivial | rfl
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨⟨rfl, hw, i, rfl, hi⟩, rfl, rfl⟩ _ _ hvs
     refine ⟨rfl, hw, ?_, ?_⟩
-    · exact (hEp.carry (n := Γp.size) _ (by simp [Γp])).trans (Ext.push _ _)
+    · exact (hEp.bindAt (n := Γp.size) (by simp [Γp]) _).trans (Extends.push _ _)
     · simpa [Vals.slots] using hvs.symm
   · rintro nb Γ0 cs a Γ1 t f wb hnb ⟨⟨rfl, hw, i, rfl, hi⟩, rfl, rfl⟩ heval hcont
     have hf : (f != 0) = true := by simpa [contIfULt, contIf] using hcont
     simp only [contIfULt, contIf] at heval
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i] 0
-    have hn1 := hE1.fact hn
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i] 0
+    have hn1 := hE1.get hn
     have hlt : i < nv := icmp_ult_true hi0 hn1 heval hf
     have hiN : i.toNat < N := by have := UInt64.lt_iff_toNat_lt.mp hlt; omega
-    have hEb : Ext Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i]).push (.sc t f)) nb [.sc .i64 i]) :=
-      (hE1.trans (Ext.push _ _)).carry _ (by have := hE1.1; simp at hnb ⊢; omega)
-    have hib := bindAt_get_carry ((bindAt Γp Γp.size [.sc .i64 i]).push (.sc t f)) nb [.sc .i64 i] 0
+    have hEb : Extends Γ (bindAt ((bindAt Γp Γp.size [.sc .i64 i]).push (.sc t f)) nb [.sc .i64 i]) :=
+      (hE1.trans (Extends.push _ _)).bindAt (by have := hE1.1; simp at hnb ⊢; omega) _
+    have hib := bindAt_at ((bindAt Γp Γp.size [.sc .i64 i]).push (.sc t f)) nb [.sc .i64 i] 0
     simp only [Nat.add_zero, List.getElem?_cons_zero] at hib
     simp only [wp_bind]
     refine wp_mono cfg _ _ _ _ _ ?_ _ _ (hbody _ _ (by simp) nb _ wb i hEb hw hib hiN (UInt64.lt_iff_toNat_lt.mp hlt))
     rintro _ Γ2 w2 ⟨hE2, hw2⟩
-    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Ext.push Γ2 _).fact (hE2.fact hib)
+    have hnb2 : (Γ2.push (.sc .i64 1))[nb]? = some (.sc .i64 i) := (Extends.push Γ2 _).get (hE2.get hib)
     have hc1 : (Γ2.push (.sc .i64 1))[Γ2.size]? = some (.sc .i64 1) := by simp
     have hv'e := evalOp_iadd64 (m := w2.mem) hnb2 hc1
     simp only [wp_op, wp_ret, wp_pure, iadd, op]
@@ -2478,17 +2073,17 @@ theorem wp_forLoop_bnd {cfg : Cfg} {d : Nat} {J : Post} {Γ : Env} {w : World}
     exact ⟨trivial, hw2, i + 1, rfl, by omega⟩
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, hw, hEb, rfl⟩
     simp only [wp_ret]
-    exact hk _ w' (hEb.carry _ (by have := hEp.1; simp [Γp] at hle this ⊢; omega)) hw
+    exact hk _ w' (hEb.bindAt (by have := hEp.1; simp [Γp] at hle this ⊢; omega) _) hw
   · rintro Γ0 cs a Γ1 w1 ⟨⟨rfl, -, i, rfl, -⟩, rfl, rfl⟩ hnone
-    have hE1 : Ext Γ (bindAt Γp Γp.size [.sc .i64 i]) := hEp.carry _ (by simp [Γp])
+    have hE1 : Extends Γ (bindAt Γp Γp.size [.sc .i64 i]) := hEp.bindAt (by simp [Γp]) _
     have hi0 : (bindAt Γp Γp.size [.sc .i64 i])[Γp.size]? = some (.sc .i64 i) := by
-      simpa using bindAt_get_carry Γp Γp.size [.sc .i64 i] 0
-    exact absurd hnone (icmp_i64_some _ hi0 (hE1.fact hn))
+      simpa using bindAt_at Γp Γp.size [.sc .i64 i] 0
+    exact absurd hnone (icmp_i64_some _ hi0 (hE1.get hn))
 
 /-- Where a loop entered at `Γ` in `W` may go: back to its head in `W`, or out
     from an environment keeping `Γ`, in `W`; farther out as `J` says. -/
 abbrev loopTo (J : Post) (Γ : Env) (W : World → Prop) (exitTys tys : List ClifTy) : Post :=
-  loopJ J Γ (fun Γ0 _ w => Γ0 = Γ ∧ W w) (fun Γ0 Γb _ w => Γ0 = Γ ∧ Ext Γ Γb ∧ W w) exitTys tys
+  loopJ J Γ (fun Γ0 _ w => Γ0 = Γ ∧ W w) (fun Γ0 Γb _ w => Γ0 = Γ ∧ Extends Γ Γb ∧ W w) exitTys tys
 
 /-- **A loop, by the typestate.** A head and a body that keep `W` from any
     environment keeping the one the loop starts in keep it for every trip, and
@@ -2498,33 +2093,33 @@ theorem wp_loop_vc {tys exitTys : List ClifTy} {γ : Type} {init : Vals Slot tys
     {head : Lvl exitTys tys → Vals Slot tys → Prog Slot Lvl (Cond Slot × Vals Slot exitTys × γ)}
     {body : Lvl exitTys tys → Vals Slot tys → γ → Prog Slot Lvl (Vals Slot tys)}
     {k : Vals Slot exitTys → Prog Slot Lvl α} (W : World → Prop) (hW : W w)
-    (hhead : ∀ n0 Γh wh, Ext Γ Γh → W wh →
+    (hhead : ∀ n0 Γh wh, Extends Γ Γh → W wh →
       wp cfg (d + 1) (loopTo J Γ W exitTys tys) (head d (carriesFrom n0 tys))
-        (fun _ Γ1 w1 => Ext Γh Γ1 ∧ W w1) Γh wh)
-    (hbody : ∀ nb a Γb wb, Ext Γ Γb → W wb →
+        (fun _ Γ1 w1 => Extends Γh Γ1 ∧ W w1) Γh wh)
+    (hbody : ∀ nb a Γb wb, Extends Γ Γb → W wb →
       wp cfg (d + 1) (loopTo J Γ W exitTys tys) (body d (carriesFrom nb tys) a) (fun _ _ w2 => W w2) Γb wb)
-    (hk : ∀ nE Γ' w', Ext Γ Γ' → W w' → wp cfg d J (k (carriesFrom nE exitTys)) Q Γ' w') (hJ : J.faultOk = true) :
+    (hk : ∀ nE Γ' w', Extends Γ Γ' → W w' → wp cfg d J (k (carriesFrom nE exitTys)) Q Γ' w') (hJ : J.faultOk = true) :
     wp cfg d J (.loop init head body k) Q Γ w := by
   rw [wp_loop]
-  refine ⟨fun Γ0 _ w => Γ0 = Γ ∧ W w, fun Γ0 _ _ Γ1 w1 => Γ0 = Γ ∧ Ext Γ Γ1 ∧ W w1,
-    fun Γ0 Γb _ w => Γ0 = Γ ∧ Ext Γ Γb ∧ W w, fun _ _ => ⟨rfl, hW⟩, ?_, ?_, ?_, ?_,
+  refine ⟨fun Γ0 _ w => Γ0 = Γ ∧ W w, fun Γ0 _ _ Γ1 w1 => Γ0 = Γ ∧ Extends Γ Γ1 ∧ W w1,
+    fun Γ0 Γb _ w => Γ0 = Γ ∧ Extends Γ Γb ∧ W w, fun _ _ => ⟨rfl, hW⟩, ?_, ?_, ?_, ?_,
     fun _ _ _ _ _ _ _ => hJ⟩
   · rintro n0 Γ0 cs wh rfl ⟨rfl, hw⟩
-    have he := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have he := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h => ⟨rfl, he.trans h.1, h.2⟩) _ _ (hhead _ _ _ he hw)
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨rfl, he, hw⟩ _ _ _
-    exact ⟨rfl, he.trans (Ext.push _ _), hw⟩
+    exact ⟨rfl, he.trans (Extends.push _ _), hw⟩
   · rintro nb Γ0 cs a Γ1 t f wb rfl ⟨rfl, he, hw⟩ _ _
-    have he' := Ext.carry (n := Γ1.size + 1) cs (he.trans (Ext.push Γ1 (.sc t f))) (by have := he.1; simp; omega)
+    have he' := Extends.bindAt (n := Γ1.size + 1) (he.trans (Extends.push Γ1 (.sc t f))) (by have := he.1; simp; omega) cs
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h _ _ => ⟨rfl, h⟩) _ _ (hbody _ _ _ _ he' hw)
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, he, hw⟩
-    exact hk _ _ _ (Ext.carry vs he hle) hw
+    exact hk _ _ _ (Extends.bindAt he hle vs) hw
 
 /-- Where a bottom-tested loop entered at `Γ` in `W` may go, from a trip
     entered at `Γ0`: back to its head, or out from an environment keeping `Γ`,
     each from `Γ0` keeping `Γ` and in `W`; farther out as `J` says. -/
 abbrev dloopTo (J : Post) (Γ Γ0 : Env) (W : World → Prop) (exitTys tys : List ClifTy) : Post :=
-  loopJ J Γ0 (fun Γ0 _ w => Ext Γ Γ0 ∧ W w) (fun Γ0 Γb _ w => Ext Γ Γ0 ∧ Ext Γ Γb ∧ W w) exitTys tys
+  loopJ J Γ0 (fun Γ0 _ w => Extends Γ Γ0 ∧ W w) (fun Γ0 Γb _ w => Extends Γ Γ0 ∧ Extends Γ Γb ∧ W w) exitTys tys
 
 /-- **A bottom-tested loop, by the typestate.** A body that keeps `W` from any
     environment keeping the one the loop starts in keeps it for every trip, and
@@ -2535,30 +2130,30 @@ theorem wp_dloop_vc {tys : List ClifTy} {tb : ClifTy} {init : Vals Slot tys} {cc
     {contOnTrue : Bool} {exitIdx : List Nat}
     {body : Lvl (idxTys tys exitIdx) tys → Vals Slot tys → Prog Slot Lvl (Slot tb × Vals Slot tys)}
     {k : Vals Slot (idxTys tys exitIdx) → Prog Slot Lvl α} (W : World → Prop) (hW : W w)
-    (hbody : ∀ Γ0 nb Γb wb, Ext Γ Γ0 → Ext Γ Γb → W wb →
+    (hbody : ∀ Γ0 nb Γb wb, Extends Γ Γ0 → Extends Γ Γb → W wb →
       wp cfg (d + 1) (dloopTo J Γ Γ0 W (idxTys tys exitIdx) tys) (body d (carriesFrom nb tys))
-        (fun _ Γ2 w2 => Ext Γb Γ2 ∧ W w2) Γb wb)
-    (hk : ∀ nE Γ' w', Ext Γ Γ' → W w' → wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q Γ' w') (hJ : J.faultOk = true) :
+        (fun _ Γ2 w2 => Extends Γb Γ2 ∧ W w2) Γb wb)
+    (hk : ∀ nE Γ' w', Extends Γ Γ' → W w' → wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q Γ' w') (hJ : J.faultOk = true) :
     wp cfg d J (.dloop init cc cb guardIdx hg contOnTrue exitIdx body k) Q Γ w := by
   rw [wp_dloop]
-  refine ⟨fun Γ0 _ w => Ext Γ Γ0 ∧ W w, fun Γ0 _ _ Γ2 w2 => Ext Γ Γ0 ∧ Ext Γ Γ2 ∧ W w2,
-    fun Γ0 Γb _ w => Ext Γ Γ0 ∧ Ext Γ Γb ∧ W w, ⟨fun _ _ _ => hJ, ?_⟩, ?_, ?_, ?_,
+  refine ⟨fun Γ0 _ w => Extends Γ Γ0 ∧ W w, fun Γ0 _ _ Γ2 w2 => Extends Γ Γ0 ∧ Extends Γ Γ2 ∧ W w2,
+    fun Γ0 Γb _ w => Extends Γ Γ0 ∧ Extends Γ Γb ∧ W w, ⟨fun _ _ _ => hJ, ?_⟩, ?_, ?_, ?_,
     fun _ _ _ _ _ _ _ => hJ⟩
   · intro Γ' w' cs hg' _
     cases guardIdx with
-    | none => obtain ⟨rfl, rfl⟩ := hg'; exact ⟨Ext.refl _, hW⟩
+    | none => obtain ⟨rfl, rfl⟩ := hg'; exact ⟨Extends.refl _, hW⟩
     | some _ =>
         obtain ⟨Γ1, v, rfl, ⟨rfl, rfl⟩, _⟩ := hg'
-        exact fun _ _ _ => ⟨fun _ => ⟨Ext.push _ _, hW⟩,
-          fun _ _ _ => ⟨Ext.push _ _, Ext.push _ _, hW⟩⟩
+        exact fun _ _ _ => ⟨fun _ => ⟨Extends.push _ _, hW⟩,
+          fun _ _ _ => ⟨Extends.push _ _, Extends.push _ _, hW⟩⟩
   · rintro n0 Γ0 cs wb rfl ⟨he0, hw⟩
-    have heb := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have heb := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h => ⟨he0, (he0.trans heb).trans h.1, h.2⟩) _ _
       (hbody _ _ _ _ he0 (he0.trans heb) hw)
   · rintro Γ0 cs a Γ2 w2 t f next ⟨he0, he2, hw⟩ _ _
-    exact ⟨fun _ => ⟨he0, hw⟩, fun _ _ _ => ⟨he0, he2.trans (Ext.push _ _), hw⟩⟩
+    exact ⟨fun _ => ⟨he0, hw⟩, fun _ _ _ => ⟨he0, he2.trans (Extends.push _ _), hw⟩⟩
   · rintro nE Γ0 Γb outs w' hle ⟨he0, heb, hw⟩
-    exact hk _ _ _ (Ext.carry outs heb (Nat.le_trans he0.1 hle)) hw
+    exact hk _ _ _ (Extends.bindAt heb (Nat.le_trans he0.1 hle) outs) hw
 
 theorem mapM_length {tys : List ClifTy} {args : Vals Slot tys} {Γ : Env} {vs : List V}
     (h : args.slots.mapM (fun r => Γ[r]?) = some vs) : vs.length = tys.length := by
@@ -2635,219 +2230,6 @@ theorem TyAt.get {Γ : Env} {r : R} {t : ClifTy} (h : TyAt Γ r t) : ∃ v, Γ[r
 
 section VecTy
 
-/-- Operands of their types, scalars or vectors. -/
-def ArgsV (Γ : Env) : List R → List ClifTy → Prop
-  | [], [] => True
-  | r :: rs, t :: ts => TyAt Γ r t ∧ ArgsV Γ rs ts
-  | _, _ => False
-
-/-- Two vectors of one type. -/
-def vSame : List ClifTy → Option ClifTy
-  | [t, u] => if t == u && t.lanes.isSome then some t else none
-  | _ => none
-
-/-- Two vectors of one type with float lanes. -/
-def vSameF : List ClifTy → Option ClifTy
-  | [t, u] => match t.lanes with
-    | some (l, _) => if t == u && l.isFloat then some t else none
-    | none => none
-  | _ => none
-
-/-- Three vectors of one type: `bitselect`'s mask and its two choices. -/
-def vSame3 : List ClifTy → Option ClifTy
-  | [t, u, v] => if t == u && t == v && t.lanes.isSome then some t else none
-  | _ => none
-
-/-- Two `f32x4`s. -/
-def vF4 : List ClifTy → Option ClifTy
-  | [t, u] => if t == .f32x4 && u == .f32x4 then some .f32x4 else none
-  | _ => none
-
-/-- The type an operation answers over vectors, or that makes or reads one. -/
-def tyVOp (o : Op) (ts : List ClifTy) : Option ClifTy :=
-  match o with
-  | .fadd _ _ | .fsub _ _ | .fmul _ _ => vF4 ts
-  | .fmax _ _ | .fmin _ _ => vSameF ts
-  | .band _ _ | .bandNot _ _ | .bor _ _ | .bxor _ _ | .icmp _ _ _ => vSame ts
-  | .bitselect _ _ _ => vSame3 ts
-  | .fneg _ => if ts == [.f32x4] then some .f32x4 else none
-  | .splat ty _ => match ty.lanes, ts with
-    | some (l, _), [t] => if t == l then some ty else none
-    | _, _ => none
-  | .extractlane _ i => match ts with
-    | [t] => match t.lanes with
-      | some (l, n) => if i < n then some l else none
-      | none => none
-    | _ => none
-  | .vhighBits _ => match ts with
-    | [t] => if t.lanes.isSome then some .i32 else none
-    | _ => none
-  | _ => none
-
-theorem lane_scalar {t l : ClifTy} {n : Nat} (h : t.lanes = some (l, n)) : l.lanes = none := by
-  cases t <;> simp [ClifTy.lanes] at h <;> obtain ⟨rfl, rfl⟩ := h <;> rfl
-
-theorem tyAt_vec {Γ : Env} {r : R} {t l : ClifTy} {n : Nat} (hl : t.lanes = some (l, n)) (h : TyAt Γ r t) :
-    ∃ xs, Γ[r]? = some (.vec t xs) ∧ xs.size = n := by
-  unfold TyAt at h; rw [hl] at h; exact h
-
-theorem tyAt_sc {Γ : Env} {r : R} {t : ClifTy} (hl : t.lanes = none) (h : TyAt Γ r t) :
-    ∃ x, Γ[r]? = some (.sc t x) := by
-  unfold TyAt at h; rw [hl] at h; exact h
-
-theorem vSame_eq {ts : List ClifTy} {T : ClifTy} (h : vSame ts = some T) :
-    ts = [T, T] ∧ ∃ l n, T.lanes = some (l, n) := by
-  rcases ts with _ | ⟨t, _ | ⟨u, _ | ⟨_, _⟩⟩⟩ <;> simp [vSame] at h
-  obtain ⟨⟨rfl, h2⟩, rfl⟩ := h
-  refine ⟨rfl, ?_⟩
-  cases hl : t.lanes with
-  | none => rw [hl] at h2; cases h2
-  | some p => exact ⟨p.1, p.2, rfl⟩
-
-theorem vSameF_eq {ts : List ClifTy} {T : ClifTy} (h : vSameF ts = some T) :
-    ts = [T, T] ∧ ∃ l n, T.lanes = some (l, n) ∧ l.isFloat = true := by
-  rcases ts with _ | ⟨t, _ | ⟨u, _ | ⟨_, _⟩⟩⟩ <;> simp only [vSameF, reduceCtorEq] at h
-  split at h
-  · rename_i l n hl
-    simp only [Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, beq_iff_eq] at h
-    obtain ⟨⟨rfl, h2⟩, rfl⟩ := h
-    exact ⟨rfl, l, n, hl, h2⟩
-  · cases h
-
-theorem vSame3_eq {ts : List ClifTy} {T : ClifTy} (h : vSame3 ts = some T) :
-    ts = [T, T, T] ∧ ∃ l n, T.lanes = some (l, n) := by
-  rcases ts with _ | ⟨t, _ | ⟨u, _ | ⟨v, _ | ⟨_, _⟩⟩⟩⟩ <;> simp [vSame3] at h
-  obtain ⟨⟨⟨rfl, rfl⟩, h2⟩, rfl⟩ := h
-  refine ⟨rfl, ?_⟩
-  cases hl : t.lanes with
-  | none => rw [hl] at h2; cases h2
-  | some p => exact ⟨p.1, p.2, rfl⟩
-
-theorem vF4_eq {ts : List ClifTy} {T : ClifTy} (h : vF4 ts = some T) : ts = [.f32x4, .f32x4] ∧ T = .f32x4 := by
-  rcases ts with _ | ⟨t, _ | ⟨u, _ | ⟨_, _⟩⟩⟩ <;> simp [vF4] at h
-  obtain ⟨⟨rfl, rfl⟩, rfl⟩ := h; exact ⟨rfl, rfl⟩
-
-theorem args2V {Γ : Env} {a b : R} {t u : ClifTy} (h : ArgsV Γ [a, b] [t, u]) : TyAt Γ a t ∧ TyAt Γ b u :=
-  ⟨h.1, h.2.1⟩
-
-theorem zipIntBits_vec {xs ys : Array UInt64} {T l : ClifTy} {n : Nat} (hl : T.lanes = some (l, n))
-    (hx : xs.size = n) (hy : ys.size = n) (f : ClifTy → UInt64 → UInt64 → UInt64) :
-    ∃ v, zipIntBits (.vec T xs) (.vec T ys) f = some v ∧ TyV T v := by
-  refine ⟨_, ?_, TyV.vec hl (xs := xs.zipWith (fun x y => f l x y &&& widthMask l) ys) (by simp [hx, hy])⟩
-  simp [zipIntBits, hl, hx, hy]
-
-theorem zipIntCmp_vec {xs ys : Array UInt64} {T l : ClifTy} {n : Nat} (hl : T.lanes = some (l, n))
-    (hx : xs.size = n) (hy : ys.size = n) (c : ICmpCond) :
-    ∃ v, zipIntCmp c (.vec T xs) (.vec T ys) = some v ∧ TyV T v := by
-  refine ⟨_, ?_, TyV.vec hl (xs := xs.zipWith (fun x y => if cmpInt c l x y then widthMask l else 0) ys)
-    (by simp [hx, hy])⟩
-  simp [zipIntCmp, hl, hx, hy]
-
-theorem zipAnyBits_vec {xs ys : Array UInt64} {T l : ClifTy} {n : Nat} (hl : T.lanes = some (l, n))
-    (hx : xs.size = n) (hy : ys.size = n) (f : ClifTy → UInt64 → UInt64 → UInt64) :
-    zipAnyBits (.vec T xs) (.vec T ys) f = some (.vec T (xs.zipWith (f l) ys)) := by
-  simp [zipAnyBits, zipBitsIf, hl, hx, hy]
-
-theorem zipBits_vec {xs ys : Array UInt64} {T l : ClifTy} {n : Nat} (hl : T.lanes = some (l, n))
-    (hf : l.isFloat = true) (hx : xs.size = n) (hy : ys.size = n) (f : ClifTy → UInt64 → UInt64 → UInt64) :
-    ∃ v, zipBits (.vec T xs) (.vec T ys) f = some v ∧ TyV T v := by
-  refine ⟨_, ?_, TyV.vec hl (xs := xs.zipWith (f l) ys) (by simp [hx, hy])⟩
-  simp [zipBits, zipBitsIf, hl, hx, hy, hf]
-
-theorem zipF_vec {xs ys : Array UInt64} (hx : xs.size = 4) (hy : ys.size = 4)
-    (f : Float32 → Float32 → Float32) (g : Float → Float → Float) :
-    ∃ v, zipF (.vec .f32x4 xs) (.vec .f32x4 ys) f g = some v ∧ TyV .f32x4 v := by
-  refine ⟨_, ?_, TyV.vec (t := .f32x4) (lane := .f32) (n := 4) rfl (xs := xs.zipWith (fun x y => ofF32 (f (f32 x) (f32 y))) ys)
-    (by simp [hx, hy])⟩
-  simp [zipF, hx, hy]
-
-theorem tyVOp_sound {m : Mem} {Γ : Env} {o : Op} {ts : List ClifTy} {T : ClifTy}
-    (h : ArgsV Γ o.regs ts) (hT : tyVOp o ts = some T) : ∃ v, evalOp m Γ o = some v ∧ TyV T v := by
-  cases o <;> simp only [tyVOp, reduceCtorEq] at hT
-  case fadd a b | fsub a b | fmul a b =>
-    obtain ⟨rfl, rfl⟩ := vF4_eq hT
-    obtain ⟨ha, hb⟩ := args2V h
-    obtain ⟨xs, hxa, hxs⟩ := tyAt_vec (t := .f32x4) (l := .f32) (n := 4) rfl ha
-    obtain ⟨ys, hya, hys⟩ := tyAt_vec (t := .f32x4) (l := .f32) (n := 4) rfl hb
-    simp only [evalOp, Sem.get, hxa, hya, Option.bind_eq_bind, Option.bind_some]
-    exact zipF_vec hxs hys _ _
-  case fmax a b | fmin a b =>
-    obtain ⟨rfl, l, n, hl, hf⟩ := vSameF_eq hT
-    obtain ⟨ha, hb⟩ := args2V h
-    obtain ⟨xs, hxa, hxs⟩ := tyAt_vec hl ha
-    obtain ⟨ys, hya, hys⟩ := tyAt_vec hl hb
-    simp only [evalOp, Sem.get, hxa, hya, Option.bind_eq_bind, Option.bind_some]
-    exact zipBits_vec hl hf hxs hys _
-  case band a b | bandNot a b | bor a b | bxor a b =>
-    obtain ⟨rfl, l, n, hl⟩ := vSame_eq hT
-    obtain ⟨ha, hb⟩ := args2V h
-    obtain ⟨xs, hxa, hxs⟩ := tyAt_vec hl ha
-    obtain ⟨ys, hya, hys⟩ := tyAt_vec hl hb
-    simp only [evalOp, Sem.get, hxa, hya, Option.bind_eq_bind, Option.bind_some]
-    exact zipIntBits_vec hl hxs hys _
-  case icmp c a b =>
-    obtain ⟨rfl, l, n, hl⟩ := vSame_eq hT
-    obtain ⟨ha, hb⟩ := args2V h
-    obtain ⟨xs, hxa, hxs⟩ := tyAt_vec hl ha
-    obtain ⟨ys, hya, hys⟩ := tyAt_vec hl hb
-    simp only [evalOp, Sem.get, hxa, hya, Option.bind_eq_bind, Option.bind_some]
-    exact zipIntCmp_vec hl hxs hys _
-  case bitselect c a b =>
-    obtain ⟨rfl, l, n, hl⟩ := vSame3_eq hT
-    obtain ⟨xs, hxc, hxs⟩ := tyAt_vec hl h.1
-    obtain ⟨ys, hya, hys⟩ := tyAt_vec hl h.2.1
-    obtain ⟨zs, hzb, hzs⟩ := tyAt_vec hl h.2.2.1
-    simp only [evalOp, Sem.get, hxc, hya, hzb, Option.bind_eq_bind, Option.bind_some,
-      zipAnyBits_vec hl hxs hys, zipAnyBits_vec hl hxs hzs]
-    exact ⟨_, zipAnyBits_vec hl (by simp [hxs, hys]) (by simp [hxs, hzs]) _, TyV.vec hl (by simp [hxs, hys, hzs])⟩
-  case fneg a =>
-    split at hT
-    · rename_i hts
-      simp only [beq_iff_eq] at hts; subst hts
-      cases hT
-      obtain ⟨xs, hxa, hxs⟩ := tyAt_vec (t := .f32x4) (l := .f32) (n := 4) rfl h.1
-      refine ⟨_, ?_, TyV.vec (t := .f32x4) (lane := .f32) (n := 4) rfl (xs := xs.map (· ^^^ 0x80000000))
-        (by simp [hxs])⟩
-      simp [evalOp, Sem.get, hxa]
-    · cases hT
-  case splat ty a =>
-    split at hT
-    · rename_i l n t hl
-      split at hT
-      · rename_i htl
-        simp only [beq_iff_eq] at htl; subst htl
-        cases hT
-        obtain ⟨x, hxa⟩ := tyAt_sc (lane_scalar hl) h.1
-        refine ⟨_, ?_, TyV.vec hl (xs := Array.replicate n (x &&& widthMask t)) (by simp)⟩
-        simp [evalOp, Sem.get, hxa, hl]
-      · cases hT
-    · cases hT
-  case extractlane a i =>
-    split at hT
-    · rename_i t
-      split at hT
-      · rename_i l n hl
-        split at hT
-        · rename_i hi
-          cases hT
-          obtain ⟨xs, hxa, hxs⟩ := tyAt_vec hl h.1
-          refine ⟨.sc T (xs[i]'(hxs ▸ hi)), ?_, TyV.sc (lane_scalar hl)⟩
-          simp [evalOp, Sem.get, hxa, hl, hxs, hi]
-        · cases hT
-      · cases hT
-    · cases hT
-  case vhighBits a =>
-    split at hT
-    · rename_i t
-      split at hT
-      · rename_i hs
-        cases hT
-        obtain ⟨⟨l, n⟩, hl⟩ := Option.isSome_iff_exists.mp hs
-        obtain ⟨xs, hxa, -⟩ := tyAt_vec hl h.1
-        cases t <;> simp [ClifTy.lanes] at hl <;> simp [evalOp, Sem.get, hxa, TyV, ClifTy.lanes]
-      · cases hT
-    · cases hT
-
 /-- Lanes loaded one after another: as many as asked, when every one is there. -/
 theorem foldlM_lanes_size {m : Mem} {addr : UInt64} {w : Nat} : ∀ (l : List Nat) (acc r : Array UInt64),
     l.foldlM (fun acc i => (m.load (addr + UInt64.ofNat (i * w)) w).bind fun b => pure (acc.push b)) acc = some r →
@@ -2899,26 +2281,26 @@ theorem wp_op_vload_at {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
     {lane : ClifTy} {n : Nat} (ho : o.erase = .load op a) (hal : op.aligned = false) (hk : op.kind = .plain)
     (hl : op.ty.lanes = some (lane, n)) {t' : ClifTy} {x : UInt64} (ha : Γ[a]? = some (.sc t' x))
     (hJ : J.faultOk = true ∨ Fits w.mem x (n * tyBytes lane))
-    (h : ∀ v, evalOp w.mem Γ o.erase = some v → TyV op.ty v → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some v →
+    (h : ∀ v, evalOp w.mem Γ o.erase = some v → TyV op.ty v → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some v →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w :=
   have hv := evalOp_vload (m := w.mem) hal hk hl ha
   ⟨fun hn => hJ.elim id fun hf => absurd (ho ▸ hn) (hv.2 hf),
-   fun v hev => h v hev (hv.1 v (ho ▸ hev)) _ (Ext.push Γ v) (by simp)⟩
+   fun v hev => h v hev (hv.1 v (ho ▸ hev)) _ (Extends.push Γ v) (by simp)⟩
 
-/-- **An operation `tyVOp` types**, over operands of the types it asks: it
-    answers a value of the type it names. -/
+/-- **An operation that answers a value of type `T`**: what follows runs on
+    it. -/
 theorem wp_op_tyV {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
     {Γ : Env} {w : World} {ty} {o : Op' Slot ty} {k : Slot ty → Prog Slot Lvl α} (T : ClifTy)
     (hty : ∃ v, evalOp w.mem Γ o.erase = some v ∧ TyV T v)
-    (h : ∀ v, evalOp w.mem Γ o.erase = some v → TyV T v → ∀ Γ', Ext Γ Γ' → Γ'[Γ.size]? = some v →
+    (h : ∀ v, evalOp w.mem Γ o.erase = some v → TyV T v → ∀ Γ', Extends Γ Γ' → Γ'[Γ.size]? = some v →
       wp cfg d J (k Γ.size) Q Γ' w) :
     wp cfg d J (.op o k) Q Γ w :=
   by
   obtain ⟨v', hv', ht⟩ := hty
   refine ⟨fun hn => (by rw [hv'] at hn; cases hn), fun v hev => ?_⟩
   rw [hv'] at hev; cases hev
-  exact h v' hv' ht _ (Ext.push Γ _) (by simp)
+  exact h v' hv' ht _ (Extends.push Γ _) (by simp)
 
 /-- A scalar answer, typed: of its constructor. -/
 theorem tyV_sc_ex {e : Option V} {T : ClifTy} (hl : T.lanes = none) (h : ∃ v, e = some v ∧ TyV T v) :
@@ -2948,16 +2330,16 @@ theorem SlotsOk.cons {t : ClifTy} {ts : List ClifTy} {s : Slot t} {rest : Vals S
   refine ⟨v :: vs, ?_, hv, hc⟩
   simp [Vals.slots, List.mapM_cons, h, hvs]
 
-theorem mapM_ext {Γ' : Env} (he : Ext Γ Γ') : ∀ {rs : List Nat} {vs : List V},
+theorem mapM_ext {Γ' : Env} (he : Extends Γ Γ') : ∀ {rs : List Nat} {vs : List V},
     rs.mapM (fun r => Γ[r]?) = some vs → rs.mapM (fun r => Γ'[r]?) = some vs
   | [], _, h => h
   | r :: rs, vs, h => by
       simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
         Option.some.injEq] at h ⊢
       obtain ⟨v, hv, vs', hvs', rfl⟩ := h
-      exact ⟨v, he.fact hv, vs', mapM_ext he hvs', rfl⟩
+      exact ⟨v, he.get hv, vs', mapM_ext he hvs', rfl⟩
 
-theorem SlotsOk.ext {Γ' : Env} {tys : List ClifTy} {vals : Vals Slot tys} (he : Ext Γ Γ') (h : SlotsOk Γ vals) :
+theorem SlotsOk.ext {Γ' : Env} {tys : List ClifTy} {vals : Vals Slot tys} (he : Extends Γ Γ') (h : SlotsOk Γ vals) :
     SlotsOk Γ' vals := let ⟨vs, hvs, hc⟩ := h; ⟨vs, mapM_ext he hvs, hc⟩
 
 theorem SlotsOk.carry {tys : List ClifTy} {vals : Vals Slot tys} {vs : List V} (h : SlotsOk Γ vals)
@@ -3003,8 +2385,8 @@ def GuardOk (Γ : Env) {tys : List ClifTy} {tb : ClifTy} : Option Nat → Vals S
 
 /-- `dloopTo`, the carries of their types at each trip. -/
 abbrev dloopToT (J : Post) (Γ Γ0 : Env) (W : World → Prop) (exitTys tys : List ClifTy) : Post :=
-  loopJ J Γ0 (fun Γ0 cs w => Ext Γ Γ0 ∧ W w ∧ CarryOk tys cs)
-    (fun Γ0 Γb outs w => Ext Γ Γ0 ∧ Ext Γ Γb ∧ W w ∧ CarryOk exitTys outs) exitTys tys
+  loopJ J Γ0 (fun Γ0 cs w => Extends Γ Γ0 ∧ W w ∧ CarryOk tys cs)
+    (fun Γ0 Γb outs w => Extends Γ Γ0 ∧ Extends Γ Γb ∧ W w ∧ CarryOk exitTys outs) exitTys tys
 
 /-- **A bottom-tested loop, by the typestate, its carries of their types.** A body
     that keeps `W`, ends in values of the carries' types and in a back-edge test
@@ -3018,47 +2400,47 @@ theorem wp_dloop_vcT {tys : List ClifTy} {tb : ClifTy} {init : Vals Slot tys} {c
     {k : Vals Slot (idxTys tys exitIdx) → Prog Slot Lvl α} (W : World → Prop) (hW : W w)
     (hinit : SlotsOk Γ init)
     (hgd : J.faultOk = true ∨ GuardOk Γ guardIdx init cb)
-    (hbody : ∀ Γ0 nb Γb wb, Ext Γ Γ0 → Ext Γ Γb → W wb → CarryAt Γb nb tys →
+    (hbody : ∀ Γ0 nb Γb wb, Extends Γ Γ0 → Extends Γ Γb → W wb → CarryAt Γb nb tys →
       wp cfg (d + 1) (dloopToT J Γ Γ0 W (idxTys tys exitIdx) tys) (body d (carriesFrom nb tys))
-        (fun a Γ2 w2 => Ext Γb Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2) Γb wb)
-    (hk : ∀ nE Γ' w', Ext Γ Γ' → W w' → CarryAt Γ' nE (idxTys tys exitIdx) →
+        (fun a Γ2 w2 => Extends Γb Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2) Γb wb)
+    (hk : ∀ nE Γ' w', Extends Γ Γ' → W w' → CarryAt Γ' nE (idxTys tys exitIdx) →
       wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q Γ' w') :
     wp cfg d J (.dloop init cc cb guardIdx hg contOnTrue exitIdx body k) Q Γ w := by
   rw [wp_dloop]
-  refine ⟨fun Γ0 cs w => Ext Γ Γ0 ∧ W w ∧ CarryOk tys cs,
-    fun Γ0 _ a Γ2 w2 => Ext Γ Γ0 ∧ Ext Γ Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2,
-    fun Γ0 Γb outs w => Ext Γ Γ0 ∧ Ext Γ Γb ∧ W w ∧ CarryOk (idxTys tys exitIdx) outs,
+  refine ⟨fun Γ0 cs w => Extends Γ Γ0 ∧ W w ∧ CarryOk tys cs,
+    fun Γ0 _ a Γ2 w2 => Extends Γ Γ0 ∧ Extends Γ Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2,
+    fun Γ0 Γb outs w => Extends Γ Γ0 ∧ Extends Γ Γb ∧ W w ∧ CarryOk (idxTys tys exitIdx) outs,
     ⟨fun gi hgi hn => hgd.elim id fun h => by subst hgi; exact absurd hn (IcmpOk.some h cc), ?_⟩,
     ?_, ?_, ?_, ?_⟩
   · intro Γ' w' cs hg' hcs
     cases guardIdx with
     | none =>
         obtain ⟨rfl, rfl⟩ := hg'
-        exact ⟨Ext.refl _, hW, hinit.carry hcs⟩
+        exact ⟨Extends.refl _, hW, hinit.carry hcs⟩
     | some _ =>
         obtain ⟨Γ1, v, rfl, ⟨rfl, rfl⟩, _⟩ := hg'
-        have hc := (hinit.ext (Ext.push Γ1 v)).carry hcs
-        exact fun _ _ _ => ⟨fun _ => ⟨Ext.push _ _, hW, hc⟩,
-          fun _ outs ho => ⟨Ext.push _ _, Ext.push _ _, hW, carryOk_idx hc ho⟩⟩
+        have hc := (hinit.ext (Extends.push Γ1 v)).carry hcs
+        exact fun _ _ _ => ⟨fun _ => ⟨Extends.push _ _, hW, hc⟩,
+          fun _ outs ho => ⟨Extends.push _ _, Extends.push _ _, hW, carryOk_idx hc ho⟩⟩
   · rintro n0 Γ0 cs wb rfl ⟨he0, hw, hc⟩
-    have heb := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have heb := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     have hca : CarryAt (bindAt Γ0 Γ0.size cs) Γ0.size tys :=
-      carryAt_of hc fun i => bindAt_get_carry Γ0 Γ0.size cs i
+      carryAt_of hc fun i => bindAt_at Γ0 Γ0.size cs i
     exact wp_mono cfg _ _ _ _ _ (fun a _ _ h => ⟨he0, (he0.trans heb).trans h.1, h.2.1, h.2.2.1, h.2.2.2⟩) _ _
       (hbody _ _ _ _ he0 (he0.trans heb) hw hca)
   · rintro Γ0 cs a Γ2 w2 t f next ⟨he0, he2, hw, -, hs⟩ _ hnx
-    have hc := (hs.ext (Ext.push Γ2 (.sc t f))).carry hnx
-    exact ⟨fun _ => ⟨he0, hw, hc⟩, fun _ outs ho => ⟨he0, he2.trans (Ext.push _ _), hw, carryOk_idx hc ho⟩⟩
+    have hc := (hs.ext (Extends.push Γ2 (.sc t f))).carry hnx
+    exact ⟨fun _ => ⟨he0, hw, hc⟩, fun _ outs ho => ⟨he0, he2.trans (Extends.push _ _), hw, carryOk_idx hc ho⟩⟩
   · rintro nE Γ0 Γb outs w' hle ⟨he0, heb, hw, ho⟩
-    exact hk _ _ _ (Ext.carry outs heb (Nat.le_trans he0.1 hle)) hw
-      (carryAt_of ho fun i => bindAt_get_carry Γb nE outs i)
+    exact hk _ _ _ (Extends.bindAt heb (Nat.le_trans he0.1 hle) outs) hw
+      (carryAt_of ho fun i => bindAt_at Γb nE outs i)
   · rintro Γ0 cs a Γ2 w2 ⟨-, -, -, hi, -⟩ hn
     exact hi.elim id fun h => absurd hn (h.some cc)
 
 /-- `loopTo`, the carries of their types at each trip. -/
 abbrev loopToT (J : Post) (Γ : Env) (W : World → Prop) (exitTys tys : List ClifTy) : Post :=
   loopJ J Γ (fun Γ0 cs w => Γ0 = Γ ∧ W w ∧ CarryOk tys cs)
-    (fun Γ0 Γb vs w => Γ0 = Γ ∧ Ext Γ Γb ∧ W w ∧ CarryOk exitTys vs) exitTys tys
+    (fun Γ0 Γb vs w => Γ0 = Γ ∧ Extends Γ Γb ∧ W w ∧ CarryOk exitTys vs) exitTys tys
 
 /-- **A loop, by the typestate, its carries of their types.** A head that keeps
     `W`, ends in a test over integers of one type and in exit values of their
@@ -3071,42 +2453,42 @@ theorem wp_loop_vcT {tys exitTys : List ClifTy} {γ : Type} {init : Vals Slot ty
     {body : Lvl exitTys tys → Vals Slot tys → γ → Prog Slot Lvl (Vals Slot tys)}
     {k : Vals Slot exitTys → Prog Slot Lvl α} (W : World → Prop) (hW : W w)
     (hinit : SlotsOk Γ init)
-    (hhead : ∀ n0 Γh wh, Ext Γ Γh → W wh → CarryAt Γh n0 tys →
+    (hhead : ∀ n0 Γh wh, Extends Γ Γh → W wh → CarryAt Γh n0 tys →
       wp cfg (d + 1) (loopToT J Γ W exitTys tys) (head d (carriesFrom n0 tys))
-        (fun a Γ1 w1 => Ext Γh Γ1 ∧ W w1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧
+        (fun a Γ1 w1 => Extends Γh Γ1 ∧ W w1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧
           SlotsOk Γ1 a.2.1) Γh wh)
-    (hbody : ∀ nb a Γb wb, Ext Γ Γb → W wb → CarryAt Γb nb tys →
+    (hbody : ∀ nb a Γb wb, Extends Γ Γb → W wb → CarryAt Γb nb tys →
       wp cfg (d + 1) (loopToT J Γ W exitTys tys) (body d (carriesFrom nb tys) a)
         (fun next Γ2 w2 => W w2 ∧ SlotsOk Γ2 next) Γb wb)
-    (hk : ∀ nE Γ' w', Ext Γ Γ' → W w' → CarryAt Γ' nE exitTys →
+    (hk : ∀ nE Γ' w', Extends Γ Γ' → W w' → CarryAt Γ' nE exitTys →
       wp cfg d J (k (carriesFrom nE exitTys)) Q Γ' w') :
     wp cfg d J (.loop init head body k) Q Γ w := by
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γ ∧ W w ∧ CarryOk tys cs,
-    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Ext Γ Γ1 ∧ W w1 ∧
+    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Extends Γ Γ1 ∧ W w1 ∧
       (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1,
-    fun Γ0 Γb vs w => Γ0 = Γ ∧ Ext Γ Γb ∧ W w ∧ CarryOk exitTys vs,
+    fun Γ0 Γb vs w => Γ0 = Γ ∧ Extends Γ Γb ∧ W w ∧ CarryOk exitTys vs,
     fun _ hcs => ⟨rfl, hW, hinit.carry hcs⟩, ?_, ?_, ?_, ?_, ?_⟩
   · rintro n0 Γ0 cs wh rfl ⟨rfl, hw, hc⟩
-    have he := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have he := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     have hca : CarryAt (bindAt Γ0 Γ0.size cs) Γ0.size tys :=
-      carryAt_of hc fun i => bindAt_get_carry Γ0 Γ0.size cs i
+      carryAt_of hc fun i => bindAt_at Γ0 Γ0.size cs i
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h => ⟨rfl, hc, he.trans h.1, h.2⟩) _ _ (hhead _ _ _ he hw hca)
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨rfl, -, he, hw, -, hs⟩ _ _ hvs
-    exact ⟨rfl, he.trans (Ext.push _ _), hw, (hs.ext (Ext.push Γ1 (.sc t f))).carry hvs⟩
+    exact ⟨rfl, he.trans (Extends.push _ _), hw, (hs.ext (Extends.push Γ1 (.sc t f))).carry hvs⟩
   · rintro nb Γ0 cs a Γ1 t f wb rfl ⟨rfl, hc, he, hw, -⟩ _ _
-    have he' := Ext.carry (n := Γ1.size + 1) cs (he.trans (Ext.push Γ1 (.sc t f))) (by have := he.1; simp; omega)
+    have he' := Extends.bindAt (n := Γ1.size + 1) (he.trans (Extends.push Γ1 (.sc t f))) (by have := he.1; simp; omega) cs
     have hca : CarryAt (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) (Γ1.size + 1) tys :=
-      carryAt_of hc fun i => bindAt_get_carry _ _ cs i
+      carryAt_of hc fun i => bindAt_at _ _ cs i
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h _ hnx => ⟨rfl, h.1, h.2.carry hnx⟩) _ _
       (hbody _ _ _ _ he' hw hca)
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, he, hw, hc⟩
-    exact hk _ _ _ (Ext.carry vs he hle) hw (carryAt_of hc fun i => bindAt_get_carry Γb nE vs i)
+    exact hk _ _ _ (Extends.bindAt he hle vs) hw (carryAt_of hc fun i => bindAt_at Γb nE vs i)
   · rintro Γ0 cs a Γ1 w1 ⟨-, -, -, -, hi, -⟩ hn
     exact hi.elim id fun h => absurd hn (h.some a.1.cc)
 
-theorem TyAt.ext {Γ Γ' : Env} {r : R} {t : ClifTy} (he : Ext Γ Γ') (h : TyAt Γ r t) : TyAt Γ' r t := by
-  obtain ⟨v, hv, ht⟩ := h.get; exact tyAt_of ht (he.fact hv)
+theorem TyAt.ext {Γ Γ' : Env} {r : R} {t : ClifTy} (he : Extends Γ Γ') (h : TyAt Γ r t) : TyAt Γ' r t := by
+  obtain ⟨v, hv, ht⟩ := h.get; exact tyAt_of ht (he.get hv)
 
 theorem carryAt_one {Γ : Env} {r : R} {t : ClifTy} (h : TyAt Γ r t) : CarryAt Γ r [t] := ⟨h, trivial⟩
 
@@ -3117,39 +2499,39 @@ theorem wp_loop_vcTA {tys exitTys : List ClifTy} {u : ClifTy} {init : Vals Slot 
     {body : Lvl exitTys tys → Vals Slot tys → Slot u → Prog Slot Lvl (Vals Slot tys)}
     {k : Vals Slot exitTys → Prog Slot Lvl α} (W : World → Prop) (hW : W w)
     (hinit : SlotsOk Γ init)
-    (hhead : ∀ n0 Γh wh, Ext Γ Γh → W wh → CarryAt Γh n0 tys →
+    (hhead : ∀ n0 Γh wh, Extends Γ Γh → W wh → CarryAt Γh n0 tys →
       wp cfg (d + 1) (loopToT J Γ W exitTys tys) (head d (carriesFrom n0 tys))
-        (fun a Γ1 w1 => Ext Γh Γ1 ∧ W w1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧
+        (fun a Γ1 w1 => Extends Γh Γ1 ∧ W w1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧
           SlotsOk Γ1 a.2.1 ∧ CarryAt Γ1 a.2.2 [u]) Γh wh)
-    (hbody : ∀ nb a Γb wb, Ext Γ Γb → W wb → CarryAt Γb nb tys → CarryAt Γb a [u] →
+    (hbody : ∀ nb a Γb wb, Extends Γ Γb → W wb → CarryAt Γb nb tys → CarryAt Γb a [u] →
       wp cfg (d + 1) (loopToT J Γ W exitTys tys) (body d (carriesFrom nb tys) a)
         (fun next Γ2 w2 => W w2 ∧ SlotsOk Γ2 next) Γb wb)
-    (hk : ∀ nE Γ' w', Ext Γ Γ' → W w' → CarryAt Γ' nE exitTys →
+    (hk : ∀ nE Γ' w', Extends Γ Γ' → W w' → CarryAt Γ' nE exitTys →
       wp cfg d J (k (carriesFrom nE exitTys)) Q Γ' w') :
     wp cfg d J (.loop init head body k) Q Γ w := by
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γ ∧ W w ∧ CarryOk tys cs,
-    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Ext Γ Γ1 ∧ W w1 ∧
+    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Extends Γ Γ1 ∧ W w1 ∧
       (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1 ∧ CarryAt Γ1 a.2.2 [u],
-    fun Γ0 Γb vs w => Γ0 = Γ ∧ Ext Γ Γb ∧ W w ∧ CarryOk exitTys vs,
+    fun Γ0 Γb vs w => Γ0 = Γ ∧ Extends Γ Γb ∧ W w ∧ CarryOk exitTys vs,
     fun _ hcs => ⟨rfl, hW, hinit.carry hcs⟩, ?_, ?_, ?_, ?_, ?_⟩
   · rintro n0 Γ0 cs wh rfl ⟨rfl, hw, hc⟩
-    have he := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have he := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     have hca : CarryAt (bindAt Γ0 Γ0.size cs) Γ0.size tys :=
-      carryAt_of hc fun i => bindAt_get_carry Γ0 Γ0.size cs i
+      carryAt_of hc fun i => bindAt_at Γ0 Γ0.size cs i
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h => ⟨rfl, hc, he.trans h.1, h.2⟩) _ _ (hhead _ _ _ he hw hca)
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨rfl, -, he, hw, -, hs, -⟩ _ _ hvs
-    exact ⟨rfl, he.trans (Ext.push _ _), hw, (hs.ext (Ext.push Γ1 (.sc t f))).carry hvs⟩
+    exact ⟨rfl, he.trans (Extends.push _ _), hw, (hs.ext (Extends.push Γ1 (.sc t f))).carry hvs⟩
   · rintro nb Γ0 cs a Γ1 t f wb rfl ⟨rfl, hc, he, hw, -, -, ha⟩ _ _
-    have h1 : Ext Γ1 (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) :=
-      Ext.carry (n := Γ1.size + 1) cs (Ext.push Γ1 (.sc t f)) (by simp)
+    have h1 : Extends Γ1 (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) :=
+      Extends.bindAt (n := Γ1.size + 1) (Extends.push Γ1 (.sc t f)) (by simp) cs
     have he' := he.trans h1
     have hca : CarryAt (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) (Γ1.size + 1) tys :=
-      carryAt_of hc fun i => bindAt_get_carry _ _ cs i
+      carryAt_of hc fun i => bindAt_at _ _ cs i
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h _ hnx => ⟨rfl, h.1, h.2.carry hnx⟩) _ _
       (hbody _ _ _ _ he' hw hca (carryAt_one (ha.1.ext h1)))
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, he, hw, hc⟩
-    exact hk _ _ _ (Ext.carry vs he hle) hw (carryAt_of hc fun i => bindAt_get_carry Γb nE vs i)
+    exact hk _ _ _ (Extends.bindAt he hle vs) hw (carryAt_of hc fun i => bindAt_at Γb nE vs i)
   · rintro Γ0 cs a Γ1 w1 ⟨-, -, -, -, hi, -⟩ hn
     exact hi.elim id fun h => absurd hn (h.some a.1.cc)
 
@@ -3249,7 +2631,7 @@ theorem mapM_push {Γ : Env} {v : V} : ∀ {rs : List Nat} {vs : List V},
       simp only [List.mapM_cons, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
         Option.some.injEq] at h ⊢
       obtain ⟨v', hv, vs', hvs', rfl⟩ := h
-      exact ⟨v', (Ext.push Γ v).fact hv, vs', mapM_push hvs', rfl⟩
+      exact ⟨v', (Extends.push Γ v).get hv, vs', mapM_push hvs', rfl⟩
 
 /-- `loopToT`, a counter carry of which `P` holds, and the loop's exit as what
     follows it. -/
@@ -3275,27 +2657,27 @@ theorem wp_loop_vcN {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     (j : Nat) (P : UInt64 → Prop) (hjt : j < tys.length)
     (hinit : SlotsOk Γ init) {x0 : UInt64}
     (hx0 : Γ[(init.slots[j]?).getD 0]? = some (.sc .i64 x0)) (hP0 : P x0)
-    (hhead : ∀ n0 Γh wh x, Ext Γ Γh → W wh → CarryAt Γh n0 tys → Γh[n0 + j]? = some (.sc .i64 x) → P x →
+    (hhead : ∀ n0 Γh wh x, Extends Γ Γh → W wh → CarryAt Γh n0 tys → Γh[n0 + j]? = some (.sc .i64 x) → P x →
       wp cfg (d + 1) (loopToN J Γ W k Q cfg d tys j P) (head d (carriesFrom n0 tys))
-        (fun a Γ1 w1 => Ext Γh Γ1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1 ∧
+        (fun a Γ1 w1 => Extends Γh Γ1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1 ∧
           CondOut Γ1 a.1
-            (∀ nb Γb, Ext Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb Γh n0 tys →
+            (∀ nb Γb, Extends Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb Γh n0 tys →
               wp cfg (d + 1) (loopToN J Γ W k Q cfg d tys j P) (body d (carriesFrom nb tys) a.2.2)
                 (fun next Γ2 w2 => W w2 ∧ SlotsOk Γ2 next ∧
                   ∃ y, Γ2[(next.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ P y) Γb w1)
-            (∀ nE Γ', Ext Γ Γ' → CarryAt Γ' nE exitTys → SameAt Γ' nE Γ1 a.2.1.slots →
+            (∀ nE Γ', Extends Γ Γ' → CarryAt Γ' nE exitTys → SameAt Γ' nE Γ1 a.2.1.slots →
               wp cfg d J (k (carriesFrom nE exitTys)) Q Γ' w1)) Γh wh) :
     wp cfg d J (.loop init head body k) Q Γ w := by
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γ ∧ W w ∧ CarryOk tys cs ∧ CtrOk cs j P,
-    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Ext (bindAt Γ0 Γ0.size cs) Γ1 ∧
+    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Extends (bindAt Γ0 Γ0.size cs) Γ1 ∧
       (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1 ∧
       CondOut Γ1 a.1
-        (∀ nb Γb, Ext Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb (bindAt Γ0 Γ0.size cs) Γ0.size tys →
+        (∀ nb Γb, Extends Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb (bindAt Γ0 Γ0.size cs) Γ0.size tys →
           wp cfg (d + 1) (loopToN J Γ W k Q cfg d tys j P) (body d (carriesFrom nb tys) a.2.2)
             (fun next Γ2 w2 => W w2 ∧ SlotsOk Γ2 next ∧
               ∃ y, Γ2[(next.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ P y) Γb w1)
-        (∀ nE Γ', Ext Γ Γ' → CarryAt Γ' nE exitTys → SameAt Γ' nE Γ1 a.2.1.slots →
+        (∀ nE Γ', Extends Γ Γ' → CarryAt Γ' nE exitTys → SameAt Γ' nE Γ1 a.2.1.slots →
           wp cfg d J (k (carriesFrom nE exitTys)) Q Γ' w1),
     fun Γ0 Γb vs w => Γ0 = Γ ∧ ∀ nE, Γ.size ≤ nE →
       wp cfg d J (k (carriesFrom nE exitTys)) Q (bindAt Γb nE vs) w,
@@ -3305,11 +2687,11 @@ theorem wp_loop_vcN {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     rw [List.getElem?_eq_getElem hj] at hx0 ⊢
     exact hx0
   · rintro n0 Γ0 cs wh rfl ⟨rfl, hw, hc, x, hxj, hPx⟩
-    have he := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have he := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     have hca : CarryAt (bindAt Γ0 Γ0.size cs) Γ0.size tys :=
-      carryAt_of hc fun i => bindAt_get_carry Γ0 Γ0.size cs i
+      carryAt_of hc fun i => bindAt_at Γ0 Γ0.size cs i
     have hxs : (bindAt Γ0 Γ0.size cs)[Γ0.size + j]? = some (.sc .i64 x) := by
-      rw [bindAt_get_carry]; exact hxj
+      rw [bindAt_at]; exact hxj
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h => ⟨rfl, hc, h⟩) _ _ (hhead _ _ _ x he hw hca hxs hPx)
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨rfl, -, he, -, hs, hco⟩ hev hout hvs
     obtain ⟨ty, xa, ya, ha, hb, hf⟩ := icmp_sc_inv hev
@@ -3319,19 +2701,19 @@ theorem wp_loop_vcN {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     have hv : vs = vs1 := by rw [mapM_push hvs1] at hvs; exact (Option.some.inj hvs).symm
     subst hv
     refine ⟨rfl, fun nE hle => hk nE _ ?_ ?_ ?_⟩
-    · exact Ext.carry vs (((Ext.carry cs (Ext.refl Γ0) (Nat.le_refl _)).trans he).trans (Ext.push Γ1 _)) hle
-    · exact carryAt_of hc1 fun i => bindAt_get_carry _ nE vs i
+    · exact Extends.bindAt (((Extends.bindAt (Extends.refl Γ0) (Nat.le_refl _) cs).trans he).trans (Extends.push Γ1 _)) hle vs
+    · exact carryAt_of hc1 fun i => bindAt_at _ nE vs i
     · refine sameAt_of fun i _ => ?_
-      rw [bindAt_get_carry, mapM_get hvs1 i]
+      rw [bindAt_at, mapM_get hvs1 i]
   · rintro nb Γ0 cs a Γ1 t f wb rfl ⟨rfl, hc, he, -, -, hco⟩ hev hout
     obtain ⟨ty, xa, ya, ha, hb, hf⟩ := icmp_sc_inv hev
     have hbody := (hco ty xa ya ha hb).1 (by
       rw [← hf]; revert hout; cases (f != 0) <;> cases a.1.exitOnTrue <;> simp)
-    have heb : Ext Γ1 (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) :=
-      Ext.carry cs ((Ext.refl Γ1).trans (Ext.push Γ1 _)) (by simp)
+    have heb : Extends Γ1 (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) :=
+      Extends.bindAt ((Extends.refl Γ1).trans (Extends.push Γ1 _)) (by simp) cs
     refine wp_mono cfg _ _ _ _ _ (fun next Γ2 w2 h nx hnx => ⟨rfl, h.1, h.2.1.carry hnx, ?_⟩) _ _
-      (hbody _ _ heb (carryAt_of hc fun i => bindAt_get_carry _ _ cs i)
-        (sameFrom_of fun i => by rw [bindAt_get_carry, bindAt_get_carry]))
+      (hbody _ _ heb (carryAt_of hc fun i => bindAt_at _ _ cs i)
+        (sameFrom_of fun i => by rw [bindAt_at, bindAt_at]))
     obtain ⟨y, hy, hPy⟩ := h.2.2
     refine ⟨y, ?_, hPy⟩
     rw [mapM_get hnx j]
@@ -3396,8 +2778,8 @@ theorem condOutR_use {m : Mem} {Γ : Env} {cc : ICmpCond} {a b : R} {e : Bool} {
 abbrev dloopToN (J : Hoare.Post) (Γ Γ0 : Env) (W : World → Prop) {α : Type} {exitTys : List ClifTy}
     (k : Vals Slot exitTys → Prog Slot Lvl α) (Q : α → Env → World → Prop) (cfg : Cfg) (d : Nat)
     (tys : List ClifTy) (j : Nat) (P : UInt64 → Prop) : Hoare.Post :=
-  loopJ J Γ0 (fun Γ0 cs w => Ext Γ Γ0 ∧ W w ∧ CarryOk tys cs ∧ CtrOk cs j P)
-    (fun Γ0 Γb outs w => Ext Γ Γ0 ∧ ∀ nE, Γ0.size ≤ nE →
+  loopJ J Γ0 (fun Γ0 cs w => Extends Γ Γ0 ∧ W w ∧ CarryOk tys cs ∧ CtrOk cs j P)
+    (fun Γ0 Γb outs w => Extends Γ Γ0 ∧ ∀ nE, Γ0.size ≤ nE →
       wp cfg d J (k (carriesFrom nE exitTys)) Q (bindAt Γb nE outs) w)
     exitTys tys
 
@@ -3420,30 +2802,30 @@ theorem wp_dloop_vcN {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
     (hguard : ∀ gi, guardIdx = some gi →
       (J.faultOk = true ∨ IcmpOk Γ ((init.slots[gi]?).getD 0) cb) ∧
       CondOutR Γ cc ((init.slots[gi]?).getD 0) cb (!contOnTrue) (P x0)
-        (∀ nE Γ', Ext Γ Γ' → CarryAt Γ' nE (idxTys tys exitIdx) →
+        (∀ nE Γ', Extends Γ Γ' → CarryAt Γ' nE (idxTys tys exitIdx) →
           SameAt Γ' nE Γ (exitIdx.map (fun i => (init.slots[i]?).getD 0)) →
           wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q Γ' w))
-    (hbody : ∀ Γ0 n0 Γb wb x, Ext Γ Γ0 → Ext Γ Γb → W wb → CarryAt Γb n0 tys →
+    (hbody : ∀ Γ0 n0 Γb wb x, Extends Γ Γ0 → Extends Γ Γb → W wb → CarryAt Γb n0 tys →
       Γb[n0 + j]? = some (.sc .i64 x) → P x →
       wp cfg (d + 1) (dloopToN J Γ Γ0 W k Q cfg d tys j P) (body d (carriesFrom n0 tys))
-        (fun a Γ2 w2 => Ext Γb Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2 ∧
+        (fun a Γ2 w2 => Extends Γb Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2 ∧
           CondOutR Γ2 cc a.1 cb (!contOnTrue)
             (∃ y, Γ2[(a.2.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ P y)
-            (∀ nE Γ', Ext Γ Γ' → CarryAt Γ' nE (idxTys tys exitIdx) →
+            (∀ nE Γ', Extends Γ Γ' → CarryAt Γ' nE (idxTys tys exitIdx) →
               SameAt Γ' nE Γ2 (exitIdx.map (fun i => (a.2.slots[i]?).getD 0)) →
               wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q Γ' w2)) Γb wb) :
     wp cfg d J (.dloop init cc cb guardIdx hg contOnTrue exitIdx body k) Q Γ w := by
   have hj : j < init.slots.length := by rw [Vals.slots_length]; exact hjt
   rw [wp_dloop]
-  refine ⟨fun Γ0 cs w => Ext Γ Γ0 ∧ W w ∧ CarryOk tys cs ∧ CtrOk cs j P,
-    fun Γ0 cs a Γ2 w2 => Ext Γ Γ0 ∧ CarryOk tys cs ∧ Ext (bindAt Γ0 Γ0.size cs) Γ2 ∧ W w2 ∧
+  refine ⟨fun Γ0 cs w => Extends Γ Γ0 ∧ W w ∧ CarryOk tys cs ∧ CtrOk cs j P,
+    fun Γ0 cs a Γ2 w2 => Extends Γ Γ0 ∧ CarryOk tys cs ∧ Extends (bindAt Γ0 Γ0.size cs) Γ2 ∧ W w2 ∧
       (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2 ∧
       CondOutR Γ2 cc a.1 cb (!contOnTrue)
         (∃ y, Γ2[(a.2.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ P y)
-        (∀ nE Γ', Ext Γ Γ' → CarryAt Γ' nE (idxTys tys exitIdx) →
+        (∀ nE Γ', Extends Γ Γ' → CarryAt Γ' nE (idxTys tys exitIdx) →
           SameAt Γ' nE Γ2 (exitIdx.map (fun i => (a.2.slots[i]?).getD 0)) →
           wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q Γ' w2),
-    fun Γ0 Γb outs w => Ext Γ Γ0 ∧ ∀ nE, Γ0.size ≤ nE →
+    fun Γ0 Γb outs w => Extends Γ Γ0 ∧ ∀ nE, Γ0.size ≤ nE →
       wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q (bindAt Γb nE outs) w,
     ⟨fun gi hgi hn => (hguard gi hgi).1.elim id fun h => absurd hn (h.some cc), ?_⟩, ?_, ?_, ?_, ?_⟩
   · intro Γ' w' cs hpre hcs
@@ -3452,7 +2834,7 @@ theorem wp_dloop_vcN {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
     cases guardIdx with
     | none =>
         obtain ⟨rfl, rfl⟩ := hpre
-        refine ⟨Ext.refl _, hW, hinit.carry hcs, x0, ?_, hP0 rfl⟩
+        refine ⟨Extends.refl _, hW, hinit.carry hcs, x0, ?_, hP0 rfl⟩
         rw [mapM_get hcs j, List.getElem?_eq_getElem hj]; exact hc0
     | some gi =>
         obtain ⟨Γ1, v, rfl, ⟨rfl, rfl⟩, hev⟩ := hpre
@@ -3463,18 +2845,18 @@ theorem wp_dloop_vcN {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
         have hv : v = .sc t f := by simpa using hl
         subst hv
         have hco := condOutR_use (hguard gi rfl).2 hev
-        refine ⟨fun hout => ⟨Ext.push _ _, hW, hc1, x0, ?_, hco.1 (by revert hout; cases (f != 0) <;> cases contOnTrue <;> simp)⟩,
-          fun hout outs houts => ⟨Ext.push _ _, fun nE hle => (hco.2 (by revert hout; cases (f != 0) <;> cases contOnTrue <;> simp)) nE _
-            (Ext.carry outs (Ext.push _ _) (by simp at hle; omega)) (carryAt_of (carryOk_idx hc1 houts)
-              fun i => bindAt_get_carry _ nE outs i)
-            (sameAt_idx hvs1 houts fun i => bindAt_get_carry _ nE outs i)⟩⟩
+        refine ⟨fun hout => ⟨Extends.push _ _, hW, hc1, x0, ?_, hco.1 (by revert hout; cases (f != 0) <;> cases contOnTrue <;> simp)⟩,
+          fun hout outs houts => ⟨Extends.push _ _, fun nE hle => (hco.2 (by revert hout; cases (f != 0) <;> cases contOnTrue <;> simp)) nE _
+            (Extends.bindAt (Extends.push _ _) (by simp at hle; omega) outs) (carryAt_of (carryOk_idx hc1 houts)
+              fun i => bindAt_at _ nE outs i)
+            (sameAt_idx hvs1 houts fun i => bindAt_at _ nE outs i)⟩⟩
         rw [mapM_get hvs1 j, List.getElem?_eq_getElem hj]; exact hc0
   · rintro n0 Γ0 cs wb rfl ⟨he0, hw, hc, x, hxj, hPx⟩
-    have heb := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have heb := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     have hca : CarryAt (bindAt Γ0 Γ0.size cs) Γ0.size tys :=
-      carryAt_of hc fun i => bindAt_get_carry Γ0 Γ0.size cs i
+      carryAt_of hc fun i => bindAt_at Γ0 Γ0.size cs i
     have hxs : (bindAt Γ0 Γ0.size cs)[Γ0.size + j]? = some (.sc .i64 x) := by
-      rw [bindAt_get_carry]; exact hxj
+      rw [bindAt_at]; exact hxj
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h => ⟨he0, hc, h⟩) _ _
       (hbody _ _ _ _ x he0 (he0.trans heb) hw hca hxs hPx)
   · rintro Γ0 cs a Γ2 w2 t f next ⟨he0, hc, he2, hw, -, hs, hco⟩ hev hnx
@@ -3490,10 +2872,10 @@ theorem wp_dloop_vcN {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
       rw [List.getElem?_eq_getElem hj'] at hy; exact hy
     · have hle' : Γ.size ≤ nE := Nat.le_trans he0.1 hle
       exact (hco.2 (by revert hout; cases (f != 0) <;> cases contOnTrue <;> simp)) nE _
-        (Ext.carry outs (((he0.trans (Ext.carry cs (Ext.refl Γ0) (Nat.le_refl _))).trans he2).trans
-          (Ext.push _ _)) hle')
-        (carryAt_of (carryOk_idx hc1 houts) fun i => bindAt_get_carry _ nE outs i)
-        (sameAt_idx hvs1 houts fun i => bindAt_get_carry _ nE outs i)
+        (Extends.bindAt (((he0.trans (Extends.bindAt (Extends.refl Γ0) (Nat.le_refl _) cs)).trans he2).trans
+          (Extends.push _ _)) hle' outs)
+        (carryAt_of (carryOk_idx hc1 houts) fun i => bindAt_at _ nE outs i)
+        (sameAt_idx hvs1 houts fun i => bindAt_at _ nE outs i)
   · rintro nE Γ0 Γb outs w' hle ⟨-, hk⟩
     exact hk nE hle
   · rintro Γ0 cs a Γ2 w2 ⟨-, -, -, -, hi, -⟩ hn
@@ -3525,7 +2907,7 @@ theorem sameFrom_tail {Γb Γh : Env} {nb n0 : Nat} {t : ClifTy} {ts : List Clif
 abbrev loopToX (J : Hoare.Post) (Γ : Env) (W : World → Prop) (exitTys tys : List ClifTy) (j : Nat)
     (P : UInt64 → Prop) (jE : Nat) (Px : UInt64 → Prop) : Hoare.Post :=
   loopJ J Γ (fun Γ0 cs w => Γ0 = Γ ∧ W w ∧ CarryOk tys cs ∧ CtrOk cs j P)
-    (fun Γ0 Γb vs w => Γ0 = Γ ∧ Ext Γ Γb ∧ W w ∧ CarryOk exitTys vs ∧ CtrOk vs jE Px) exitTys tys
+    (fun Γ0 Γb vs w => Γ0 = Γ ∧ Extends Γ Γb ∧ W w ∧ CarryOk exitTys vs ∧ CtrOk vs jE Px) exitTys tys
 
 /-- A jump's exit counter, from the slot the jump carries it from. -/
 theorem ctrOk_of_mapM {Γ : Env} {rs : List Nat} {vs : List V} {jE : Nat} {Px : UInt64 → Prop}
@@ -3550,40 +2932,40 @@ theorem wp_loop_vcX {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     (hjE : jE < exitTys.length)
     (hinit : SlotsOk Γ init) {x0 : UInt64}
     (hx0 : Γ[(init.slots[j]?).getD 0]? = some (.sc .i64 x0)) (hP0 : P x0)
-    (hhead : ∀ n0 Γh wh x, Ext Γ Γh → W wh → CarryAt Γh n0 tys → Γh[n0 + j]? = some (.sc .i64 x) → P x →
+    (hhead : ∀ n0 Γh wh x, Extends Γ Γh → W wh → CarryAt Γh n0 tys → Γh[n0 + j]? = some (.sc .i64 x) → P x →
       wp cfg (d + 1) (loopToX J Γ W exitTys tys j P jE Px) (head d (carriesFrom n0 tys))
-        (fun a Γ1 w1 => Ext Γh Γ1 ∧ W w1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1 ∧
+        (fun a Γ1 w1 => Extends Γh Γ1 ∧ W w1 ∧ (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1 ∧
           CondOut Γ1 a.1
-            (∀ nb Γb, Ext Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb Γh n0 tys →
+            (∀ nb Γb, Extends Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb Γh n0 tys →
               wp cfg (d + 1) (loopToX J Γ W exitTys tys j P jE Px) (body d (carriesFrom nb tys) a.2.2)
                 (fun next Γ2 w2 => W w2 ∧ SlotsOk Γ2 next ∧
                   ∃ y, Γ2[(next.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ P y) Γb w1)
             (∃ y, Γ1[(a.2.1.slots[jE]?).getD 0]? = some (.sc .i64 y) ∧ Px y)) Γh wh)
-    (hk : ∀ nE Γ' w' y, Ext Γ Γ' → W w' → CarryAt Γ' nE exitTys → Γ'[nE + jE]? = some (.sc .i64 y) →
+    (hk : ∀ nE Γ' w' y, Extends Γ Γ' → W w' → CarryAt Γ' nE exitTys → Γ'[nE + jE]? = some (.sc .i64 y) →
       Px y → wp cfg d J (k (carriesFrom nE exitTys)) Q Γ' w') :
     wp cfg d J (.loop init head body k) Q Γ w := by
   rw [wp_loop]
   refine ⟨fun Γ0 cs w => Γ0 = Γ ∧ W w ∧ CarryOk tys cs ∧ CtrOk cs j P,
-    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Ext (bindAt Γ0 Γ0.size cs) Γ1 ∧ W w1 ∧
+    fun Γ0 cs a Γ1 w1 => Γ0 = Γ ∧ CarryOk tys cs ∧ Extends (bindAt Γ0 Γ0.size cs) Γ1 ∧ W w1 ∧
       (J.faultOk = true ∨ IcmpOk Γ1 a.1.a a.1.b) ∧ SlotsOk Γ1 a.2.1 ∧
       CondOut Γ1 a.1
-        (∀ nb Γb, Ext Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb (bindAt Γ0 Γ0.size cs) Γ0.size tys →
+        (∀ nb Γb, Extends Γ1 Γb → CarryAt Γb nb tys → SameFrom Γb nb (bindAt Γ0 Γ0.size cs) Γ0.size tys →
           wp cfg (d + 1) (loopToX J Γ W exitTys tys j P jE Px) (body d (carriesFrom nb tys) a.2.2)
             (fun next Γ2 w2 => W w2 ∧ SlotsOk Γ2 next ∧
               ∃ y, Γ2[(next.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ P y) Γb w1)
         (∃ y, Γ1[(a.2.1.slots[jE]?).getD 0]? = some (.sc .i64 y) ∧ Px y),
-    fun Γ0 Γb vs w => Γ0 = Γ ∧ Ext Γ Γb ∧ W w ∧ CarryOk exitTys vs ∧ CtrOk vs jE Px,
+    fun Γ0 Γb vs w => Γ0 = Γ ∧ Extends Γ Γb ∧ W w ∧ CarryOk exitTys vs ∧ CtrOk vs jE Px,
     fun cs hcs => ⟨rfl, hW, hinit.carry hcs, x0, ?_, hP0⟩, ?_, ?_, ?_, ?_, ?_⟩
   · rw [mapM_get hcs j]
     have hj : j < init.slots.length := by rw [Vals.slots_length]; exact hjt
     rw [List.getElem?_eq_getElem hj] at hx0 ⊢
     exact hx0
   · rintro n0 Γ0 cs wh rfl ⟨rfl, hw, hc, x, hxj, hPx⟩
-    have he := Ext.carry (n := Γ0.size) cs (Ext.refl Γ0) (Nat.le_refl _)
+    have he := Extends.bindAt (n := Γ0.size) (Extends.refl Γ0) (Nat.le_refl _) cs
     have hca : CarryAt (bindAt Γ0 Γ0.size cs) Γ0.size tys :=
-      carryAt_of hc fun i => bindAt_get_carry Γ0 Γ0.size cs i
+      carryAt_of hc fun i => bindAt_at Γ0 Γ0.size cs i
     have hxs : (bindAt Γ0 Γ0.size cs)[Γ0.size + j]? = some (.sc .i64 x) := by
-      rw [bindAt_get_carry]; exact hxj
+      rw [bindAt_at]; exact hxj
     exact wp_mono cfg _ _ _ _ _ (fun _ _ _ h => ⟨rfl, hc, h⟩) _ _ (hhead _ _ _ x he hw hca hxs hPx)
   · rintro Γ0 cs a Γ1 w1 t f vs ⟨rfl, -, he, hw, -, hs, hco⟩ hev hout hvs
     obtain ⟨ty, xa, ya, ha, hb, hf⟩ := icmp_sc_inv hev
@@ -3592,18 +2974,18 @@ theorem wp_loop_vcX {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     obtain ⟨vs1, hvs1, hc1⟩ := hs
     have hv : vs = vs1 := by rw [mapM_push hvs1] at hvs; exact (Option.some.inj hvs).symm
     subst hv
-    have hE : Ext Γ0 (Γ1.push (.sc t f)) :=
-      ((Ext.carry cs (Ext.refl Γ0) (Nat.le_refl _)).trans he).trans (Ext.push Γ1 _)
+    have hE : Extends Γ0 (Γ1.push (.sc t f)) :=
+      ((Extends.bindAt (Extends.refl Γ0) (Nat.le_refl _) cs).trans he).trans (Extends.push Γ1 _)
     exact ⟨rfl, hE, hw, hc1, ctrOk_of_mapM hvs1 (by rw [Vals.slots_length]; exact hjE) hx⟩
   · rintro nb Γ0 cs a Γ1 t f wb rfl ⟨rfl, hc, he, -, -, -, hco⟩ hev hout
     obtain ⟨ty, xa, ya, ha, hb, hf⟩ := icmp_sc_inv hev
     have hbody := (hco ty xa ya ha hb).1 (by
       rw [← hf]; revert hout; cases (f != 0) <;> cases a.1.exitOnTrue <;> simp)
-    have heb : Ext Γ1 (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) :=
-      Ext.carry cs ((Ext.refl Γ1).trans (Ext.push Γ1 _)) (by simp)
+    have heb : Extends Γ1 (bindAt (Γ1.push (.sc t f)) (Γ1.size + 1) cs) :=
+      Extends.bindAt ((Extends.refl Γ1).trans (Extends.push Γ1 _)) (by simp) cs
     refine wp_mono cfg _ _ _ _ _ (fun next Γ2 w2 h nx hnx => ⟨rfl, h.1, h.2.1.carry hnx, ?_⟩) _ _
-      (hbody _ _ heb (carryAt_of hc fun i => bindAt_get_carry _ _ cs i)
-        (sameFrom_of fun i => by rw [bindAt_get_carry, bindAt_get_carry]))
+      (hbody _ _ heb (carryAt_of hc fun i => bindAt_at _ _ cs i)
+        (sameFrom_of fun i => by rw [bindAt_at, bindAt_at]))
     obtain ⟨y, hy, hPy⟩ := h.2.2
     refine ⟨y, ?_, hPy⟩
     rw [mapM_get hnx j]
@@ -3611,8 +2993,8 @@ theorem wp_loop_vcX {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     rw [List.getElem?_eq_getElem hj] at hy ⊢
     exact hy
   · rintro nE Γ0 Γb vs w' hle ⟨rfl, he, hw, hc, y, hy, hpy⟩
-    exact hk nE _ w' y (Ext.carry vs he hle) hw (carryAt_of hc fun i => bindAt_get_carry Γb nE vs i)
-      (by rw [bindAt_get_carry]; exact hy) hpy
+    exact hk nE _ w' y (Extends.bindAt he hle vs) hw (carryAt_of hc fun i => bindAt_at Γb nE vs i)
+      (by rw [bindAt_at]; exact hy) hpy
   · rintro Γ0 cs a Γ1 w1 ⟨-, -, -, -, hi, -⟩ hn
     exact hi.elim id fun h => absurd hn (h.some a.1.cc)
 
@@ -3633,14 +3015,14 @@ theorem wp_dloop_vcX {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
     (hguard : ∀ gi, guardIdx = some gi →
       (J.faultOk = true ∨ IcmpOk Γ ((init.slots[gi]?).getD 0) cb) ∧
       CondOutR Γ cc ((init.slots[gi]?).getD 0) cb (!contOnTrue) (P x0) (Px x0))
-    (hbody : ∀ Γ0 n0 Γb wb x, Ext Γ Γ0 → Ext Γ Γb → W wb → CarryAt Γb n0 tys →
+    (hbody : ∀ Γ0 n0 Γb wb x, Extends Γ Γ0 → Extends Γ Γb → W wb → CarryAt Γb n0 tys →
       Γb[n0 + j]? = some (.sc .i64 x) → P x →
       wp cfg (d + 1) (dloopToN J Γ Γ0 W k Q cfg d tys j P) (body d (carriesFrom n0 tys))
-        (fun a Γ2 w2 => Ext Γb Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2 ∧
+        (fun a Γ2 w2 => Extends Γb Γ2 ∧ W w2 ∧ (J.faultOk = true ∨ IcmpOk Γ2 a.1 cb) ∧ SlotsOk Γ2 a.2 ∧
           CondOutR Γ2 cc a.1 cb (!contOnTrue)
             (∃ y, Γ2[(a.2.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ P y)
             (∃ y, Γ2[(a.2.slots[j]?).getD 0]? = some (.sc .i64 y) ∧ Px y)) Γb wb)
-    (hk : ∀ nE Γ' w' y, Ext Γ Γ' → W w' → CarryAt Γ' nE (idxTys tys exitIdx) →
+    (hk : ∀ nE Γ' w' y, Extends Γ Γ' → W w' → CarryAt Γ' nE (idxTys tys exitIdx) →
       Γ'[nE + jE]? = some (.sc .i64 y) → Px y →
       wp cfg d J (k (carriesFrom nE (idxTys tys exitIdx))) Q Γ' w') :
     wp cfg d J (.dloop init cc cb guardIdx hg contOnTrue exitIdx body k) Q Γ w :=
@@ -3660,10 +3042,10 @@ theorem wp_dloop_vcX {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
     carried from the slots `rs` of the trip's. -/
 theorem wp_bindAt_vc {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α → Env → World → Prop}
     {p : Prog Slot Lvl α} {Γ Γb : Env} {w : World} {nE : Nat} {rs : List Nat} {vs : List V}
-    (he : Ext Γ Γb) (hle : Γ.size ≤ nE) (hvs : rs.mapM (fun r => Γb[r]?) = some vs)
-    (h : ∀ Γ', Ext Γ Γ' → SameAt Γ' nE Γb rs → wp cfg d J p Q Γ' w) :
+    (he : Extends Γ Γb) (hle : Γ.size ≤ nE) (hvs : rs.mapM (fun r => Γb[r]?) = some vs)
+    (h : ∀ Γ', Extends Γ Γ' → SameAt Γ' nE Γb rs → wp cfg d J p Q Γ' w) :
     wp cfg d J p Q (bindAt Γb nE vs) w :=
-  h _ (Ext.carry vs he hle) (sameAt_of fun i _ => by rw [bindAt_get_carry, mapM_get hvs i])
+  h _ (Extends.bindAt he hle vs) (sameAt_of fun i _ => by rw [bindAt_at, mapM_get hvs i])
 
 end LoopN
 
@@ -3673,19 +3055,19 @@ end LoopN
 theorem wp_ite_vc {jTys : List ClifTy} {c : Cond Slot} {thn els : Prog Slot Lvl (Vals Slot jTys)}
     {k : Vals Slot jTys → Prog Slot Lvl α} (W : World → Prop) (Rt Re : Prop)
     (hRt : Refines w.mem Γ c true Rt) (hRe : Refines w.mem Γ c false Re)
-    (hT : ∀ Γ', Ext Γ Γ' → Rt → wp cfg d J thn (fun _ Γe we => Ext Γ Γe ∧ W we) Γ' w)
-    (hE : ∀ Γ', Ext Γ Γ' → Re → wp cfg d J els (fun _ Γe we => Ext Γ Γe ∧ W we) Γ' w)
-    (hK : ∀ nJ Γ' w', Ext Γ Γ' → W w' → wp cfg d J (k (carriesFrom nJ jTys)) Q Γ' w')
+    (hT : ∀ Γ', Extends Γ Γ' → Rt → wp cfg d J thn (fun _ Γe we => Extends Γ Γe ∧ W we) Γ' w)
+    (hE : ∀ Γ', Extends Γ Γ' → Re → wp cfg d J els (fun _ Γe we => Extends Γ Γe ∧ W we) Γ' w)
+    (hK : ∀ nJ Γ' w', Extends Γ Γ' → W w' → wp cfg d J (k (carriesFrom nJ jTys)) Q Γ' w')
     (hJ : J.faultOk = true ∨ IcmpOk Γ c.a c.b) :
     wp cfg d J (.ite c thn els k) Q Γ w := by
   rw [wp_ite]
-  exact ⟨fun _ Γe we => Ext Γ Γe ∧ W we, fun _ Γe we => Ext Γ Γe ∧ W we,
-    ⟨fun t f h hf => hT _ (Ext.push Γ _) (hRt t f h hf),
-     fun ne t f hne h hf => hE _ (Ext.bindAt_push Γ _ hne) (hRe t f h hf),
+  exact ⟨fun _ Γe we => Extends Γ Γe ∧ W we, fun _ Γe we => Extends Γ Γe ∧ W we,
+    ⟨fun t f h hf => hT _ (Extends.push Γ _) (hRt t f h hf),
+     fun ne t f hne h hf => hE _ (Extends.bindAt_push Γ _ hne) (hRe t f h hf),
      fun hn => hJ.elim id fun h => absurd hn (h.some _)⟩,
     fun nJ Γ' _ vs w' hle _ hq => by
       have h := hq.elim id id
-      exact hK nJ _ w' (Ext.carry vs h.1 (Nat.le_trans h.1.1 hle)) h.2⟩
+      exact hK nJ _ w' (Extends.bindAt h.1 (Nat.le_trans h.1.1 hle) vs) h.2⟩
 
 /-- **A comparison of two values**, as each arm finds it. -/
 theorem refine_cmp {m : Mem} {Γ : Env} {c : Cond Slot} {t t' : ClifTy} {x z : UInt64}
@@ -3756,7 +3138,7 @@ theorem signed_i64_of_lt {x : UInt64} (h : x.toNat < 2 ^ 63) : signed .i64 x = x
 /-- Bytes at an address past a region's base, within a length the program was
     handed for it. -/
 theorem fits_of_roomArg_sub {S : Contracts.TState} {w : World} {a X : UInt64} {n : Nat} {r : Region}
-    (hS : S.holds w) (hm : Contracts.Fact.roomArg r X ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Contracts.Fact.roomArg r X ∈ S)
     (hp : r ≠ .pinned) (hle : (regionBase r).toNat ≤ a.toNat)
     (hb : a.toNat - (regionBase r).toNat + n ≤ X.toNat) (hn : 0 < n) : Fits w.mem a n := by
   have hx := hS _ hm
@@ -3767,12 +3149,12 @@ theorem fits_of_roomArg_sub {S : Contracts.TState} {w : World} {a X : UInt64} {n
     UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr hle)
   rw [← hsub, UInt64.ofNat_toNat, UInt64.add_comm, UInt64.sub_add_cancel] at hd
   rw [hsub] at hd
-  exact ⟨r, _, hd, hp, by have := hx.1; omega, Contracts.holds_of_mem hS hz, by have := hx.2; omega⟩
+  exact ⟨r, _, hd, hp, by have := hx.1; omega, by have := hx.2; omega⟩
 
 /-- Bytes at an address past a region's base, within a room the typestate
     names. -/
 theorem fits_of_room_sub {S : Contracts.TState} {w : World} {a : UInt64} {n N : Nat} {r : Region}
-    (hS : S.holds w) (hm : Contracts.Fact.room r N ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hS : S.holds w) (hm : Contracts.Fact.room r N ∈ S)
     (hp : r ≠ .pinned) (hle : (regionBase r).toNat ≤ a.toNat)
     (hb : a.toNat - (regionBase r).toNat + n ≤ N) (hN : N ≤ 2 ^ 36) (hn : 0 < n) : Fits w.mem a n := by
   have hx : N ≤ w.mem.sizes r := hS _ hm
@@ -3783,7 +3165,7 @@ theorem fits_of_room_sub {S : Contracts.TState} {w : World} {a : UInt64} {n N : 
     UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr hle)
   rw [← hsub, UInt64.ofNat_toNat, UInt64.add_comm, UInt64.sub_add_cancel] at hd
   rw [hsub] at hd
-  exact ⟨r, _, hd, hp, by omega, Contracts.holds_of_mem hS hz, by omega⟩
+  exact ⟨r, _, hd, hp, by omega, by omega⟩
 
 /-- A mask clearing the low `k` bits rounds down to a multiple of `2^k`. -/
 theorem toNat_and_mask {x : UInt64} {k : Nat} (hk : k < 64) :
@@ -3821,7 +3203,7 @@ theorem foldlM_lane_stores_some {addr : UInt64} {lw : Nat} : ∀ (l : List (UInt
       obtain ⟨m1, h1⟩ := (h p (by simp)).store p.1
       simp only [List.foldlM_cons, h1, Option.bind_eq_bind, Option.bind_some]
       exact foldlM_lane_stores_some l m1 fun q hq =>
-        (h q (by simp [hq])).congr (Contracts.store_sizes_eq h1) (Contracts.store_frozen h1)
+        (h q (by simp [hq])).congr (Contracts.store_sizes_eq h1)
 
 /-- **A vector store, by the typestate**: where the post allows no fault, its
     bytes fit; it keeps every fact but the cells. -/
@@ -3933,20 +3315,20 @@ theorem wp_ite_vcT {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     {Γ : Env} {w : World} {jTys : List ClifTy} {c : Cond Slot} {thn els : Prog Slot Lvl (Vals Slot jTys)}
     {k : Vals Slot jTys → Prog Slot Lvl α} (W : World → Prop) (Rt Re : Prop)
     (hRt : Refines w.mem Γ c true Rt) (hRe : Refines w.mem Γ c false Re)
-    (hT : ∀ Γ', Ext Γ Γ' → Rt → wp cfg d J thn (fun jv Γe we => Ext Γ Γe ∧ W we ∧ SlotsOk Γe jv) Γ' w)
-    (hE : ∀ Γ', Ext Γ Γ' → Re → wp cfg d J els (fun jv Γe we => Ext Γ Γe ∧ W we ∧ SlotsOk Γe jv) Γ' w)
-    (hK : ∀ nJ Γ' w', Ext Γ Γ' → W w' → CarryAt Γ' nJ jTys → wp cfg d J (k (carriesFrom nJ jTys)) Q Γ' w')
+    (hT : ∀ Γ', Extends Γ Γ' → Rt → wp cfg d J thn (fun jv Γe we => Extends Γ Γe ∧ W we ∧ SlotsOk Γe jv) Γ' w)
+    (hE : ∀ Γ', Extends Γ Γ' → Re → wp cfg d J els (fun jv Γe we => Extends Γ Γe ∧ W we ∧ SlotsOk Γe jv) Γ' w)
+    (hK : ∀ nJ Γ' w', Extends Γ Γ' → W w' → CarryAt Γ' nJ jTys → wp cfg d J (k (carriesFrom nJ jTys)) Q Γ' w')
     (hJ : J.faultOk = true ∨ IcmpOk Γ c.a c.b) :
     wp cfg d J (.ite c thn els k) Q Γ w := by
   rw [wp_ite]
-  exact ⟨fun jv Γe we => Ext Γ Γe ∧ W we ∧ SlotsOk Γe jv, fun jv Γe we => Ext Γ Γe ∧ W we ∧ SlotsOk Γe jv,
-    ⟨fun t f h hf => hT _ (Ext.push Γ _) (hRt t f h hf),
-     fun ne t f hne h hf => hE _ (Ext.bindAt_push Γ _ hne) (hRe t f h hf),
+  exact ⟨fun jv Γe we => Extends Γ Γe ∧ W we ∧ SlotsOk Γe jv, fun jv Γe we => Extends Γ Γe ∧ W we ∧ SlotsOk Γe jv,
+    ⟨fun t f h hf => hT _ (Extends.push Γ _) (hRt t f h hf),
+     fun ne t f hne h hf => hE _ (Extends.bindAt_push Γ _ hne) (hRe t f h hf),
      fun hn => hJ.elim id fun h => absurd hn (h.some _)⟩,
     fun nJ Γ' jv vs w' hle hvs hq => by
       have h := hq.elim id id
-      exact hK nJ _ w' (Ext.carry vs h.1 (Nat.le_trans h.1.1 hle)) h.2.1
-        (carryAt_of (h.2.2.carry hvs) fun i => bindAt_get_carry Γ' nJ vs i)⟩
+      exact hK nJ _ w' (Extends.bindAt h.1 (Nat.le_trans h.1.1 hle) vs) h.2.1
+        (carryAt_of (h.2.2.carry hvs) fun i => bindAt_at Γ' nJ vs i)⟩
 
 
 /-- **A branch joining a 64-bit value, the value told**: as `wp_ite_vcT`, and
@@ -3957,28 +3339,28 @@ theorem wp_ite_vcJ {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α �
     {k : Vals Slot jTys → Prog Slot Lvl α} (W : World → Prop) (Rt Re : Prop) (A : UInt64 → Prop)
     (h0 : 0 < jTys.length)
     (hRt : Refines w.mem Γ c true Rt) (hRe : Refines w.mem Γ c false Re)
-    (hT : ∀ Γ', Ext Γ Γ' → Rt → wp cfg d J thn (fun jv Γe we => Ext Γ Γe ∧ W we ∧ SlotsOk Γe jv ∧
+    (hT : ∀ Γ', Extends Γ Γ' → Rt → wp cfg d J thn (fun jv Γe we => Extends Γ Γe ∧ W we ∧ SlotsOk Γe jv ∧
       ∃ y, Γe[(jv.slots[0]?).getD 0]? = some (.sc .i64 y) ∧ A y) Γ' w)
-    (hE : ∀ Γ', Ext Γ Γ' → Re → wp cfg d J els (fun jv Γe we => Ext Γ Γe ∧ W we ∧ SlotsOk Γe jv ∧
+    (hE : ∀ Γ', Extends Γ Γ' → Re → wp cfg d J els (fun jv Γe we => Extends Γ Γe ∧ W we ∧ SlotsOk Γe jv ∧
       ∃ y, Γe[(jv.slots[0]?).getD 0]? = some (.sc .i64 y) ∧ A y) Γ' w)
-    (hK : ∀ nJ Γ' w' y, Ext Γ Γ' → W w' → CarryAt Γ' nJ jTys → Γ'[nJ + 0]? = some (.sc .i64 y) → A y →
+    (hK : ∀ nJ Γ' w' y, Extends Γ Γ' → W w' → CarryAt Γ' nJ jTys → Γ'[nJ + 0]? = some (.sc .i64 y) → A y →
       wp cfg d J (k (carriesFrom nJ jTys)) Q Γ' w')
     (hJ : J.faultOk = true ∨ IcmpOk Γ c.a c.b) :
     wp cfg d J (.ite c thn els k) Q Γ w := by
   rw [wp_ite]
-  let R := fun (jv : Vals Slot jTys) (Γe : Env) (we : World) => Ext Γ Γe ∧ W we ∧ SlotsOk Γe jv ∧
+  let R := fun (jv : Vals Slot jTys) (Γe : Env) (we : World) => Extends Γ Γe ∧ W we ∧ SlotsOk Γe jv ∧
       ∃ y, Γe[(jv.slots[0]?).getD 0]? = some (.sc .i64 y) ∧ A y
   exact ⟨R, R,
-    ⟨fun t f h hf => hT _ (Ext.push Γ _) (hRt t f h hf),
-     fun ne t f hne h hf => hE _ (Ext.bindAt_push Γ _ hne) (hRe t f h hf),
+    ⟨fun t f h hf => hT _ (Extends.push Γ _) (hRt t f h hf),
+     fun ne t f hne h hf => hE _ (Extends.bindAt_push Γ _ hne) (hRe t f h hf),
      fun hn => hJ.elim id fun h => absurd hn (h.some _)⟩,
     fun nJ Γ' jv vs w' hle hvs hq => by
       have h : R jv Γ' w' := hq.elim id id
       obtain ⟨he, hw, hs, y, hy, hA⟩ := h
       have hj : 0 < jv.slots.length := by rw [Vals.slots_length]; exact h0
-      refine hK nJ _ w' y (Ext.carry vs he (Nat.le_trans he.1 hle)) hw
-        (carryAt_of (hs.carry hvs) fun i => bindAt_get_carry Γ' nJ vs i) ?_ hA
-      rw [bindAt_get_carry, mapM_get hvs 0, List.getElem?_eq_getElem hj, Option.bind_some]
+      refine hK nJ _ w' y (Extends.bindAt he (Nat.le_trans he.1 hle) vs) hw
+        (carryAt_of (hs.carry hvs) fun i => bindAt_at Γ' nJ vs i) ?_ hA
+      rw [bindAt_at, mapM_get hvs 0, List.getElem?_eq_getElem hj, Option.bind_some]
       rw [List.getElem?_eq_getElem hj] at hy
       exact hy⟩
 
@@ -4035,7 +3417,7 @@ theorem toNat_and_le_right (a b : UInt64) : (a &&& b).toNat ≤ b.toNat := by
 /-- Room at an address a value past a known one: the region's room covers
     the offset and the length. -/
 theorem roomAt_add {S : Contracts.TState} {b x : UInt64} {n K : Nat} {r : Region} {off : Nat}
-    (hm : Contracts.Fact.room r K ∈ S) (hz : S.contains (.part .frozen false) = true)
+    (hm : Contracts.Fact.room r K ∈ S)
     (hd : decodeAddr b = some (r, off)) (hp : r ≠ .pinned) (hb : off + x.toNat + n ≤ K)
     (hs : off + x.toNat + n < 2 ^ 36) : Contracts.roomAt S (b + x) n = true := by
   have hd' : decodeAddr (b + x) = some (r, off + x.toNat) := by
@@ -4044,7 +3426,7 @@ theorem roomAt_add {S : Contracts.TState} {b x : UInt64} {n K : Nat} {r : Region
   unfold Contracts.roomAt
   rw [hd']
   simp only [Bool.and_eq_true, decide_eq_true_eq, List.any_eq_true]
-  refine ⟨⟨⟨hp, by omega⟩, hz⟩, _, hm, ?_⟩
+  refine ⟨⟨hp, by omega⟩, _, hm, ?_⟩
   simp only [Bool.and_eq_true, decide_eq_true_eq, true_and]
   omega
 

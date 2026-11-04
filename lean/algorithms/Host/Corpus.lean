@@ -632,21 +632,22 @@ def casesDCont : List (Case V L) := Id.run do
     pure (e.head)⟩]
   return cs
 
-/-- `sinf`, `cosf` and `powf`: the model is `Libm`'s definition and the
-    machine runs `Lib.Math`'s CLIF, so these check the one against the other —
-    at chosen values, and over sweeps that fold every result's bits into one
-    word: arbitrary bit patterns (special values, huge and tiny arguments,
-    every sign), and the small angles a rotary table takes. -/
+/-- `sinf`, `cosf` and `powf`: both sides run `Lib.Math`'s function, which
+    `Ship.MathSpec` proves answers `Libm`'s, so these check the semantics of
+    its float instructions against the machine — at chosen values, and over
+    sweeps that fold every result's bits into one word: arbitrary bit
+    patterns (special values, huge and tiny arguments, every sign), and the
+    small angles a rotary table takes. -/
 def casesMath : List (Case V L) := Id.run do
   let mut cs : List (Case V L) := []
   for (nm, bits) in f32Cases do
-    cs := cs ++ [⟨s!"sinf/{nm}", do ffi .sinf %[← fconst .f32 bits]⟩]
-    cs := cs ++ [⟨s!"cosf/{nm}", do ffi .cosf %[← fconst .f32 bits]⟩]
+    cs := cs ++ [⟨s!"sinf/{nm}", do callLib .sinf %[← fconst .f32 bits]⟩]
+    cs := cs ++ [⟨s!"cosf/{nm}", do callLib .cosf %[← fconst .f32 bits]⟩]
   for (an, a) in f32Cases do
     for (bn, b) in [("2", f32Bits 2.0), ("0.5", f32Bits 0.5), ("-1", f32Bits (-1.0)),
                     ("0", f32Bits 0.0)] do
       cs := cs ++ [⟨s!"powf/{an}^{bn}", do
-        ffi .powf %[← fconst .f32 a, ← fconst .f32 b]⟩]
+        callLib .powf %[← fconst .f32 a, ← fconst .f32 b]⟩]
   let fold (acc : V .i64) (s c p : V .f32) : Prog V L (V .i64) := do
     let w (v : V .f32) (sh : Nat) : Prog V L (V .i64) := do
       ishlImm (← uextend64 (← bitcast .i32 v)) sh
@@ -658,7 +659,7 @@ def casesMath : List (Case V L) := Id.run do
       let yb ← bor (← band (← ireduce32 k) (← iconst32 0x80ffffff)) (← iconst32 0x3c000000)
       let y ← bitcast .f32 yb
       let z ← fconst .f32 0
-      fold acc (← ffi .sinf %[x]) z z⟩]
+      fold acc (← callLib .sinf %[x]) z z⟩]
   cs := cs ++ [⟨"libm/sweep-cos", do
     forLoopAcc (← iconst64 3000) (← iconst64 0) fun i acc => do
       let k ← imul (← iaddImm i 1) (← iconst64 (0x9E3779B97F4A7C15 - 2 ^ 64))
@@ -666,7 +667,7 @@ def casesMath : List (Case V L) := Id.run do
       let yb ← bor (← band (← ireduce32 k) (← iconst32 0x80ffffff)) (← iconst32 0x3c000000)
       let y ← bitcast .f32 yb
       let z ← fconst .f32 0
-      fold acc z (← ffi .cosf %[x]) z⟩]
+      fold acc z (← callLib .cosf %[x]) z⟩]
   cs := cs ++ [⟨"libm/sweep-pow", do
     forLoopAcc (← iconst64 3000) (← iconst64 0) fun i acc => do
       let k ← imul (← iaddImm i 1) (← iconst64 (0x9E3779B97F4A7C15 - 2 ^ 64))
@@ -674,13 +675,13 @@ def casesMath : List (Case V L) := Id.run do
       let yb ← bor (← band (← ireduce32 k) (← iconst32 0x80ffffff)) (← iconst32 0x3c000000)
       let y ← bitcast .f32 yb
       let z ← fconst .f32 0
-      fold acc z z (← ffi .powf %[x, y])⟩]
+      fold acc z z (← callLib .powf %[x, y])⟩]
   cs := cs ++ [
     ⟨"libm/angles", do
       forLoopAcc (← iconst64 3000) (← iconst64 0) fun i acc => do
         let x ← fmul (← fcvtFromSint .f32 i) (← fconst .f32 (f32Bits 0.37))
         let e ← fmul (← fcvtFromSint .f32 i) (← fconst .f32 (f32Bits (-0.001)))
-        fold acc (← ffi .sinf %[x]) (← ffi .cosf %[x]) (← ffi .powf %[← fconst .f32 (f32Bits 10000.0), e])⟩]
+        fold acc (← callLib .sinf %[x]) (← callLib .cosf %[x]) (← callLib .powf %[← fconst .f32 (f32Bits 10000.0), e])⟩]
   return cs
 
 /-- Scratch inside the corpus arena, clear of the context slots. -/
@@ -706,37 +707,37 @@ def casesHt : List (Case V L) := Id.run do
   -- `init` writes the context where the slot says; the first `create` is the
   -- one that matters, since `0` is the table every accessor reads.
   cs := cs ++ [⟨"ht/create", do
-    ffiVoid .htInit %[← absAddr (← basePtr) htCtxSlot]
-    ffi .htCreate %[← ctx]⟩]
+    callLibVoid .htInit %[← absAddr (← basePtr) htCtxSlot]
+    callLib .htCreate %[← ctx]⟩]
   -- key "ab" and an eight-byte value, then a lookup that reports its length
   cs := cs ++ [⟨"ht/lookupLen", do
     put htKeyA [0x61, 0x62]
     storeI64 (← iconst64 0x1122334455667788) (← absAddr (← basePtr) htVal)
-    ffiVoid .htInsert
+    callLibVoid .htInsert
       %[← ctx, ← absAddr (← basePtr) htKeyA, ← iconst32 2, ← absAddr (← basePtr) htVal, ← iconst32 8]
-    ffi .htLookup %[← ctx, ← absAddr (← basePtr) htKeyA, ← iconst32 2, ← absAddr (← basePtr) htOut]⟩]
+    callLib .htLookup %[← ctx, ← absAddr (← basePtr) htKeyA, ← iconst32 2, ← absAddr (← basePtr) htOut]⟩]
   cs := cs ++ [⟨"ht/lookupValue", do load64 (← absAddr (← basePtr) htOut)⟩]
   -- exactly one entry, so this index is the only one there is
   cs := cs ++ [⟨"ht/getEntryKeyLen", do
-    ffi .htGetEntry
+    callLib .htGetEntry
       %[← ctx, ← iconst32 0, ← absAddr (← basePtr) htOut, ← absAddr (← basePtr) (htOut + 8)]⟩]
-  cs := cs ++ [⟨"ht/count1", do ffi .htCount %[← ctx]⟩]
+  cs := cs ++ [⟨"ht/count1", do callLib .htCount %[← ctx]⟩]
   -- a key nothing inserted, which is the sentinel arm
   cs := cs ++ [⟨"ht/lookupMissing", do
     put htKeyB [0x63, 0x64]
-    ffi .htLookup %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← absAddr (← basePtr) htOut]⟩]
+    callLib .htLookup %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← absAddr (← basePtr) htOut]⟩]
   -- increment creates on the first call and accumulates after, including
   -- downwards
   cs := cs ++ [⟨"ht/incrementNew", do
-    ffi .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 10]⟩]
+    callLib .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 10]⟩]
   cs := cs ++ [⟨"ht/incrementAgain", do
-    ffi .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 5]⟩]
+    callLib .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 5]⟩]
   cs := cs ++ [⟨"ht/incrementDown", do
-    ffi .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 (-7)]⟩]
-  cs := cs ++ [⟨"ht/count2", do ffi .htCount %[← ctx]⟩]
+    callLib .htIncrement %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← iconst64 (-7)]⟩]
+  cs := cs ++ [⟨"ht/count2", do callLib .htCount %[← ctx]⟩]
   -- and the counter reads back as the eight bytes increment stores
   cs := cs ++ [⟨"ht/incrementStored", do
-    let _ ← ffi .htLookup
+    let _ ← callLib .htLookup
       %[← ctx, ← absAddr (← basePtr) htKeyB, ← iconst32 2, ← absAddr (← basePtr) htOut]
     load64 (← absAddr (← basePtr) htOut)⟩]
   return cs

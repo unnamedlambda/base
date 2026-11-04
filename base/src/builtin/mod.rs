@@ -19,7 +19,6 @@ pub(crate) mod os;
 pub(crate) mod serial;
 pub(crate) mod stdio;
 pub(crate) mod sync;
-pub(crate) mod thread;
 pub(crate) mod usb;
 pub(crate) mod wgpu;
 pub(crate) mod window;
@@ -37,8 +36,6 @@ crate::builtin::symbols!(
     file::cl_file_set_len,
     stdio::cl_stdin_read_line,
     stdio::cl_stdout_write,
-    thread::cl_thread_start,
-    thread::cl_thread_finish,
     os::cl_mem_lock,
     os::cl_mem_unlock,
     os::cl_mem_advise_huge,

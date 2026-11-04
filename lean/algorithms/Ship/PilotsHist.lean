@@ -20,7 +20,7 @@ namespace PilotsSafe
 
 /-- The histogram's: its arena, where it copies its file names and reads. -/
 abbrev HistStart (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .room .arena HistogramBench1.MEM_SIZE, .roomArg .data dl, .roomArg .out ol]
+  [.room .arena HistogramBench1.MEM_SIZE, .roomArg .data dl, .roomArg .out ol]
 
 ship_entry hist : HProgPilots.Hist.code under HistStart dataLen outLen
 

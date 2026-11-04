@@ -34,8 +34,6 @@ open AlgorithmLib.HProg
 def blasOk : Int := 0
 def blasInvalid : Int := 7
 
-def kBlas : Nat := 5
-
 /-- The stream party a live handle runs on, while that stream is live. -/
 def Dev.blasParty? (d : Dev) (h : UInt64) : Option Nat := do
   let i ← handleOf kBlas h

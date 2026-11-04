@@ -10,7 +10,7 @@ import AlgorithmLib.Surface.Cuda
 import AlgorithmLib.Surface.Layout
 import AlgorithmLib.Surface.Link
 import AlgorithmLib.Host.Driver
-open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
+open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 
 namespace BackwardWide
 

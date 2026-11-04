@@ -109,16 +109,7 @@ def allowedHyp : List Name :=
     hypothesis is.  What the entry buys is that the condition is not an
     assumption about the world: something proves it from things already on the
     surface, and the scan names what. -/
-def derivedObligations : List (Name × Name) :=
-  [ -- the launch model's soundness on a shipped body asks that the machine
-    -- entered with the parameter the compiled form declares.  Not assumed:
-    -- exhibited at a concrete state.
-    -- five pipelines share this surface, so the discharger is the general
-    -- principle rather than one body's witness: the typing holds whenever the
-    -- decidable check passes on the entry state.  Each instantiation supplies
-    -- its own check, and each such witness is a root in its own scan.
-    (`AlgorithmLib.Clif.Check.TypesAgree,
-     `AlgorithmLib.Clif.Check.typesAgree_of_check) ]
+def derivedObligations : List (Name × Name) := []
 
 /-- **Open obligations: assumptions that are NOT on the agreed trust surface
     and are NOT derived from it.**
