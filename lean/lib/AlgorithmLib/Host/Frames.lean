@@ -61,15 +61,6 @@ def ctxSlot : Frame := .fixed 0 8
     named that no declaration uses — which a table keyed by symbol name could
     not say: a misspelt symbol there is a program with no frame. -/
 def frame : IR.Ffi → Frame
-  -- file.rs — the read family writes into shared memory, the write family only
-  -- touches the file system.
-  | .fileReadToPtr => .at 2 4
-  | .fileWriteFromPtr | .fileCreateDirAll => .none
-
-  -- stdio.rs
-  | .stdinReadline => .at 0 1
-  | .stdoutWrite => .none
-
   -- mod.rs — the libm shims are pure.
   | .sinf | .cosf | .powf => .none
 
@@ -118,19 +109,7 @@ def frame : IR.Ffi → Frame
   -- writes is the callee's frame, not this one's.
   | .threadInit | .threadCleanup => ctxSlot
   | .threadSpawn => .dataDependent 2
-  | .threadStart => .dataDependent 1
-  | .threadFinish => .none
-  | .memLock | .memUnlock | .memAdviseHuge | .threadPriority => .none
-  -- sync.rs — waiting, waking and the clock write nothing.
-  | .memWait | .memWake | .clockNow => .none
-  -- file.rs — a file's length is read or set without touching memory.
-  | .fileSize | .fileSetLen => .none
   | .threadJoin => .none
-
-  -- native.rs — placing code and asking about the CPU write nothing the
-  -- program addresses. Running that code is `Callee.native`, whose frame is
-  -- `calleeFrame`'s.
-  | .nativeLoad | .nativeFree | .nativeArch | .cpuHas => .none
 
   -- window.rs
   | .windowInit | .windowCleanup => ctxSlot
@@ -163,6 +142,14 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   | .cublas .create => .fixed 0 8
   | .cublas _ => .none
   | .cpu _ => .none
+  -- A file read or a line of standard input lands in memory; the engine's
+  -- other functions write none.
+  | .base .fileReadToPtr => .at 2 4
+  | .base .stdinReadline => .at 0 1
+  -- A thread started runs a function of the program's against the arena it
+  -- is handed.
+  | .base .threadStart => .dataDependent 1
+  | .base _ => .none
   -- The serial library writes a port's name and what a read takes; the USB
   -- library what a transfer brings back from the device.
   | .serial .name | .serial .read => .at 1 2

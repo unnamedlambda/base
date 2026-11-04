@@ -547,7 +547,7 @@ def dInitM : Prog V L Unit := do
   storeI32 poolId (← absAddr ptr DPOOL_OFF)
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
-  let _ ← ffi .fileReadToPtr %[pExp, ← iconst64 D_PATH_FIELD, poolPtr, zero64, poolBytes]
+  let _ ← ext (.base .fileReadToPtr) %[pExp, ← iconst64 D_PATH_FIELD, poolPtr, zero64, poolBytes]
   -- a staging buffer, big enough for the widest dense tensor
   let stageBytes ← iconst64 STAGE_BYTES
   let stageId ← ffi .cudaPinnedAlloc %[ctxPtr, stageBytes]
@@ -625,7 +625,7 @@ def dInitM : Prog V L Unit := do
       let n := dKindBytes.getD k 0
       let fo ← iconst64 (denseOff l k)
       let nb ← iconst64 n
-      let _ ← ffi .fileReadToPtr %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
+      let _ ← ext (.base .fileReadToPtr) %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
       let id ← load32 (← absAddr ptr (dBindOff (dStoreBuf l k)))
       let _ ← ffi .cudaUpload %[ctxPtr, id, stagePtr, nb]
   -- `lm_head` is 1.08 GiB and the staging buffer is 29.5 MiB, so it goes over
@@ -640,7 +640,7 @@ def dInitM : Prog V L Unit := do
       let take := min STAGE_BYTES (n - c * STAGE_BYTES)
       let fo ← iconst64 (off + c * STAGE_BYTES)
       let nb ← iconst64 take
-      let _ ← ffi .fileReadToPtr %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
+      let _ ← ext (.base .fileReadToPtr) %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
       let bo ← iconst64 (c * STAGE_BYTES)
       let _ ← ffi .cudaUploadOffset %[ctxPtr, id, bo, stagePtr, nb]
   -- **The rotation tables: two slices, and sines first.**
@@ -654,7 +654,7 @@ def dInitM : Prog V L Unit := do
   for (fo, bo) in [(fileRopeSin, 0), (fileRope, ropeSlice)] do
     let f ← iconst64 fo
     let nb ← iconst64 ropeSlice
-    let _ ← ffi .fileReadToPtr %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, f, nb]
+    let _ ← ext (.base .fileReadToPtr) %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, f, nb]
     let b ← iconst64 bo
     let _ ← ffi .cudaUploadOffset %[ctxPtr, bRope, b, stagePtr, nb]
   -- the narrow kernel's two counts
@@ -986,7 +986,7 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let rowB ← iconst64 (HH * 2)
   let rowOff ← imul (← uextend64 tok) rowB
   let pEmb ← iaddImm dataPtr D_PEMB
-  let _ ← ffi .fileReadToPtr %[pEmb, ← iconst64 D_PATH_FIELD, stagePtrT, rowOff, rowB]
+  let _ ← ext (.base .fileReadToPtr) %[pEmb, ← iconst64 D_PATH_FIELD, stagePtrT, rowOff, rowB]
   let _ ← ffi .cudaUpload %[ctxPtr, bEmb, stagePtrT, rowB]
   dEnqueue ptr S_WIDEN ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_EMB, B_X, B_NMH]
   -- the meta both cache depths need

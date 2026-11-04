@@ -1805,10 +1805,6 @@ def ffiThreadJoin (bits : List UInt64) (w : World) : Option (Option V × World) 
     guessing. -/
 def callBits (f : IR.Ffi) (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match f with
-  | .fileReadToPtr => ffiFileReadToPtr bits w
-  | .fileWriteFromPtr => ffiFileWriteFromPtr bits w
-  | .stdinReadline => ffiStdinReadline bits w
-  | .stdoutWrite => ffiStdoutWrite bits w
   | .sinf => ffiSinf bits w
   | .cosf => ffiCosf bits w
   | .powf => ffiPowf bits w
@@ -1876,23 +1872,9 @@ def callBits (f : IR.Ffi) (bits : List UInt64) (w : World) : Option (Option V ×
   | .windowOpen => ffiWindowOpen bits w
   | .windowPoll => ffiWindowPoll bits w
   | .windowPresentGpuBuffer => ffiWindowPresentGpuBuffer bits w
-  | .nativeLoad => ffiNativeLoad bits w
   | .threadInit => ffiThreadInit bits w
   | .threadCleanup => ffiThreadCleanup bits w
   | .threadJoin => ffiThreadJoin bits w
-  | .nativeFree => ffiNativeFree bits w
-  | .nativeArch => ffiNativeArch bits w
-  | .cpuHas => ffiCpuHas bits w
-  | .fileCreateDirAll => ffiFileCreateDirAll bits w
-  | .memLock => ffiGrant "lock" 2 bits w
-  | .memUnlock => ffiGrant "unlock" 2 bits w
-  | .memAdviseHuge => ffiGrant "hugepages" 2 bits w
-  | .threadPriority => ffiGrant "priority" 1 bits w
-  | .memWait => ffiMemWait bits w
-  | .memWake => ffiMemWake bits w
-  | .clockNow => ffiClockNow bits w
-  | .fileSize => ffiFileSize bits w
-  | .fileSetLen => ffiFileSetLen bits w
   | _ => none
 
 /-- A call with its arguments as values: every argument a scalar, read as bits,

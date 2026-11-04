@@ -87,7 +87,7 @@ resolves transitively, which is what makes `require` work at all.
 
 | | |
 |---|---|
-| `base/src/capi.rs` | the runtime behind a C calling convention |
+| `base/src/c_api.rs` | the runtime behind a C calling convention |
 | `c/shim.c` | that, in Lean's `IO` convention |
 | `BaseHost.lean` | `Driver`, `execute`, `executeStatus`, `read`, `withDriver` |
 | `Upcase.lean` | the demo artifact — a value, and buildable without any of the above |

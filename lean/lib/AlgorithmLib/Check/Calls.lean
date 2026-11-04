@@ -597,28 +597,6 @@ def preWindowPresentGpuBuffer (S : TState) (as : List AV) : Bool :=
   | [c, g, _] => ctxB S .win winCtx c && ctxB S .gpu gpuCtx g
   | _ => false
 
-def preFileReadToPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
-  match as with
-  | [pp, pc, d, _, n] => memBR S rb 0 1 pp pc && memBR S rb 2 4 d n
-  | _ => false
-
-def preNativeArch (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [] => true
-  | _ => false
-
-def preNativeLoad (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [s, n] => match n.bits with
-      | some k => memN S s (asI64 k).toNat
-      | none => false
-  | _ => false
-
-def preCpuHas (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
-  match as with
-  | [n, c] => memBR S rb 0 1 n c
-  | _ => false
-
 def preLmdbInit (S : TState) (as : List AV) : Bool :=
   match as with
   | [s] => S.contains (.part .lmdb false) && memN S s 8
@@ -721,10 +699,32 @@ def handB (k : Contracts.Held) : AV → Bool
   | .blk _ true => k == .heap
   | _ => false
 
+/-- A wait's word: four bytes of the program's memory, at an address the
+    checker knows to be a multiple of four. -/
+def wordB (S : TState) (p : AV) : Bool :=
+  memN S p 4 && (match p with | .ptr .arena n => n.al % 4 == 0 | _ => false)
+
+/-- What an engine function needs, decided: its arguments, and a wait's or
+    a wake's word. -/
+def preBase (S : TState) (rb : Nat → Nat → Bool) : BaseFn → List AV → Bool
+  | .clockNow, [] => true
+  | .memLock, [_, _] | .memUnlock, [_, _] | .memAdviseHuge, [_, _] => true
+  | .threadPriority, [_] => true
+  | .memWait, [p, _, _] | .memWake, [p, _] => wordB S p
+  | .nativeArch, [] => true
+  | .nativeLoad, [s, n] => match n.bits with
+      | some k => memN S s (asI64 k).toNat
+      | none => false
+  | .cpuHas, [p, c] | .fileCreateDirAll, [p, c] | .fileSize, [p, c] | .fileSetLen, [p, c, _]
+  | .stdoutWrite, [p, c] | .stdinReadline, [p, c] => memBR S rb 0 1 p c
+  | .fileReadToPtr, [pp, pc, s, _, n] | .fileWriteFromPtr, [pp, pc, s, _, n] =>
+      memBR S rb 0 1 pp pc && memBR S rb 2 4 s n
+  | _, _ => false
+
 /-- **What a call of the engine's own libraries needs, decided** by the
     arguments it is handed, as `extNeeds` asks it: each handle held, and room
     for each buffer it reads or writes, by a length known. -/
-def preExt (S : TState) : Ext → List AV → Bool
+def preExt (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Ext → List AV → Bool
   | .present _, [] => true
   | .c .memcpy, [d, s, n] =>
       match d.bits, s.bits, n.bits with
@@ -747,6 +747,7 @@ def preExt (S : TState) : Ext → List AV → Bool
   | .window .poll, [p, out] => handB .window p && memN S out 32
   | .cpu .count, [] | .cpu .unpin, [] => true
   | .cpu .core, [_] | .cpu .package, [_] | .cpu .pin, [_] => true
+  | .base f, as => preBase S rb f as
   | .serial .count, [] => true
   | .serial .name, [_, out, cap] => match cap.bits with
       | some c => memN S out (lenOf c)
@@ -878,34 +879,9 @@ def preCublasGemmExBf16 (S : TState) (as : List AV) : Bool :=
          | _, _, _ => false)
   | _, _ => false
 
-def preStdinReadline (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
-  match as with
-  | [d, n] => memBR S rb 0 1 d n
-  | _ => false
-
 def preThreadCleanup (S : TState) (as : List AV) : Bool :=
   match as with
   | [s] => memN S s 8 && slotOk S .thread threadCtx s
-  | _ => false
-
-def preFileCreateDirAll (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
-  match as with
-  | [p, c] => memBR S rb 0 1 p c
-  | _ => false
-
-def preFileSetLen (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
-  match as with
-  | [p, c, _] => memBR S rb 0 1 p c
-  | _ => false
-
-def preFileWriteFromPtr (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
-  match as with
-  | [pp, pc, s, _, n] => memBR S rb 0 1 pp pc && memBR S rb 2 4 s n
-  | _ => false
-
-def preStdoutWrite (S : TState) (rb : Nat → Nat → Bool) (as : List AV) : Bool :=
-  match as with
-  | [s, n] => memBR S rb 0 1 s n
   | _ => false
 
 def preCudaFreeBuffer (S : TState) (as : List AV) : Bool :=
@@ -951,20 +927,6 @@ def preThreadJoin (S : TState) (as : List AV) : Bool :=
   | [c, _] => ctxB S .thread threadCtx c
   | _ => false
 
-/-- A wait's word: four bytes of the program's memory, at an address the
-    checker knows to be a multiple of four. -/
-def preMemWait (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [p, _, _] =>
-      memN S p 4 && (match p with | .ptr .arena n => n.al % 4 == 0 | _ => false)
-  | _ => false
-
-def preMemWake (S : TState) (as : List AV) : Bool :=
-  match as with
-  | [p, _] =>
-      memN S p 4 && (match p with | .ptr .arena n => n.al % 4 == 0 | _ => false)
-  | _ => false
-
 /-- A call whose contract asks nothing but its arguments' number. -/
 def preArity (n : Nat) (as : List AV) : Bool := as.length == n
 
@@ -979,11 +941,8 @@ def preCtxN (S : TState) (n : Nat) (cap : Bool) (as : List AV) : Bool :=
     decides; every other entry point is refused. -/
 def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Bool :=
   match f with
-  | .cosf | .sinf | .threadPriority => preArity 1 as
-  | .powf | .memAdviseHuge | .memLock | .memUnlock => preArity 2 as
-  | .memWake => preMemWake S as
-  | .clockNow => preArity 0 as
-  | .memWait => preMemWait S as
+  | .cosf | .sinf => preArity 1 as
+  | .powf => preArity 2 as
   | .cudaEventCreate | .cudaMemInfoFree | .cudaMemInfoTotal | .cudaStreamCreate => preCtxN S 1 false as
   | .cudaEventDestroy | .cudaGraphDestroy | .cudaPinnedFree | .cudaPinnedPtr => preCtxN S 2 false as
   | .cudaGraphUpload => preCtxN S 3 false as
@@ -1013,10 +972,6 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .windowOpen => preWindowOpen S as
   | .windowPoll => preWindowPoll S as
   | .windowPresentGpuBuffer => preWindowPresentGpuBuffer S as
-  | .fileReadToPtr => preFileReadToPtr S rb as
-  | .nativeArch => preNativeArch S as
-  | .nativeLoad => preNativeLoad S as
-  | .cpuHas => preCpuHas S rb as
   | .lmdbInit => preLmdbInit S as
   | .lmdbBeginWriteTxn => preLmdbBeginWriteTxn S as
   | .lmdbCommitWriteTxn => preLmdbCommitWriteTxn S as
@@ -1027,10 +982,6 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .cublasSgemm => preCublasSgemm S as
   | .lmdbPut => preLmdbPut S as
   | .lmdbCursorScan => preLmdbCursorScan S as
-  | .fileCreateDirAll | .fileSize => preFileCreateDirAll S rb as
-  | .fileSetLen => preFileSetLen S rb as
-  | .fileWriteFromPtr => preFileWriteFromPtr S rb as
-  | .stdoutWrite => preStdoutWrite S rb as
   | .cudaFreeBuffer => preCudaFreeBuffer S as
   | .cublasPtrArray => preCublasPtrArray S as
   | .cudaPinnedAlloc => preCudaPinnedAlloc S as
@@ -1038,7 +989,6 @@ def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun
   | .gpuDownloadPtr => preGpuDownloadPtr S rb as
   | .threadInit => preThreadInit S as
   | .threadJoin => preThreadJoin S as
-  | .stdinReadline => preStdinReadline S rb as
   | .threadCleanup => preThreadCleanup S as
   | .cudaLaunchNamedOnStream => preCudaLaunchNamedOnStream S as
   | .cudaUploadAsync => preCudaUploadAsync S rb as

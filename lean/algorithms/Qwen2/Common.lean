@@ -561,7 +561,7 @@ def uploadFromFile {s : Shape}
     let thisSize := min PINNED_CHUNK_BYTES (totalSize - off)
     let fileOff64 ← iconst64 (fileOff + off)
     let size64    ← iconst64 thisSize
-    let _ ← ffi .fileReadToPtr %[pathPtr, pathCap, scratchPtr, fileOff64, size64]
+    let _ ← ext (.base .fileReadToPtr) %[pathPtr, pathCap, scratchPtr, fileOff64, size64]
     let bufOff64  ← iconst64 off
     let _ ← ffi .cudaUploadOffset %[ctxPtr, bufId, bufOff64, scratchPtr, size64]
 

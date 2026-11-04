@@ -454,8 +454,7 @@ theorem Frame.mayWrite_sound {fr : Frame} {args : List UInt64} {x : UInt64} (h :
     slots, downloads, pinned allocation, wgpu, the LMDB context and scan, and
     the window context and poll. -/
 def hostTouching : List IR.Ffi :=
-  [.fileReadToPtr, .fileWriteFromPtr, .stdinReadline, .stdoutWrite,
-   .sinf, .cosf, .powf, .cudaInit,
+  [.sinf, .cosf, .powf, .cudaInit,
    .cudaCleanup, .cudaDownload, .cudaDownloadOffset, .gpuInit, .gpuCleanup, .gpuCreateBuffer,
    .gpuCreatePipeline, .gpuUpload, .gpuUploadPtr, .gpuDispatch, .gpuDownload, .gpuDownloadPtr,
    .cudaPinnedAlloc, .cudaPinnedFree, .lmdbInit, .lmdbCleanup, .lmdbCursorScan,
@@ -478,9 +477,7 @@ def deviceOnly : List IR.Ffi :=
     the window, and loaded machine code. -/
 def offHost : List IR.Ffi :=
   [.lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .windowOpen,
-   .windowPresentGpuBuffer, .nativeLoad, .nativeFree, .nativeArch, .cpuHas, .fileCreateDirAll,
-   .memLock, .memUnlock, .memAdviseHuge, .threadPriority, .memWait, .memWake, .clockNow,
-   .fileSize, .fileSetLen]
+   .windowPresentGpuBuffer]
 
 /-- The entry points with an executable contract: the families the corpora run
     through the real symbols. -/
@@ -916,20 +913,6 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
     · exact Unchanged.of_eq (by rw [ffiLmdbCommitWriteTxn_mem (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiWindowOpen_mem (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiWindowPresentGpuBuffer_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiNativeLoad_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiNativeFree_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiNativeArch_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiCpuHas_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiFileCreateDirAll_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiGrant_mem_memLock (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiGrant_mem_memUnlock (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiGrant_mem_memAdviseHuge (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiGrant_mem_threadPriority (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiMemWait_world (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiMemWake_world (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiClockNow_world (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiFileSize_world (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiFileSetLen_mem (bits := bits) (w := w) h])
   have hc' : f ∈ hostTouching := by
     simp only [contracted, List.mem_append] at hc
     exact (hc.resolve_right hst).resolve_right hdev
@@ -942,50 +925,6 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
   all_goals first
     | exact absurd trivial hout
     | skip
-  -- fileReadToPtr
-  next =>
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨path, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h
-        obtain ⟨rfl, rfl⟩ := h
-        apply Unchanged.of_eq; apply copyIn_other hm
-        intro i hi e
-        rw [size_toByteArray_map_range] at hi
-        exact hout ⟨i, by omega, e⟩
-  -- fileWriteFromPtr
-  next =>
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · split at h
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-  -- stdinReadline
-  next =>
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · split at h
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h
-        obtain ⟨rfl, rfl⟩ := h
-        apply Unchanged.of_eq; apply copyIn_other hm
-        intro i hi e
-        rw [size_toByteArray_map_range] at hi
-        exact hout ⟨i, by omega, e⟩
-  -- stdoutWrite
-  next =>
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
   -- sinf, cosf, powf
   iterate 3
     next => simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _

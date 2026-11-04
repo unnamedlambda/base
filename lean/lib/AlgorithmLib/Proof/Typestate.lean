@@ -602,11 +602,9 @@ theorem moves_state_sub (cfg : Cfg) (S S' : TState) {f : Ffi} {vs : List V} {bit
   exact List.mem_filter.mpr ⟨hsub.subset hx, List.all_eq_true.mp hk x hx⟩
 
 /-- **What a call's answer is known to be**, whatever the world: a bound a
-    program may count by. `fileReadToPtr` answers `-1` or at most the bytes it
-    was asked for; `windowPoll` answers `-1` or at most the events it has room for.
-    Every other answer is known by its type alone. -/
+    program may count by. `windowPoll` answers `-1` or at most the events it
+    has room for. Every other answer is known by its type alone. -/
 def answerOk : Ffi → List UInt64 → UInt64 → Prop
-  | .fileReadToPtr, [_, _, _, _, size], x => x.toNat = 18446744073709551615 ∨ (0 < size.toNat → x.toNat ≤ size.toNat)
   | .windowPoll, [_, _, maxEvents], x => x.toNat = 4294967295 ∨ x.toNat ≤ (asI32 maxEvents).toNat
   | _, _, _ => True
 
@@ -635,28 +633,28 @@ theorem ofInt_neg_one_i32 {t : ClifTy} {x : UInt64} (h : ofInt .i32 (-1) = .sc t
   have e : ofInt .i32 (-1) = .sc .i32 0xFFFFFFFF := by rfl
   rw [e, V.sc.injEq] at h; exact h.2.symm
 
+/-- **A file read answers `-1` or at most the bytes it was asked for.** -/
+theorem fileRead_answer {a b c d size : UInt64} {w : World} {t : ClifTy} {x : UInt64} {w' : World}
+    (h : Sem.baseCall .fileReadToPtr [a, b, c, d, size] w = some (some (V.sc t x), w')) :
+    x.toNat = 18446744073709551615 ∨ (0 < size.toNat → x.toNat ≤ size.toNat) := by
+  simp only [Sem.baseCall, ffiFileReadToPtr] at h
+  split at h
+  · simp only [Option.some.injEq, Prod.mk.injEq] at h
+    exact .inl (by rw [ofInt_neg_one_i64 h.1]; rfl)
+  · obtain ⟨path, -, h⟩ := Option.bind_eq_some_iff.mp h
+    split at h
+    · simp only [Option.some.injEq, Prod.mk.injEq] at h
+      exact .inl (by rw [ofInt_neg_one_i64 h.1]; rfl)
+    · obtain ⟨m, -, h⟩ := Option.bind_eq_some_iff.mp h
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      right; intro _
+      have := size.toNat_lt
+      rw [ofInt_toNat h.1 (k := 64) (by decide) (by decide) (by omega)]
+      omega
+
 theorem answerOk_sound {f : Ffi} {bits : List UInt64} {w : World} {t : ClifTy} {x : UInt64} {w' : World}
     (h : Sem.callBits f bits w = some (some (V.sc t x), w')) : answerOk f bits x := by
   cases f
-  case fileReadToPtr =>
-    change ffiFileReadToPtr bits w = _ at h
-    rcases bits with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨size, _ | ⟨_, _⟩⟩⟩⟩⟩⟩ <;>
-      try (simp [ffiFileReadToPtr] at h; done)
-    · show _ ∨ _
-      simp only [ffiFileReadToPtr] at h
-      split at h
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h
-        exact .inl (by rw [ofInt_neg_one_i64 h.1]; rfl)
-      · obtain ⟨path, -, h⟩ := Option.bind_eq_some_iff.mp h
-        split at h
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h
-          exact .inl (by rw [ofInt_neg_one_i64 h.1]; rfl)
-        · obtain ⟨m, -, h⟩ := Option.bind_eq_some_iff.mp h
-          simp only [Option.some.injEq, Prod.mk.injEq] at h
-          right; intro _
-          have := size.toNat_lt
-          rw [ofInt_toNat h.1 (k := 64) (by decide) (by decide) (by omega)]
-          omega
   case windowPoll =>
     change ffiWindowPoll bits w = _ at h
     rcases bits with _ | ⟨_, _ | ⟨_, _ | ⟨maxEvents, _ | ⟨_, _⟩⟩⟩⟩ <;>

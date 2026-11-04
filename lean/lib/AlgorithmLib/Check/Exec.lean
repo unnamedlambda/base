@@ -453,11 +453,13 @@ def ffiAnswer (S : TState) (f : Ffi) (as : List AV) : AV :=
 
 /-- What a library call answers: for `calloc` asked for a known number of
     bytes, null or a heap block of that many; for whether a library is there,
-    a flag; for another open, null or a handle held; any value otherwise. -/
+    a flag; for an engine function, a number of the type it returns; for
+    another open, null or a handle held; any value otherwise. -/
 def extAnswer (e : Ext) (as : List AV) : AV :=
   match e, as.mapM AV.bits with
   | .c .calloc, some [n, sz] => .blk (n.toNat * sz.toNat) false
   | .present _, _ => .sc .i32
+  | .base f, _ => .sc ((Ext.base f).sig.2.getD .i64)
   | _, _ =>
       match e.opens with
       | some k => .hand k false
@@ -579,7 +581,7 @@ def AS.callee (A : AS) (lb : Bool) (c : Callee) (args : List R) : Except String 
       | .error e => .error e
   | .ext e =>
       let as := args.map A.get
-      if e.aside && as.all (·.scTy.isSome) && preExt A.facts e as then
+      if e.aside && as.all (·.scTy.isSome) && preExt A.facts (relRb A args) e as then
         .ok ((A.forgetExt e).withFacts (A.facts.filter (extKeepsA e as)), extAnswer e as)
       else .error s!"call {repr e}: precondition not decided (args {repr as})"
   | c => .error s!"call of {repr c} not handled"
@@ -672,7 +674,7 @@ def callRecs (fo lb : Bool) (A : AS) : List Stmt → List CallRec
     after it for each, from `A'`, the state after it: `fileReadToPtr`, asked
     for a known positive number of bytes, answers `-1` or at most that many. -/
 def answerCases (A A' : AS) : Stmt → Option (AS × AS)
-  | .call (.ffi .fileReadToPtr) [_, _, _, _, n] =>
+  | .call (.ext (.base .fileReadToPtr)) [_, _, _, _, n] =>
       match A.get n with
       | .known (.sc _ s) =>
           if 0 < s.toNat then

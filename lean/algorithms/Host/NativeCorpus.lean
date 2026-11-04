@@ -53,14 +53,14 @@ def body : Prog V L Unit := do
   -- Nothing to load answers 0; code placed answers an address, freed once.
   let placed (a : V .i64) : Prog V L (V .i32) := do
     uextend .i32 (← icmp .ne a (← iconst64 0))
-  code 0 (← placed (← ffi .nativeLoad %[← iconst64 0, ← iconst64 7]))
-  code 1 (← placed (← ffi .nativeLoad %[← at_ CODE, ← iconst64 0]))
-  let f ← ffi .nativeLoad %[← at_ CODE, ← iconst64 add.length]
+  code 0 (← placed (← ext (.base .nativeLoad) %[← iconst64 0, ← iconst64 7]))
+  code 1 (← placed (← ext (.base .nativeLoad) %[← at_ CODE, ← iconst64 0]))
+  let f ← ext (.base .nativeLoad) %[← at_ CODE, ← iconst64 add.length]
   code 2 (← placed f)
-  ffiVoid .nativeFree %[f]
-  code 3 (← ffi .nativeArch %[])
-  code 4 (← ffi .cpuHas %[← at_ SSE2, ← iconst64 4])
-  code 5 (← ffi .cpuHas %[← at_ UNKNOWN, ← iconst64 15])
+  ext (.base .nativeFree) %[f]
+  code 3 (← ext (.base .nativeArch) %[])
+  code 4 (← ext (.base .cpuHas) %[← at_ SSE2, ← iconst64 4])
+  code 5 (← ext (.base .cpuHas) %[← at_ UNKNOWN, ← iconst64 15])
 
 def code : Code := Prog.emit body
 def checked : Except String Code := Prog.emitChecked body

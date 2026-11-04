@@ -42,7 +42,7 @@ def init : Body := do
 def spawn : StatusBody := do
   let (s ::ᵥ fn ::ᵥ arg ::ᵥ .nil) ← entryParams [.i64, .i64, .i64]
   failIf .eq s (← iconst64 0) (do
-    let t ← ffi .threadStart %[fn, arg]
+    let t ← ext (.base .threadStart) %[fn, arg]
     failIf .eq t (← iconst64 (-1)) (do
       let h ← load64 (← at_ s NEXT)
       let i ← iaddImm h (-1)
@@ -73,7 +73,7 @@ def join : StatusBody := do
       let t ← load64 e
       failIf .eq t (← iconst64 0) (do
         storeI64 (← iconst64 0) e
-        ffi .threadFinish %[t])))
+        ext (.base .threadFinish) %[t])))
 
 /-- Finish every thread still running, then release the context. -/
 def cleanup : Body := do
@@ -83,7 +83,7 @@ def cleanup : Body := do
     let arr ← load64 (← at_ s ARR)
     forLoop (← iaddImm (← load64 (← at_ s NEXT)) (-1)) fun i => do
       let t ← load64 (← iadd arr (← ishlImm i 3))
-      when .ne t (← iconst64 0) (do let _ ← ffi .threadFinish %[t]; pure ())
+      when .ne t (← iconst64 0) (do let _ ← ext (.base .threadFinish) %[t]; pure ())
     free arr
     free s)
   storeI64 (← iconst64 0) slot

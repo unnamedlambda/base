@@ -364,35 +364,6 @@ theorem pre_lmdbCleanup {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
   have hf := memN_fits' hS hs h.1
   exact ⟨fits_load8 hf, slotOk_sound hS hs h.2, fits_slot8 hf⟩
 
-theorem pre_fileReadToPtr {pp pc d fo n : AV} (hS : S.holds w) (hb : ArgBits Γ w [pp, pc, d, fo, n] bits)
-    (h : preB .fileReadToPtr [pp, pc, d, fo, n] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .fileReadToPtr bits w := by
-  dsimp only [preB, preFileReadToPtr] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨hp, hm⟩ := h
-  argbits hb [hpp, hpc, hd, hfo, hn]
-  exact ⟨fun _ => fits_readable (memBR_fits hS hpp hpc hp (hrb 0 1)) (Nat.le_refl _), fun _ _ _ _ =>
-    fits_writable (memBR_fits hS hd hn hm (hrb 2 4)) (Nat.min_le_left _ _)⟩
-
-theorem pre_nativeArch (hb : ArgBits Γ w [] bits) (_h : preB .nativeArch [] S = true) :
-    Contracts.Pre .nativeArch bits w := by
-  argbits hb []
-  trivial
-
-theorem pre_nativeLoad {s n : AV} (hS : S.holds w) (hb : ArgBits Γ w [s, n] bits)
-    (h : preB .nativeLoad [s, n] S rb = true) : Contracts.Pre .nativeLoad bits w := by
-  dsimp only [preB, preNativeLoad] at h
-  argbits hb [hs, hn]
-  split at h
-  · rename_i k hk
-    have := known_bits hn hk; subst this
-    exact fun _ => fits_readable (memN_fits' hS hs h) (Nat.le_refl _)
-  · cases h
-
-theorem pre_cpuHas {n c : AV} (hS : S.holds w) (hb : ArgBits Γ w [n, c] bits)
-    (h : preB .cpuHas [n, c] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cpuHas bits w := by
-  dsimp only [preB, preCpuHas] at h
-  argbits hb [hn, hc]
-  exact fits_readable (memBR_fits hS hn hc h (hrb 0 1)) (Nat.le_refl _)
-
 theorem pre_lmdbInit {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
     (h : preB .lmdbInit [s] S rb = true) : Contracts.Pre .lmdbInit bits w := by
   dsimp only [preB, preLmdbInit] at h; simp only [Bool.and_eq_true] at h
@@ -675,30 +646,6 @@ theorem pre_lmdbCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as b
   · exact pre_lmdbCleanup (rb := rb) hS hb h
   · cases h
 
-theorem pre_fileReadToPtr' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .fileReadToPtr as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .fileReadToPtr bits w := by
-  dsimp only [preB] at h
-  unfold preFileReadToPtr at h
-  split at h
-  · exact pre_fileReadToPtr (rb := rb) hS hb h hrb
-  · cases h
-
-theorem pre_nativeLoad' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .nativeLoad as S rb = true) : Contracts.Pre .nativeLoad bits w := by
-  dsimp only [preB] at h
-  unfold preNativeLoad at h
-  split at h
-  · exact pre_nativeLoad (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cpuHas' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cpuHas as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cpuHas bits w := by
-  dsimp only [preB] at h
-  unfold preCpuHas at h
-  split at h
-  · exact pre_cpuHas (rb := rb) hS hb h hrb
-  · cases h
-
 theorem pre_lmdbInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB .lmdbInit as S rb = true) : Contracts.Pre .lmdbInit bits w := by
   dsimp only [preB] at h
@@ -775,14 +722,6 @@ theorem pre_cublasSgemm' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as b
     · cases hm
   · cases h
 
-theorem pre_nativeArch' {as : List AV} (hb : ArgBits Γ w as bits)
-    (h : preB .nativeArch as S rb = true) : Contracts.Pre .nativeArch bits w := by
-  dsimp only [preB] at h
-  unfold preNativeArch at h
-  split at h
-  · exact pre_nativeArch (S := S) hb h
-  · cases h
-
 end entries
 
 /-- **What `preB` accepts, `Pre` holds of**: where the checker describes the
@@ -808,6 +747,65 @@ theorem handB_sound {a : AV} {x : UInt64} {k : Contracts.Held} (hd : ∃ t, a.De
     · exact hl.live
   · cases h
 
+/-- The checker's word for a wait is one the model reads: an address in the
+    program's memory at an offset a multiple of four, with four bytes there. -/
+private theorem wordB_sound {p : AV} {x : UInt64} (hS : S.holds w) (hd : ∃ t, p.Desc Γ w (.sc t x))
+    (h : wordB S p = true) : x % 4 = 0 ∧ Fits w.mem x 4 := by
+  unfold wordB at h
+  simp only [Bool.and_eq_true] at h
+  obtain ⟨hm, hal⟩ := h
+  refine ⟨?_, memN_fits' hS hd hm⟩
+  split at hal
+  · obtain ⟨t0, hd⟩ := hd
+    obtain ⟨off, hv, ⟨-, hhi, hdvd, -⟩, hspan⟩ := hd
+    cases hv
+    have h4 : 4 ∣ off := Nat.dvd_trans (Nat.dvd_of_mod_eq_zero (by simpa using hal)) hdvd
+    exact arena_addr_mod4 h4 (Nat.le_trans hhi hspan)
+  · cases hal
+
+/-- **What `preBase` decides is what the engine's functions ask.** -/
+private theorem preBase_sound (hS : S.holds w) {f : BaseFn} {as : List AV} {bits : List UInt64}
+    (hb : ArgBits Γ w as bits) (h : preBase S rb f as = true) (hrb : RbSound w bits rb) :
+    ∃ rs, Contracts.baseNeeds f bits = some ([], rs) ∧ ∀ q ∈ rs, Fits w.mem q.1 q.2 := by
+  unfold preBase at h
+  split at h
+  · argbits hb []; exact ⟨[], rfl, by simp⟩
+  · argbits hb [h1, h2]; exact ⟨[], rfl, by simp⟩
+  · argbits hb [h1, h2]; exact ⟨[], rfl, by simp⟩
+  · argbits hb [h1, h2]; exact ⟨[], rfl, by simp⟩
+  · argbits hb [h1]; exact ⟨[], rfl, by simp⟩
+  · argbits hb [h1, h2, h3]
+    obtain ⟨ha, hf⟩ := wordB_sound hS h1 h
+    exact ⟨[(_, 4)], by simp [Contracts.baseNeeds, ha] <;> rfl, fun q hq => by
+      simp only [List.mem_singleton] at hq; subst hq; exact hf⟩
+  · argbits hb [h1, h2]
+    obtain ⟨ha, hf⟩ := wordB_sound hS h1 h
+    exact ⟨[(_, 4)], by simp [Contracts.baseNeeds, ha] <;> rfl, fun q hq => by
+      simp only [List.mem_singleton] at hq; subst hq; exact hf⟩
+  · argbits hb []; exact ⟨[], rfl, by simp⟩
+  · split at h
+    · rename_i k hk
+      argbits hb [h1, h2]
+      have := known_bits h2 hk; subst this
+      exact ⟨[(_, _)], rfl, fun q hq => by
+        simp only [List.mem_singleton] at hq; subst hq; exact memN_fits' hS h1 h⟩
+    · cases h
+  all_goals first
+    | (argbits hb [h1, h2]
+       exact ⟨[(_, _)], rfl, fun q hq => by
+         simp only [List.mem_singleton] at hq; subst hq; exact memBR_fits hS h1 h2 h (hrb 0 1)⟩)
+    | (argbits hb [h1, h2, h3]
+       exact ⟨[(_, _)], rfl, fun q hq => by
+         simp only [List.mem_singleton] at hq; subst hq; exact memBR_fits hS h1 h2 h (hrb 0 1)⟩)
+    | (simp only [Bool.and_eq_true] at h
+       argbits hb [h1, h2, h3, h4, h5]
+       exact ⟨[(_, _), (_, _)], rfl, fun q hq => by
+         simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+         rcases hq with rfl | rfl
+         · exact memBR_fits hS h1 h2 h.1 (hrb 0 1)
+         · exact memBR_fits hS h3 h5 h.2 (hrb 2 4)⟩)
+    | cases h
+
 /-- Room for `n` bytes the arguments name, and a handle the arguments name,
     as the library contracts ask them. -/
 private theorem ext_room {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w) (hd : ∃ t, p.Desc Γ w (.sc t x))
@@ -821,7 +819,7 @@ private theorem ext_hand {a : AV} {x : UInt64} {k : Contracts.Held} (hd : ∃ t,
 /-- **What `preExt` decides is what the library contracts ask**: the handles
     and the room `extNeeds` names for the bits handed over. -/
 theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List UInt64} (hb : ArgBits Γ w as bits)
-    (h : preExt S e as = true) :
+    (h : preExt S rb e as = true) (hrb : RbSound w bits rb) :
     ∃ hs rs, Contracts.extNeeds e bits = some (hs, rs) ∧ (∀ p ∈ hs, p.1.live w p.2 = true) ∧
       (∀ q ∈ rs, Fits w.mem q.1 q.2) := by
   have none_ : ∀ p ∈ ([] : List (Contracts.Held × UInt64)), p.1.live w p.2 = true := by simp
@@ -899,6 +897,9 @@ theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List U
   · argbits hb [h1]; exact ⟨[], [], rfl, none_, noroom⟩
   · argbits hb [h1]; exact ⟨[], [], rfl, none_, noroom⟩
   · argbits hb [h1]; exact ⟨[], [], rfl, none_, noroom⟩
+  -- the engine's own
+  · obtain ⟨rs, hn, hr⟩ := preBase_sound hS hb h hrb
+    exact ⟨[], rs, hn, none_, hr⟩
   -- serial: count
   · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
   -- serial: name
@@ -955,55 +956,6 @@ theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List U
       have := known_bits h4 e4; subst this
       exact ⟨_, _, rfl, ext_hand h1 hp, ext_room hS h3 h⟩
     · cases h
-
-theorem pre_fileCreateDirAll' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .fileCreateDirAll as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .fileCreateDirAll bits w := by
-  dsimp only [preB] at h
-  unfold preFileCreateDirAll at h
-  split at h
-  · argbits hb [hp, hc]
-    exact fits_readable (memBR_fits hS hp hc h (hrb 0 1)) (Nat.le_refl _)
-  · cases h
-
-theorem pre_fileSize' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .fileSize as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .fileSize bits w := by
-  dsimp only [preB] at h
-  unfold preFileCreateDirAll at h
-  split at h
-  · argbits hb [hp, hc]
-    exact fits_readable (memBR_fits hS hp hc h (hrb 0 1)) (Nat.le_refl _)
-  · cases h
-
-theorem pre_fileSetLen' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .fileSetLen as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .fileSetLen bits w := by
-  dsimp only [preB] at h
-  unfold preFileSetLen at h
-  split at h
-  · argbits hb [hp, hc, _hl]
-    exact fits_readable (memBR_fits hS hp hc h (hrb 0 1)) (Nat.le_refl _)
-  · cases h
-
-theorem pre_fileWriteFromPtr' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .fileWriteFromPtr as S rb = true) (hrb : RbSound w bits rb) :
-    Contracts.Pre .fileWriteFromPtr bits w := by
-  dsimp only [preB] at h
-  unfold preFileWriteFromPtr at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    argbits hb [hpp, hpc, hs, hfo, hn]
-    exact fun _ => ⟨fits_readable (memBR_fits hS hpp hpc h.1 (hrb 0 1)) (Nat.le_refl _),
-      fits_readable (memBR_fits hS hs hn h.2 (hrb 2 4)) (Nat.le_refl _)⟩
-  · cases h
-
-theorem pre_stdoutWrite' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .stdoutWrite as S rb = true) (hrb : RbSound w bits rb) :
-    Contracts.Pre .stdoutWrite bits w := by
-  dsimp only [preB] at h
-  unfold preStdoutWrite at h
-  split at h
-  · argbits hb [hs, hn]
-    exact fun _ => fits_readable (memBR_fits hS hs hn h (hrb 0 1)) (Nat.le_refl _)
-  · cases h
 
 theorem pre_cudaFreeBuffer' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB .cudaFreeBuffer as S rb = true) : Contracts.Pre .cudaFreeBuffer bits w := by
@@ -1076,48 +1028,6 @@ theorem pre_threadInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bi
   · simp only [Bool.and_eq_true] at h
     argbits hb [hs]
     exact ⟨partB_sound hS h.1, fits_slot8 (memN_fits' hS hs h.2)⟩
-  · cases h
-
-/-- The checker's word for a wait is one the model reads: an address in the
-    program's memory at an offset a multiple of four, with four bytes there. -/
-theorem pre_memWake' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .memWake as S rb = true) : Contracts.Pre .memWake bits w := by
-  dsimp only [preB] at h
-  unfold preMemWake at h
-  split at h
-  · rename_i p c
-    simp only [Bool.and_eq_true] at h
-    obtain ⟨hm, hal⟩ := h
-    argbits hb [hp, hc]
-    refine ⟨?_, fits_load4 (memN_fits' hS hp hm)⟩
-    split at hal
-    · rename_i n
-      obtain ⟨t0, hd⟩ := hp
-      obtain ⟨off, hv, ⟨-, hhi, hdvd, -⟩, hspan⟩ := hd
-      cases hv
-      have h4 : 4 ∣ off := Nat.dvd_trans (Nat.dvd_of_mod_eq_zero (by simpa using hal)) hdvd
-      exact arena_addr_mod4 h4 (Nat.le_trans hhi hspan)
-    · cases hal
-  · cases h
-
-theorem pre_memWait' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .memWait as S rb = true) : Contracts.Pre .memWait bits w := by
-  dsimp only [preB] at h
-  unfold preMemWait at h
-  split at h
-  · rename_i p e t
-    simp only [Bool.and_eq_true] at h
-    obtain ⟨hm, hal⟩ := h
-    argbits hb [hp, he, ht]
-    refine ⟨?_, fits_load4 (memN_fits' hS hp hm)⟩
-    split at hal
-    · rename_i n
-      obtain ⟨t0, hd⟩ := hp
-      obtain ⟨off, hv, ⟨-, hhi, hdvd, -⟩, hspan⟩ := hd
-      cases hv
-      have h4 : 4 ∣ off := Nat.dvd_trans (Nat.dvd_of_mod_eq_zero (by simpa using hal)) hdvd
-      exact arena_addr_mod4 h4 (Nat.le_trans hhi hspan)
-    · cases hal
   · cases h
 
 theorem pre_threadJoin' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
@@ -1315,16 +1225,6 @@ theorem pre_cublasGemmExBf16' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w
     · cases hm
   · cases h
 
-theorem pre_stdinReadline' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .stdinReadline as S rb = true) (hrb : RbSound w bits rb) :
-    Contracts.Pre .stdinReadline bits w := by
-  dsimp only [preB] at h
-  unfold preStdinReadline at h
-  split at h
-  · argbits hb [hd, hn]
-    exact fun _ _ _ _ => fits_writable (memBR_fits hS hd hn h (hrb 0 1)) (Nat.min_le_right _ _)
-  · cases h
-
 theorem pre_threadCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB .threadCleanup as S rb = true) : Contracts.Pre .threadCleanup bits w := by
   dsimp only [preB] at h
@@ -1398,10 +1298,6 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case windowPresentGpuBuffer => exact pre_windowPresentGpuBuffer' hS hb h
   case windowCleanup => exact pre_windowCleanup' hS hb h
   case lmdbCleanup => exact pre_lmdbCleanup' hS hb h
-  case fileReadToPtr => exact pre_fileReadToPtr' hS hb h hrb
-  case nativeLoad => exact pre_nativeLoad' hS hb h
-  case cpuHas => exact pre_cpuHas' hS hb h hrb
-  case nativeArch => exact pre_nativeArch' hb h
   case lmdbInit => exact pre_lmdbInit' hS hb h
   case lmdbOpen => exact pre_lmdbOpen' hS hb h
   case lmdbBeginWriteTxn => exact pre_lmdbBeginWriteTxn' hS hb h
@@ -1410,11 +1306,6 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case cublasSgemv => exact pre_cublasSgemv' hS hb h
   case cublasSgemm => exact pre_cublasSgemm' hS hb h
   case lmdbCursorScan => exact pre_lmdbCursorScan' hS hb h
-  case fileCreateDirAll => exact pre_fileCreateDirAll' hS hb h hrb
-  case fileSize => exact pre_fileSize' hS hb h hrb
-  case fileSetLen => exact pre_fileSetLen' hS hb h hrb
-  case fileWriteFromPtr => exact pre_fileWriteFromPtr' hS hb h hrb
-  case stdoutWrite => exact pre_stdoutWrite' hS hb h hrb
   case cudaFreeBuffer => exact pre_cudaFreeBuffer' hS hb h
   case cublasPtrArray => exact pre_cublasPtrArray' hS hb h
   case cudaPinnedAlloc => exact pre_cudaPinnedAlloc' hS hb h
@@ -1422,7 +1313,6 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case gpuDownloadPtr => exact pre_gpuDownloadPtr' hS hb h hrb
   case threadInit => exact pre_threadInit' hS hb h
   case threadJoin => exact pre_threadJoin' hS hb h
-  case stdinReadline => exact pre_stdinReadline' hS hb h hrb
   case threadCleanup => exact pre_threadCleanup' hS hb h
   case cudaLaunchNamedOnStream => exact pre_cudaLaunchNamedOnStream' hS hb h
   case cudaUploadAsync => exact pre_cudaUploadAsync' hS hb h hrb
@@ -1438,21 +1328,9 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case sinf =>
     have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
     match bits, hl with | [_], _ => trivial
-  case threadPriority =>
-    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
-  case memWake => exact pre_memWake' hS hb h
-  case clockNow =>
-    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
-  case memWait => exact pre_memWait' hS hb h
   case powf =>
     have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
     match bits, hl with | [_, _], _ => trivial
-  case memAdviseHuge =>
-    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
-  case memLock =>
-    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
-  case memUnlock =>
-    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
   case cudaEventCreate =>
     obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
     match rest, hl with | [], _ => exact hc

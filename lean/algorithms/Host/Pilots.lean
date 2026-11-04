@@ -51,9 +51,9 @@ namespace Hist
 open HistogramBench1 (INPUT_PATH_OFF OUTPUT_PATH_OFF HIST_OFF HIST_BYTES DATA_OFF MEM_SIZE MAX_DATA_BYTES
   PATH_MAX_IN PATH_MAX_OUT BINS)
 
-abbrev fnRead : Ffi := .fileReadToPtr
-abbrev fnEmpty : Ffi := .fileSetLen
-abbrev fnWrite : Ffi := .fileWriteFromPtr
+abbrev fnRead : Ext := .base .fileReadToPtr
+abbrev fnEmpty : Ext := .base .fileSetLen
+abbrev fnWrite : Ext := .base .fileWriteFromPtr
 
 /-- `HistogramBench1.orchFn`, as a term. -/
 def code : Prog V L Unit := do
@@ -84,7 +84,7 @@ def code : Prog V L Unit := do
   istore8 zeroI (← iadd (← absAddr (← basePtr) OUTPUT_PATH_OFF) outEnd.head)
   -- read the file, then derive the element count and the histogram bounds
   -- at most the data region
-  let fileSize ← ffi fnRead
+  let fileSize ← ext fnRead
     %[← absAddr (← basePtr) INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← absAddr (← basePtr) DATA_OFF, zeroI,
      ← iconst64 MAX_DATA_BYTES]
   let n ← ushr fileSize (← iconst64 2)
@@ -132,14 +132,14 @@ def code : Prog V L Unit := do
   -- write the histogram out, in place of what the file held
   let outPath ← absAddr (← basePtr) OUTPUT_PATH_OFF
   let outCap ← iconst64 PATH_MAX_OUT
-  let _ ← ffi fnEmpty %[outPath, outCap, zeroI]
-  let _ ← ffi fnWrite %[outPath, outCap, ← absAddr (← basePtr) HIST_OFF, zeroI, ← iconst64 HIST_BYTES]
+  let _ ← ext fnEmpty %[outPath, outCap, zeroI]
+  let _ ← ext fnWrite %[outPath, outCap, ← absAddr (← basePtr) HIST_OFF, zeroI, ← iconst64 HIST_BYTES]
   return ()
 
 
 /-- The program reads one file and then writes one, and does nothing else
     across the FFI. -/
-theorem code_calls : callsOf (Prog.emit code) = [fnRead, fnEmpty, fnWrite].map Callee.ffi := rfl
+theorem code_calls : callsOf (Prog.emit code) = [.ext fnRead, .ext fnEmpty, .ext fnWrite] := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
@@ -368,12 +368,12 @@ def code : Prog V L Unit := do
   store (branched.head) (← absAddr (← basePtr) 0x408)
   let outPath ← absAddr (← basePtr) 0x200
   let outCap ← iconst64 0x200
-  let _ ← ffi Hist.fnEmpty %[outPath, outCap, zeroI]
-  let _ ← ffi Hist.fnWrite %[outPath, outCap, ← absAddr (← basePtr) 0x400, zeroI, ← iconst64 16]
+  let _ ← ext Hist.fnEmpty %[outPath, outCap, zeroI]
+  let _ ← ext Hist.fnWrite %[outPath, outCap, ← absAddr (← basePtr) 0x400, zeroI, ← iconst64 16]
   return ()
 
 
-theorem code_calls : Prog.callNames code = [Hist.fnEmpty, Hist.fnWrite].map (·.cname) := rfl
+theorem code_calls : Prog.callNames code = ["base!cl_file_set_len", "base!cl_file_write_from_ptr"] := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program

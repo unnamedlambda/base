@@ -116,7 +116,7 @@ def loadTokenizerM (c : TokMem) : Prog V L Unit := do
   let pinId ← ffi .cudaPinnedAlloc %[ctxPtr, bytes64]
   let bufP ← ffi .cudaPinnedPtr %[ctxPtr, pinId]
   let zero64 ← iconst64 0
-  let _ ← ffi .fileReadToPtr %[pathP, pathC, bufP, zero64, bytes64]
+  let _ ← ext (.base .fileReadToPtr) %[pathP, pathC, bufP, zero64, bytes64]
   storeI64 bufP (← absAddr ptr c.bufPtr)
   ffiVoid .htInit %[ptr]
   let htCtx ← load64At ptr c.htCtx

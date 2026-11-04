@@ -74,11 +74,11 @@ cargo build of `lean-artifacts` or `lake query algorithmLib/artifacts` writes.
 ## Rust (`tests/`)
 
 - [`threads.rs`](tests/threads.rs): the `add` checks over an `Arc<Driver>`:
-  `cargo test -p applications --test shared_sum_threads`.
+  `cargo test -p applications --test apps shared_sum_threads`.
 - [`rayon.rs`](tests/rayon.rs): producers and consumers on a rayon pool. A
   parallel iterator makes 100,000 items and `push`es them, rayon tasks `pop`
   them until the ring is closed, and every item has to come out exactly once:
-  `cargo test -p applications --test shared_sum_rayon`.
+  `cargo test -p applications --test apps shared_sum_rayon`.
 
 ## What the C API promises
 

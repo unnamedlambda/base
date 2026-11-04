@@ -389,6 +389,30 @@ def usbPre (f : UsbFn) (bits : List UInt64) (w : World) : Prop :=
 def windowPre (f : WindowFn) (bits : List UInt64) (w : World) : Prop :=
   bits.length = (Ext.window f).sig.1.length ∧ (wlDecode f bits w).isSome
 
+/-- What an engine function needs: its arguments, and for a wait or a wake
+    a word, four bytes of memory at an address a multiple of four. -/
+def basePre (f : BaseFn) (bits : List UInt64) (w : World) : Prop :=
+  match f, bits with
+  | .clockNow, [] => True
+  | .memLock, [_, _] | .memUnlock, [_, _] | .memAdviseHuge, [_, _] => True
+  | .threadPriority, [_] => True
+  | .memWait, [a, _, _] | .memWake, [a, _] => a % 4 = 0 ∧ (w.mem.load a 4).isSome = true
+  | .nativeLoad, [src, len] => ¬ (src = 0 ∨ asI64 len ≤ 0) → Readable w.mem src (asI64 len).toNat
+  | .nativeFree, [addr] => (w.nativeAt? addr).isSome
+  | .nativeArch, [] => True
+  | .cpuHas, [p, c] | .fileCreateDirAll, [p, c] | .fileSize, [p, c] | .fileSetLen, [p, c, _] =>
+      Field w.mem p c
+  | .stdoutWrite, [src, size] => ¬ asI64 size < 0 → Readable w.mem src size.toNat
+  | .fileReadToPtr, [pathPtr, pathCap, dstPtr, fileOff, size] =>
+      (¬ asI64 size ≤ 0 → Field w.mem pathPtr pathCap) ∧
+      (∀ path c, readField w.mem pathPtr pathCap = some (some path) → w.fs.get path = some c →
+        Writable w.mem dstPtr (readCountPtr c fileOff size))
+  | .fileWriteFromPtr, [pathPtr, pathCap, srcPtr, fileOff, size] =>
+      ¬ (asI64 size ≤ 0 ∨ asI64 fileOff < 0) → Field w.mem pathPtr pathCap ∧ Readable w.mem srcPtr size.toNat
+  | .stdinReadline, [dst, cap] =>
+      ∀ line rest, w.stdin = line :: rest → ¬ asI64 cap ≤ 0 → Writable w.mem dst (min line.size cap.toNat)
+  | _, _ => False
+
 /-- **What a C library call needs**, from argument bits: nothing of a library
     that did not load. -/
 def ExtPre (e : Ext) (bits : List UInt64) (w : World) : Prop :=
@@ -410,6 +434,7 @@ def ExtPre (e : Ext) (bits : List UInt64) (w : World) : Prop :=
   | .cpu f, bits => cpuPre f bits
   | .serial f, bits => serialPre f bits w
   | .usb f, bits => usbPre f bits w
+  | .base f, bits => basePre f bits w
   | _, _ => False
 
 /-- **Where each clause comes from.** The references are the C standard and
@@ -466,6 +491,29 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
       [("granted or declined", .unmodelled "the world's cpuPins"),
        ("a CPU not there is declined", .observed "CpuCorpus: -1 and the count itself")]
   | .cpu .unpin => [("granted or declined", .unmodelled "the world's cpuPins")]
+  | .base .clockNow => [("none", .documented "sync.rs: the system's monotonic clock")]
+  | .base .memLock | .base .memUnlock | .base .memAdviseHuge | .base .threadPriority =>
+      [("granted or declined", .unmodelled "the world's grants")]
+  | .base .memWait | .base .memWake =>
+      [("a word: four bytes, at an address a multiple of four",
+        .documented "futex(2), WaitOnAddress: the address of a 32-bit aligned word")]
+  | .base .nativeLoad => [("the code readable", .documented "native.rs: copies len bytes from src")]
+  | .base .nativeFree =>
+      [("an address nativeLoad answered, live", .documented "munmap, VirtualFree: only a mapping made")]
+  | .base .nativeArch => [("none", .documented "native.rs: the target the engine was built for")]
+  | .base .cpuHas | .base .fileCreateDirAll | .base .fileSize | .base .fileSetLen =>
+      [("the name's field readable", .documented "Sem.readField: up to cap bytes, to the first NUL")]
+  | .base .stdoutWrite => [("the bytes readable", .documented "write(2): size bytes from src")]
+  | .base .fileReadToPtr =>
+      [("the path's field readable", .documented "Sem.readField: up to cap bytes, to the first NUL"),
+       ("room for what is read", .documented "pread(2): at most size bytes written at dst")]
+  | .base .fileWriteFromPtr =>
+      [("the path's field readable", .documented "Sem.readField: up to cap bytes, to the first NUL"),
+       ("the bytes readable", .documented "pwrite(2): size bytes from src")]
+  | .base .threadStart | .base .threadFinish =>
+      [("never called but by the thread library", .unmodelled "stated as threadSpawn and threadJoin")]
+  | .base .stdinReadline =>
+      [("room for the line, up to cap", .documented "fgets: at most cap bytes written at dst")]
   | .serial .count => [("the ports listed", .unmodelled "the world's serialNames")]
   | .serial .name =>
       [("cap bytes writable", .documented "serial.rs: base_serial_name writes at most cap bytes"),
@@ -1249,6 +1297,64 @@ theorem cudaPre_safe (f : CudaFn) (bits : List UInt64) (w : World) (h : cudaPre 
 theorem cudaPre_length {f : CudaFn} {bits : List UInt64} {w : World} (h : cudaPre f bits w) :
     bits.length = (Ext.cuda f).sig.1.length := cudaStepPre_length h.2
 
+/-- **An engine function changes at most the world's loaded code, its files,
+    its standard streams, and, reading a line, the memory it copies the line
+    into**, and answers a number of the type its signature returns, or
+    nothing. -/
+theorem baseCall_same {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : baseCall f bits w = some (r, w')) :
+    w' = { w with mem := w'.mem, native := w'.native, fs := w'.fs, stdin := w'.stdin, stdout := w'.stdout } ∧
+    (w'.mem = w.mem ∨ (f = .fileReadToPtr ∨ f = .stdinReadline) ∧ ∃ a bs, copyIn w.mem a bs = some w'.mem) ∧
+      ∀ v, r = some v → ∃ x, v = .sc ((Ext.base f).sig.2.getD .i64) x := by
+  cases f <;> simp only [baseCall, ffiClockNow, ffiGrant, ffiMemWait, ffiMemWake, ffiNativeLoad,
+    ffiNativeFree, ffiNativeArch, ffiCpuHas, ffiFileCreateDirAll, ffiFileSize, ffiFileSetLen,
+    ffiFileReadToPtr, ffiFileWriteFromPtr, ffiStdinReadline, ffiStdoutWrite] at h <;>
+    (repeat' (first
+      | (split at h)
+      | (rw [Option.bind_eq_bind, Option.bind_eq_some_iff] at h; obtain ⟨_, _, h⟩ := h)
+      | (rw [Option.bind_eq_some_iff] at h; obtain ⟨_, _, h⟩ := h))) <;>
+    first
+      | (cases h; done)
+      | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, rfl⟩ := h
+         refine ⟨rfl, ?_, ?_⟩
+         · first
+             | exact .inl rfl
+             | exact .inr ⟨.inl rfl, _, _, by assumption⟩
+             | exact .inr ⟨.inr rfl, _, _, by assumption⟩
+         · first | exact fun v hv => by cases hv; exact ⟨_, rfl⟩ | exact fun v hv => nomatch hv)
+
+/-- An engine function returns a scalar, not a vector. -/
+theorem base_ret_lanes (f : BaseFn) : ((Ext.base f).sig.2.getD .i64).lanes = none := by
+  cases f <;> rfl
+
+theorem basePre_length {f : BaseFn} {bits : List UInt64} {w : World} (h : basePre f bits w) :
+    bits.length = (Ext.base f).sig.1.length := by
+  unfold basePre at h
+  split at h <;> first | rfl | exact h.elim
+
+theorem basePre_safe {f : BaseFn} {bits : List UInt64} {w : World} (h : basePre f bits w) :
+    (baseCall f bits w).isSome = true := by
+  unfold basePre at h
+  split at h
+  · rfl
+  all_goals first
+    | exact h.elim
+    | (simp [baseCall, ffiGrant]; done)
+    | exact fileReadToPtr_safe h.1 h.2
+    | (obtain ⟨ha, hl⟩ := h
+       obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hl
+       simp [baseCall, ffiMemWait, ffiMemWake, ha, hv])
+    | exact nativeLoad_safe h
+    | exact nativeFree_safe h
+    | exact nativeArch_safe w
+    | exact cpuHas_safe h
+    | exact fileCreateDirAll_safe h
+    | exact fileSize_safe h
+    | exact fileSetLen_safe h
+    | exact stdoutWrite_safe h
+    | exact fileWriteFromPtr_safe h
+    | exact stdinReadline_safe h
+
 /-- **Every contract's precondition suffices**: a call that meets it answers. -/
 theorem ext_pre_safe (e : Ext) (bits : List UInt64) (w : World) (h : ExtPre e bits w) :
     (extCall e (e.args bits) w).isSome = true := by
@@ -1359,6 +1465,10 @@ theorem ext_pre_safe (e : Ext) (bits : List UInt64) (w : World) (h : ExtPre e bi
         simp only [Ext.args, bind, Option.bind]
         rw [mapM_asBits_zip _ _ h.1]
         simp only [usbCall, Option.isSome_map]; exact h.2
+    | base f =>
+        simp only [Ext.args, bind, Option.bind]
+        rw [mapM_asBits_zip _ _ (basePre_length h)]
+        exact basePre_safe h
 
 -- ---------------------------------------------------------------------------
 -- Answers respect the frames
@@ -1827,6 +1937,47 @@ theorem cpuCall_respects_frame (f : CpuFn) (bits : List UInt64) (w : World) (r :
   · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
     exact Unchanged.refl _ _
 
+/-- **An engine function writes host memory only inside its frame**: a file
+    or a line read, where it was asked to land; nothing otherwise. -/
+theorem baseCall_respects_frame (f : BaseFn) (bits : List UInt64) (w : World) (r : Option V)
+    (w' : World) (h : baseCall f bits w = some (r, w')) (a : UInt64)
+    (hout : ¬ (Ext.base f).frame.allows bits (r.bind asBits) a) : Unchanged w.mem w'.mem a := by
+  obtain ⟨-, hm | ⟨rfl | rfl, -⟩, -⟩ := baseCall_same h
+  · rw [hm]; exact Unchanged.refl _ _
+  · simp only [baseCall, ffiFileReadToPtr] at h
+    split at h
+    · split at h
+      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
+      · obtain ⟨path, -, h⟩ := Option.bind_eq_some_iff.mp h
+        split at h
+        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
+        · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
+          simp only [Option.some.injEq, Prod.mk.injEq] at h
+          obtain ⟨rfl, rfl⟩ := h
+          simp only [Ext.frame, Frame.allows, List.getD, List.getElem?_cons_zero,
+            List.getElem?_cons_succ, Option.getD_some] at hout
+          apply Unchanged.of_eq; apply copyIn_other hm
+          intro i hi e
+          rw [size_toByteArray_map_range] at hi
+          exact hout ⟨i, by omega, e⟩
+    · cases h
+  simp only [baseCall, ffiStdinReadline] at h
+  split at h
+  · split at h
+    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
+    · split at h
+      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
+      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        simp only [Ext.frame, Frame.allows, List.getD, List.getElem?_cons_zero,
+          List.getElem?_cons_succ, Option.getD_some] at hout
+        apply Unchanged.of_eq; apply copyIn_other hm
+        intro i hi e
+        rw [size_toByteArray_map_range] at hi
+        exact hout ⟨i, by omega, e⟩
+  · cases h
+
 /-- **A serial library call writes host memory only inside its frame**: a
     port's name, and what a read takes, into the buffer and length handed in. -/
 theorem serialCall_respects_frame (f : SerialFn) (bits : List UInt64) (w : World) (r : Option V)
@@ -1988,6 +2139,11 @@ theorem ext_respects_frame (e : Ext) (vs : List V) (w : World) (r : Option V) (w
     obtain ⟨bits', hb', h⟩ := Option.bind_eq_some_iff.mp h
     rw [hb] at hb'; cases hb'
     exact usbCall_respects_frame f bits w r w' h a hout
+  -- the engine's own
+  · rename_i f vs'
+    obtain ⟨bits', hb', h⟩ := Option.bind_eq_some_iff.mp h
+    rw [hb] at hb'; cases hb'
+    exact baseCall_respects_frame f bits w r w' h a hout
   · cases h
 
 end AlgorithmLib.HProg.ExtContracts

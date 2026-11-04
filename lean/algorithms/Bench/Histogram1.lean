@@ -40,9 +40,9 @@ def MEM_SIZE        : Nat := DATA_OFF + MAX_DATA_BYTES
 open AlgorithmLib.Prog
 
 
-abbrev fnRead : Ffi := .fileReadToPtr
-abbrev fnEmpty : Ffi := .fileSetLen
-abbrev fnWrite : Ffi := .fileWriteFromPtr
+abbrev fnRead : Ext := .base .fileReadToPtr
+abbrev fnEmpty : Ext := .base .fileSetLen
+abbrev fnWrite : Ext := .base .fileWriteFromPtr
 
 def code : Prog V L Unit := do
   let ptr ← basePtr
@@ -74,7 +74,7 @@ def code : Prog V L Unit := do
   istore8 zero (← iadd (← absAddr ptr OUTPUT_PATH_OFF) outEnd.head)
 
   -- at most the data region
-  let fileSize ← ffi fnRead
+  let fileSize ← ext fnRead
     %[← absAddr ptr INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← absAddr ptr DATA_OFF, zero, ← iconst64 MAX_DATA_BYTES]
   let n        ← ushrImm fileSize 2    -- n = bytes / 4
   let histPtr  ← absAddr ptr HIST_OFF
@@ -124,8 +124,8 @@ def code : Prog V L Unit := do
 
   let outPath ← absAddr ptr OUTPUT_PATH_OFF
   let outCap ← iconst64 PATH_MAX_OUT
-  let _ ← ffi fnEmpty %[outPath, outCap, zero]
-  let _ ← ffi fnWrite %[outPath, outCap, ← absAddr ptr HIST_OFF, zero, ← iconst64 HIST_BYTES]
+  let _ ← ext fnEmpty %[outPath, outCap, zero]
+  let _ ← ext fnWrite %[outPath, outCap, ← absAddr ptr HIST_OFF, zero, ← iconst64 HIST_BYTES]
 
 
 def clifIR : Except String (List FuncData) :=

@@ -149,7 +149,7 @@ def streamLayerFn : Prog V L Unit := do
   let wsBaseA      ← absAddr ptr WORKING_SET_BASE
   -- ONE big read pulls the entire layer (~57 MB) into pinned scratch in one
   -- syscall.  The on-disk layout matches the pinned scratch layout 1:1.
-  let _ ← ffi .fileReadToPtr %[pathPtr, pathCap, pinnedPtr, baseOff, layerBytes64]
+  let _ ← ext (.base .fileReadToPtr) %[pathPtr, pathCap, pinnedPtr, baseOff, layerBytes64]
   -- 12 synchronous H→D uploads.  Sync semantics keep the pinned scratch safe
   -- to reuse on the next streamLayerFn call without an extra device sync.
   let upOne (bufId : V .i32) (scratchOff size : Nat) : Prog V L Unit := do
@@ -189,9 +189,9 @@ def kvLoadLayerFn : Prog V L Unit := do
   let zero64     ← iconst64 0
   -- position zero has nothing cached yet
   when .ne pos zero64 (do
-    let _ ← ffi .fileReadToPtr %[kvPath, kvCap, pinnedPtr, kFileOff, kvBytes64]
+    let _ ← ext (.base .fileReadToPtr) %[kvPath, kvCap, pinnedPtr, kFileOff, kvBytes64]
     let _ ← ffi .cudaUpload %[ctxPtr, tK.buf, pinnedPtr, kvBytes64]
-    let _ ← ffi .fileReadToPtr %[kvPath, kvCap, pinnedPtr, vFileOff, kvBytes64]
+    let _ ← ext (.base .fileReadToPtr) %[kvPath, kvCap, pinnedPtr, vFileOff, kvBytes64]
     let _ ← ffi .cudaUpload %[ctxPtr, tV.buf, pinnedPtr, kvBytes64]
     pure ())
 
@@ -223,9 +223,9 @@ def kvSaveLayerFn : Prog V L Unit := do
     let kSlotFile     ← iadd kFileOff slotOff
     let vSlotFile     ← iadd vFileOff slotOff
     let _ ← ffi .cudaDownloadOffset %[ctxPtr, tK.buf, slotOff, pinnedPtr, slotBytes64]
-    let _ ← ffi .fileWriteFromPtr           %[kvPath, kvCap, pinnedPtr, kSlotFile, slotBytes64]
+    let _ ← ext (.base .fileWriteFromPtr) %[kvPath, kvCap, pinnedPtr, kSlotFile, slotBytes64]
     let _ ← ffi .cudaDownloadOffset %[ctxPtr, tV.buf, slotOff, pinnedPtr, slotBytes64]
-    let _ ← ffi .fileWriteFromPtr           %[kvPath, kvCap, pinnedPtr, vSlotFile, slotBytes64]
+    let _ ← ext (.base .fileWriteFromPtr) %[kvPath, kvCap, pinnedPtr, vSlotFile, slotBytes64]
 
 -- ── CLIF IR ──────────────────────────────────────────────────────────────────
 

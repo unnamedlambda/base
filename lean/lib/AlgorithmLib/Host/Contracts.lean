@@ -1084,18 +1084,6 @@ theorem threadJoin_safe {w : World} {ctx h : UInt64} (hc : ThreadOk w ctx) :
     none, and neither has `threadSpawn`, whose callee is a local function the
     program logic answers for. -/
 def Pre : IR.Ffi → List UInt64 → World → Prop
-  | .fileReadToPtr => fun bits w => match bits with
-    | [pathPtr, pathCap, dstPtr, fileOff, size] => (¬ asI64 size ≤ 0 → Field w.mem pathPtr pathCap) ∧ (∀ path c, readField w.mem pathPtr pathCap = some (some path) → w.fs.get path = some c → Writable w.mem dstPtr (readCountPtr c fileOff size))
-    | _ => False
-  | .fileWriteFromPtr => fun bits w => match bits with
-    | [pathPtr, pathCap, srcPtr, fileOff, size] => (¬ (asI64 size ≤ 0 ∨ asI64 fileOff < 0) → Field w.mem pathPtr pathCap ∧ Readable w.mem srcPtr size.toNat)
-    | _ => False
-  | .stdinReadline => fun bits w => match bits with
-    | [dst, cap] => (∀ line rest, w.stdin = line :: rest → ¬ asI64 cap ≤ 0 → Writable w.mem dst (min line.size cap.toNat))
-    | _ => False
-  | .stdoutWrite => fun bits w => match bits with
-    | [src, size] => (¬ asI64 size < 0 → Readable w.mem src size.toNat)
-    | _ => False
   | .sinf => fun bits w => match bits with
     | [_x] => True
     | _ => False
@@ -1299,9 +1287,6 @@ def Pre : IR.Ffi → List UInt64 → World → Prop
   | .windowPresentGpuBuffer => fun bits w => match bits with
     | [ctx, gctx, _buf] => (WinOk w ctx) ∧ (ctx ≠ 0 → GpuOk w.pump gctx)
     | _ => False
-  | .nativeLoad => fun bits w => match bits with
-    | [src, len] => (¬ (src = 0 ∨ asI64 len ≤ 0) → Readable w.mem src (asI64 len).toNat)
-    | _ => False
   | .threadInit => fun bits w => match bits with
     | [slot] => (w.thread.live = false) ∧ (Slot8 w.mem slot)
     | _ => False
@@ -1311,63 +1296,13 @@ def Pre : IR.Ffi → List UInt64 → World → Prop
   | .threadJoin => fun bits w => match bits with
     | [ctx, _hd] => (ThreadOk w ctx)
     | _ => False
-  | .nativeFree => fun bits w => match bits with
-    | [addr] => (w.nativeAt? addr).isSome
-    | _ => False
-  | .nativeArch => fun bits w => match bits with
-    | [] => True
-    | _ => False
-  | .cpuHas => fun bits w => match bits with
-    | [name, cap] => Field w.mem name cap
-    | _ => False
   | .threadSpawn => fun _ _ => False
-  | .fileCreateDirAll => fun bits w => match bits with
-    | [path, cap] => Field w.mem path cap
-    | _ => False
-  | .fileSize => fun bits w => match bits with
-    | [path, cap] => Field w.mem path cap
-    | _ => False
-  | .fileSetLen => fun bits w => match bits with
-    | [path, cap, _] => Field w.mem path cap
-    | _ => False
-  -- The thread shims are stated where programs meet them, as `threadSpawn`
-  -- and `threadJoin`, whose functions call them.
-  | .threadStart | .threadFinish => fun _ _ => False
-  | .memLock => fun bits _ => bits.length = 2
-  | .memUnlock => fun bits _ => bits.length = 2
-  | .memAdviseHuge => fun bits _ => bits.length = 2
-  | .threadPriority => fun bits _ => bits.length = 1
-  -- A wait and a wake each need a word: four bytes there, at an address a
-  -- multiple of four.
-  | .memWait => fun bits w => match bits with
-    | [addr, _expected, _timeout] => addr % 4 = 0 ∧ (w.mem.load addr 4).isSome = true
-    | _ => False
-  | .memWake => fun bits w => match bits with
-    | [addr, _count] => addr % 4 = 0 ∧ (w.mem.load addr 4).isSome = true
-    | _ => False
-  | .clockNow => fun bits _ => bits.length = 0
 
 /-- **Every entry point answers under its precondition**: whatever the call,
     `Pre` is enough for the model not to refuse it. -/
 theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w) :
     (callBits f bits w).isSome = true := by
   cases f
-  case fileReadToPtr =>
-    simp only [Pre] at h; split at h
-    · apply fileReadToPtr_safe h.1 h.2
-    · exact h.elim
-  case fileWriteFromPtr =>
-    simp only [Pre] at h; split at h
-    · apply fileWriteFromPtr_safe h
-    · exact h.elim
-  case stdinReadline =>
-    simp only [Pre] at h; split at h
-    · apply stdinReadline_safe h
-    · exact h.elim
-  case stdoutWrite =>
-    simp only [Pre] at h; split at h
-    · apply stdoutWrite_safe h
-    · exact h.elim
   case sinf =>
     simp only [Pre] at h; split at h
     · apply sinf_safe _ _
@@ -1644,10 +1579,6 @@ theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w
     simp only [Pre] at h; split at h
     · apply windowPresentGpuBuffer_safe h.1 h.2
     · exact h.elim
-  case nativeLoad =>
-    simp only [Pre] at h; split at h
-    · apply nativeLoad_safe h
-    · exact h.elim
   case threadInit =>
     simp only [Pre] at h; split at h
     · apply threadInit_safe h.1 h.2
@@ -1660,68 +1591,6 @@ theorem pre_safe (f : IR.Ffi) (bits : List UInt64) (w : World) (h : Pre f bits w
     simp only [Pre] at h; split at h
     · apply threadJoin_safe h
     · exact h.elim
-  case nativeFree =>
-    simp only [Pre] at h; split at h
-    · apply nativeFree_safe h
-    · exact h.elim
-  case nativeArch =>
-    simp only [Pre] at h; split at h
-    · apply nativeArch_safe _
-    · exact h.elim
-  case cpuHas =>
-    simp only [Pre] at h; split at h
-    · apply cpuHas_safe h
-    · exact h.elim
   case threadSpawn => exact h.elim
-  case fileCreateDirAll =>
-    simp only [Pre] at h; split at h
-    · apply fileCreateDirAll_safe h
-    · exact h.elim
-  case fileSize =>
-    simp only [Pre] at h; split at h
-    · apply fileSize_safe h
-    · exact h.elim
-  case fileSetLen =>
-    simp only [Pre] at h; split at h
-    · apply fileSetLen_safe h
-    · exact h.elim
-  case threadStart => exact h.elim
-  case threadFinish => exact h.elim
-  case memLock =>
-    simp only [Pre] at h
-    show (ffiGrant "lock" 2 bits w).isSome = true
-    unfold ffiGrant; simp [h]
-  case memUnlock =>
-    simp only [Pre] at h
-    show (ffiGrant "unlock" 2 bits w).isSome = true
-    unfold ffiGrant; simp [h]
-  case memAdviseHuge =>
-    simp only [Pre] at h
-    show (ffiGrant "hugepages" 2 bits w).isSome = true
-    unfold ffiGrant; simp [h]
-  case threadPriority =>
-    simp only [Pre] at h
-    show (ffiGrant "priority" 1 bits w).isSome = true
-    unfold ffiGrant; simp [h]
-  case memWait =>
-    simp only [Pre] at h; split at h
-    · rename_i a e t
-      obtain ⟨ha, hl⟩ := h
-      obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hl
-      show (ffiMemWait [a, e, t] w).isSome = true
-      simp [ffiMemWait, ha, hv]
-    · exact h.elim
-  case memWake =>
-    simp only [Pre] at h; split at h
-    · rename_i a c
-      obtain ⟨ha, hl⟩ := h
-      obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hl
-      show (ffiMemWake [a, c] w).isSome = true
-      simp [ffiMemWake, ha, hv]
-    · exact h.elim
-  case clockNow =>
-    simp only [Pre] at h
-    show (ffiClockNow bits w).isSome = true
-    match bits, h with | [], _ => rfl
 
 end AlgorithmLib.HProg.Contracts

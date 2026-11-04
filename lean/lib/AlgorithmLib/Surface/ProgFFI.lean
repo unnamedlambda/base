@@ -160,7 +160,7 @@ def htGetEntry (ptr : V .i64) (index : V .i32) (keyOutOff valOutOff : V .i64)
 def readFile (ptr : V .i64) (filenameOff filenameCap dataOff room : Nat) : Prog V L (V .i64) := do
   let path ← iadd ptr (← iconst64 filenameOff)
   let dst ← iadd ptr (← iconst64 dataOff)
-  ffi .fileReadToPtr %[path, ← iconst64 filenameCap, dst, ← iconst64 0, ← iconst64 room]
+  ext (.base .fileReadToPtr) %[path, ← iconst64 filenameCap, dst, ← iconst64 0, ← iconst64 room]
 
 /-- Write a region of shared memory over a file from `fileOffset`, keeping
     what the file holds past it; the result is the byte count. -/
@@ -168,34 +168,34 @@ def writeFile (ptr : V .i64) (filenameOff filenameCap srcOff : Nat) (fileOffset 
     Prog V L (V .i64) := do
   let path ← iadd ptr (← iconst64 filenameOff)
   let src ← iadd ptr (← iconst64 srcOff)
-  ffi .fileWriteFromPtr %[path, ← iconst64 filenameCap, src, fileOffset, size]
+  ext (.base .fileWriteFromPtr) %[path, ← iconst64 filenameCap, src, fileOffset, size]
 
 /-- Replace a file with a region of shared memory. -/
 def writeFile0 (ptr : V .i64) (filenameOff filenameCap srcOff : Nat) (size : V .i64) :
     Prog V L (V .i64) := do
-  let _ ← ffi .fileSetLen %[← iadd ptr (← iconst64 filenameOff), ← iconst64 filenameCap, ← iconst64 0]
+  let _ ← ext (.base .fileSetLen) %[← iadd ptr (← iconst64 filenameOff), ← iconst64 filenameCap, ← iconst64 0]
   writeFile ptr filenameOff filenameCap srcOff (← iconst64 0) size
 
 /-- `writeFile`, with the offsets as values. -/
 def writeFileAt (ptr filenameOff filenameCap srcOff fileOffset size : V .i64) : Prog V L (V .i64) := do
-  ffi .fileWriteFromPtr %[← iadd ptr filenameOff, filenameCap, ← iadd ptr srcOff, fileOffset, size]
+  ext (.base .fileWriteFromPtr) %[← iadd ptr filenameOff, filenameCap, ← iadd ptr srcOff, fileOffset, size]
 
 /-- `writeFile0`, with the offsets as values. -/
 def replaceFileAt (ptr filenameOff filenameCap srcOff size : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
-  let _ ← ffi .fileSetLen %[← iadd ptr filenameOff, filenameCap, zero]
+  let _ ← ext (.base .fileSetLen) %[← iadd ptr filenameOff, filenameCap, zero]
   writeFileAt ptr filenameOff filenameCap srcOff zero size
 
 /-- Read a line from standard input to `dstOff` in memory: the line with its
     newline, or as much of it as `cap` holds, the rest left for the next read;
     `0` at the end of input. -/
 def stdinReadline (ptr : V .i64) (dstOff cap : V .i64) : Prog V L (V .i64) := do
-  ffi .stdinReadline %[← iadd ptr dstOff, cap]
+  ext (.base .stdinReadline) %[← iadd ptr dstOff, cap]
 
 /-- Write `size` bytes from `srcOff` in memory to standard output: `size`, or
     `-1`. -/
 def stdoutWrite (ptr : V .i64) (srcOff size : V .i64) : Prog V L (V .i64) := do
-  ffi .stdoutWrite %[← iadd ptr srcOff, size]
+  ext (.base .stdoutWrite) %[← iadd ptr srcOff, size]
 
 /-- `(x + 3) &&& ~3` --- wgpu's `COPY_BUFFER_ALIGNMENT`. -/
 def alignUp4 (v : V .i64) : Prog V L (V .i64) := do
@@ -572,12 +572,12 @@ def sequenceWrapper (callees : List Nat) : Prog V L Unit := do
 /-- Place `len` bytes of machine code at `src` where they can run. Answers the
     address to call, or 0 if they could not be placed. -/
 def nativeLoad (src len : V .i64) : Prog V L (V .i64) :=
-  ffi .nativeLoad %[src, len]
+  ext (.base .nativeLoad) %[src, len]
 
 /-- Unmap what `nativeLoad` answered, other than 0, once: any other address
     is undefined. -/
 def nativeFree (fn : V .i64) : Prog V L Unit :=
-  ffiVoid .nativeFree %[fn]
+  ext (.base .nativeFree) %[fn]
 
 /-- Run the code at `fn` on four arguments and answer what it returns: an
     indirect call, with nothing of the engine's between. `fn` must be an
@@ -598,26 +598,26 @@ def hostCall (fn inp inLen out outLen : V .i64) : Prog V L (V .i64) :=
 
 /-- 1 on x86-64, 2 on AArch64, 0 on anything else. -/
 def nativeArch : Prog V L (V .i32) :=
-  ffi .nativeArch %[]
+  ext (.base .nativeArch) %[]
 
 /-- Whether the CPU has the feature named in the `cap`-byte field at `name`
     (`Sem.readField`): 1, 0, or -1 for a name the runtime does not know. -/
 def cpuHas (name cap : V .i64) : Prog V L (V .i32) :=
-  ffi .cpuHas %[name, cap]
+  ext (.base .cpuHas) %[name, cap]
 
 -- ---------------------------------------------------------------------------
 -- Performance controls: `0` granted, `-1` declined, memory unchanged either way
 -- ---------------------------------------------------------------------------
 
 /-- Keep `len` bytes from `p` in physical memory. -/
-def memLock (p len : V .i64) : Prog V L (V .i32) := ffi .memLock %[p, len]
-def memUnlock (p len : V .i64) : Prog V L (V .i32) := ffi .memUnlock %[p, len]
+def memLock (p len : V .i64) : Prog V L (V .i32) := ext (.base .memLock) %[p, len]
+def memUnlock (p len : V .i64) : Prog V L (V .i32) := ext (.base .memUnlock) %[p, len]
 /-- Ask for huge pages under the whole pages of `len` bytes from `p`. -/
-def memAdviseHuge (p len : V .i64) : Prog V L (V .i32) := ffi .memAdviseHuge %[p, len]
+def memAdviseHuge (p len : V .i64) : Prog V L (V .i32) := ext (.base .memAdviseHuge) %[p, len]
 /-- The calling thread's priority set to `level`, from `0` the lowest to
     `99` the highest, on one scale for every system: `0` granted, `-1` not
     (raising past where the thread started takes privilege). -/
-def threadPriority (level : V .i32) : Prog V L (V .i32) := ffi .threadPriority %[level]
+def threadPriority (level : V .i32) : Prog V L (V .i32) := ext (.base .threadPriority) %[level]
 
 -- ---------------------------------------------------------------------------
 -- Waiting on memory, and the clock
@@ -630,20 +630,20 @@ def threadPriority (level : V .i32) : Prog V L (V .i32) := ffi .threadPriority %
     program's at the same words. Loop on the condition: a wait may end for no
     reason, and answers nothing. -/
 def memWait (p : V .i64) (expected : V .i32) (timeoutNs : V .i64) : Prog V L Unit :=
-  ffiVoid .memWait %[p, expected, timeoutNs]
+  ext (.base .memWait) %[p, expected, timeoutNs]
 /-- Wake one thread waiting on the word at `p` when `count` is 1, every one
     for any other `count` but 0, none for 0. -/
-def memWake (p : V .i64) (count : V .i32) : Prog V L Unit := ffiVoid .memWake %[p, count]
+def memWake (p : V .i64) (count : V .i32) : Prog V L Unit := ext (.base .memWake) %[p, count]
 /-- Nanoseconds on the system's monotonic clock, the one a host reads with
     the system's own call. -/
-def clockNow : Prog V L (V .i64) := ffi .clockNow %[]
+def clockNow : Prog V L (V .i64) := ext (.base .clockNow) %[]
 
 /-- The length of the file at the path in the `cap`-byte field at `path`,
     `-1` for none. -/
-def fileSize (path cap : V .i64) : Prog V L (V .i64) := ffi .fileSize %[path, cap]
+def fileSize (path cap : V .i64) : Prog V L (V .i64) := ext (.base .fileSize) %[path, cap]
 
 /-- The file at the path in the `cap`-byte field at `path` made `len` bytes
     long, created if there is none. -/
-def fileSetLen (path cap len : V .i64) : Prog V L (V .i64) := ffi .fileSetLen %[path, cap, len]
+def fileSetLen (path cap len : V .i64) : Prog V L (V .i64) := ext (.base .fileSetLen) %[path, cap, len]
 
 end AlgorithmLib.Prog

@@ -278,6 +278,25 @@ def CpuFn.all : List CpuFn := [.count, .core, .package, .pin, .unpin]
 
 theorem CpuFn.mem_all (f : CpuFn) : f ∈ CpuFn.all := by cases f <;> simp [CpuFn.all]
 
+/-- The engine's own functions over the operating system (`base/src/ffi`):
+    the monotonic clock, in nanoseconds; requests the system may grant or
+    decline, each answering `0` or `-1` (locking memory in RAM, unlocking it,
+    advising huge pages, raising the thread's priority); and waiting on a
+    32-bit word of memory and waking its waiters; and placing machine code
+    where it can run, unmapping it, naming the CPU's architecture and asking
+    whether it has a feature; creating a directory, a file's length and
+    setting it, reading a file into memory and writing memory to a file; and
+    reading a line of standard
+    input into memory and writing memory to standard output; and starting a
+    thread on one of the program's functions and waiting for it, which the
+    thread library's spawn and join call. -/
+inductive BaseFn where
+  | clockNow | memLock | memUnlock | memAdviseHuge | threadPriority | memWait | memWake
+  | nativeLoad | nativeFree | nativeArch | cpuHas
+  | fileCreateDirAll | fileSize | fileSetLen | fileReadToPtr | fileWriteFromPtr | stdinReadline
+  | stdoutWrite | threadStart | threadFinish
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
 /-- The engine's serial library (`base/src/ffi/serial.rs`, over the
     `serialport` crate): the ports the system lists and their names, and a
     port opened by name, read, written, asked what is waiting, and closed. -/
@@ -313,6 +332,7 @@ inductive Ext where
   | cpu (f : CpuFn)
   | serial (f : SerialFn)
   | usb (f : UsbFn)
+  | base (f : BaseFn)
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 def Ext.lib : Ext → Lib
@@ -325,6 +345,7 @@ def Ext.lib : Ext → Lib
   | .cpu _ => .cpu
   | .serial _ => .serial
   | .usb _ => .usb
+  | .base _ => .base
 
 /-- The symbol the library exports, empty for the presence probe. -/
 def Ext.symbol : Ext → String
@@ -399,6 +420,17 @@ def Ext.symbol : Ext → String
   | .cpu f => match f with
     | .count => "base_cpu_count" | .core => "base_cpu_core" | .package => "base_cpu_package"
     | .pin => "base_cpu_pin" | .unpin => "base_cpu_unpin"
+  | .base f => match f with
+    | .clockNow => "cl_clock_now" | .memLock => "cl_mem_lock" | .memUnlock => "cl_mem_unlock"
+    | .memAdviseHuge => "cl_mem_advise_huge" | .threadPriority => "cl_thread_priority"
+    | .memWait => "cl_mem_wait" | .memWake => "cl_mem_wake"
+    | .nativeLoad => "cl_native_load" | .nativeFree => "cl_native_free"
+    | .nativeArch => "cl_native_arch" | .cpuHas => "cl_cpu_has"
+    | .fileCreateDirAll => "cl_file_create_dir_all" | .fileSize => "cl_file_size"
+    | .fileSetLen => "cl_file_set_len" | .stdoutWrite => "cl_stdout_write"
+    | .fileWriteFromPtr => "cl_file_write_from_ptr" | .stdinReadline => "cl_stdin_read_line"
+    | .fileReadToPtr => "cl_file_read_to_ptr" | .threadStart => "cl_thread_start"
+    | .threadFinish => "cl_thread_finish"
   | .serial f => "base_serial_" ++ match f with
     | .count => "count" | .name => "name" | .open => "open" | .close => "close"
     | .read => "read" | .write => "write" | .pending => "pending"
@@ -497,6 +529,21 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
   | .cpu f => match f with
     | .count | .unpin => ([], some .i32)
     | .core | .package | .pin => ([.i32], some .i32)
+  | .base f => match f with
+    | .clockNow => ([], some .i64)
+    | .memLock | .memUnlock | .memAdviseHuge => ([.i64, .i64], some .i32)
+    | .threadPriority => ([.i32], some .i32)
+    | .memWait => ([.i64, .i32, .i64], none)
+    | .memWake => ([.i64, .i32], none)
+    | .nativeLoad => ([.i64, .i64], some .i64)
+    | .nativeFree => ([.i64], none)
+    | .nativeArch => ([], some .i32)
+    | .cpuHas => ([.i64, .i64], some .i32)
+    | .fileCreateDirAll | .fileSize | .stdoutWrite | .stdinReadline => ([.i64, .i64], some .i64)
+    | .fileReadToPtr | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
+    | .threadStart => ([.i64, .i64], some .i64)
+    | .threadFinish => ([.i64], some .i64)
+    | .fileSetLen => ([.i64, .i64, .i64], some .i64)
   -- A port, a device, a buffer, a length and a count are `i64`s; an index,
   -- a baud rate, a timeout, an interface, an endpoint and the fields of a
   -- SETUP packet `i32`s.
@@ -552,8 +599,6 @@ structure LoadOp where
 
 /-- One runtime entry point. -/
 inductive Ffi where
-  | fileReadToPtr | fileWriteFromPtr
-  | stdinReadline | stdoutWrite
   | gpuInit | gpuCreateBuffer | gpuCreatePipeline | gpuUpload | gpuDownload
   | gpuDispatch | gpuCleanup | gpuUploadPtr | gpuDownloadPtr
   | windowInit | windowOpen | windowPoll | windowPresentGpuBuffer | windowCleanup
@@ -575,21 +620,12 @@ inductive Ffi where
   | cublasPtrArray | cublasSgemmBatchedOnStream
   | cudaPinnedPtrAt | cudaMemInfoFree | cudaMemInfoTotal | cublasGemmExBf16
   | cublasGemmStridedBatchedExBf16
-  | nativeLoad | nativeFree | nativeArch | cpuHas
-  | fileCreateDirAll | threadStart | threadFinish
-  | memLock | memUnlock | memAdviseHuge | threadPriority
-  | memWait | memWake | clockNow
-  | fileSize | fileSetLen
   deriving Repr, DecidableEq, Inhabited, Lean.ToExpr
 
 namespace Ffi
 
 /-- The C symbol the JIT resolves. -/
 def cname : Ffi → String
-  | .fileReadToPtr => "cl_file_read_to_ptr"
-  | .fileWriteFromPtr => "cl_file_write_from_ptr"
-  | .stdinReadline => "cl_stdin_read_line"
-  | .stdoutWrite => "cl_stdout_write"
   | .gpuInit => "cl_gpu_init"
   | .gpuCreateBuffer => "cl_gpu_create_buffer"
   | .gpuCreatePipeline => "cl_gpu_create_pipeline"
@@ -669,29 +705,9 @@ def cname : Ffi → String
   | .cudaMemInfoTotal => "cl_cuda_mem_info_total"
   | .cublasGemmExBf16 => "cl_cublas_gemm_ex_bf16"
   | .cublasGemmStridedBatchedExBf16 => "cl_cublas_gemm_strided_batched_ex_bf16"
-  | .nativeLoad => "cl_native_load"
-  | .nativeFree => "cl_native_free"
-  | .nativeArch => "cl_native_arch"
-  | .cpuHas => "cl_cpu_has"
-  | .fileCreateDirAll => "cl_file_create_dir_all"
-  | .threadStart => "cl_thread_start"
-  | .threadFinish => "cl_thread_finish"
-  | .memLock => "cl_mem_lock"
-  | .memUnlock => "cl_mem_unlock"
-  | .memAdviseHuge => "cl_mem_advise_huge"
-  | .threadPriority => "cl_thread_priority"
-  | .memWait => "cl_mem_wait"
-  | .memWake => "cl_mem_wake"
-  | .clockNow => "cl_clock_now"
-  | .fileSize => "cl_file_size"
-  | .fileSetLen => "cl_file_set_len"
 
 /-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
 def sig : Ffi → List ClifTy × Option ClifTy
-  | .fileReadToPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
-  | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
-  | .stdinReadline => ([.i64, .i64], some .i64)
-  | .stdoutWrite => ([.i64, .i64], some .i64)
   | .gpuInit => ([.i64], none)
   | .gpuCreateBuffer => ([.i64, .i64], some .i32)
   | .gpuCreatePipeline => ([.i64, .i64, .i64, .i32], some .i32)
@@ -814,26 +830,15 @@ def sig : Ffi → List ClifTy × Option ClifTy
   -- not be placed); `arch` and `cpuHas` (a NUL-terminated feature name) decide
   -- which bytes to carry in. Running them is not an import: it is a call with
   -- `Callee.native`.
-  | .nativeLoad => ([.i64, .i64], some .i64)
-  | .nativeFree => ([.i64], none)
-  | .nativeArch => ([], some .i32)
-  | .cpuHas => ([.i64, .i64], some .i32)
   -- `(path)`: the directory at the path, and every one missing on the way;
   -- `0`, or `-1` when that cannot be done.
-  | .fileCreateDirAll => ([.i64, .i64], some .i64)
   -- `(fn, arg)`: function `fn` of the program run on `arg` on a new thread,
   -- answered as a handle, or `-1`; `(handle)`: that thread waited for and the
   -- handle released, once: `0`, or `-1`.
-  | .threadStart => ([.i64, .i64], some .i64)
-  | .threadFinish => ([.i64], some .i64)
   -- The performance controls: lock `(ptr, len)` in physical memory, unlock
   -- it, ask for huge pages under it, and raise (`1`) or lower (`-1`) the
   -- calling thread's priority a step, or reset it (`0`). Each answers `0`,
   -- or `-1` when the system declines; none changes what memory holds.
-  | .memLock => ([.i64, .i64], some .i32)
-  | .memUnlock => ([.i64, .i64], some .i32)
-  | .memAdviseHuge => ([.i64, .i64], some .i32)
-  | .threadPriority => ([.i32], some .i32)
   -- ffi/sync.rs: `(addr, expected, timeout)` sleeps while the 32-bit word at
   -- `addr` holds `expected`, until a wake on `addr`, the timeout in
   -- nanoseconds (none if negative), or for no reason: `0` woken, `1` the word
@@ -841,11 +846,6 @@ def sig : Ffi → List ClifTy × Option ClifTy
   -- `(addr, count)` wakes up to `count` waiters there (all if negative),
   -- answering how many; `()` reads a clock that never goes backwards, in
   -- nanoseconds. None changes what memory holds.
-  | .memWait => ([.i64, .i32, .i64], none)
-  | .memWake => ([.i64, .i32], none)
-  | .clockNow => ([], some .i64)
-  | .fileSize => ([.i64, .i64], some .i64)
-  | .fileSetLen => ([.i64, .i64, .i64], some .i64)
   -- What wgpu answers through a callback, waited for: `(instance)` its
   -- high-performance adapter, or `0`; `(adapter)` a device, or `0`;
   -- `(device, buffer, offset, dst, size)` the buffer's bytes copied to `dst`
@@ -857,9 +857,7 @@ def result (f : Ffi) : Option ClifTy := f.sig.2
 
 /-- Every entry point, in the order that fixes the ids. -/
 def all : List Ffi :=
-  [.fileReadToPtr, .fileWriteFromPtr,
-   .stdinReadline, .stdoutWrite,
-   .gpuInit, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuDownload,
+  [.gpuInit, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuDownload,
    .gpuDispatch, .gpuCleanup, .gpuUploadPtr, .gpuDownloadPtr,
    .windowInit, .windowOpen, .windowPoll, .windowPresentGpuBuffer, .windowCleanup,
    .lmdbInit, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn,
@@ -879,10 +877,7 @@ def all : List Ffi :=
    .cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmOnStream,
    .cublasPtrArray, .cublasSgemmBatchedOnStream,
    .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16,
-   .cublasGemmStridedBatchedExBf16,
-   .nativeLoad, .nativeFree, .nativeArch, .cpuHas, .fileCreateDirAll, .threadStart, .threadFinish,
-   .memLock, .memUnlock, .memAdviseHuge, .threadPriority,
-   .memWait, .memWake, .clockNow, .fileSize, .fileSetLen]
+   .cublasGemmStridedBatchedExBf16]
 
 /-- The registry of entry points: `all` misses none and repeats none, so the
     ids below are a numbering of `Ffi` and not merely of a list beside it. -/

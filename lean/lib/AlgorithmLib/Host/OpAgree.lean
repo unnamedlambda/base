@@ -113,6 +113,61 @@ macro "agree_simp" : tactic => `(tactic| (
 
 variable {m : Mem} {Δ : TyEnv} {Γ : Env}
 
+/-- An integer operation of two operands of one integer type, total: the
+    family `iadd`, `isub` and `imul` are. -/
+theorem agree_intBin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
+    (h : UInt64 → UInt64 → UInt64)
+    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && ta.isInt) ta))
+    (he : evalOp m Γ o = bin Γ a b fun t x y => some (norm t (h x y)))
+    (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
+  unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get, bin]; rw [hΔ a, hΔ b]
+  slot a with ha <;> slot b with hb <;> agree_simp
+
+/-- A bitwise operation on two integers or two vectors of one type. -/
+theorem agree_bitwise (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
+    (h : UInt64 → UInt64 → UInt64)
+    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && (ta.isInt || ta.isVec)) ta))
+    (he : evalOp m Γ o = (do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => h x y)))
+    (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
+  unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get]; rw [hΔ a, hΔ b]
+  slot a with ha <;> slot b with hb <;> agree_simp
+
+/-- A float operation on two floats or two float vectors of one type. -/
+theorem agree_floatBin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
+    (f32op : Float32 → Float32 → Float32) (f64op : Float → Float → Float)
+    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta))
+    (he : evalOp m Γ o = (do zipF (← get Γ a) (← get Γ b) f32op f64op))
+    (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
+  unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get]; rw [hΔ a, hΔ b]
+  slot a with ha <;> slot b with hb <;> agree_simp
+
+/-- A float operation on the raw bits of two floats or float vectors of one type. -/
+theorem agree_floatBits (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
+    (f : ClifTy → UInt64 → UInt64 → UInt64)
+    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta))
+    (he : evalOp m Γ o = (do zipBits (← get Γ a) (← get Γ b) f))
+    (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
+  unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get]; rw [hΔ a, hΔ b]
+  slot a with ha <;> slot b with hb <;> agree_simp
+
+/-- A shift: an integer, by an integer of any width. -/
+theorem agree_shift (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a b : R}
+    (g : ClifTy → UInt64 → UInt64 → UInt64)
+    (hc : o.check Δ = (do let ta ← Δ.get a; let tb ← Δ.get b; need (ta.isInt && tb.isInt) ta))
+    (he : evalOp m Γ o = shiftBin Γ a b fun t x y => some (norm t (g t x y)))
+    (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
+  unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get, shiftBin]; rw [hΔ a, hΔ b]
+  slot a with ha <;> slot b with hb <;> agree_simp
+
+/-- A unary integer operation, at the operand's type. -/
+theorem agree_intUn (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) {o : Op} {a : R}
+    (g : ClifTy → UInt64 → UInt64)
+    (hc : o.check Δ = (do let ta ← Δ.get a; need ta.isInt ta))
+    (he : evalOp m Γ o = un Γ a (·.isInt) fun t x => some (norm t (g t x)))
+    (ht : o.mayTrap = false) (hs : o.Strict Γ = True) : Agree m Δ Γ o := by
+  unfold Agree; rw [hc, he, ht, hs]; simp only [Sem.get, un]; rw [hΔ a]
+  slot a with ha <;> agree_simp
+
 theorem agree_iconst (ty : ClifTy) (k : Int) : Agree m Δ Γ (.iconst ty k) := by
   agree_unfold; cases ty <;> agree_simp
 
@@ -125,9 +180,8 @@ theorem agree_memory : Agree m Δ Γ .memory := by
 theorem agree_funcAddr (i : Nat) : Agree m Δ Γ (.funcAddr i) := by
   agree_unfold; agree_simp
 
-theorem agree_ineg (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a : R) : Agree m Δ Γ (.ineg a) := by
-  agree_unfold; rw [hΔ a]
-  slot a with ha <;> agree_simp
+theorem agree_ineg (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a : R) : Agree m Δ Γ (.ineg a) :=
+  agree_intUn hΔ hΓ (fun _ x => 0 - x) rfl rfl rfl rfl
 
 theorem agree_ctz (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a : R) : Agree m Δ Γ (.ctz a) := by
   agree_unfold; rw [hΔ a]
@@ -196,65 +250,51 @@ theorem agree_extractlane (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a : R) (l : 
     have hn := Array.getElem?_eq_none_iff (xs := xs) (i := l)
     rcases hl : xs[l]? with _ | y <;> simp_all <;> omega)
 
-theorem agree_iadd (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.iadd a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_iadd (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.iadd a b) :=
+  agree_intBin hΔ hΓ (· + ·) rfl rfl rfl rfl
 
-theorem agree_isub (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.isub a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_isub (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.isub a b) :=
+  agree_intBin hΔ hΓ (· - ·) rfl rfl rfl rfl
 
-theorem agree_imul (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.imul a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_imul (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.imul a b) :=
+  agree_intBin hΔ hΓ (· * ·) rfl rfl rfl rfl
 
 theorem agree_udiv (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.udiv a b) := by
   agree_unfold; rw [hΔ a, hΔ b]
   slot a with ha <;> slot b with hb <;> agree_simp
 
-theorem agree_ishl (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.ishl a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_ishl (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.ishl a b) :=
+  agree_shift hΔ hΓ (fun t x y => x <<< (y % UInt64.ofNat t.width)) rfl rfl rfl rfl
 
-theorem agree_ushr (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.ushr a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_ushr (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.ushr a b) :=
+  agree_shift hΔ hΓ (fun t x y => (x &&& widthMask t) >>> (y % UInt64.ofNat t.width)) rfl rfl rfl rfl
 
-theorem agree_band (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.band a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_band (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.band a b) :=
+  agree_bitwise hΔ hΓ (· &&& ·) rfl rfl rfl rfl
 
-theorem agree_bandNot (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.bandNot a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_bandNot (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.bandNot a b) :=
+  agree_bitwise hΔ hΓ (fun x y => x &&& ~~~y) rfl rfl rfl rfl
 
-theorem agree_bor (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.bor a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_bor (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.bor a b) :=
+  agree_bitwise hΔ hΓ (· ||| ·) rfl rfl rfl rfl
 
-theorem agree_bxor (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.bxor a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_bxor (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.bxor a b) :=
+  agree_bitwise hΔ hΓ (· ^^^ ·) rfl rfl rfl rfl
 
-theorem agree_fadd (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fadd a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_fadd (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fadd a b) :=
+  agree_floatBin hΔ hΓ (· + ·) (· + ·) rfl rfl rfl rfl
 
-theorem agree_fsub (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fsub a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_fsub (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fsub a b) :=
+  agree_floatBin hΔ hΓ (· - ·) (· - ·) rfl rfl rfl rfl
 
-theorem agree_fmul (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmul a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_fmul (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmul a b) :=
+  agree_floatBin hΔ hΓ (· * ·) (· * ·) rfl rfl rfl rfl
 
-theorem agree_fmax (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmax a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_fmax (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmax a b) :=
+  agree_floatBits hΔ hΓ (pickExtreme true) rfl rfl rfl rfl
 
-theorem agree_fmin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmin a b) := by
-  agree_unfold; rw [hΔ a, hΔ b]
-  slot a with ha <;> slot b with hb <;> agree_simp
+theorem agree_fmin (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (a b : R) : Agree m Δ Γ (.fmin a b) :=
+  agree_floatBits hΔ hΓ (pickExtreme false) rfl rfl rfl rfl
 
 theorem agree_icmp (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c : ICmpCond) (a b : R) : Agree m Δ Γ (.icmp c a b) := by
   agree_unfold; rw [hΔ a, hΔ b]
@@ -332,16 +372,78 @@ theorem ite_vec (c : Prop) [Decidable c] (t : ClifTy) (xs ys : Array UInt64) :
     (if c then V.vec t xs else V.vec t ys) = V.vec t (if c then xs else ys) := by split <;> rfl
 
 set_option maxHeartbeats 8000000 in
-theorem agree_select (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c a b : R) : Agree m Δ Γ (.select c a b) := by
-  agree_unfold; rw [hΔ c, hΔ a, hΔ b]
-  slot c with hc <;> slot a with ha <;> slot b with hb <;>
-    simp [ite_some_some, ite_sc, ite_vec, apply_ite Array.size, need, V.ty, V.Shaped, ClifTy.isInt, ClifTy.lanes,
-      bind, Option.bind, *]
+theorem agree_select (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c a b : R) :
+    Agree m Δ Γ (.select c a b) := by
+  unfold Agree
+  simp only [Op.check, evalOp, Op.mayTrap, Op.Strict, Sem.get, hΔ c, hΔ a, hΔ b]
+  rcases hcv : Γ[c]? with _ | cv <;> rcases hav : Γ[a]? with _ | av <;>
+    rcases hbv : Γ[b]? with _ | bv <;> simp [need]
+  have sa := hΓ _ _ hav; have sb := hΓ _ _ hbv
+  rcases cv with ⟨tc, x⟩ | ⟨tc, xs⟩
+  · have hty : (V.sc tc x).ty = tc := rfl
+    by_cases hT : isTrue (V.sc tc x) = true <;> simp only [hT, if_true, if_false, Bool.false_eq_true] <;>
+      refine ⟨?_, ?_, ?_⟩ <;> intros <;> simp_all <;> grind
+  · obtain ⟨l, n, hl, -⟩ := hΓ _ _ hcv
+    have hty : (V.vec tc xs).ty = tc := rfl
+    cases tc <;> simp_all [ClifTy.lanes, ClifTy.isInt]
 
 set_option maxHeartbeats 8000000 in
-theorem agree_bitselect (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c a b : R) : Agree m Δ Γ (.bitselect c a b) := by
-  agree_unfold; rw [hΔ c, hΔ a, hΔ b]
-  slot c with hc <;> slot a with ha <;> slot b with hb <;> agree_simp
+/-- What `zipAnyBits` answers: a value of its operands' one type, shaped as the
+    first one is. -/
+theorem zipAnyBits_some {u v w : V} {f : ClifTy → UInt64 → UInt64 → UInt64}
+    (h : zipAnyBits u v f = some w) : u.ty = v.ty ∧ w.ty = u.ty ∧ (u.Shaped → w.Shaped) := by
+  unfold zipAnyBits zipBitsIf at h
+  rcases u with ⟨t, x⟩ | ⟨t, xs⟩ <;> rcases v with ⟨t', y⟩ | ⟨t', ys⟩ <;> simp at h
+  · obtain ⟨rfl, rfl⟩ := h
+    exact ⟨rfl, rfl, fun hs => hs⟩
+  · rcases hl : t.lanes with _ | ⟨l, n⟩ <;> simp [hl] at h
+    obtain ⟨⟨rfl, hsz⟩, rfl⟩ := h
+    refine ⟨rfl, rfl, fun ⟨l', n', hl', hn'⟩ => ⟨l', n', hl', ?_⟩⟩
+    simp [Array.size_zipWith]; omega
+
+/-- Two shaped operands of one type: `zipAnyBits` answers. -/
+theorem zipAnyBits_ok {u v : V} (f : ClifTy → UInt64 → UInt64 → UInt64)
+    (hu : u.Shaped) (hv : v.Shaped) (ht : u.ty = v.ty) : ∃ w, zipAnyBits u v f = some w := by
+  unfold zipAnyBits zipBitsIf
+  rcases u with ⟨t, x⟩ | ⟨t, xs⟩ <;> rcases v with ⟨t', y⟩ | ⟨t', ys⟩ <;>
+    simp only [V.ty, V.Shaped] at ht hu hv
+  · subst ht; simp
+  · subst ht; obtain ⟨l, n, hl, _⟩ := hv; simp [hl] at hu
+  · subst ht; obtain ⟨l, n, hl, _⟩ := hu; simp [hl] at hv
+  · subst ht
+    obtain ⟨l, n, hl, hn⟩ := hu
+    obtain ⟨l', n', hl', hn'⟩ := hv
+    rw [hl] at hl'; cases hl'
+    simp [hl, hn, hn']
+
+theorem agree_bitselect (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c a b : R) :
+    Agree m Δ Γ (.bitselect c a b) := by
+  unfold Agree
+  simp only [Op.check, evalOp, Op.mayTrap, Op.Strict, Sem.get, hΔ c, hΔ a, hΔ b]
+  rcases hcv : Γ[c]? with _ | cv <;> rcases hav : Γ[a]? with _ | av <;>
+    rcases hbv : Γ[b]? with _ | bv <;> simp [need]
+  have sc := hΓ _ _ hcv; have sa := hΓ _ _ hav; have sb := hΓ _ _ hbv
+  refine ⟨?_, ?_, ?_⟩
+  · intro e ht v hv
+    simp only [Option.bind_eq_some_iff] at hv
+    obtain ⟨mk, hm, ot, -, hw⟩ := hv
+    obtain ⟨-, e2, s1⟩ := zipAnyBits_some hm
+    obtain ⟨-, e4, s3⟩ := zipAnyBits_some hw
+    exact ⟨by rw [e4, e2, e], s3 (s1 sc)⟩
+  · intro e ht
+    obtain ⟨mk, hm⟩ := zipAnyBits_ok (fun _ m x => m &&& x) sc sa e
+    obtain ⟨ot, ho⟩ := zipAnyBits_ok (fun _ m y => ~~~m &&& y) sc sb (e.trans ht)
+    obtain ⟨-, e2, s1⟩ := zipAnyBits_some hm
+    obtain ⟨-, e4, s2⟩ := zipAnyBits_some ho
+    obtain ⟨w, hw⟩ := zipAnyBits_ok (fun _ x y => x ||| y) (s1 sc) (s2 sc) (by rw [e2, e4])
+    simp [hm, ho, hw]
+  · intro v hv
+    simp only [Option.bind_eq_some_iff] at hv
+    obtain ⟨mk, hm, ot, ho, hw⟩ := hv
+    obtain ⟨e1, e2, -⟩ := zipAnyBits_some hm
+    obtain ⟨e1', -, -⟩ := zipAnyBits_some ho
+    obtain ⟨-, e4, -⟩ := zipAnyBits_some hw
+    exact ⟨⟨e1, e1.symm.trans e1'⟩, by rw [e4, e2, e1]⟩
 
 set_option maxHeartbeats 8000000 in
 theorem agree_fma (hΔ : Types Δ Γ) (hΓ : EnvShaped Γ) (c a b : R) : Agree m Δ Γ (.fma c a b) := by

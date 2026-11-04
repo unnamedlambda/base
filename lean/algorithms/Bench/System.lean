@@ -119,7 +119,7 @@ def wc : Prog V L Unit := do
   let base ← basePtr
   let buf ← iaddImm base BUF
   -- the path is the caller's whole data buffer
-  let got ← ffi .fileReadToPtr %[← dataPtr, ← dataLen, buf, ← iconst64 0, ← iconst64 WC_MAX]
+  let got ← ext (.base .fileReadToPtr) %[← dataPtr, ← dataLen, buf, ← iconst64 0, ← iconst64 WC_MAX]
   let n ← select (← icmp .slt got (← iconst64 0)) (← iconst64 0) got
   storeI64 (← countNewlines buf n) (← outPtr)
 

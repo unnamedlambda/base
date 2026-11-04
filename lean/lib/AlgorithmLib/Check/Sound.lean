@@ -844,7 +844,7 @@ theorem ext_rooms {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {e : 
 /-- **A library call the checker accepts** ends where its state says: the facts
     it keeps, the handles of the kind it may close forgotten, and its answer. -/
 theorem extCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} (ha : e.aside = true)
-    (hsc : (args.map A.get).all (fun a => a.scTy.isSome) = true) (hp : preExt A.facts e (args.map A.get) = true)
+    (hsc : (args.map A.get).all (fun a => a.scTy.isSome) = true) (hp : preExt A.facts (relRb A args) e (args.map A.get) = true)
     {Γ : Env} {w : World} {vs : List V} (hA : A.Holds vals Γ w) (hvs : args.mapM (fun r => Γ[r]?) = some vs) :
     ∃ r w', callOf cfg.locals (.ext e) vs (obsCall w (.ext e) vs) = some (r, w') ∧
       ((A.forgetExt e).withFacts (A.facts.filter (extKeepsA e (args.map A.get)))).Holds vals Γ w' ∧
@@ -853,7 +853,7 @@ theorem extCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} (ha : e.asid
   have hd := descAll_of hA1 hvs
   obtain ⟨bits, hb⟩ := bits_exist hd hsc
   have hab := argBits_of hd hb
-  obtain ⟨hs, rs, hn, hlive, hroom⟩ := preExt_sound hA1.2.2 hab hp
+  obtain ⟨hs, rs, hn, hlive, hroom⟩ := preExt_sound hA1.2.2 hab hp (relRb_sound hA1 hvs hb)
   have hpre := Contracts.extNeeds_pre hn hlive hroom
   have hsome := ExtContracts.ext_pre_safe e bits _ hpre
   rw [Contracts.extCall_bits (cs := e.args bits) (cs' := vs) ha _
@@ -886,6 +886,11 @@ theorem extCall_core {cfg : Cfg} {A : AS} {e : Ext} {args : List R} (ha : e.asid
   · obtain ⟨-, x, hx⟩ := Contracts.present_same hcall
     cases hx
     exact TyV.sc (t := .i32) rfl
+  · simp only [extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true, Bool.false_eq_true,
+      if_false, hb, Option.bind_eq_bind, Option.bind_some] at hcall
+    obtain ⟨x, hx⟩ := (ExtContracts.baseCall_same hcall).2.2 _ rfl
+    cases hx
+    exact TyV.sc (ExtContracts.base_ret_lanes _)
   · split
     · rename_i k hk
       obtain ⟨x, rfl⟩ := Contracts.lib_open_i64 hk hcall hb
@@ -905,7 +910,7 @@ theorem callee_ffi {A B : AS} {f : Ffi} {args : List R} {av : AV} (h : A.callee 
 
 theorem callee_ext {A B : AS} {e : Ext} {args : List R} {av : AV} (h : A.callee lb (.ext e) args = .ok (B, av)) :
     e.aside = true ∧ (args.map A.get).all (fun a => a.scTy.isSome) = true ∧
-      preExt A.facts e (args.map A.get) = true ∧
+      preExt A.facts (relRb A args) e (args.map A.get) = true ∧
       B = (A.forgetExt e).withFacts (A.facts.filter (extKeepsA e (args.map A.get))) ∧
       av = extAnswer e (args.map A.get) := by
   simp only [AS.callee] at h
@@ -1353,17 +1358,24 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
         simp only [absStmt, answersAs, if_true] at h
         split at h
         · rename_i B av hB
-          obtain ⟨hB', rfl⟩ := callee_ffi hB rfl
+          obtain ⟨ha, hsc, hp, rfl, rfl⟩ := callee_ext hB
           cases h
           refine call_rule fun Γ w vs hA hvs => ?_
-          obtain ⟨r, w', bits, hcall, hA', hab, hr⟩ := ffiCall_core hB' hA hvs
+          obtain ⟨r, w', hcall, hA', hr⟩ := extCall_core (cfg := cfg) ha hsc hp hA hvs
+          have hA1 := hA.obsCall (.ext (.base .fileReadToPtr)) vs
+          have hd := descAll_of hA1 hvs
+          obtain ⟨bits, hb⟩ := bits_exist hd hsc
+          have hab := argBits_of hd hb
           refine ⟨r, w', hcall, fun v hv => ?_⟩
-          obtain ⟨x, rfl, hans, -⟩ := hr v hv
-          have hP := hA'.push (av := .sc (Ffi.fileReadToPtr.result.getD .i64))
-            (v := .sc (Ffi.fileReadToPtr.result.getD .i64) x) (TyV.sc (ffi_result_lanes Ffi.fileReadToPtr))
+          have hdv := hr v hv
+          have hc2 := hcall
+          simp only [callOf, extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true,
+            Bool.false_eq_true, if_false, hb, Option.bind_eq_bind, Option.bind_some] at hc2
+          subst hv
+          obtain ⟨x, rfl⟩ := (ExtContracts.baseCall_same hc2).2.2 _ rfl
+          have hP := hA'.push hdv
           have hlen : Γ.size = A.len := hA.1.1
-          have hat : ∀ u, (Γ.push (.sc (Ffi.fileReadToPtr.result.getD .i64) x))[A.len]? = some u →
-              u = .sc .i64 x := by
+          have hat : ∀ u, (Γ.push (.sc .i64 x))[A.len]? = some u → u = .sc .i64 x := by
             intro u hu
             rw [← hlen, Array.getElem?_push_size] at hu
             cases hu; rfl
@@ -1371,12 +1383,11 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
           simp only [List.map_cons, List.map_nil] at hab
           rcases bits with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨size, _ | ⟨_, _⟩⟩⟩⟩⟩⟩ <;>
             simp only [ArgBits, and_false] at hab
-          obtain ⟨-, -, -, -, ⟨t, hd⟩, -⟩ := hab
-          rw [hn] at hd
-          simp only [AV.Desc, V.sc.injEq] at hd
-          obtain ⟨-, rfl⟩ := hd
-          simp only [answerOk] at hans
-          rcases hans with h1 | h2
+          obtain ⟨-, -, -, -, ⟨t, hd'⟩, -⟩ := hab
+          rw [hn] at hd'
+          simp only [AV.Desc, V.sc.injEq] at hd'
+          obtain ⟨-, rfl⟩ := hd'
+          rcases fileRead_answer hc2 with h1 | h2
           · left
             refine hP.setAV fun u hu => ?_
             rw [hat u hu]

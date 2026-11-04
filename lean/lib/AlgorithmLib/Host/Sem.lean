@@ -225,6 +225,30 @@ def strlenAt (m : Mem) (a : UInt64) : Option Nat := do
     (`Lib.builtin`); another as the machine has it. -/
 def World.has (w : World) (l : Lib) : Bool := l.builtin || w.present l
 
+/-- **What the engine's own functions do**, on their arguments' bits. -/
+def baseCall (f : BaseFn) (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  match f with
+  | .clockNow => ffiClockNow bits w
+  | .memLock => ffiGrant "lock" 2 bits w
+  | .memUnlock => ffiGrant "unlock" 2 bits w
+  | .memAdviseHuge => ffiGrant "hugepages" 2 bits w
+  | .threadPriority => ffiGrant "priority" 1 bits w
+  | .memWait => ffiMemWait bits w
+  | .memWake => ffiMemWake bits w
+  | .nativeLoad => ffiNativeLoad bits w
+  | .nativeFree => ffiNativeFree bits w
+  | .nativeArch => ffiNativeArch bits w
+  | .cpuHas => ffiCpuHas bits w
+  | .fileCreateDirAll => ffiFileCreateDirAll bits w
+  | .fileSize => ffiFileSize bits w
+  | .fileSetLen => ffiFileSetLen bits w
+  | .stdoutWrite => ffiStdoutWrite bits w
+  | .fileReadToPtr => ffiFileReadToPtr bits w
+  | .fileWriteFromPtr => ffiFileWriteFromPtr bits w
+  | .stdinReadline => ffiStdinReadline bits w
+  -- Stated where programs meet them, as the thread library's spawn and join.
+  | .threadStart | .threadFinish => none
+
 /-- **What the C library's functions do**, on their arguments' bits.
     `memcpy` between overlapping ranges is undefined, so it is not answered. -/
 def cCall (f : CFn) (bits : List UInt64) (w : World) : Option (Option V × World) :=
@@ -303,6 +327,9 @@ def extCall (e : Ext) (vs : List V) (w : World) : Option (Option V × World) :=
   | .usb f, vs => do
       let bits ← vs.mapM asBits
       usbCall f bits w
+  | .base f, vs => do
+      let bits ← vs.mapM asBits
+      baseCall f bits w
   | _, _ => none
 
 /-- What a library function's 64-bit answer is to the caller of the entry

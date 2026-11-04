@@ -29,7 +29,7 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 /-- The engine's own libraries, whose calls change only their own handles and
     the memory in their frame. -/
 def _root_.AlgorithmLib.IR.Ext.aside : Ext → Bool
-  | .present _ | .c _ | .window _ | .cpu _ | .serial _ | .usb _ => true
+  | .present _ | .c _ | .window _ | .cpu _ | .serial _ | .usb _ | .base _ => true
   | _ => false
 
 /-- The kind of handle a call opens. -/
@@ -790,6 +790,23 @@ theorem cpu_step {f : CpuFn} {bits : List UInt64} {w : World} {r : Option V} {w'
       fun ⟨_, h⟩ => nomatch h⟩
     intro k x hk; simp [Ext.opens] at hk
 
+theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : baseCall f bits w = some (r, w')) : LibStep (.base f) bits w r w' := by
+  obtain ⟨hw, hmem, -⟩ := ExtContracts.baseCall_same h
+  have hr : Rewritten w.mem w'.mem := by
+    rcases hmem with hm | ⟨-, _, _, hc⟩
+    · rw [hm]; exact Rewritten.refl _
+    · exact Rewritten.of_eq (copyIn_frozen hc) (copyIn_sizes_eq hc) (copyIn_busy hc)
+  generalize w'.native = n at hw
+  generalize w'.fs = fs at hw
+  generalize w'.stdin = si at hw
+  generalize w'.stdout = so at hw
+  generalize w'.mem = m at hw hr
+  subst hw
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hr,
+    fun k _ _ hl => by cases k <;> exact hl,
+    fun k x hk => by simp [Ext.opens] at hk, fun ⟨_, h⟩ => nomatch h⟩
+
 -- ---------------------------------------------------------------------------
 -- The C library
 -- ---------------------------------------------------------------------------
@@ -915,6 +932,7 @@ theorem lib_step {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {r : O
   · exact cpu_step h
   · exact serial_step h
   · exact usb_step h
+  · exact base_step h
 
 /-- Whether a call with these argument bits keeps a fact, whatever it
     answers. A close keeps no handle of the kind it closes: which one it
@@ -1138,6 +1156,8 @@ theorem lib_scalar {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {v :
     all_goals (repeat' split at hr) <;> first
       | (cases hr <;> exact ⟨_, _, rfl⟩)
       | (cases hr <;> exact usbDecode_answer hc)
+  · obtain ⟨x, hx⟩ := (ExtContracts.baseCall_same h).2.2 _ rfl
+    exact ⟨_, x, hx⟩
 
 /-- **An open answers a 64-bit word**: the handle it opened, or null. -/
 theorem lib_open_i64 {e : Ext} {k : Held} (hk : e.opens = some k) {vs : List V} {bits : List UInt64}
@@ -1238,6 +1258,46 @@ theorem roomAt_sub {S S' : TState} (hsub : ∀ x ∈ S', x ∈ S) {a : UInt64} {
     exact ⟨⟨⟨hp, hn⟩, hsub _ hz⟩, x, hsub _ hx, hr⟩
   · cases h
 
+/-- What an engine function needs: its arguments, and for a wait or a wake
+    four bytes at an address a multiple of four. -/
+def baseNeeds : BaseFn → List UInt64 → Option (List (Held × UInt64) × List (UInt64 × Nat))
+  | .clockNow, [] => some ([], [])
+  | .memLock, [_, _] | .memUnlock, [_, _] | .memAdviseHuge, [_, _] => some ([], [])
+  | .threadPriority, [_] => some ([], [])
+  | .memWait, [a, _, _] | .memWake, [a, _] => if a % 4 = 0 then some ([], [(a, 4)]) else none
+  | .nativeArch, [] => some ([], [])
+  | .nativeLoad, [src, len] => some ([], [(src, (asI64 len).toNat)])
+  | .cpuHas, [p, c] | .fileCreateDirAll, [p, c] | .fileSize, [p, c] | .fileSetLen, [p, c, _]
+  | .stdoutWrite, [p, c] => some ([], [(p, c.toNat)])
+  | .stdinReadline, [d, c] => some ([], [(d, c.toNat)])
+  | .fileReadToPtr, [pp, pc, s, _, n] | .fileWriteFromPtr, [pp, pc, s, _, n] =>
+      some ([], [(pp, pc.toNat), (s, n.toNat)])
+  | _, _ => none
+
+theorem baseNeeds_length {f : BaseFn} {bits : List UInt64} {n : List (Held × UInt64) × List (UInt64 × Nat)}
+    (h : baseNeeds f bits = some n) : bits.length = (Ext.base f).sig.1.length := by
+  unfold baseNeeds at h
+  split at h <;> first | rfl | cases h
+
+theorem baseNeeds_pre {f : BaseFn} {bits : List UInt64} {w : World} {hs : List (Held × UInt64)}
+    {rs : List (UInt64 × Nat)} (hn : baseNeeds f bits = some (hs, rs)) (room : ∀ q ∈ rs, Fits w.mem q.1 q.2) :
+    ExtContracts.basePre f bits w := by
+  unfold baseNeeds at hn
+  split at hn <;> (try cases hn) <;> (try trivial)
+  all_goals first
+    | exact fun _ => (room _ List.mem_cons_self).readable
+    | exact (room _ List.mem_cons_self).readable
+    | exact fun _ _ _ _ => (Fits.mono (Nat.min_le_right _ _) (room _ List.mem_cons_self)).writable
+    | exact fun _ => ⟨(room _ List.mem_cons_self).readable,
+        (room _ (List.mem_cons_of_mem _ List.mem_cons_self)).readable⟩
+    | exact ⟨fun _ => (room _ List.mem_cons_self).readable, fun _ _ _ _ =>
+        (Fits.mono (Nat.min_le_left _ _) (room _ (List.mem_cons_of_mem _ List.mem_cons_self))).writable⟩
+    | (split at hn
+       · rename_i ha; cases hn
+         obtain ⟨r, off, hd, hp, hs, hz, -⟩ := room _ List.mem_cons_self
+         exact ⟨ha, load_isSome hd hp hs hz⟩
+       · cases hn)
+
 /-- **What a call of the engine's own libraries needs of a typestate**: the
     handles it is handed, held, and room for each buffer it reads or writes,
     by address and length; `none` for a call the typestate cannot vouch for,
@@ -1256,6 +1316,7 @@ def extNeeds : Ext → List UInt64 → Option (List (Held × UInt64) × List (UI
   | .window .poll, [p, out] => some ([(.window, p)], [(out, 32)])
   | .cpu .count, [] | .cpu .unpin, [] => some ([], [])
   | .cpu .core, [_] | .cpu .package, [_] | .cpu .pin, [_] => some ([], [])
+  | .base f, bits => baseNeeds f bits
   | .serial .count, [] => some ([], [])
   | .serial .name, [_, out, cap] => some ([], [(out, lenOf cap)])
   | .serial .close, [p] | .serial .pending, [p] => some ([(.port, p)], [])
@@ -1271,7 +1332,7 @@ def extNeeds : Ext → List UInt64 → Option (List (Held × UInt64) × List (UI
 theorem extNeeds_length {e : Ext} {bits : List UInt64} {n : List (Held × UInt64) × List (UInt64 × Nat)}
     (h : extNeeds e bits = some n) : bits.length = e.sig.1.length := by
   unfold extNeeds at h
-  split at h <;> first | rfl | cases h
+  split at h <;> first | rfl | cases h | exact baseNeeds_length h
 
 theorem copyIn_zeros {w : World} {a : UInt64} {n : Nat} (h : Fits w.mem a n) :
     ∃ m, Sem.copyIn w.mem a (ByteArray.mk (Array.replicate n 0)) = some m :=
@@ -1337,6 +1398,8 @@ theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
     exact ⟨rfl, by simp [wlDecode, wlDPoll, hk, hm]⟩
   -- cpu
   all_goals try exact rfl
+  -- the engine's own
+  · exact baseNeeds_pre hn room
   -- serial: count
   · exact ⟨rfl, rfl⟩
   -- serial: name

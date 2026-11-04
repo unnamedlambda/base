@@ -152,7 +152,7 @@ def emitWriteAll (ptr lmdbCtx : V .i64) (handle : V .i32) (resOff : V .i64)
   let four ← iconst64 4
   let count64 ← sextend64 count
   let fcap ← iconst64 outFnameRegion
-  let _ ← ffi .fileSetLen %[← iadd ptr fnameOff, fcap, zero]
+  let _ ← ext (.base .fileSetLen) %[← iadd ptr fnameOff, fcap, zero]
   let _ ← wloop %[zero, four, zero]
     (head := fun c => return (contIf .slt (c.head) count64, %[], ()))
     (body := fun c _ => do
@@ -179,7 +179,7 @@ def emitFilter (ptr resOff : V .i64) (count : V .i32) (fnameOff : V .i64) (patte
   let patOff ← iconst64 patternStr_off
   let count64 ← sextend64 count
   let fcap ← iconst64 outFnameRegion
-  let _ ← ffi .fileSetLen %[← iadd ptr fnameOff, fcap, zero]
+  let _ ← ext (.base .fileSetLen) %[← iadd ptr fnameOff, fcap, zero]
   let _ ← wloop %[zero, four, zero]
     (head := fun c => return (contIf .slt (c.head) count64, %[], ()))
     (body := fun c _ => do
