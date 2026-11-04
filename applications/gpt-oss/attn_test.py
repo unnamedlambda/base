@@ -77,9 +77,9 @@ def main():
     positions = [int(p) for p in args.positions.split(",")]
     T = max(positions) + 1
 
-    art = py_base.load_artifact(args.artifact)
+    art = open(args.artifact, "rb").read()
     base = py_base.Driver(art)
-    want = struct.unpack_from("<I", base.read(0x80, 4))[0]
+    want = struct.unpack_from("<I", base.arena, 0x80)[0]
 
     # ---- the weights, exactly as the buffers want them ----
     anorm = bank.f32(ent["attn_norm"], (H,))

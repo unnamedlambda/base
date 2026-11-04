@@ -48,23 +48,26 @@ def code : Prog V L Unit := do
 
 The `lean-artifacts` crate builds every generator with Lake and embeds the
 resulting artifacts. Loading one compiles it once; each entry point is then a
-native function, found by name once and called with the caller's input and
-output buffers (`Driver::execute` does both, for a call made once).
+Rust function, found by name once and called with the caller's input and
+output buffers, as a C host gets a function pointer and Python a callable.
 
 ```rust
-use base::{Artifact, Driver};
+use base::Driver;
 
-let artifact = Artifact::from_bytes(lean_artifacts::BYTE_SCRUB)?;
-let driver = Driver::load(artifact)?;
+let driver = Driver::load(lean_artifacts::BYTE_SCRUB)?;
 
 let input = [0u8; 4096];
 let mut output = [0u8; 4096];
 // SAFETY: the artifact is one Lean built and checked.
-unsafe { driver.execute("main", &input, &mut output) }?;
+let scrub = unsafe { driver.function("main") }?;
+scrub(&input, &mut output);
 assert!(!output.contains(&0));
 ```
 
-The driver is also exported as a C API, which the Python and Lean bindings use.
+The C API is four calls: load an artifact, look up a function, the arena, and
+free. Every binding, Rust, C++, Python and Lean, is those four in its language's
+terms and nothing more; whatever a host builds on them, such as copying out of
+the arena or waiting on one of its words, is the host's own code.
 
 ## Performance
 

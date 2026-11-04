@@ -86,7 +86,7 @@ def main():
 
     import py_base
 
-    art = py_base.load_artifact(args.artifact)
+    art = open(args.artifact, "rb").read()
     base = py_base.Driver(art)
     check_layout(base)
 

@@ -29,7 +29,6 @@ def numClauses_off : Nat := 0x48
 def clauseCount_off : Nat := 0x50
 def resultFlag_off : Nat := 0x58
 def outLen_off : Nat := 0x60
-def inputFilename_off : Nat := 0x100
 def outputFilename_off : Nat := 0x200
 def outputStr_off : Nat := 0x300
 def cnf_off : Nat := 0x1000
@@ -56,7 +55,6 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"clause_count", clauseCount_off, 8⟩,
    ⟨"result_flag", resultFlag_off, 8⟩,
    ⟨"out_len",     outLen_off, 8⟩,
-   ⟨"input_name",  inputFilename_off, outputFilename_off - inputFilename_off⟩,
    ⟨"output_name", outputFilename_off, outputStr_off - outputFilename_off⟩,
    ⟨"output_str",  outputStr_off, cnf_off - outputStr_off⟩,
    ⟨"cnf",         cnf_off, maxCnfFileSize⟩,
@@ -499,7 +497,7 @@ def mainCode : Prog V L Unit := do
   let clauseCountAddr ← absAddr ptr clauseCount_off
   let resultFlagAddr ← absAddr ptr resultFlag_off
 
-  let read ← readFile ptr inputFilename_off (outputFilename_off - inputFilename_off) cnf_off maxCnfFileSize
+  let read ← readInputFile ptr cnf_off maxCnfFileSize
   -- a read that failed (-1) parses nothing
   let bytesRead ← select (← icmp .ugt read (← iconst64 maxCnfFileSize)) c0 read
 
@@ -536,10 +534,9 @@ def clifIrSource : Except String (List FuncData) :=
 -- ---------------------------------------------------------------------------
 
 def payloads : List UInt8 :=
-  let reserved := zeros inputFilename_off
-  let inputFname := padTo (stringToBytes "input.cnf") (outputFilename_off - inputFilename_off)
+  let reserved := zeros outputFilename_off
   let outputFname := padTo (stringToBytes "sat_output.txt") (cnf_off - outputFilename_off)
-  reserved ++ inputFname ++ outputFname
+  reserved ++ outputFname
 
 def satConfig (clif : List FuncData) : Artifact := {
   functions := clif,

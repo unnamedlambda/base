@@ -4,7 +4,7 @@
 //!     v1  = v0 * exp x2
 //!     out = v1 + x3 * v0
 
-use base::{Artifact, Driver};
+use base::Driver;
 
 const ART: &[u8] = lean_artifacts::GRAD_WARP;
 
@@ -29,22 +29,21 @@ pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..NIN).map(|i| ((i % 617) as f32 - 308.0) * 0.004).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-    let base = Driver::load(artifact).expect("Driver::load");
-    let run = "run";
-    let run_d = "runD";
-    let fetch = "fetch";
+    let base = Driver::load(ART).expect("Driver::load");
+    let run = unsafe { base.function("run") }.expect("run");
+    let run_d = unsafe { base.function("runD") }.expect("runD");
+    let fetch = unsafe { base.function("fetch") }.expect("fetch");
 
     let mut out = vec![0u8; NIN * 4];
-    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
-    unsafe { base.execute(run, b"", &mut []) }.expect("run");
+    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
+    run(b"", &mut []);
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.execute(run, b"", &mut []) }.expect("run");
+        run(b"", &mut []);
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
+    fetch(b"", &mut out);
 
     let gpu: Vec<f32> = out
         .chunks_exact(4)
@@ -81,13 +80,13 @@ pub fn main(_args: Vec<String>) {
 
     // ---- the narrowed gradient `gradProgD`, under `ZeroTermFree`/`ZeroLaws` ----
     let mut out_d = vec![0u8; NIN * 4];
-    unsafe { base.execute(run_d, b"", &mut []) }.expect("runD");
+    run_d(b"", &mut []);
     let t1 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.execute(run_d, b"", &mut []) }.expect("runD");
+        run_d(b"", &mut []);
     }
     let dt_d = t1.elapsed().as_secs_f64() / reps as f64;
-    unsafe { base.execute(fetch, b"", &mut out_d) }.expect("fetch");
+    fetch(b"", &mut out_d);
 
     let gpu_d: Vec<f32> = out_d
         .chunks_exact(4)

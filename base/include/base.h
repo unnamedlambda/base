@@ -4,11 +4,6 @@
  * `base_driver_function` answers a function by name as `dlsym` does, and the
  * host calls it directly, from any number of threads at once. Only a load
  * fails with something to say; a trap in a program ends the process.
- *
- * Waiting on a word of the arena, waking, and the clock are the system's own
- * calls (futex, WaitOnAddress, os_sync_wait_on_address; CLOCK_MONOTONIC,
- * CLOCK_UPTIME_RAW, QueryPerformanceCounter), so hosts and programs meet at the
- * same words; base.hpp has them as base::wait, base::wake and base::now.
  */
 #ifndef BASE_H
 #define BASE_H

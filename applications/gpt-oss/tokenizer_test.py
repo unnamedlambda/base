@@ -52,7 +52,7 @@ def main():
     alts, _o2, norm = pretok.pattern_for(tokjson)
     tab = pretok.class_table()
 
-    art = py_base.load_artifact(args.artifact)
+    art = open(args.artifact, "rb").read()
     base = py_base.Driver(art)
     path = os.path.abspath(args.tokenizer).encode() + b"\0"
     assert len(path) < 256

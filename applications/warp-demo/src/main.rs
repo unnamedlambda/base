@@ -1,7 +1,7 @@
 //! The proven warp reduction `warpSumSqV4Store` on the GPU, against the
 //! reference the proof predicts.
 
-use base::{Artifact, Driver};
+use base::Driver;
 
 const ART: &[u8] = lean_artifacts::WARP_SUMSQ;
 
@@ -15,24 +15,23 @@ pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..N).map(|i| ((i % 1024) as f32) * 0.001).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-    let base = Driver::load(artifact).expect("Driver::load");
+    let base = Driver::load(ART).expect("Driver::load");
 
     let mut out = vec![0u8; GRID * 4];
-    let run = "run";
-    let fetch = "fetch";
+    let run = unsafe { base.function("run") }.expect("run");
+    let fetch = unsafe { base.function("fetch") }.expect("fetch");
 
     // upload once
-    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
+    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
     // warm up, then time the LAUNCH ONLY
-    unsafe { base.execute(run, b"", &mut []) }.expect("run");
+    run(b"", &mut []);
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.execute(run, b"", &mut []) }.expect("run");
+        run(b"", &mut []);
     }
     let elapsed = t0.elapsed().as_secs_f64() / reps as f64;
-    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
+    fetch(b"", &mut out);
 
     let bytes_read = (N * 4) as f64;
     println!("working set : {:.0} MiB", bytes_read / 1048576.0);

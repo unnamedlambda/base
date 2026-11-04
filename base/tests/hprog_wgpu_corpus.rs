@@ -1,6 +1,5 @@
 //! wgpu called directly, against the interpreter (`Host/WgpuCorpus.lean`).
 
-use base_types::Artifact;
 use std::path::PathBuf;
 
 fn corpus_dir() -> PathBuf {
@@ -22,12 +21,10 @@ fn interpreter_and_wgpu_agree() {
     let names: Vec<String> =
         v["names"].as_array().expect("names").iter().map(|n| n.as_str().expect("name").to_string()).collect();
     let read = v["read"].as_u64().expect("read") as usize;
-    let a = Artifact::from_bytes(&std::fs::read(dir.join("hprog_wgpu_corpus.cbor")).expect("read artifact"))
-        .expect("artifact shape");
 
-    let b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(&std::fs::read(dir.join("hprog_wgpu_corpus.cbor")).expect("read artifact")).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
+    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
 
     let mut bad: Vec<String> = names
         .iter()

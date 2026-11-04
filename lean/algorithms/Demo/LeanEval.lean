@@ -14,19 +14,21 @@ open AlgorithmLib
 
 namespace LeanEval
 
--- Payload layout (app fields start at 0x0038 = 56, past the reserved header)
+-- Payload layout (app fields start at 0x0038 = 56, past the reserved header).
+-- The source file is the one the caller's input names, up to its first zero;
+-- bytes after that zero name the output file in place of `output.txt`.
 def OUTPUT_PATH    : Nat := 0x0038
-def INPUT_PATH     : Nat := 0x0078
-def SOURCE_BUF     : Nat := 0x0178
+def OUTPUT_PATH_SZ : Nat := 64
+def SOURCE_BUF     : Nat := 0x0078
 def SOURCE_BUF_SZ  : Nat := 4096
-def TRUE_STR       : Nat := 0x1178
-def FALSE_STR      : Nat := 0x1180
-def IDENT_BUF      : Nat := 0x1188
+def TRUE_STR       : Nat := 0x1078
+def FALSE_STR      : Nat := 0x1080
+def IDENT_BUF      : Nat := 0x1088
 def IDENT_BUF_SZ   : Nat := 64
-def HT_VAL_BUF     : Nat := 0x11C8
-def OUTPUT_BUF     : Nat := 0x11D0
+def HT_VAL_BUF     : Nat := 0x10C8
+def OUTPUT_BUF     : Nat := 0x10D0
 def OUTPUT_BUF_SZ  : Nat := 64
-def STACK_BASE     : Nat := 0x1210
+def STACK_BASE     : Nat := 0x1110
 def STACK_SZ       : Nat := 4096
 
 open AlgorithmLib.IR
@@ -392,7 +394,7 @@ def compareBy (k : K V) (op left right : V .i64) : Prog V L (V .i64) := do
 
 /-- Write the output buffer's first `len` bytes to the output file. -/
 def writeOut (k : K V) (len : V .i64) : Prog V L Unit := do
-  let _ ← writeFile0 k.ptr OUTPUT_PATH (INPUT_PATH - OUTPUT_PATH) OUTPUT_BUF len
+  let _ ← writeFile0 k.ptr OUTPUT_PATH OUTPUT_PATH_SZ OUTPUT_BUF len
 
 /-- A literal string, written out. -/
 def writeText (k : K V) (s : String) : Prog V L Unit := do
@@ -459,7 +461,30 @@ def mainCode : Prog V L Unit := do
   let stackAddr ← absAddr ptr STACK_BASE
 
   -- one byte short of the buffer: its last byte stays zero, the text's end
-  let _ ← readFile ptr INPUT_PATH (SOURCE_BUF - INPUT_PATH) SOURCE_BUF (SOURCE_BUF_SZ - 1)
+  let _ ← readInputFile ptr SOURCE_BUF (SOURCE_BUF_SZ - 1)
+
+  -- An output path after the source path's zero replaces the default: copied
+  -- until its own zero, within the input and the field less one byte, which a
+  -- zero then ends.
+  let input ← dataPtr
+  let inputLen ← dataLen
+  let srcEnd ← wloop1L zero
+    (head := fun _ i => return (contIfULt i inputLen, %[i], ()))
+    (body := fun l i _ => do
+      when .eq (← uload8_64 (← iadd input i)) zero (brk l %[i])
+      return %[← iaddImm i 1])
+  let outStart ← iaddImm srcEnd.head 1
+  when .ult outStart inputLen do
+    let outSrc ← iadd input outStart
+    let outLim ← umin (← isub inputLen outStart) (← iconst64 (OUTPUT_PATH_SZ - 1))
+    let outEnd ← wloop1L zero
+      (head := fun _ i => return (contIfULt i outLim, %[i], ()))
+      (body := fun l i _ => do
+        let ch ← uload8_64 (← iadd outSrc i)
+        istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH) i)
+        when .eq ch zero (brk l %[i])
+        return %[← iaddImm i 1])
+    istore8 zero (← iadd (← absAddr ptr OUTPUT_PATH) outEnd.head)
   let htSlotPtr ← absAddr ptr AlgorithmLib.ContextSlots.ht
   callLibVoid fnHtInit %[htSlotPtr]
   let ctx ← load64 htSlotPtr
@@ -590,17 +615,16 @@ def clifIrSource : Except String (List FuncData) :=
 
 def buildPayload : List UInt8 :=
   let reserved    := zeros 56                              -- 0x0000-0x0037: reserved header (context slots, then unused)
-  let outputPath  := padTo (stringToBytes "output.txt") 64 -- 0x0038
-  let inputPath   := zeros 256                             -- 0x0078
-  let sourceBuf   := zeros SOURCE_BUF_SZ                   -- 0x0178
-  let trueStr     := padTo (stringToBytes "true") 8        -- 0x1178
-  let falseStr    := padTo (stringToBytes "false") 8       -- 0x1180
-  let identBuf    := zeros IDENT_BUF_SZ                    -- 0x1188
-  let htValBuf    := zeros 8                               -- 0x11C8
-  let outputBuf   := zeros OUTPUT_BUF_SZ                   -- 0x11D0
-  let stackRegion := zeros STACK_SZ                        -- 0x1210
+  let outputPath  := padTo (stringToBytes "output.txt") OUTPUT_PATH_SZ -- 0x0038
+  let sourceBuf   := zeros SOURCE_BUF_SZ                   -- 0x0078
+  let trueStr     := padTo (stringToBytes "true") 8        -- 0x1078
+  let falseStr    := padTo (stringToBytes "false") 8       -- 0x1080
+  let identBuf    := zeros IDENT_BUF_SZ                    -- 0x1088
+  let htValBuf    := zeros 8                               -- 0x10C8
+  let outputBuf   := zeros OUTPUT_BUF_SZ                   -- 0x10D0
+  let stackRegion := zeros STACK_SZ                        -- 0x1110
   reserved ++
-    outputPath ++ inputPath ++ sourceBuf ++
+    outputPath ++ sourceBuf ++
     trueStr ++ falseStr ++ identBuf ++ htValBuf ++ outputBuf ++
     stackRegion
 
@@ -612,8 +636,7 @@ def buildPayload : List UInt8 :=
     those is what stops an offset being placed where one of those calls will
     overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"output_path", OUTPUT_PATH, INPUT_PATH - OUTPUT_PATH⟩,
-   ⟨"input_path",  INPUT_PATH, SOURCE_BUF - INPUT_PATH⟩,
+  [⟨"output_path", OUTPUT_PATH, OUTPUT_PATH_SZ⟩,
    ⟨"source_buf",  SOURCE_BUF, SOURCE_BUF_SZ⟩,
    ⟨"true_str",    TRUE_STR, FALSE_STR - TRUE_STR⟩,
    ⟨"false_str",   FALSE_STR, IDENT_BUF - FALSE_STR⟩,

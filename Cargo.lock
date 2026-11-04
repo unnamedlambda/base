@@ -132,7 +132,6 @@ name = "applications"
 version = "0.1.0"
 dependencies = [
  "base",
- "base-types",
  "ciborium",
  "lean-artifacts",
  "lz4_flex",
@@ -538,6 +537,7 @@ name = "cpu-bench"
 version = "0.1.0"
 dependencies = [
  "base",
+ "base-types",
  "lean-artifacts",
 ]
 

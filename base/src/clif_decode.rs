@@ -472,3 +472,15 @@ fn emit(func: &mut ir::Function, blk: ir::Block, inst: &clif::Inst, vals: &mut V
     let (inst, dfg) = cur.ins().build(data, ct);
     bind(vals, results, inst, dfg)
 }
+
+/// The host's ISA, optimized for speed, frames probed.
+pub(crate) fn isa() -> cranelift_codegen::isa::OwnedTargetIsa {
+    use cranelift_codegen::settings::Configurable;
+    let mut flag_builder = cranelift_codegen::settings::builder();
+    flag_builder.set("opt_level", "speed").unwrap();
+    // A frame larger than the guard page faults on it instead of stepping past.
+    flag_builder.set("enable_probestack", "true").unwrap();
+    flag_builder.set("probestack_strategy", "inline").unwrap();
+    let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
+    isa_builder.finish(cranelift_codegen::settings::Flags::new(flag_builder)).unwrap()
+}

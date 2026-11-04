@@ -1,7 +1,7 @@
 //! Base's libraries (`system_bench`: hash table, files) against the Rust
 //! crates a program would use instead. Prints `<workload> <column> <ns>` lines.
 
-use base::{Artifact, Driver};
+use base::Driver;
 use std::ffi::CString;
 use std::hint::black_box;
 use std::path::Path;
@@ -90,19 +90,19 @@ fn cstr(p: &Path) -> Vec<u8> {
 }
 
 fn main() {
-    let art = Artifact::from_bytes(lean_artifacts::SYSTEM_BENCH).expect("the build checked this artifact");
-    let drv = Driver::load(art).expect("system_bench loads");
+    let drv = Driver::load(lean_artifacts::SYSTEM_BENCH).expect("system_bench loads");
     let mut out = vec![0u8; OUT_BYTES];
     let work = std::env::temp_dir().join(format!("base-system-bench-{}", std::process::id()));
     std::fs::create_dir_all(&work).unwrap();
 
     // ht
     let input = N.to_le_bytes().to_vec();
-    unsafe { drv.execute("ht", &input, &mut out) }.unwrap();
+    let ht = unsafe { drv.function("ht") }.unwrap();
+    ht(&input, &mut out);
     assert_eq!(answer(&out), rust_ht(N), "ht");
     let t = time(2, |c| match c {
         0 => { black_box(rust_ht(black_box(N))); }
-        _ => { unsafe { drv.execute("ht", &input, &mut out) }.unwrap(); }
+        _ => { ht(&input, &mut out); }
     });
     println!("ht\trust\t{:.0}\nht\tbase\t{:.0}", t[0], t[1]);
 
@@ -119,11 +119,12 @@ fn main() {
     std::fs::write(&file, &text).unwrap();
     let input = cstr(&file);
     let mut buf = Vec::with_capacity(WC_BYTES);
-    unsafe { drv.execute("wc", &input, &mut out) }.unwrap();
+    let wc = unsafe { drv.function("wc") }.unwrap();
+    wc(&input, &mut out);
     assert_eq!(answer(&out), rust_wc(&file, &mut buf), "wc");
     let t = time(2, |c| match c {
         0 => { black_box(rust_wc(black_box(&file), &mut buf)); }
-        _ => { unsafe { drv.execute("wc", &input, &mut out) }.unwrap(); }
+        _ => { wc(&input, &mut out); }
     });
     println!("wc\trust\t{:.0}\nwc\tbase\t{:.0}", t[0], t[1]);
 

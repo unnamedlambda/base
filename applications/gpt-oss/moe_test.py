@@ -43,12 +43,12 @@ def main():
     H, I, E, K = bank.H, bank.I, bank.E, bank.K
     L = args.layer
 
-    art = py_base.load_artifact(args.artifact)
+    art = open(args.artifact, "rb").read()
     base = py_base.Driver(art)
 
     # The host region Lean declared, read back rather than restated: if the
     # packing here and the layout there disagreed, this is where it shows.
-    want = struct.unpack_from("<I", base.read(0x80, 4))[0]
+    want = struct.unpack_from("<I", base.arena, 0x80)[0]
 
     # ---- pack: the activation, the gates, then all thirty-two experts ----
     rng = np.random.default_rng(7)

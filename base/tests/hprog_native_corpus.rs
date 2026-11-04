@@ -1,7 +1,6 @@
 //! The native-code entry points on an x86-64 host, against the interpreter
 //! (`Host/NativeCorpus.lean`), byte for byte.
 
-use base_types::Artifact;
 
 use std::path::PathBuf;
 
@@ -32,11 +31,10 @@ fn interpreter_and_runtime_agree() {
         .iter()
         .map(|b| b.as_u64().expect("byte") as u8)
         .collect();
-    let a = Artifact::from_bytes(lean_artifacts::HPROG_NATIVE_CORPUS).expect("artifact shape");
 
-    let b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(lean_artifacts::HPROG_NATIVE_CORPUS).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
+    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
 
     let mut bad = Vec::new();
     for (k, what) in WHAT.iter().enumerate() {

@@ -47,7 +47,7 @@ def timed(base, fn, reps=100):
 
 
 def main():
-    art = py_base.load_artifact(sys.argv[1])
+    art = open(sys.argv[1], "rb").read()
     w = R.make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)
     base = py_base.Driver(art)

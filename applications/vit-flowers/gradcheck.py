@@ -27,11 +27,11 @@ def pbase(i):
     return 9 + 22 * i
 
 
-art = py_base.load_artifact(ART)
+art = open(ART, "rb").read()
 base = py_base.Driver(art)
 # The map is the last region Lean writes: VMEM_SIZE = VGMAP_OFF + 4*VBASE + 0x100.
 GMAP = len(base.arena) - 0x100 - 4 * VBASE
-gmap = np.frombuffer(base.read(GMAP, 4 * VBASE), "<u4")
+gmap = np.frombuffer(bytes(base.arena[GMAP:GMAP + 4 * VBASE]), "<u4")
 
 blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy")

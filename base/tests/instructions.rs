@@ -9,9 +9,7 @@ fn compute(insts: Vec<Inst>, n: usize) -> Vec<u8> {
     body.push(ret());
     let d = driver(main_of(body));
     call_with(&d, "main", &[], &mut []);
-    let mut out = vec![0u8; n];
-    d.read(2000, &mut out).unwrap();
-    out
+    read(&d, 2000, n)
 }
 
 fn i64s(bytes: &[u8]) -> Vec<i64> {

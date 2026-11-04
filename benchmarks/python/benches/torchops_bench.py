@@ -38,8 +38,8 @@ def _run_binary(
     label: str,
     torch_ref,
 ) -> list[harness.BenchResult]:
-    artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Driver(artifact)
+    with open(artifact_path, "rb") as f:
+        engine = py_base.Driver(f.read())
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"

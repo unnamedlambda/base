@@ -1,6 +1,6 @@
 import struct
 import pytest
-from py_base import Artifact, Driver, load_artifact
+from py_base import Driver
 
 import cbor
 
@@ -121,38 +121,30 @@ def unpack_i32s(data, count):
     return list(struct.unpack(f"<{count}i", data[:count * 4]))
 
 
-class TestArtifact:
-    def test_valid(self):
-        assert Artifact(make_double_artifact()) is not None
-
+class TestLoad:
     def test_json_is_not_an_artifact(self):
         """The runtime decodes the artifact, so that is where bad input is caught."""
         with pytest.raises(ValueError, match="not an artifact"):
-            Driver(Artifact(b'{"primitives": [], "functions": [], "arena_size": 8, "data": []}'))
+            Driver(b'{"primitives": [], "functions": [], "arena_size": 8, "data": []}')
 
     def test_missing_fields(self):
         with pytest.raises(ValueError, match="primitives"):
-            Driver(Artifact(cbor.encode({"functions": []})))
-
-    def test_from_file(self, tmp_path):
-        path = tmp_path / "double.cbor"
-        path.write_bytes(make_double_artifact())
-        assert Driver(load_artifact(str(path))).function(DOUBLE)() == 0
+            Driver(cbor.encode({"functions": []}))
 
 
 class TestBase:
     def test_new(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
         assert base is not None
 
     def test_malformed_program(self):
         """v9 is never defined, so the program cannot be built."""
         malformed = artifact(program([function([block(0, [0], [store(9, 0), ret()])])])["functions"])
         with pytest.raises(ValueError, match="v9 used before it is defined"):
-            Driver(Artifact(malformed))
+            Driver(malformed)
 
     def test_call_no_data(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
         # With no input there is nothing to double, and it answers 0.
         assert base.function(DOUBLE)() == 0
 
@@ -160,11 +152,11 @@ class TestBase:
         """A function answers the status its `return` carries."""
         answering = artifact(program([function([block(0, [1, 2, 3, 4], [
             iconst64(5, 42), ret(5)])], name="answer")])["functions"])
-        base = Driver(Artifact(answering))
+        base = Driver(answering)
         assert base.function("answer")() == 42
 
     def test_call_into_doubles(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
 
         values = [1, 2, 3, 4, 5, 10, 100, -7]
         data = pack_i32s(values)
@@ -175,7 +167,7 @@ class TestBase:
         assert result == [v * 2 for v in values]
 
     def test_call_into_reuse(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
 
         for seed in range(5):
             values = list(range(seed * 10, seed * 10 + 20))
@@ -186,7 +178,7 @@ class TestBase:
             assert result == [v * 2 for v in values]
 
     def test_call_into_large(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
 
         n = 100_000
         values = list(range(n))
@@ -199,12 +191,12 @@ class TestBase:
             assert result[i] == values[i] * 2, f"Mismatch at index {i}"
 
     def test_call_into_empty(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
         out = bytearray(0)
         base.function(DOUBLE)(b"", out)
 
     def test_bytes_input(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
 
         data = bytes(pack_i32s([42, -1, 0]))
         out = bytearray(len(data))
@@ -213,38 +205,28 @@ class TestBase:
 
     def test_call_into_answers_through_out(self):
         """The result is what the program wrote to `out`; the status is 0."""
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
 
         out = bytearray(16)
         assert base.function(DOUBLE)(pack_i32s([1, 2, 3, 4]), out) == 0
         assert unpack_i32s(out, 4) == [2, 4, 6, 8]
 
     def test_a_name_no_function_has_is_refused(self):
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
         with pytest.raises(ValueError, match='"triple"'):
             base.function("triple")()
-
-    def test_read_answers_bytes(self):
-        """What the artifact starts from, as `bytes` a host can unpack."""
-        started = artifact(DOUBLE_I32_PROG["functions"], data=[{"offset": 8, "bytes": bytes([7, 0, 0, 0])}])
-        base = Driver(Artifact(started))
-        got = base.read(8, 4)
-        assert isinstance(got, bytes)
-        assert struct.unpack("<I", got)[0] == 7
-        with pytest.raises(ValueError, match="outside"):
-            base.read(254, 4)
 
     def test_the_arena_is_a_view_of_it(self):
         """The arena itself, not a copy: what a call leaves there is in the
         view, a write through the view is what the next call sees, and the
         view keeps its driver alive."""
         started = artifact(DOUBLE_I32_PROG["functions"], data=[{"offset": 8, "bytes": bytes([7, 0, 0, 0])}])
-        base = Driver(Artifact(started))
+        base = Driver(started)
         arena = base.arena
         assert len(arena) == 256 and not arena.readonly
         assert bytes(arena[8:12]) == bytes([7, 0, 0, 0])
         arena[8:12] = bytes([9, 0, 0, 0])
-        assert base.read(8, 4) == bytes([9, 0, 0, 0])
+        assert bytes(base.arena[8:12]) == bytes([9, 0, 0, 0])
         import gc
         del base
         gc.collect()
@@ -253,7 +235,7 @@ class TestBase:
 
 class TestFunction:
     def test_a_function_is_found_once_and_called_often(self):
-        double = Driver(Artifact(make_double_artifact())).function(DOUBLE)
+        double = Driver(make_double_artifact()).function(DOUBLE)
         for k in range(1, 4):
             out = bytearray(16)
             assert double(pack_i32s([k] * 4), out) == 0
@@ -262,7 +244,7 @@ class TestFunction:
     def test_a_function_keeps_its_driver_alive(self):
         """The driver is freed only when nothing can call into it."""
         import gc
-        base = Driver(Artifact(make_double_artifact()))
+        base = Driver(make_double_artifact())
         double = base.function(DOUBLE)
         del base
         gc.collect()

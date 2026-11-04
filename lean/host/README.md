@@ -90,7 +90,7 @@ resolves transitively, which is what makes `require` work at all.
 |---|---|
 | `base/src/c_api.rs` | the runtime behind a C calling convention |
 | `c/shim.c` | that, in Lean's `IO` convention |
-| `BaseHost.lean` | `Driver`, `execute`, `executeStatus`, `read`, `withDriver` |
+| `BaseHost.lean` | the C API's four calls in Lean's terms: `load`, `function`, the arena (`arenaSize`, `read`, `write`), `close` |
 | `Upcase.lean` | the demo artifact — a value, and buildable without any of the above |
 | `UpcaseHost.lean` | the ~15 lines that run it |
 
@@ -104,19 +104,16 @@ in it is unaffected by any of this.
 
 ## What a host reads back
 
-Results come back four ways:
+Results come back three ways:
 
-* the status `executeStatus` answers — one `i64`, needing no address at all,
+* the status a function answers — one `i64`, needing no address at all,
   and `0` for a program whose body ends in a bare `return`. `Upcase` answers
   the byte count it read this way as well as storing it.
-
-* `readField`, given the same `Fld` the artifact was built from — the offset
-  and the width both come from the layout, so the host never writes either
-  down. `Upcase` stores the byte count it read to a `size` field and
-  `UpcaseHost` reads it back; neither end knows the number ahead of time.
-* the output buffer `execute` answers, for a program that writes through
+* the output buffer a function answers, for a program that writes through
   `outPtr`, the entry parameter the caller's buffer arrives in.
-* `read`, for an address no field describes.
+* `read`, at an offset the artifact's layout names. `Upcase` stores the byte
+  count it read to its `size` field and `UpcaseHost` reads it back at
+  `Upcase.f.size.offset`; neither end knows the number ahead of time.
 
 An artifact whose effects are files, sockets or the GPU needs none of them.
 

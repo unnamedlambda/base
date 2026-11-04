@@ -35,11 +35,12 @@ namespace Fft
 --   [0x0000..0x0100)  reserved / scratch
 --   [0x0100..0x0200)  binding descriptors (4 bindings × 8 bytes)
 --   [0x0200..0x2200)  WGSL shader (8KB)
---   [0x2200..0x2300)  input filename
---   [0x2300..0x2400)  output filename "fft_output.bin"
---   [0x2400..0x2440)  flags + padding
---   [0x2440..0x4440)  CLIF IR region (8KB)
---   [0x4440+)         data regions (input, buf_a, buf_b, meta)
+--   [0x2200..0x2300)  output filename "fft_output.bin"
+--   [0x2300..0x2340)  flags + padding
+--   [0x2340..0x4340)  CLIF IR region (8KB)
+--   [0x4340+)         data regions (input, buf_a, buf_b, meta)
+--
+-- The input file is the one the caller's input names.
 -- ---------------------------------------------------------------------------
 
 def maxN : Nat := 1024 * 1024  -- max 1M complex numbers
@@ -49,13 +50,12 @@ def metaSize : Nat := 16  -- N, stage, direction, padding (aligned to 4)
 -- Offsets: wgpu's state (`app`) from 0, the shader from 0x200
 def shader_off : Nat := 0x200
 def shaderRegionSize : Nat := 8192
-def inputFilename_off : Nat := shader_off + shaderRegionSize  -- 0x2200
 def filenameRegionSize : Nat := 256
-def outputFilename_off : Nat := inputFilename_off + filenameRegionSize  -- 0x2300
-def flag_off : Nat := outputFilename_off + filenameRegionSize  -- 0x2400
-def clifIr_off : Nat := flag_off + 64  -- 0x2440
+def outputFilename_off : Nat := shader_off + shaderRegionSize  -- 0x2200
+def flag_off : Nat := outputFilename_off + filenameRegionSize  -- 0x2300
+def clifIr_off : Nat := flag_off + 64  -- 0x2340
 def clifIrRegionSize : Nat := 8192
-def inputData_off : Nat := clifIr_off + clifIrRegionSize  -- 0x4440
+def inputData_off : Nat := clifIr_off + clifIrRegionSize  -- 0x4340
 def bufA_off : Nat := inputData_off + maxDataSize
 def bufB_off : Nat := bufA_off + maxDataSize
 def meta_off : Nat := bufB_off + maxDataSize
@@ -151,9 +151,9 @@ def code : Prog V L Unit := do
   let c4  ← iconst64 4
   let c8  ← iconst64 8
 
-  -- Step 1: Read input file
+  -- Step 1: Read the file the caller's input names
   let inDatOff ← iconst64 inputData_off
-  let bytesRead ← readFile ptr inputFilename_off filenameRegionSize inputData_off maxDataSize
+  let bytesRead ← readInputFile ptr inputData_off maxDataSize
 
   -- A read that failed (-1), ran past the input region, or holds no complete
   -- number computes nothing: a write of size 0 would write up to a NUL.
@@ -243,13 +243,12 @@ def clifIrSource : Except String (List FuncData) :=
 def payloads : List UInt8 :=
   let wgState := zeros app.NAME ++ "main".toUTF8.toList ++ zeros (shader_off - app.NAME - 4)
   let shaderBytes := padTo (stringToBytes fftShader) shaderRegionSize
-  let inputFnameBytes := zeros filenameRegionSize
   let outputFnameBytes := padTo (stringToBytes "fft_output.bin") filenameRegionSize
   let flagBytes := uint64ToBytes 0
   let flagPad := zeros (clifIr_off - flag_off - 8)
   let clifPad := zeros clifIrRegionSize
   wgState ++
-  shaderBytes ++ inputFnameBytes ++ outputFnameBytes ++
+  shaderBytes ++ outputFnameBytes ++
   flagBytes ++ flagPad ++ clifPad
 
 -- ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 //! `byte_scrub` copies a fixed window with NULs replaced by spaces; the
 //! patterns catch a wrong loop bound or a blend taking the wrong side.
 
-use base::{Artifact, Driver};
+use base::Driver;
 
 const ARTIFACT: &[u8] = lean_artifacts::BYTE_SCRUB;
 
@@ -12,17 +12,15 @@ const BYTES: usize = 4096;
 const OLD: u8 = 0;
 const NEW: u8 = b' ';
 
-fn scrub(base: &mut Driver, entry: &str, data: &[u8]) -> Vec<u8> {
+fn scrub(base: &Driver, entry: &str, data: &[u8]) -> Vec<u8> {
     let mut out = vec![0xAAu8; BYTES];
-    unsafe { base.execute(entry, data, &mut out) }
-        .expect("execute failed");
+    unsafe { base.function(entry) }.expect("no such entry")(data, &mut out);
     out
 }
 
 #[test]
 fn scrubs_every_vector() {
-    let artifact = Artifact::from_bytes(ARTIFACT).expect("the build checked this artifact");
-    let mut base = Driver::load(artifact).expect("Driver::load");
+    let base = Driver::load(ARTIFACT).expect("Driver::load");
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("none", vec![b'x'; BYTES]),
@@ -57,7 +55,7 @@ fn scrubs_every_vector() {
     ];
 
     for (label, data) in &cases {
-        let got = scrub(&mut base, "main", data);
+        let got = scrub(&base, "main", data);
         let want: Vec<u8> = data
             .iter()
             .map(|&b| if b == OLD { NEW } else { b })

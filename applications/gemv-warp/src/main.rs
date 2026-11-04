@@ -2,7 +2,7 @@
 //! schedules (vec4, strided, blocked) and four shapes. Each schedule is exact
 //! against its own fold order, so columns may differ in the last bits.
 
-use base::{Artifact, Driver};
+use base::Driver;
 use warp_check::{floats, gbs, roofline, time, Walk};
 
 const ART_QWEN: &[u8] =
@@ -38,9 +38,8 @@ fn bench(
     let mut bytes: Vec<u8> = a.iter().flat_map(|f| f.to_le_bytes()).collect();
     bytes.extend(x.iter().flat_map(|f| f.to_le_bytes()));
 
-    let artifact = Artifact::from_bytes(art_bytes).expect("the build checked this artifact");
-    let mut base = Driver::load(artifact).expect("Driver::load");
-    let fetch = "fetch";
+    let base = Driver::load(art_bytes).expect("Driver::load");
+    let fetch = unsafe { base.function("fetch") }.expect("fetch");
     let dot = fam_label == "dot";
     let runs = if dot {
         [
@@ -56,21 +55,21 @@ fn bench(
         ]
     };
 
-    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
+    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
 
     let mut times = Vec::new();
     let mut outs: Vec<Vec<f32>> = Vec::new();
     for (_, alg) in &runs {
-        times.push(time(&mut base, *alg, reps));
+        times.push(time(&base, *alg, reps));
         let mut buf = vec![0u8; m * 4];
-        unsafe { base.execute(fetch, b"", &mut buf) }.expect("fetch");
+        fetch(b"", &mut buf);
         outs.push(floats(&buf));
     }
     // cuBLAS is a baseline for the dot only; there is no sgemv for x·x.
     let t_blas = if dot {
-        let t = time(&mut base, "blas", reps);
+        let t = time(&base, "blas", reps);
         let mut buf = vec![0u8; m * 4];
-        unsafe { base.execute(fetch, b"", &mut buf) }.expect("fetch");
+        fetch(b"", &mut buf);
         Some((t, floats(&buf)))
     } else {
         None

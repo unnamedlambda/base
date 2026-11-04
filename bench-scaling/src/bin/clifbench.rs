@@ -1,7 +1,8 @@
 //! Decode and JIT time per artifact, one `file\tbytes\tdecode_s\tjit_s` line each:
 //! `cargo build --release -p bench-scaling --bin clifbench --features jit`
 
-use base::{Artifact, Driver};
+use base::Driver;
+use base_types::Artifact;
 
 
 fn main() {
@@ -33,7 +34,7 @@ fn main() {
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         let t = std::time::Instant::now();
-        match Driver::load(artifact) {
+        match Driver::load(&artifact.to_bytes()) {
             Ok(b) => {
                 let el = t.elapsed();
                 println!(

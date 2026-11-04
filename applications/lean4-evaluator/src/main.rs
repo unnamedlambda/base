@@ -1,38 +1,23 @@
-use base::{run, Artifact};
+use crate::run;
 
 const ARTIFACT_BINARY: &[u8] = lean_artifacts::LEAN_EVAL_APP;
 
-const INPUT_PATH_OFFSET: u64 = 0x0078;
-const INPUT_PATH_MAX_LEN: usize = 256;
-const OUTPUT_PATH_OFFSET: u64 = 0x0038;
-const OUTPUT_PATH_MAX_LEN: usize = 64;
-
 pub fn main(args: Vec<String>) {
-    let mut artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
-
-        if args.len() < 2 {
+    if args.len() < 2 {
         eprintln!("Usage: lean4-eval <source.lean> [output_file]");
         std::process::exit(1);
     }
 
-    // Patch input file path
-    let input_path = &args[1];
-    let input_len = input_path.len().min(INPUT_PATH_MAX_LEN - 1);
-    let mut path = vec![0u8; INPUT_PATH_MAX_LEN];
-    path[..input_len].copy_from_slice(&input_path.as_bytes()[..input_len]);
-    artifact.write(INPUT_PATH_OFFSET, &path);
-
-    // Patch output file path if provided
-    if args.len() > 2 {
-        let output_path = &args[2];
-        let output_len = output_path.len().min(OUTPUT_PATH_MAX_LEN - 1);
-        let mut path = vec![0u8; OUTPUT_PATH_MAX_LEN];
-        path[..output_len].copy_from_slice(&output_path.as_bytes()[..output_len]);
-        artifact.write(OUTPUT_PATH_OFFSET, &path);
+    // The source path, then, after a zero, the output path if there is one.
+    let mut input = args[1].as_bytes().to_vec();
+    if let Some(output_path) = args.get(2) {
+        input.push(0);
+        input.extend_from_slice(output_path.as_bytes());
     }
 
-    // SAFETY: the artifact is the one Lean built for this application.
-    match unsafe { run(artifact, "main") } {
+    // SAFETY: the artifact is the one Lean built for this application; its input
+    // names the files it reads and writes.
+    match unsafe { run(ARTIFACT_BINARY, "main", &input) } {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Execution failed: {:?}", e);

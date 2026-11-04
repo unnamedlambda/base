@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 base = { path = "../../base" }
+base-types = { path = "../../base-types" }
 lean-artifacts = { path = "../../lean" }
 
 [[bin]]

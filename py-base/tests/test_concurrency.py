@@ -3,7 +3,7 @@
 The counterpart of `applications/shared-sum/tests/threads.rs` and `rayon.rs`.
 A `Function` releases the GIL while the program runs, so these threads run their
 calls in parallel, and a thread blocked inside the program (`pop` on an empty
-ring, or `Driver.wait`) leaves the others free to run: were the GIL held, the ring
+ring) leaves the others free to run: were the GIL held, the ring
 test would deadlock rather than pass.
 """
 
@@ -12,7 +12,7 @@ import struct
 import threading
 
 import pytest
-from py_base import Driver, load_artifact, now
+from py_base import Driver
 
 ARTIFACT = os.path.join(
     os.path.dirname(__file__), "..", "..", "lean", ".lake", "build", "artifacts",
@@ -21,19 +21,18 @@ ARTIFACT = os.path.join(
 TOTAL_AT = 0x40
 CALLS_AT = 0x48
 HIST_AT = 0x50
-# A word of the arena the program leaves alone, for waiting on.
-FREE_WORD = 0x10
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(ARTIFACT), reason="the Lean artifacts have not been generated")
 
 
 def load():
-    return Driver(load_artifact(ARTIFACT))
+    with open(ARTIFACT, "rb") as f:
+        return Driver(f.read())
 
 
 def u64(driver, at):
-    return struct.unpack("<Q", driver.read(at, 8))[0]
+    return struct.unpack_from("<Q", driver.arena, at)[0]
 
 
 def run_threads(targets, timeout=60):
@@ -96,7 +95,7 @@ def test_concurrent_adds_all_land():
     assert u64(driver, TOTAL_AT) == sent
     assert driver.function("calls")() == THREADS * CALLS
     assert u64(driver, CALLS_AT) == THREADS * CALLS
-    got = struct.unpack("<256Q", driver.read(HIST_AT, 8 * 256))
+    got = struct.unpack_from("<256Q", driver.arena, HIST_AT)
     assert list(got) == hist
     # Each call saw the total before its addition: together they tile [0, sent).
     at = 0
@@ -166,38 +165,3 @@ def test_an_output_in_use_cannot_be_resized():
     assert refused, "the buffer was never seen held"
     assert answers == [1] and struct.unpack("<Q", item)[0] == 42
     item.extend(b"x")  # free again once the call is over
-
-
-def args(*words):
-    return struct.pack(f"<{len(words)}q", *words)
-
-
-def test_wait_wake_and_now():
-    driver = load()
-
-    # The word does not hold what is expected: back at once.
-    t0 = now()
-    driver.wait(FREE_WORD, 1, 5_000_000_000)
-    assert now() - t0 < 1_000_000_000
-    # It does, and nothing wakes it: back by the timeout.
-    driver.wait(FREE_WORD, 0, 2_000_000)
-    # Not a word of the arena.
-    with pytest.raises(ValueError):
-        driver.wait(FREE_WORD + 1, 0, 0)
-    with pytest.raises(ValueError):
-        driver.wake(1 << 40, 1)
-
-    # A Python thread asleep on the word, woken by another: it is back long
-    # before its timeout.
-    t0 = now()
-    t = threading.Thread(target=lambda: driver.wait(FREE_WORD, 0, 30_000_000_000))
-    t.start()
-    while t.is_alive() and now() - t0 < 20_000_000_000:
-        driver.wake(FREE_WORD, -1)
-        t.join(0.01)
-    assert not t.is_alive()
-    assert now() - t0 < 20_000_000_000
-
-    # The clock never goes back.
-    stamps = [now() for _ in range(1000)]
-    assert stamps == sorted(stamps)

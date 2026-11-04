@@ -248,7 +248,7 @@ pub fn run(srcs: &[u8], fir_box: &[u8], drv: &'static base::Driver) {
     for s in &streams {
         s.synchronize().expect("sync");
     }
-    let call = |name: &str, input: &[u8], out: &mut [u8]| unsafe { drv.function(name).expect(name).call(input, out) };
+    let call = |name: &str, input: &[u8], out: &mut [u8]| unsafe { drv.function(name) }.expect(name)(input, out);
     let mut st = [0u8; 48];
     call("gpu_init", &[], &mut st);
     assert_eq!(words(&st), vec![0; 12], "gpu_init's steps all answered 0");

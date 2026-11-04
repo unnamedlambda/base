@@ -1,4 +1,3 @@
-use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::JITBuilder;
 use cranelift_module::{Linkage, Module};
 
@@ -31,16 +30,6 @@ const CODE_RESERVE_PER_INST: usize = 64;
 /// At most AArch64's ±128 MiB direct-call reach.
 const CODE_RESERVE_MAX: usize = 128 << 20;
 
-/// The host's ISA, optimized for speed, frames probed.
-pub(crate) fn isa() -> cranelift_codegen::isa::OwnedTargetIsa {
-    let mut flag_builder = settings::builder();
-    flag_builder.set("opt_level", "speed").unwrap();
-    // A frame larger than the guard page faults on it instead of stepping past.
-    flag_builder.set("enable_probestack", "true").unwrap();
-    flag_builder.set("probestack_strategy", "inline").unwrap();
-    let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
-    isa_builder.finish(settings::Flags::new(flag_builder)).unwrap()
-}
 
 /// A JIT module with `symbols` registered and its code in one region, so calls
 /// between a program's functions stay within a direct call's reach.
@@ -48,7 +37,7 @@ fn new_module(
     insts: usize,
     symbols: &[(String, usize)],
 ) -> Result<cranelift_jit::JITModule, String> {
-    let mut builder = JITBuilder::with_isa(isa(), cranelift_module::default_libcall_names());
+    let mut builder = JITBuilder::with_isa(crate::clif_decode::isa(), cranelift_module::default_libcall_names());
     register_symbols(&mut builder, symbols);
     let reserve = CODE_RESERVE_MIN
         .saturating_add(insts.saturating_mul(CODE_RESERVE_PER_INST))
@@ -81,7 +70,7 @@ pub(crate) fn compile(
     arena: *mut u8,
 ) -> Result<Program, String> {
     let exports = exports_of(functions)?;
-    let decoded = crate::clif_decode::decode(primitives, functions, isa().default_call_conv())?;
+    let decoded = crate::clif_decode::decode(primitives, functions, crate::clif_decode::isa().default_call_conv())?;
     let insts = functions.iter().flat_map(|f| &f.blocks).map(|b| b.insts.len()).sum();
     let mut symbols: Vec<(String, usize)> = Vec::with_capacity(primitives.len() + 1);
     for p in primitives {

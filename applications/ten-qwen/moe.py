@@ -48,7 +48,7 @@ def main():
     x = u(MD)
     ws = [(u(MDFF, MD), u(MDFF, MD), u(MD, MDFF)) for _ in range(NE)]
 
-    art = py_base.load_artifact(sys.argv[1])
+    art = open(sys.argv[1], "rb").read()
     blob = (np.ones(NE, dtype=np.float32).tobytes() + wr.tobytes() + x.tobytes()
             + b"".join(m.astype("<f4").ravel().tobytes() for w in ws for m in w))
     base = py_base.Driver(art)

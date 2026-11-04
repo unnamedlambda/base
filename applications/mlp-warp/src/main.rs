@@ -2,7 +2,7 @@
 //! compiled by `compileW`, emitted by the proven lowering, run on the GPU.
 //! No kernel was hand-written and no layer was unrolled by hand.
 
-use base::{Artifact, Driver};
+use base::Driver;
 
 const ART: &[u8] = lean_artifacts::MLP_WARP;
 
@@ -39,21 +39,20 @@ pub fn main(_args: Vec<String>) {
         .collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-    let base = Driver::load(artifact).expect("Driver::load");
-    let run = "run";
-    let fetch = "fetch";
+    let base = Driver::load(ART).expect("Driver::load");
+    let run = unsafe { base.function("run") }.expect("run");
+    let fetch = unsafe { base.function("fetch") }.expect("fetch");
 
     let mut out = vec![0u8; LANES * 4];
-    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
-    unsafe { base.execute(run, b"", &mut []) }.expect("run");
+    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
+    run(b"", &mut []);
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.execute(run, b"", &mut []) }.expect("run");
+        run(b"", &mut []);
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
+    fetch(b"", &mut out);
 
     let gpu: Vec<f32> = out
         .chunks_exact(4)

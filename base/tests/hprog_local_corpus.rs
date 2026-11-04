@@ -1,7 +1,6 @@
 //! Calls to a program's own functions, against the interpreter
 //! (`Host/LocalCorpus.lean`), byte for byte.
 
-use base_types::Artifact;
 
 use std::path::PathBuf;
 
@@ -21,11 +20,10 @@ fn interpreter_and_jit_agree_on_local_calls() {
         .iter()
         .map(|b| b.as_u64().expect("byte") as u8)
         .collect();
-    let a = Artifact::from_bytes(lean_artifacts::HPROG_LOCAL_CORPUS).expect("artifact shape");
 
-    let b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(lean_artifacts::HPROG_LOCAL_CORPUS).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
+    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
 
     let word = |bs: &[u8], k: usize| i64::from_le_bytes(bs[8 * k..8 * k + 8].try_into().unwrap());
     for (k, what) in [

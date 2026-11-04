@@ -3,22 +3,22 @@
 
 use std::sync::Mutex;
 
-use base::{Artifact, Driver};
+use base::Driver;
 use rayon::prelude::*;
 
 const ITEMS: u64 = 100_000;
 const CONSUMERS: usize = 4;
 
 fn load() -> Driver {
-    Driver::load(Artifact::from_bytes(lean_artifacts::SHARED_SUM).unwrap()).unwrap()
+    Driver::load(lean_artifacts::SHARED_SUM).unwrap()
 }
 
 #[test]
 fn rayon_producers_and_consumers_share_the_ring() {
     let driver = load();
-    let push = driver.function("push").unwrap();
-    let pop = driver.function("pop").unwrap();
-    let close = driver.function("close").unwrap();
+    let push = unsafe { driver.function("push") }.unwrap();
+    let pop = unsafe { driver.function("pop") }.unwrap();
+    let close = unsafe { driver.function("close") }.unwrap();
     let popped = Mutex::new(Vec::with_capacity(ITEMS as usize));
 
     // A consumer blocks in `pop` while the ring is empty, so the pool has room
@@ -29,7 +29,7 @@ fn rayon_producers_and_consumers_share_the_ring() {
             s.spawn(|_| {
                 let mut mine = Vec::new();
                 let mut item = [0u8; 8];
-                while unsafe { pop.call(&[], &mut item) } == 1 {
+                while pop(&[], &mut item) == 1 {
                     mine.push(u64::from_le_bytes(item));
                 }
                 popped.lock().unwrap().extend(mine);
@@ -38,9 +38,9 @@ fn rayon_producers_and_consumers_share_the_ring() {
         s.spawn(|_| {
             // Any work at all can make the items: here, a parallel map.
             (0..ITEMS).into_par_iter().map(|i| i * 3 + 1).for_each(|item| {
-                assert_eq!(unsafe { push.call(&item.to_le_bytes(), &mut []) }, 1);
+                assert_eq!(push(&item.to_le_bytes(), &mut []), 1);
             });
-            unsafe { close.call(&[], &mut []) };
+            close(&[], &mut []);
         });
     });
 
@@ -50,6 +50,6 @@ fn rayon_producers_and_consumers_share_the_ring() {
     assert_eq!(popped.len(), expected.len(), "every item popped once");
     assert_eq!(popped, expected);
     // Closed and drained: a push is refused and a pop finds nothing.
-    assert_eq!(unsafe { push.call(&7u64.to_le_bytes(), &mut []) }, 0);
-    assert_eq!(unsafe { pop.call(&[], &mut [0u8; 8]) }, 0);
+    assert_eq!(push(&7u64.to_le_bytes(), &mut []), 0);
+    assert_eq!(pop(&[], &mut [0u8; 8]), 0);
 }

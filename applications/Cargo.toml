@@ -8,7 +8,6 @@ edition = "2021"
 
 [dependencies]
 base = { path = "../base" }
-base-types = { path = "../base-types" }
 # Every artifact, as `lean_artifacts::NAME`.
 lean-artifacts = { path = "../lean" }
 warp-check = { path = "../warp-check" }

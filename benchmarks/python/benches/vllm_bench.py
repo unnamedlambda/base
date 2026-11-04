@@ -53,8 +53,8 @@ ATTN_INNER_ITERS = 64
 
 
 def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
-    artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Driver(artifact)
+    with open(artifact_path, "rb") as f:
+        engine = py_base.Driver(f.read())
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"
@@ -111,8 +111,8 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 
 def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
-    artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Driver(artifact)
+    with open(artifact_path, "rb") as f:
+        engine = py_base.Driver(f.read())
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"
@@ -170,8 +170,8 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 
 def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
-    artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Driver(artifact)
+    with open(artifact_path, "rb") as f:
+        engine = py_base.Driver(f.read())
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"
@@ -197,10 +197,8 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         else:
             torch_ms = None
 
-        # Both sides now pay SOFTMAX_INNER_ITERS dispatches and the same number
-        # of device round trips. The batched `stack` entry, which performed all
-        # of them inside one `execute`, made this row an upper bound rather than
-        # a measurement.
+        # Both sides pay SOFTMAX_INNER_ITERS dispatches and the same number of
+        # device round trips.
         def _infer_many() -> None:
             for _ in range(SOFTMAX_INNER_ITERS):
                 engine.function(infer_alg)()
@@ -236,8 +234,8 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 
 def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
-    artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Driver(artifact)
+    with open(artifact_path, "rb") as f:
+        engine = py_base.Driver(f.read())
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"
@@ -277,8 +275,7 @@ def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.Bench
             torch_ms = None
 
         # As in the softmax row: ATTN_INNER_ITERS dispatches and the same number
-        # of device round trips on both sides, rather than one batched `execute`
-        # against that many separate torch calls.
+        # of device round trips on both sides.
         def _infer_many() -> None:
             for _ in range(ATTN_INNER_ITERS):
                 engine.function(infer_alg)()

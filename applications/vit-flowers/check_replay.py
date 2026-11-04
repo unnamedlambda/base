@@ -15,7 +15,7 @@ SQ, NC = 200, 128
 blob = np.load(D + "/blob.npy").tobytes()
 ref = np.load(D + "/ref.npy")
 
-art = py_base.load_artifact(ART)
+art = open(ART, "rb").read()
 base = py_base.Driver(art)
 base.function("main")(blob)
 

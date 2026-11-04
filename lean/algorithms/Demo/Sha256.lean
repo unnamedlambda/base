@@ -17,7 +17,7 @@ namespace Sha256
 -- SHA-256 hasher
 --
 -- Single CLIF function:
---   1. readFile — load input file into memory
+--   1. readInputFile — load the file the caller's input names
 --   2. SHA-256 padding (append 0x80, zeros, 64-bit BE bit length)
 --   3. Process each 64-byte block: message schedule + 64-round compression
 --   4. Format 8 x u32 hash state as 64 hex chars
@@ -35,7 +35,6 @@ structure Fields where
   fileSize       : Fld .i64
   paddedLen      : Fld .i64
   numBlocks      : Fld .i64
-  inputFilename  : Fld (.bytes 256)
   outputFilename : Fld (.bytes 256)
   hexOutput      : Fld (.bytes 66)
   K              : Fld (.bytes 256)
@@ -52,8 +51,7 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let fileSize       ← field .i64              -- scratch: file_size
   let paddedLen      ← field .i64              -- scratch: padded_len
   let numBlocks      ← field .i64              -- scratch: num_blocks
-  skip 168                                      -- pad to 0x100
-  let inputFilename  ← field (.bytes 256)      -- input filename (patched at runtime)
+  skip 424                                      -- pad to 0x200
   let outputFilename ← field (.bytes 256)      -- output filename
   let hexOutput      ← field (.bytes 66)       -- 64 hex chars + newline + padding
   skip (0x1000 - 0x0342)                        -- pad to 0x1000
@@ -64,7 +62,7 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let hexTable       ← field (.bytes 16)       -- "0123456789abcdef"
   skip (0x2000 - 0x1250)                        -- pad to 0x2000
   let fileData       ← field (.bytes (maxFileSize + 128))
-  pure { reserved, fileSize, paddedLen, numBlocks, inputFilename,
+  pure { reserved, fileSize, paddedLen, numBlocks,
          outputFilename, hexOutput, K, H_init, H_work, W, hexTable, fileData }
 
 def f : Fields := mkLayout.1
@@ -440,7 +438,7 @@ def emitHexFormat (k : Consts V) : Prog V L Unit := do
 def mainCode : Prog V L Unit := do
   let ptr ← basePtr
 
-  let fileSize ← fldReadFile ptr f.inputFilename f.fileData maxFileSize
+  let fileSize ← readInputFile ptr f.fileData.offset maxFileSize
   -- A read that failed (-1) or ran past the input region hashes nothing.
   let maxC ← iconst64 maxFileSize
   let _ ← ifte .ugt fileSize maxC (pure %[]) (do
@@ -502,7 +500,6 @@ def clifIrSource : Except String (List FuncData) :=
 
 def payloads : List UInt8 :=
   mkPayload f.fileData.offset [
-    f.inputFilename.init (stringToBytes "input.bin"),
     f.outputFilename.init (stringToBytes "sha256_output.txt"),
     f.K.init ((kConstants.map uint32ToBytes).flatten),
     f.H_init.init ((hInitial.map uint32ToBytes).flatten),

@@ -12,7 +12,8 @@ import Demo.Compress
 Each entry point, proven by the condition generator from the typestate it
 starts in, for any lengths of data and output the caller hands over: what
 `Wg.App.loadTS` states of wgpu and of the program's memory, the shaders'
-acceptance among it. None of the four faults, Compress where the caller's data and output hold the lengths it passes:
+acceptance among it. None of the four faults, Fft where the caller's data holds the length it passes and
+Compress where its data and output do:
 every load and store finds the bytes it reaches, and every operation answers.
 Fft's gather reads at a bit-reversed index, below the count because it reverses
 as many low bits as the count's highest bit is high (`bitrev_index_lt`).
@@ -39,9 +40,10 @@ ship_entry Raytrace : Raytrace.code under RaytraceMain
 
 -- Fft
 
-abbrev FftMain : World → Prop := Contracts.TState.holds Fft.app.loadTS
+abbrev FftMain (dl : UInt64) : World → Prop := Contracts.TState.holds
+  (Fft.app.loadTS ++ [.roomArg .data dl])
 
-ship_entry Fft : Fft.code under FftMain
+ship_entry Fft : Fft.code under FftMain dataLen
 
 -- Compress, at the block size it ships with
 

@@ -2,7 +2,8 @@
 //! or an error, and never panics or aborts. Each case is a generated artifact
 //! with one field of its structure changed.
 
-use base::{Artifact, Driver};
+use base::Driver;
+use base_types::Artifact;
 use serde_json::Value;
 
 /// xorshift64*, seeded, so a failing case is reproducible from its number.
@@ -91,7 +92,7 @@ fn mutations(seed: u64, cases: u32) {
         let mut v = seed.clone();
         mutate(&mut v, &mut rng);
         let Ok(artifact) = serde_json::from_value::<Artifact>(v) else { continue };
-        let loaded = std::panic::catch_unwind(|| Driver::load(artifact).map(drop));
+        let loaded = std::panic::catch_unwind(|| Driver::load(&artifact.to_bytes()).map(drop));
         assert!(loaded.is_ok(), "case {case}, a mutation of {name}, panicked while loading");
     }
 }

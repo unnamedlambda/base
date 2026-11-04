@@ -177,11 +177,12 @@ pub fn compare(got: &[f32], want: impl Fn(usize) -> f32) -> Diff {
 pub const ROOFLINE_GBS: f64 = 360.0;
 
 /// Seconds per launch, after one warm-up.
-pub fn time(base: &mut Driver, entry: &str, reps: usize) -> f64 {
-    unsafe { base.execute(entry, b"", &mut []) }.expect("warm-up launch");
+pub fn time(base: &Driver, entry: &str, reps: usize) -> f64 {
+    let launch = unsafe { base.function(entry) }.expect("the artifact has the entry");
+    launch(b"", &mut []);
     let t = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.execute(entry, b"", &mut []) }.expect("timed launch");
+        launch(b"", &mut []);
     }
     t.elapsed().as_secs_f64() / reps as f64
 }

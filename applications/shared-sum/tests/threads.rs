@@ -1,23 +1,23 @@
 //! One driver called from many threads at once: every addition lands exactly
 //! once, as the C++ host also checks.
 
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use base::{Artifact, Driver};
+use base::Driver;
 
 const TOTAL_AT: usize = 0x40;
 const CALLS_AT: usize = 0x48;
 const HIST_AT: usize = 0x50;
 
 fn load() -> Driver {
-    Driver::load(Artifact::from_bytes(lean_artifacts::SHARED_SUM).unwrap()).unwrap()
+    Driver::load(lean_artifacts::SHARED_SUM).unwrap()
 }
 
 fn read_u64(driver: &Driver, at: usize) -> u64 {
-    let mut word = [0u8; 8];
-    driver.read(at, &mut word).unwrap();
-    u64::from_le_bytes(word)
+    let word: Vec<u8> = driver.arena()[at..at + 8].iter().map(|b| b.load(Relaxed)).collect();
+    u64::from_le_bytes(word.try_into().unwrap())
 }
 
 /// The bytes thread `t` sends on call `i`: varied in length, zero included.
@@ -40,7 +40,7 @@ fn concurrent_adds_on_one_driver_all_land() {
                 for i in 0..CALLS {
                     let input = bytes(t, i);
                     let mut before = [0u8; 8];
-                    let sum = unsafe { driver.execute("add", &input, &mut before) }.unwrap() as u64;
+                    let sum = unsafe { driver.function("add") }.unwrap()(&input, &mut before) as u64;
                     assert_eq!(sum, input.iter().map(|&b| b as u64).sum::<u64>());
                     spans.lock().unwrap().push((u64::from_le_bytes(before), sum));
                 }
@@ -68,9 +68,9 @@ fn concurrent_adds_on_one_driver_all_land() {
             }
         }
     }
-    assert_eq!(unsafe { driver.execute("total", &[], &mut []) }.unwrap() as u64, sent);
+    assert_eq!(unsafe { driver.function("total") }.unwrap()(&[], &mut []) as u64, sent);
     assert_eq!(read_u64(&driver, TOTAL_AT), sent);
-    assert_eq!(unsafe { driver.execute("calls", &[], &mut []) }.unwrap() as usize, THREADS * CALLS);
+    assert_eq!(unsafe { driver.function("calls") }.unwrap()(&[], &mut []) as usize, THREADS * CALLS);
     assert_eq!(read_u64(&driver, CALLS_AT) as usize, THREADS * CALLS);
     for (b, &n) in hist.iter().enumerate() {
         assert_eq!(read_u64(&driver, HIST_AT + 8 * b), n, "histogram counter {b}");
@@ -83,17 +83,4 @@ fn concurrent_adds_on_one_driver_all_land() {
         at += sum;
     }
     assert_eq!(at, sent);
-}
-
-/// A read reaching past the end is an error that names the range, and a read
-/// that fits answers the bytes there.
-#[test]
-fn read_refuses_past_the_end() {
-    let driver = load();
-    let size = driver.arena_size();
-    let mut two = [0u8; 2];
-    assert!(driver.read(size - 2, &mut two).is_ok());
-    let e = driver.read(size - 1, &mut two).unwrap_err();
-    assert!(matches!(e, base::Error::Range { .. }), "{e}");
-    assert!(driver.read(usize::MAX, &mut two).is_err());
 }

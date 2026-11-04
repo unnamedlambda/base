@@ -7,7 +7,7 @@ ART, D = sys.argv[1], sys.argv[2]
 SQ, NC, N = 200, 128, 30
 
 blob = np.load(D + "/blob.npy").tobytes()
-art = py_base.load_artifact(ART)
+art = open(ART, "rb").read()
 base = py_base.Driver(art)
 base.function("main")(blob)
 base.function("capture")()

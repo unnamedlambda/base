@@ -16,7 +16,7 @@ SQ, NC = 200, 128
 TORCH_MS = 1.42          # batch 1, torch.compile(max-autotune), bench_torch_step.py
 
 blob = np.load(D + "/blob.npy").tobytes()
-art = py_base.load_artifact(ART)
+art = open(ART, "rb").read()
 base = py_base.Driver(art)
 base.function("main")(blob)
 run, replay, fetch = "run", "replay", "fetch"

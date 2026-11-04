@@ -27,13 +27,15 @@ functions, the size of the arena they run in, and the arena's initial
 contents. A script calls a function of it by the function's name.
 
 ```python
-from py_base import load_artifact, Driver
+from py_base import Driver
 
-artifact = load_artifact("../lean/.lake/build/artifacts/sha256_app.cbor")
+with open("../lean/.lake/build/artifacts/sha256_app.cbor", "rb") as f:
+    artifact = f.read()
 
 driver = Driver(artifact)            # JIT compiles — do this once
 main = driver.function("main")       # the function, found once
-main()                               # …then call it as often as you like
+main(b"input.bin")                   # …then call it as often as you like:
+                                     # its input names the file it hashes
 ```
 
 An artifact is CBOR, so one can also be built in Python from nested dicts,
@@ -41,15 +43,15 @@ which is what the tests do with the standard-library encoder in
 `tests/cbor.py`:
 
 ```python
-from py_base import Artifact, Driver
+from py_base import Driver
 import cbor
 
-artifact = Artifact(cbor.encode({
+artifact = cbor.encode({
     "primitives": [],                # the C functions it calls, each once
     "functions": [...],              # the program, one named "double"
     "arena_size": 256,
     "data": [],
-}))
+})
 
 input = b"\x01\x00\x00\x00\x02\x00\x00\x00"
 output = bytearray(8)
@@ -64,17 +66,12 @@ generator's to say; `base` gives them no format.
 
 ## API
 
-### `Artifact(bytes)`
-What a generator emits: the primitives, the CLIF functions, the arena size and
-the data segments the arena starts with, encoded as CBOR. The runtime is what decodes it,
-so a malformed artifact is reported when a `Driver` is loaded from it.
+The four calls of the C API, in Python's terms, and nothing built on them.
 
-### `load_artifact(path: str) -> Artifact`
-Read an artifact from the `.cbor` file a generator wrote.
-
-### `Driver(artifact: Artifact)`
-The artifact, loaded: its program JIT compiled and its arena allocated. This is the expensive step — do
-it once.
+### `Driver(artifact: bytes)`
+An encoded artifact, as a generator wrote it, loaded: decoded, its program JIT
+compiled and its arena allocated. A malformed artifact is a `ValueError` saying
+what is wrong. This is the expensive step — do it once.
 
 ### `driver.function(name) -> Function`
 The function named `name`, as the native function it is, the one
@@ -89,28 +86,18 @@ through `output`, a writable contiguous byte buffer (a `bytearray`, a `uint8`
 NumPy array); both are zero-copy. The `int` is the status the function
 answered: a program whose body ends in a bare `return` answers `0`.
 
-### `driver.wait(offset, expected, timeout_ns=-1)`, `driver.wake(offset, count=-1)`, `py_base.now()`
-Waiting on a 4-byte-aligned word of the arena, waking its waiters,
-and the clock: the system's own calls, which programs make too, so a Python
-thread and a program's threads meet at the same words. The GIL is released
-while waiting. A wait may end for no reason: loop on the condition.
-
 ### `driver.arena -> memoryview`
 The arena itself: no copy, writable, and holding the driver alive.
 `len(driver.arena)` is its size, and `numpy.frombuffer(driver.arena, ...)`
-reads it in place. A plain view reads without atomics, so while calls run,
-reach bytes a running program may touch with `driver.read`.
-
-### `driver.read(offset, length) -> bytes`
-What the program left in its arena, at an address its generator says it
-writes, copied: each aligned 8-byte word with one atomic load, so it is sound
-while calls run. A range past the end is an error, not a short answer.
+or `struct.unpack_from(fmt, driver.arena, offset)` reads it in place. A plain
+view reads without atomics, so while calls run, bytes a running program may
+touch are the program's.
 
 ## Threads
 
 One `Driver`, and its functions, may be used from any number of Python threads.
 The GIL is released while a program runs, so calls run at once, and a thread
-blocked inside the program (on a lock the program keeps), or in `driver.wait`, leaves
+blocked inside the program (on a lock the program keeps) leaves
 the others running. `output` is held for the whole call, so another thread
 resizing it gets `BufferError` rather than pulling it out from under the
 program. How calls share the arena is the program's to decide;

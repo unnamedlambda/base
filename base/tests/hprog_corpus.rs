@@ -1,7 +1,6 @@
 //! The differential corpus: what `Host.Sem` says each operation computes,
 //! against the machine. `BASE_HPROG_DIR` runs a corpus generated elsewhere.
 
-use base_types::Artifact;
 
 use std::path::PathBuf;
 
@@ -55,8 +54,6 @@ fn interpreter_and_machine_agree() {
     };
 
     let corpus = Corpus::read(&dir.join("hprog_corpus/expected.json"));
-    let a = Artifact::from_bytes(&std::fs::read(dir.join("hprog_corpus.cbor")).expect("read artifact"))
-        .expect("artifact shape");
 
     assert_eq!(
         corpus.expected.len(),
@@ -64,9 +61,9 @@ fn interpreter_and_machine_agree() {
         "one slot per case"
     );
 
-    let b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(&std::fs::read(dir.join("hprog_corpus.cbor")).expect("read artifact")).expect("compile");
     let mut out = vec![0u8; corpus.expected.len()];
-    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
+    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
 
     /// A NaN of `w` bytes, read little-endian from the front of `b`.
     fn is_nan(b: &[u8], w: usize) -> bool {

@@ -9,7 +9,7 @@ use wait_on_address::AtomicWait;
 
 /// Sleeps while `word` holds `expected`, until woken, `timeout_ns` passes (never
 /// if negative), or spuriously.
-pub fn wait(word: &AtomicU32, expected: u32, timeout_ns: i64) {
+pub(crate) fn wait(word: &AtomicU32, expected: u32, timeout_ns: i64) {
     match u64::try_from(timeout_ns) {
         Ok(ns) => word.wait_timeout(expected, Duration::from_nanos(ns)),
         Err(_) => word.wait(expected),
@@ -17,7 +17,7 @@ pub fn wait(word: &AtomicU32, expected: u32, timeout_ns: i64) {
 }
 
 /// Wakes one waiter when `count` is 1, none for 0, and all otherwise.
-pub fn wake(word: &AtomicU32, count: i32) {
+pub(crate) fn wake(word: &AtomicU32, count: i32) {
     match count {
         0 => {}
         1 => word.notify_one(),
@@ -45,10 +45,6 @@ pub(crate) unsafe extern "C" fn cl_mem_wake(addr: *const u8, count: i32) {
 }
 
 /// Nanoseconds on the system's monotonic clock.
-pub fn now() -> i64 {
-    cl_clock_now()
-}
-
 pub(crate) extern "C" fn cl_clock_now() -> i64 {
     #[cfg(unix)]
     {

@@ -2,7 +2,7 @@
 //! proven by `compileWKernel_correct`, emitted to PTX, run on the GPU.
 //! No kernel was hand-written.
 
-use base::{Artifact, Driver};
+use base::Driver;
 
 const ART: &[u8] = lean_artifacts::SILU_WARP;
 
@@ -13,19 +13,18 @@ pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..N).map(|i| ((i % 2048) as f32 - 1024.0) * 0.01).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-    let base = Driver::load(artifact).expect("Driver::load");
-    let run = "run";
-    let fetch = "fetch";
+    let base = Driver::load(ART).expect("Driver::load");
+    let run = unsafe { base.function("run") }.expect("run");
+    let fetch = unsafe { base.function("fetch") }.expect("fetch");
 
     let mut out = vec![0u8; N * 4];
-    unsafe { base.execute("main", &bytes, &mut []) }.expect("load");
-    unsafe { base.execute(run, b"", &mut []) }.expect("run");
+    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
+    run(b"", &mut []);
     let reps = 50;
     let t0 = std::time::Instant::now();
-    for _ in 0..reps { unsafe { base.execute(run, b"", &mut []) }.expect("run"); }
+    for _ in 0..reps { run(b"", &mut []); }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    unsafe { base.execute(fetch, b"", &mut out) }.expect("fetch");
+    fetch(b"", &mut out);
 
     let gpu: Vec<f32> = out.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
@@ -43,14 +42,14 @@ pub fn main(_args: Vec<String>) {
     println!("elements    : {N}");
     println!("kernel time : {:.3} ms", dt * 1e3);
     // The same spec, 8 elements per lane: 8x fewer blocks.
-    let run_loop = "runLoop";
-    unsafe { base.execute(run_loop, b"", &mut []) }.expect("runLoop");
+    let run_loop = unsafe { base.function("runLoop") }.expect("runLoop");
+    run_loop(b"", &mut []);
     let t1 = std::time::Instant::now();
-    for _ in 0..reps { unsafe { base.execute(run_loop, b"", &mut []) }.expect("runLoop"); }
+    for _ in 0..reps { run_loop(b"", &mut []); }
     let dt_loop = t1.elapsed().as_secs_f64() / reps as f64;
     // The looped kernel wrote the same buffer — check *its* output too.
     let mut out2 = vec![0u8; N * 4];
-    unsafe { base.execute(fetch, b"", &mut out2) }.expect("fetch");
+    fetch(b"", &mut out2);
     let gpu2: Vec<f32> = out2.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
     let mut same = 0usize;

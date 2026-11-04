@@ -1,6 +1,5 @@
 //! The serial library against a pseudo-terminal (`Host/SerialCorpus.lean`).
 
-use base_types::Artifact;
 use std::path::PathBuf;
 
 fn corpus_dir() -> PathBuf {
@@ -47,8 +46,6 @@ fn interpreter_and_terminal_agree() {
         v["names"].as_array().expect("names").iter().map(|n| n.as_str().expect("name").to_string()).collect();
     let greeting = v["greeting"].as_str().expect("greeting").as_bytes().to_vec();
     let sent: Vec<u8> = v["sent"].as_array().expect("sent").iter().map(|b| b.as_u64().expect("byte") as u8).collect();
-    let a = Artifact::from_bytes(&std::fs::read(dir.join("hprog_serial_corpus.cbor")).expect("read artifact"))
-        .expect("artifact shape");
 
     let (far, path, near) = terminal();
     unsafe {
@@ -68,9 +65,9 @@ fn interpreter_and_terminal_agree() {
 
     let mut input = path.clone().into_bytes();
     input.push(0);
-    let b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(&std::fs::read(dir.join("hprog_serial_corpus.cbor")).expect("read artifact")).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.execute("main", &input, &mut out) }.expect("execute");
+    unsafe { b.function("main") }.expect("execute")(&input, &mut out);
 
     let word = |bs: &[u8], k: usize| i32::from_le_bytes(bs[4 * k..4 * k + 4].try_into().unwrap());
     let bad: Vec<String> = names

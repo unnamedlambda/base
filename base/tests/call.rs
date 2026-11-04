@@ -72,13 +72,13 @@ fn the_output_is_written_in_place() {
 /// program reaches it at the address the host is handed.
 #[test]
 fn the_arena_starts_as_the_artifact_states() {
-    let mut d = driver(artifact(
+    let d = driver(artifact(
         functions(vec![function().named("addr").entry(vec![ret_status(v(0))])]),
         64,
         vec![Segment { offset: 8, bytes: 0x1122_3344_5566_7788u64.to_le_bytes().to_vec() }],
     ));
-    assert_eq!(call_with(&d, "addr", &[], &mut []) as usize, d.arena_ptr() as usize);
-    let arena = d.arena();
+    assert_eq!(call_with(&d, "addr", &[], &mut []) as usize, d.arena().as_ptr() as usize);
+    let arena = read(&d, 0, 64);
     assert_eq!(arena.len(), 64);
     assert_eq!(arena[8..16], 0x1122_3344_5566_7788u64.to_le_bytes());
     assert!(arena[..8].iter().chain(&arena[16..]).all(|&b| b == 0));
@@ -122,7 +122,7 @@ fn functions_are_found_by_name_only() {
     let d = driver(artifact(functions(vec![answering(1), answering(2).named("two")]), 64, vec![]));
     assert_eq!(call_with(&d, "two", &[], &mut []), 2);
     for name in ["u0:0", "one", ""] {
-        let Err(base::Error::NoSuchFunction(missing)) = d.function(name) else { panic!("{name:?} should not be found") };
+        let Err(base::Error::NoSuchFunction(missing)) = (unsafe { d.function(name) }) else { panic!("{name:?} should not be found") };
         assert_eq!(missing, name);
     }
 }
@@ -159,12 +159,12 @@ fn names_survive_a_reordering() {
 #[test]
 fn threads_call_one_driver_at_once() {
     let d = driver(main_of(vec![iconst64(v(1), 1), atomic_add(v(2), v(0), v(1)), ret()]));
-    let f = d.function("main").unwrap();
+    let f = unsafe { d.function("main") }.unwrap();
     std::thread::scope(|s| {
         for _ in 0..8 {
             s.spawn(|| {
                 for _ in 0..10_000 {
-                    unsafe { f.call(&[], &mut []) };
+                    f(&[], &mut []);
                 }
             });
         }

@@ -43,6 +43,17 @@ mod warp_demo;
 #[path = "window-demo/src/main.rs"]
 mod window_demo;
 
+/// Loads the encoded `artifact` and calls `name` once on `input`, with no output.
+///
+/// # Safety
+///
+/// As [`base::Driver::function`].
+pub unsafe fn run(artifact: &[u8], name: &str, input: &[u8]) -> Result<i64, base::Error> {
+    let driver = base::Driver::load(artifact)?;
+    let f = unsafe { driver.function(name) }?;
+    Ok(f(input, &mut []))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let app = if args.is_empty() { String::new() } else { args[0].clone() };

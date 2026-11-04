@@ -2,7 +2,7 @@
 //! references in the committed fold order: bit-exact, except `silu`'s
 //! (`ex2.approx`) by error magnitude. Training is `train.py`.
 
-use base::{Artifact, Driver};
+use base::Driver;
 use warp_check::{compare, dot, dot_by, floats, gbs, le, roofline, time, Lcg, Walk};
 
 const ART: &[u8] = lean_artifacts::MLP_CIFAR;
@@ -40,8 +40,6 @@ fn batch_sum(f: impl Fn(usize) -> f32) -> f32 {
 }
 
 pub fn main(_args: Vec<String>) {
-    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-
     let mut rng = Lcg::new(0x5eed_1234);
     let a1 = (6.0f32 / IN as f32).sqrt();
     let a2 = (6.0f32 / H as f32).sqrt();
@@ -57,41 +55,43 @@ pub fn main(_args: Vec<String>) {
 
     // Seam check: Lean publishes the byte count its `hostIn` layout expects, so
     // the packing here and the uploader there cannot drift apart silently.
-    const HOST_LEN_OFF: u64 = 0x0080;
-    let want = u32::from_le_bytes(artifact.read(HOST_LEN_OFF, 4).try_into().unwrap()) as usize;
+    const HOST_LEN_OFF: usize = 0x0080;
+    let base = Driver::load(ART).expect("Driver::load");
+    let want = base.arena()[HOST_LEN_OFF..HOST_LEN_OFF + 4]
+        .iter()
+        .rev()
+        .fold(0usize, |n, b| n << 8 | b.load(std::sync::atomic::Ordering::Relaxed) as usize);
     assert_eq!(blob.len(), want, "host packing disagrees with Lean's `hostIn`");
-
-    let mut base = Driver::load(artifact).expect("Driver::load");
-    let go = |b: &mut Driver, name: &str, data: &[u8], out: &mut [u8]| {
-        unsafe { b.execute(name, data, out) }.unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    let go = |b: &Driver, name: &str, data: &[u8], out: &mut [u8]| {
+        unsafe { b.function(name) }.unwrap_or_else(|e| panic!("{name}: {e:?}"))(data, out);
     };
 
-    unsafe { base.execute("main", &blob, &mut []) }.expect("load");
+    unsafe { base.function("main") }.expect("load")(&blob, &mut []);
     println!("MLP {IN} → {H} → {CLASSES} (padded to {C}), batch {B}, lr = 1/{}", (1.0 / LR) as u32);
     println!("host packing: {} bytes, matches Lean's hostIn\n", blob.len());
 
     // ── forward ─────────────────────────────────────────────────────────────
-    go(&mut base, "uploadX", &le(&x), &mut []);
-    go(&mut base, "runFwd1", b"", &mut []);
+    go(&base, "uploadX", &le(&x), &mut []);
+    go(&base, "runFwd1", b"", &mut []);
 
     let mut buf_bh = vec![0u8; B * H * 4];
-    go(&mut base, "fetchZ1", b"", &mut buf_bh);
+    go(&base, "fetchZ1", b"", &mut buf_bh);
     let z1 = floats(&buf_bh);
     // Output `k` is sample `k/H`, hidden unit `k%H`.
     let d = compare(&z1, |k| dot(Walk::Strided, &w1, &x, (k % H) * IN, (k / H) * IN, IN));
     println!("fwd1  z1 = W1·x        {d}");
     assert!(d.is_exact(), "fwd1 must match its proven fold order bit-for-bit");
 
-    go(&mut base, "runAct", b"", &mut []);
-    go(&mut base, "fetchH", b"", &mut buf_bh);
+    go(&base, "runAct", b"", &mut []);
+    go(&base, "fetchH", b"", &mut buf_bh);
     let hv = floats(&buf_bh);
     let d = compare(&hv, |k| silu(z1[k]));
     println!("act   h  = silu(z1)    worst rel {:.2e}   (ex2.approx, the declared approximation)", d.worst);
     assert!(d.worst < 1e-5, "silu must match the spec to within the declared approximation");
 
-    go(&mut base, "runFwd2", b"", &mut []);
+    go(&base, "runFwd2", b"", &mut []);
     let mut buf_bc = vec![0u8; B * C * 4];
-    go(&mut base, "fetchLogits", b"", &mut buf_bc);
+    go(&base, "fetchLogits", b"", &mut buf_bc);
     let logits = floats(&buf_bc);
     // Referenced against the *fetched* `h`, so this isolates fwd2 from `act`.
     let d = compare(&logits, |k| dot(Walk::Strided, &w2, &hv, (k % C) * H, (k / C) * H, H));
@@ -105,11 +105,11 @@ pub fn main(_args: Vec<String>) {
     for s in 0..B {
         onehot[s * C + labels[s]] = 1.0;
     }
-    go(&mut base, "uploadBias", &le(&bias), &mut []);
-    go(&mut base, "uploadOneHot", &le(&onehot), &mut []);
-    go(&mut base, "runSoftmax", b"", &mut []);
+    go(&base, "uploadBias", &le(&bias), &mut []);
+    go(&base, "uploadOneHot", &le(&onehot), &mut []);
+    go(&base, "runSoftmax", b"", &mut []);
     let mut buf_dl = vec![0u8; B * C * 4];
-    go(&mut base, "fetchDlog", b"", &mut buf_dl);
+    go(&base, "fetchDlog", b"", &mut buf_dl);
     let dlog = floats(&buf_dl);
 
     // Reference in the committed order: the max and the sum are the same
@@ -144,16 +144,16 @@ pub fn main(_args: Vec<String>) {
     assert!(d.worst_abs < 1e-6, "softmaxCE must match its proven spec");
 
     // ── backward ────────────────────────────────────────────────────────────
-    go(&mut base, "runDw2", b"", &mut []);
+    go(&base, "runDw2", b"", &mut []);
     let mut buf_w2 = vec![0u8; C * H * 4];
-    go(&mut base, "fetchDw2", b"", &mut buf_w2);
+    go(&base, "fetchDw2", b"", &mut buf_w2);
     let dw2 = floats(&buf_w2);
     let d = compare(&dw2, |k| batch_sum(|s| dlog[s * C + k / H] * hv[s * H + k % H]));
     println!("dw2   dW2 = Σₛ dlog⊗h  {d}");
     assert!(d.is_exact(), "the batched outer product must be bit-exact");
 
-    go(&mut base, "runDh", b"", &mut []);
-    go(&mut base, "fetchDh", b"", &mut buf_bh);
+    go(&base, "runDh", b"", &mut []);
+    go(&base, "fetchDh", b"", &mut buf_bh);
     let dh = floats(&buf_bh);
     // The transposed walk: successive classes are `H` floats apart, which is
     // why no `Walk` describes it and `dot_by` takes the index functions.
@@ -164,8 +164,8 @@ pub fn main(_args: Vec<String>) {
     println!("dh    dh = W2ᵀ·dlog    {d}");
     assert!(d.is_exact(), "the transposed matvec must match its proven fold order");
 
-    go(&mut base, "runAdj", b"", &mut []);
-    go(&mut base, "fetchAdj", b"", &mut buf_bh);
+    go(&base, "runAdj", b"", &mut []);
+    go(&base, "fetchAdj", b"", &mut buf_bh);
     let adj = floats(&buf_bh);
     let d = compare(&adj, |k| dh[k] * silu_prime(z1[k]));
     println!("adj   adj = dh·silu'   worst rel {:.2e} (ref {:.2e} at {}), worst abs {:.2e}",
@@ -174,23 +174,23 @@ pub fn main(_args: Vec<String>) {
     // is what says the kernel agrees with the spec's derivative.
     assert!(d.worst_abs < 1e-5, "the activation backward must match the spec's derivative");
 
-    go(&mut base, "runDw1", b"", &mut []);
+    go(&base, "runDw1", b"", &mut []);
     let mut buf_w1 = vec![0u8; H * IN * 4];
-    go(&mut base, "fetchDw1", b"", &mut buf_w1);
+    go(&base, "fetchDw1", b"", &mut buf_w1);
     let dw1 = floats(&buf_w1);
     let d = compare(&dw1, |k| batch_sum(|s| adj[s * H + k / IN] * x[s * IN + k % IN]));
     println!("dw1   dW1 = Σₛ adj⊗x   {d}");
     assert!(d.is_exact(), "the batched outer product must be bit-exact");
 
     // ── the optimiser ───────────────────────────────────────────────────────
-    go(&mut base, "runSgd1", b"", &mut []);
-    go(&mut base, "runSgd2", b"", &mut []);
-    go(&mut base, "fetchW1", b"", &mut buf_w1);
+    go(&base, "runSgd1", b"", &mut []);
+    go(&base, "runSgd2", b"", &mut []);
+    go(&base, "fetchW1", b"", &mut buf_w1);
     let d = compare(&floats(&buf_w1), |k| w1[k] - LR * dw1[k]);
     println!("sgd1  W1 ← W1 − lr·dW1 {d}");
     assert!(d.is_exact(), "the optimiser step must be bit-exact");
 
-    go(&mut base, "fetchW2", b"", &mut buf_w2);
+    go(&base, "fetchW2", b"", &mut buf_w2);
     let d = compare(&floats(&buf_w2), |k| w2[k] - LR * dw2[k]);
     println!("sgd2  W2 ← W2 − lr·dW2 {d}");
     assert!(d.is_exact(), "the optimiser step must be bit-exact");
@@ -198,12 +198,12 @@ pub fn main(_args: Vec<String>) {
     // ── the same five GEMMs through cuBLAS, checking its column-major convention ──
     // The optimiser has stepped W1/W2; reset them to the references' weights.
     let mut blas_ok = true;
-    unsafe { base.execute("main", &blob, &mut []) }.expect("reload");
-    go(&mut base, "uploadBias", &le(&bias), &mut []);
-    go(&mut base, "uploadOneHot", &le(&onehot), &mut []);
-    go(&mut base, "uploadX", &le(&x), &mut []);
-    go(&mut base, "runFwdBlas", b"", &mut []);
-    go(&mut base, "fetchZ1", b"", &mut buf_bh);
+    unsafe { base.function("main") }.expect("reload")(&blob, &mut []);
+    go(&base, "uploadBias", &le(&bias), &mut []);
+    go(&base, "uploadOneHot", &le(&onehot), &mut []);
+    go(&base, "uploadX", &le(&x), &mut []);
+    go(&base, "runFwdBlas", b"", &mut []);
+    go(&base, "fetchZ1", b"", &mut buf_bh);
     let chk = |name: &str, got: &[f32], want: &[f32], ok: &mut bool| {
         // Relative error is meaningless at an element that cancels to ~0, so
         // measure the worst absolute deviation against the tensor's own scale.
@@ -213,15 +213,15 @@ pub fn main(_args: Vec<String>) {
         *ok &= worst / scale < 1e-5;
     };
     chk("z1", &floats(&buf_bh), &z1, &mut blas_ok);
-    go(&mut base, "fetchLogits", b"", &mut buf_bc);
+    go(&base, "fetchLogits", b"", &mut buf_bc);
     chk("logits", &floats(&buf_bc), &logits, &mut blas_ok);
 
-    go(&mut base, "runBwdBlas", b"", &mut []);
-    go(&mut base, "fetchDh", b"", &mut buf_bh);
+    go(&base, "runBwdBlas", b"", &mut []);
+    go(&base, "fetchDh", b"", &mut buf_bh);
     chk("dh", &floats(&buf_bh), &dh, &mut blas_ok);
-    go(&mut base, "fetchDw2", b"", &mut buf_w2);
+    go(&base, "fetchDw2", b"", &mut buf_w2);
     chk("dW2", &floats(&buf_w2), &dw2, &mut blas_ok);
-    go(&mut base, "fetchDw1", b"", &mut buf_w1);
+    go(&base, "fetchDw1", b"", &mut buf_w1);
     chk("dW1", &floats(&buf_w1), &dw1, &mut blas_ok);
     assert!(blas_ok, "cuBLAS must agree with the proven kernels");
 
@@ -244,7 +244,7 @@ pub fn main(_args: Vec<String>) {
     println!("\n{:<9} {:>9} {:>11} {:>9}", "kernel", "time", "bandwidth", "roofline");
     let mut total = 0f64;
     for (name, bytes) in traffic {
-        let dt = time(&mut base, name, reps);
+        let dt = time(&base, name, reps);
         total += dt;
         println!("{:<9} {:>7.1} us {:>8.1} GB/s {:>8.0}%", name, dt * 1e6,
                  gbs(*bytes, dt), roofline(*bytes, dt) * 100.0);
@@ -257,11 +257,11 @@ pub fn main(_args: Vec<String>) {
     let xb = le(&x);
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.execute("uploadX", &xb, &mut []) }.unwrap();
-        unsafe { base.execute("runFwd", b"", &mut []) }.unwrap();
-        unsafe { base.execute("fetchLogits", b"", &mut buf_bc) }.unwrap();
-        unsafe { base.execute("uploadOneHot", &oh, &mut []) }.unwrap();
-        unsafe { base.execute("runBwd", b"", &mut []) }.unwrap();
+        unsafe { base.function("uploadX") }.unwrap()(&xb, &mut []);
+        unsafe { base.function("runFwd") }.unwrap()(b"", &mut []);
+        unsafe { base.function("fetchLogits") }.unwrap()(b"", &mut buf_bc);
+        unsafe { base.function("uploadOneHot") }.unwrap()(&oh, &mut []);
+        unsafe { base.function("runBwd") }.unwrap()(b"", &mut []);
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (fused: 2 runs, 2 uploads, 1 download)", "step", dt * 1e6);
@@ -269,11 +269,11 @@ pub fn main(_args: Vec<String>) {
 
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.execute("uploadX", &xb, &mut []) }.unwrap();
-        unsafe { base.execute("runFwdBlas", b"", &mut []) }.unwrap();
-        unsafe { base.execute("fetchLogits", b"", &mut buf_bc) }.unwrap();
-        unsafe { base.execute("uploadOneHot", &oh, &mut []) }.unwrap();
-        unsafe { base.execute("runBwdBlas", b"", &mut []) }.unwrap();
+        unsafe { base.function("uploadX") }.unwrap()(&xb, &mut []);
+        unsafe { base.function("runFwdBlas") }.unwrap()(b"", &mut []);
+        unsafe { base.function("fetchLogits") }.unwrap()(b"", &mut buf_bc);
+        unsafe { base.function("uploadOneHot") }.unwrap()(&oh, &mut []);
+        unsafe { base.function("runBwdBlas") }.unwrap()(b"", &mut []);
     }
     let dtb = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (cuBLAS for the 5 GEMMs)", "step/blas", dtb * 1e6);

@@ -48,7 +48,7 @@ drives it seven ways, each with its own host code around the calls:
    threads calling `pop` consume, and alongside them a host thread consumes
    straight from the arena: it takes the program's own lock with a
    compare-and-swap through `std::atomic_ref`, copies the slot under it, and
-   sleeps with `Driver::wait`, which the program's `push` wakes. Every item has
+   sleeps on the head with the system's wait, which the program's `push` wakes. Every item has
    to arrive exactly once.
 7. **shared ownership**: main drops its handle before the threads start, and
    the last thread to finish checks the result. Its copy is the last one, so it
@@ -101,5 +101,6 @@ Four functions, used like a shared library:
 - Waiting on a word, waking, and the clock are the system's own calls (a
   private futex on Linux, `WaitOnAddress` on Windows, `os_sync_wait_on_address`
   on macOS), which programs make too, so a host thread and a program's threads
-  wait and wake each other at the same words. `base::wait`, `base::wake` and
-  `base::now` in `base.hpp` make them.
+  wait and wake each other at the same words. `main.cpp` makes them itself on
+  the arena `base.hpp` hands over: `base.hpp` is the C API's four calls and
+  nothing more.

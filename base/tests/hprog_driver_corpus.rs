@@ -1,7 +1,6 @@
 //! The CUDA driver calls a program makes, on the device, against the
 //! interpreter (`Host/DriverCorpus.lean`): result codes and bytes.
 
-use base_types::Artifact;
 use std::path::PathBuf;
 
 #[test]
@@ -28,14 +27,10 @@ fn interpreter_and_driver_agree() {
         .map(|n| n.as_str().expect("name").to_string())
         .collect();
     let data = v["data"].as_u64().expect("data") as usize;
-    let a = Artifact::from_bytes(
-        &std::fs::read(dir.join("hprog_driver_corpus.cbor")).expect("read artifact"),
-    )
-    .expect("artifact shape");
-
-    let b = base::Driver::load(a).expect("compile");
+    let bytes = std::fs::read(dir.join("hprog_driver_corpus.cbor")).expect("read artifact");
+    let b = base::Driver::load(&bytes).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
+    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
 
     let mut bad = Vec::new();
     for (k, name) in names.iter().enumerate() {

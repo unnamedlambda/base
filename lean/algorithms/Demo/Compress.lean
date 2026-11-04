@@ -50,13 +50,12 @@ def maxInputSize : Nat := 4 * 1024 * 1024
 -- Fixed layout offsets: wgpu's state (`app`) from 0, the shader from 0x200
 def shader_off         : Nat := 0x200
 def shaderRegionSize   : Nat := 16384
-def inputFilename_off  : Nat := shader_off + shaderRegionSize   -- 0x4200
 def filenameRegionSize : Nat := 256
-def outputFilename_off : Nat := inputFilename_off + filenameRegionSize   -- 0x4300
-def flag_off           : Nat := outputFilename_off + filenameRegionSize  -- 0x4400
-def clifIr_off         : Nat := flag_off + 64                            -- 0x4440
+def outputFilename_off : Nat := shader_off + shaderRegionSize           -- 0x4200
+def flag_off           : Nat := outputFilename_off + filenameRegionSize  -- 0x4300
+def clifIr_off         : Nat := flag_off + 64                            -- 0x4340
 def clifIrRegionSize   : Nat := 8192
-def inputData_off      : Nat := clifIr_off + clifIrRegionSize            -- 0x6440
+def inputData_off      : Nat := clifIr_off + clifIrRegionSize            -- 0x6340
 def outputData_off     : Nat := inputData_off + maxInputSize
 
 -- ---------------------------------------------------------------------------
@@ -281,10 +280,10 @@ def code (bs shLen : Nat) : Prog V L Unit :=
   do
     let ptr ← basePtr
 
-    -- Step 1: Read input file
+    -- Step 1: Read the file the caller's input names
     let inData    ← iconst64 inputData_off
     let zero      ← iconst64 0
-    let bytesRead ← readFile ptr inputFilename_off filenameRegionSize inputData_off maxInputSize
+    let bytesRead ← readInputFile ptr inputData_off maxInputSize
     -- A read that failed (-1) or ran past the input region compresses nothing.
     let _ ← ifte .ugt bytesRead (← iconst64 maxInputSize) (pure %[]) (do
 
@@ -396,14 +395,12 @@ def buildPayload (bs : Nat) : List UInt8 :=
   let a := app bs (compressionShader bs).utf8ByteSize
   let wgState        := zeros a.NAME ++ "main".toUTF8.toList ++ zeros (shader_off - a.NAME - 4)
   let shaderBytes    := padTo (stringToBytes (compressionShader bs)) shaderRegionSize
-  -- Input filename left as zeros (main.rs writes the path at runtime)
-  let inputFnameBytes  := zeros filenameRegionSize
   let outputFnameBytes := padTo (stringToBytes "compress_output.lz4") filenameRegionSize
   let flagBytes      := uint64ToBytes 0
   let flagPad        := zeros (clifIr_off - flag_off - 8)
   let clifPad        := zeros clifIrRegionSize
   wgState ++
-  shaderBytes ++ inputFnameBytes ++ outputFnameBytes ++
+  shaderBytes ++ outputFnameBytes ++
   flagBytes ++ flagPad ++ clifPad
 
 -- ---------------------------------------------------------------------------

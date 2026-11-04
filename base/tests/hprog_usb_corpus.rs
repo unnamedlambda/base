@@ -1,6 +1,5 @@
 //! The USB library against the system (`Host/UsbCorpus.lean`).
 
-use base_types::Artifact;
 use std::path::PathBuf;
 
 fn corpus_dir() -> PathBuf {
@@ -21,12 +20,10 @@ fn interpreter_and_system_agree() {
         v["expected"].as_array().expect("expected").iter().map(|b| b.as_u64().expect("byte") as u8).collect();
     let names: Vec<String> =
         v["names"].as_array().expect("names").iter().map(|n| n.as_str().expect("name").to_string()).collect();
-    let a = Artifact::from_bytes(&std::fs::read(dir.join("hprog_usb_corpus.cbor")).expect("read artifact"))
-        .expect("artifact shape");
 
-    let b = base::Driver::load(a).expect("compile");
+    let b = base::Driver::load(&std::fs::read(dir.join("hprog_usb_corpus.cbor")).expect("read artifact")).expect("compile");
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.execute("main", &[], &mut out) }.expect("execute");
+    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
 
     let word = |bs: &[u8], k: usize| i32::from_le_bytes(bs[4 * k..4 * k + 4].try_into().unwrap());
     let bad: Vec<String> = names

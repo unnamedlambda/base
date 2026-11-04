@@ -37,26 +37,32 @@ LEAN_EXPORT lean_obj_res lean_base_driver_load(b_lean_obj_arg artifact, lean_obj
     return lean_io_result_mk_ok(lean_box_usize((size_t)handle));
 }
 
-/* The output buffer is allocated here rather than taken from the caller: a
- * `ByteArray` Lean already holds may be shared, and writing through it would
- * mutate a value another reference can observe. A fresh one is unshared by
- * construction, and returning it is how the caller reads what ran.
- *
- * The pair is the buffer and the status the program returned, which is the one
- * value it answers with without agreeing on a place in the arena to leave it. */
-LEAN_EXPORT lean_obj_res lean_base_driver_execute(size_t handle, b_lean_obj_arg name,
-                                                  b_lean_obj_arg input, size_t output_len,
-                                                  lean_obj_arg w) {
+/* The function named `name`, as its address; an error when there is none. */
+LEAN_EXPORT lean_obj_res lean_base_driver_function(size_t handle, b_lean_obj_arg name, lean_obj_arg w) {
     (void)w;
-    base_function entry = base_driver_function((const void *)handle,
-                                          (const uint8_t *)lean_string_cstr(name),
-                                          lean_string_size(name) - 1);
-    if (entry == NULL) {
+    base_function fn = base_driver_function((const void *)handle, (const uint8_t *)lean_string_cstr(name),
+                                            lean_string_size(name) - 1);
+    if (fn == NULL) {
         return base_io_error("the artifact has no function by that name");
     }
-    lean_object *output = lean_alloc_sarray(1, output_len, output_len);
-    int64_t status = entry(lean_sarray_cptr(input), lean_sarray_size(input),
-                           lean_sarray_cptr(output), output_len);
+    return lean_io_result_mk_ok(lean_box_usize((size_t)fn));
+}
+
+/* Calls `fn` on `input` and `output`. A `ByteArray` another reference holds
+ * must not change under it, so `output` is written in place only when this
+ * call holds it alone, and copied first otherwise. The pair is `output` as
+ * the program left it and the program's status. */
+LEAN_EXPORT lean_obj_res lean_base_call(size_t fn, b_lean_obj_arg input, lean_obj_arg output, lean_obj_arg w) {
+    (void)w;
+    if (!lean_is_exclusive(output)) {
+        size_t n = lean_sarray_size(output);
+        lean_object *own = lean_alloc_sarray(1, n, n);
+        memcpy(lean_sarray_cptr(own), lean_sarray_cptr(output), n);
+        lean_dec_ref(output);
+        output = own;
+    }
+    int64_t status = ((base_function)fn)(lean_sarray_cptr(input), lean_sarray_size(input),
+                                         lean_sarray_cptr(output), lean_sarray_size(output));
     lean_object *pair = lean_alloc_ctor(0, 2, 0);
     lean_ctor_set(pair, 0, output);
     lean_ctor_set(pair, 1, lean_box_uint64((uint64_t)status));
@@ -92,6 +98,37 @@ LEAN_EXPORT lean_obj_res lean_base_driver_read(size_t handle, size_t offset, siz
         }
     }
     return lean_io_result_mk_ok(dst);
+}
+
+/* Puts `bytes` into the arena at `offset`, as `read` reads it: each aligned
+ * 8-byte word with one atomic store, the bytes either side one at a time. */
+LEAN_EXPORT lean_obj_res lean_base_driver_write(size_t handle, size_t offset, b_lean_obj_arg bytes,
+                                                lean_obj_arg w) {
+    (void)w;
+    size_t have = 0;
+    uint8_t *memory = base_driver_arena((const void *)handle, &have);
+    size_t len = lean_sarray_size(bytes);
+    if (len == 0) {
+        return lean_io_result_mk_ok(lean_box(0));
+    }
+    if (memory == NULL || offset > have || len > have - offset) {
+        return base_io_error("that range is outside the arena");
+    }
+    const uint8_t *src = lean_sarray_cptr(bytes);
+    size_t i = 0;
+    while (i < len) {
+        uint8_t *at = memory + offset + i;
+        if (((uintptr_t)at & 7) == 0 && len - i >= 8) {
+            uint64_t word;
+            memcpy(&word, src + i, 8);
+            __atomic_store_n((uint64_t *)at, word, __ATOMIC_RELAXED);
+            i += 8;
+        } else {
+            __atomic_store_n(at, src[i], __ATOMIC_RELAXED);
+            i += 1;
+        }
+    }
+    return lean_io_result_mk_ok(lean_box(0));
 }
 
 LEAN_EXPORT lean_obj_res lean_base_driver_arena_size(size_t handle, lean_obj_arg w) {

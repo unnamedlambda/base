@@ -72,7 +72,7 @@ def main() -> None:
     torch.backends.cudnn.deterministic = True
 
     path = find_artifact()
-    art = py_base.load_artifact(path)
+    art = open(path, "rb").read()
     xtr, ytr, xte, yte = load_cifar()
 
     rng = np.random.default_rng(0)
@@ -83,7 +83,7 @@ def main() -> None:
     blob = w1.tobytes() + w2.tobytes()
     HOST_LEN_OFF = 0x0080
     base = py_base.Driver(art)
-    assert len(blob) == struct.unpack_from("<I", base.read(HOST_LEN_OFF, 4))[0]
+    assert len(blob) == struct.unpack_from("<I", base.arena, HOST_LEN_OFF)[0]
 
     base.function("main")(blob)
 

@@ -23,6 +23,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <functional>
 #include <future>
 #include <latch>
@@ -34,6 +37,18 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(__linux__)
+#include <climits>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#elif defined(__APPLE__)
+#include <os/os_sync_wait_on_address.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#pragma comment(lib, "Synchronization.lib")
+#endif
 
 namespace {
 
@@ -52,6 +67,58 @@ constexpr uint32_t CLOSED = 0x80000000u;
 constexpr uint32_t COUNT = 0x7fffffffu;
 
 using Bytes = std::vector<std::byte>;
+
+// --- the host's own tools, on the arena `base.hpp` hands over -------------
+
+// The `T` at `offset` of the arena, as an atomic the host shares with running
+// programs: the location their atomics reach.
+template <class T>
+std::atomic_ref<T> atomic(const base::Driver &driver, std::size_t offset) {
+    return std::atomic_ref<T>(*reinterpret_cast<T *>(driver.arena().data() + offset));
+}
+
+template <class T>
+T read(const base::Driver &driver, std::size_t offset) {
+    return atomic<T>(driver, offset).load(std::memory_order_relaxed);
+}
+
+// Sleeps while the arena's word at `offset` holds `expected`, until woken or
+// spuriously, through the system call programs wait with, so the two meet.
+void wait(const base::Driver &driver, std::size_t offset, uint32_t expected) {
+    auto *addr = reinterpret_cast<uint32_t *>(driver.arena().data() + offset);
+#if defined(__linux__)
+    syscall(SYS_futex, addr, FUTEX_WAIT_PRIVATE, expected, nullptr, nullptr, 0);
+#elif defined(__APPLE__)
+    os_sync_wait_on_address(addr, expected, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+#elif defined(_WIN32)
+    WaitOnAddress(addr, &expected, 4, INFINITE);
+#endif
+}
+
+// Wakes one waiter on the arena's word at `offset` when `count` is 1, all otherwise.
+void wake(const base::Driver &driver, std::size_t offset, int32_t count = -1) {
+    auto *addr = reinterpret_cast<uint32_t *>(driver.arena().data() + offset);
+#if defined(__linux__)
+    syscall(SYS_futex, addr, FUTEX_WAKE_PRIVATE, count == 1 ? 1 : INT_MAX, nullptr, nullptr, 0);
+#elif defined(__APPLE__)
+    if (count == 1)
+        os_sync_wake_by_address_any(addr, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+    else
+        os_sync_wake_by_address_all(addr, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE);
+#elif defined(_WIN32)
+    if (count == 1)
+        WakeByAddressSingle(addr);
+    else
+        WakeByAddressAll(addr);
+#endif
+}
+
+base::Driver load_file(const std::filesystem::path &path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw base::Error("load: cannot read " + path.string());
+    std::vector<char> bytes{std::istreambuf_iterator<char>(in), {}};
+    return base::Driver::load(std::as_bytes(std::span(bytes)));
+}
 
 [[noreturn]] void fail(const std::string &why) {
     std::fprintf(stderr, "FAILED: %s\n", why.c_str());
@@ -283,7 +350,7 @@ void barrier_phases(const base::Driver &driver, Ledger &ledger, unsigned n) {
     std::jthread monitor([&driver](std::stop_token stop) {
         uint64_t last = 0;
         while (!stop.stop_requested()) {
-            uint64_t now = driver.read<uint64_t>(TOTAL_AT);
+            uint64_t now = read<uint64_t>(driver, TOTAL_AT);
             if (now < last) fail("the total went backwards");
             last = now;
             std::this_thread::yield();
@@ -337,14 +404,14 @@ void shared_ownership(std::optional<base::Driver> &mine, Ledger &ledger, unsigne
 class RingLock {
 public:
     explicit RingLock(const base::Driver &driver)
-        : driver_(driver), word_(driver.atomic<uint32_t>(LOCK_AT)) {}
+        : driver_(driver), word_(atomic<uint32_t>(driver, LOCK_AT)) {}
     void lock() {
         uint32_t free = 0;
         if (word_.compare_exchange_strong(free, 1, std::memory_order_acquire)) return;
-        while (word_.exchange(2, std::memory_order_acquire) != 0) driver_.wait(LOCK_AT, 2);
+        while (word_.exchange(2, std::memory_order_acquire) != 0) wait(driver_, LOCK_AT, 2);
     }
     void unlock() {
-        if (word_.exchange(0, std::memory_order_release) == 2) driver_.wake(LOCK_AT, 1);
+        if (word_.exchange(0, std::memory_order_release) == 2) wake(driver_, LOCK_AT, 1);
     }
 
 private:
@@ -356,8 +423,8 @@ private:
 // drained. The slot is read with a plain copy: the program wrote it under the
 // lock, and the host reads it under the lock.
 std::optional<uint64_t> host_pop(const base::Driver &driver, RingLock &lock) {
-    auto head = driver.atomic<uint32_t>(HEAD_AT);
-    auto tail = driver.atomic<uint32_t>(TAIL_AT);
+    auto head = atomic<uint32_t>(driver, HEAD_AT);
+    auto tail = atomic<uint32_t>(driver, TAIL_AT);
     for (;;) {
         uint32_t h;
         std::optional<uint64_t> item;
@@ -375,10 +442,10 @@ std::optional<uint64_t> host_pop(const base::Driver &driver, RingLock &lock) {
             }
         }
         if (item) {
-            driver.wake(TAIL_AT);  // producers sleep on the tail
+            wake(driver, TAIL_AT);  // producers sleep on the tail
             return item;
         }
-        driver.wait(HEAD_AT, h);  // until a push or the close changes the head
+        wait(driver, HEAD_AT, h);  // until a push or the close changes the head
     }
 }
 
@@ -442,11 +509,11 @@ void check_against_ledger(const base::Driver &driver, Ledger &ledger) {
     expect(calls == ledger.calls, "calls: program " + std::to_string(calls) + ", host " +
                                       std::to_string(ledger.calls.load()));
     std::array<uint64_t, 256> hist;
-    driver.read(HIST_AT, std::as_writable_bytes(std::span(hist)));
+    for (std::size_t b = 0; b < hist.size(); ++b) hist[b] = read<uint64_t>(driver, HIST_AT + 8 * b);
     for (std::size_t b = 0; b < 256; ++b)
         expect(hist[b] == ledger.hist[b], "histogram counter " + std::to_string(b));
-    expect(driver.read<uint64_t>(TOTAL_AT) == total, "memory and `total` disagree");
-    expect(driver.read<uint64_t>(CALLS_AT) == calls, "memory and `calls` disagree");
+    expect(read<uint64_t>(driver, TOTAL_AT) == total, "memory and `total` disagree");
+    expect(read<uint64_t>(driver, CALLS_AT) == calls, "memory and `calls` disagree");
 
     // Each call added its sum at the total it saw: sorted, the ranges must
     // meet end to start, from zero to the total.
@@ -476,7 +543,7 @@ int main(int argc, char **argv) {
                           : std::max(2u, std::thread::hardware_concurrency());
     if (n == 0) fail("threads must be at least 1");
     try {
-        std::optional<base::Driver> driver = base::Driver::load(std::filesystem::path(argv[1]));
+        std::optional<base::Driver> driver = load_file(argv[1]);
         std::printf("loaded %zu bytes of memory; %u threads\n", driver->arena().size(), n);
         Ledger ledger;
 

@@ -23,15 +23,15 @@ namespace CpuAppsSafe
 
 -- Sat
 
-abbrev SatMain : World → Prop := Contracts.TState.holds
-  [.room .arena Sat.totalMemory]
+abbrev SatMain (dl : UInt64) : World → Prop := Contracts.TState.holds
+  [.room .arena Sat.totalMemory, .roomArg .data dl]
 
 theorem Sat_fine : Fine (emitGo (fnBody ptrParams (Sat.mainCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by native_decide, by native_decide⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
-theorem Sat_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SatMain w) (m : String) :
+theorem Sat_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : SatMain dataLen w) (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Sat.mainCode : Prog Slot Lvl Unit)) ≠ .misuse m := by
   check_body
 

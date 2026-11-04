@@ -1,7 +1,7 @@
 //! Reading `self_describing`'s outputs with a generic CBOR decoder and no
 //! copy of its formats.
 
-use base::{Artifact, Driver};
+use base::Driver;
 use ciborium::Value;
 
 const ARTIFACT: &[u8] = lean_artifacts::SELF_DESCRIBING;
@@ -10,16 +10,16 @@ const ARTIFACT: &[u8] = lean_artifacts::SELF_DESCRIBING;
 const INPUT: &[u8] = b"abca";
 
 fn driver() -> Driver {
-    Driver::load(Artifact::from_bytes(ARTIFACT).expect("the build checked this artifact"))
+    Driver::load(ARTIFACT)
         .expect("compile")
 }
 
 /// Call `entry` the way a host that does not know the output's size does: ask
 /// with no buffer, then call again with as many bytes as it answered.
-fn call(base: &mut Driver, entry: &str, data: &[u8]) -> Vec<u8> {
-    let need = unsafe { base.execute(entry, data, &mut []) }.expect("execute");
+fn call(base: &Driver, entry: &str, data: &[u8]) -> Vec<u8> {
+    let need = unsafe { base.function(entry) }.expect("execute")(data, &mut []);
     let mut out = vec![0u8; usize::try_from(need).expect("a size")];
-    assert_eq!(unsafe { base.execute(entry, data, &mut out) }.expect("execute"), need);
+    assert_eq!(unsafe { base.function(entry) }.expect("execute")(data, &mut out), need);
     out
 }
 
@@ -49,7 +49,7 @@ fn expected_histogram() -> Vec<u8> {
 
 #[test]
 fn schema_describes_both_outputs() {
-    let got = decode(&call(&mut driver(), "schema", &[]));
+    let got = decode(&call(&driver(), "schema", &[]));
     let expected = map(&[
         (
             "stats",
@@ -83,7 +83,7 @@ fn schema_describes_both_outputs() {
 /// is — nothing about the layout was needed to get here.
 #[test]
 fn stats_decode_without_a_layout() {
-    let got = decode(&call(&mut driver(), "stats", INPUT));
+    let got = decode(&call(&driver(), "stats", INPUT));
     let expected = map(&[
         ("format", text("base.u8stats/1")),
         ("count", Value::Integer(4.into())),
@@ -98,7 +98,7 @@ fn stats_decode_without_a_layout() {
 #[test]
 fn stats_hold_values_of_any_size() {
     let input = vec![0xffu8; 70_000];
-    let got = decode(&call(&mut driver(), "stats", &input));
+    let got = decode(&call(&driver(), "stats", &input));
     let Value::Map(entries) = got else { panic!("a map") };
     assert_eq!(entries[1], (text("count"), Value::Integer(70_000.into())));
     assert_eq!(entries[2], (text("sum"), Value::Integer((70_000 * 255).into())));
@@ -123,7 +123,7 @@ fn read_bulk(bytes: &[u8], id: &[u8; 8]) -> Result<Vec<u64>, String> {
 
 #[test]
 fn bulk_is_read_after_checking_its_id() {
-    let bytes = call(&mut driver(), "bulk", INPUT);
+    let bytes = call(&driver(), "bulk", INPUT);
     assert_eq!(bytes.len(), 8 + 2048);
     let expected: Vec<u64> =
         expected_histogram().chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
@@ -134,7 +134,7 @@ fn bulk_is_read_after_checking_its_id() {
 /// instead of reading them as its own.
 #[test]
 fn a_stale_bulk_reader_refuses() {
-    let bytes = call(&mut driver(), "bulk", INPUT);
+    let bytes = call(&driver(), "bulk", INPUT);
     assert_eq!(
         read_bulk(&bytes, b"u8hist00"),
         Err("expected format \"u8hist00\", got \"u8hist01\"".to_string())
@@ -147,9 +147,9 @@ fn a_stale_bulk_reader_refuses() {
 fn a_buffer_too_small_is_left_alone() {
     let base = driver();
     for entry in ["schema", "stats", "bulk"] {
-        let need = unsafe { base.execute(entry, INPUT, &mut []) }.expect("execute");
+        let need = unsafe { base.function(entry) }.expect("execute")(INPUT, &mut []);
         let mut out = vec![0xaau8; need as usize - 1];
-        assert_eq!(unsafe { base.execute(entry, INPUT, &mut out) }.expect("execute"), need, "{entry}");
+        assert_eq!(unsafe { base.function(entry) }.expect("execute")(INPUT, &mut out), need, "{entry}");
         assert!(out.iter().all(|&b| b == 0xaa), "{entry} wrote into a buffer too small for it");
     }
 }

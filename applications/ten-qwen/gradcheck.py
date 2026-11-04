@@ -28,7 +28,7 @@ ORDER = ["cos", "sin", "ones", "kc", "vc", "x", "g1", "g2",
 
 def main():
     path = sys.argv[1]
-    art = py_base.load_artifact(path)
+    art = open(path, "rb").read()
     w = R.make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)      # spans the widest reduction
 

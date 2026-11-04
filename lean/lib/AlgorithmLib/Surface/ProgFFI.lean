@@ -121,6 +121,13 @@ def readFile (ptr : V .i64) (filenameOff filenameCap dataOff room : Nat) : Prog 
   let dst ← iadd ptr (← iconst64 dataOff)
   ext (.base .fileReadToPtr) %[path, ← iconst64 filenameCap, dst, ← iconst64 0, ← iconst64 room]
 
+/-- Read the file the caller's input names into `room` bytes of shared memory;
+    the result is the byte count. The path is the input's bytes up to the first
+    zero, or all of them. -/
+def readInputFile (ptr : V .i64) (dataOff room : Nat) : Prog V L (V .i64) := do
+  let dst ← iadd ptr (← iconst64 dataOff)
+  ext (.base .fileReadToPtr) %[← dataPtr, ← dataLen, dst, ← iconst64 0, ← iconst64 room]
+
 /-- Write a region of shared memory over a file from `fileOffset`, keeping
     what the file holds past it; the result is the byte count. -/
 def writeFile (ptr : V .i64) (filenameOff filenameCap srcOff : Nat) (fileOffset size : V .i64) :

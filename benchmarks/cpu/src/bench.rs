@@ -1,6 +1,7 @@
 //! The harness itself; `main.rs` says what it measures.
 
-use base::{Artifact, Driver};
+use base::Driver;
+use base_types::Artifact;
 use crate::kernels::*;
 use std::hint::black_box;
 use std::time::Instant;
@@ -36,9 +37,9 @@ fn workloads() -> Vec<(&'static str, Kernel, fn(&In) -> Vec<u8>)> {
 }
 
 /// A column to time: a Rust kernel, or a Base entry.
-enum Col {
+enum Col<'d> {
     Rust(Kernel),
-    Base(String),
+    Base(Box<dyn Fn(&[u8], &mut [u8]) -> i64 + 'd>),
 }
 
 /// Each column's fastest sample, columns taking turns so all see the machine
@@ -72,11 +73,11 @@ fn time(cols: &[Col], mut run: impl FnMut(&Col)) -> Vec<f64> {
 pub fn main() {
     let art = Artifact::from_bytes(lean_artifacts::CPU_BENCH).expect("the build checked this artifact");
     let names: Vec<String> = art.functions.iter().filter_map(|f| f.name.clone()).collect();
-    let drv = Driver::load(art).expect("cpu_bench loads");
+    let drv = Driver::load(lean_artifacts::CPU_BENCH).expect("cpu_bench loads");
     // Map the machine code, once, as a program would at startup; every body
     // must have loaded, or an `_asm` row would be timing its fallback.
     let mut slots = vec![0u8; 8 * 64];
-    unsafe { drv.execute("asm_load", &[], &mut slots) }.expect("asm_load runs");
+    unsafe { drv.function("asm_load") }.expect("asm_load runs")(&[], &mut slots);
     let word = |k: usize| u64::from_le_bytes(slots[8 * k..8 * k + 8].try_into().unwrap());
     let bodies = word(0) as usize;
     assert!(bodies > 0 && (1..=bodies).all(|k| word(k) != 0),
@@ -85,8 +86,9 @@ pub fn main() {
     let inp = make_input();
     let mut out_buf = Lines::<u8>::zeroed(OUT_BYTES);
     let out = &mut out_buf[..];
-    let t = time(&[Col::Base("noop".into())], |_| { black_box(unsafe { drv.execute("noop", &[], out) }.unwrap()); });
-    println!("execute\tnoop\t{:.1}", t[0]);
+    let noop = unsafe { drv.function("noop") }.unwrap();
+    let t = time(&[Col::Base(Box::new(noop))], |_| { black_box(noop(&[], out)); });
+    println!("call\tnoop\t{:.1}", t[0]);
 
     for (w, kernel, input) in workloads() {
         let data = Lines::from_slice(&input(&inp));
@@ -104,15 +106,16 @@ pub fn main() {
             }
             // the answer's slot, so an entry that never wrote it is caught
             out[..8].fill(0);
-            unsafe { drv.execute(&entry, data, out) }.unwrap();
+            let f = unsafe { drv.function(&entry) }.unwrap();
+            f(data, out);
             let got = u64::from_le_bytes(out[..8].try_into().unwrap());
             assert_eq!(got, want, "{entry} answers {got:#x}, the Rust kernel {want:#x}");
-            cols.push((col.to_string(), Col::Base(entry)));
+            cols.push((col.to_string(), Col::Base(Box::new(f))));
         }
         let (labels, cols): (Vec<String>, Vec<Col>) = cols.into_iter().unzip();
         let ts = time(&cols, |c| match c {
             Col::Rust(k) => { black_box(k(black_box(&inp))); }
-            Col::Base(e) => { black_box(unsafe { drv.execute(e, black_box(data), out) }.unwrap()); }
+            Col::Base(f) => { black_box(f(black_box(data), out)); }
         });
         for (label, t) in labels.iter().zip(ts) {
             println!("{w}\t{label}\t{t:.1}");

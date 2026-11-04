@@ -1,7 +1,7 @@
 // Throughput and byte-exact check of the proven GPU LZ4 compressor against
 // nvCOMP (`baseline/bench_nvcomp_compress.py`). Corpus: `baseline/setup.sh
 // --corpus-only`, or LZ4_CORPUS.
-use base::{Artifact, Driver};
+use base::Driver;
 use std::time::Instant;
 
 /// Set up by `baseline/setup.sh`; override with `LZ4_CORPUS`.
@@ -13,10 +13,9 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let data = original.to_vec();
     // Looked up by name: this bench selects a kernel by name.
     let bytes = lean_artifacts::by_name(name).unwrap_or_else(|| panic!("no artifact {name}"));
-    let art = Artifact::from_bytes(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let base = Driver::load(art).expect("compile");
+    let base = Driver::load(&bytes).expect("compile");
     // The driver, the allocation and the kernel, made once.
-    unsafe { base.execute("load", &[], &mut []) }.expect("load");
+    unsafe { base.function("load") }.expect("load")(&[], &mut []);
 
     // Layout mirrors Lz4Ship.WP in lean/algorithms/Lz4/Kernel.lean; asserted against the
     // geometry the program writes after the blocks.
@@ -26,7 +25,8 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let blocks = num_blk * out_stride;
     let mut out = vec![0u8; blocks + 48];
 
-    unsafe { base.execute("main", &data, &mut out) }.expect("run");
+    let compress = unsafe { base.function("main") }.expect("run");
+    compress(&data, &mut out);
     let geom = |i: usize| {
         i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as u64
     };
@@ -79,12 +79,12 @@ fn run(name: &str, block: usize, original: &[u8]) {
         for &b in &out[bo..bo + clen] { ck ^= b as u64; ck = ck.wrapping_mul(0x100000001b3); }
     }
 
-    for _ in 0..2 { unsafe { base.execute("main", &data, &mut out) }.unwrap(); }
+    for _ in 0..2 { compress(&data, &mut out); }
     let runs = 5u64;
     let mut times = Vec::new();
     for _ in 0..runs {
         let t = Instant::now();
-        unsafe { base.execute("main", &data, &mut out) }.unwrap();
+        compress(&data, &mut out);
         times.push(t.elapsed().as_secs_f64());
     }
     let dt: f64 = times.iter().sum();
@@ -93,7 +93,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     // Steady-state re-verification: zero the host buffer, execute once more, and
     // re-check every block byte-exact — proves the timed executes still do the work.
     out.iter_mut().for_each(|b| *b = 0);
-    unsafe { base.execute("main", &data, &mut out) }.unwrap();
+    compress(&data, &mut out);
     let recheck = verify(&out, "steady-state");
     assert_eq!(recheck, total_comp, "steady-state compressed size drifted");
 

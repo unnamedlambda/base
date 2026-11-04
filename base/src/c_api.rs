@@ -6,7 +6,6 @@
 //! as its error rather than unwinding into C.
 
 use crate::{Driver, BaseFunction};
-use base_types::Artifact;
 
 /// `body`, with a panic as an error carrying its message. Nothing a panicking
 /// load was building is reachable after it, so unwind safety holds.
@@ -46,8 +45,7 @@ pub unsafe extern "C" fn base_driver_load(
 ) -> *mut Driver {
     let loaded = guard(|| {
         let bytes = slice_in(artifact, len).ok_or("artifact is null with a non-zero length")?;
-        let artifact = Artifact::from_bytes(bytes)?;
-        Driver::load(artifact).map_err(|e| e.to_string())
+        Driver::load(bytes).map_err(|e| e.to_string())
     });
     match loaded {
         Ok(driver) => Box::into_raw(Box::new(driver)),
@@ -76,7 +74,7 @@ pub unsafe extern "C" fn base_driver_function(
     name_len: usize,
 ) -> Option<BaseFunction> {
     let name = std::str::from_utf8(slice_in(name, name_len)?).ok()?;
-    Some(driver.as_ref()?.function(name).ok()?.as_ptr())
+    driver.as_ref()?.export(name)
 }
 
 /// The arena and its size, at an address fixed until [`base_driver_free`]; null
@@ -90,7 +88,7 @@ pub unsafe extern "C" fn base_driver_function(
 #[no_mangle]
 pub unsafe extern "C" fn base_driver_arena(driver: *const Driver, len: *mut usize) -> *mut u8 {
     let (ptr, size) = match driver.as_ref() {
-        Some(driver) => (driver.arena_ptr(), driver.arena_size()),
+        Some(driver) => (driver.arena().as_ptr() as *mut u8, driver.arena().len()),
         None => (std::ptr::null_mut(), 0),
     };
     if let Some(len) = len.as_mut() {

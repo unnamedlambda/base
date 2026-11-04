@@ -93,11 +93,11 @@ def main():
     rows, order = load(sys.argv[1])
     if not rows:
         sys.exit(f"no runs in {sys.argv[1]}")
-    R = {w: Row(rows, w) for w in order if w != "execute"}
-    noop = min(rows[("execute", "noop")]) if ("execute", "noop") in rows else float("nan")
+    R = {w: Row(rows, w) for w in order if w != "call"}
+    noop = min(rows[("call", "noop")]) if ("call", "noop") in rows else float("nan")
 
     para("Every workload is a kernel a Base program would run: CLIF a generator emits, "
-         "compiled by Cranelift and run through Driver::execute, against the same kernel in "
+         "compiled by Cranelift and called as the Rust function Driver::function hands back, against the same kernel in "
          "Rust built for this machine. Every answer is checked against Rust's before "
          "anything is timed; a mismatch stops the run. Ratios are Base / Rust, above 1 Base "
          "slower; 'over runs' is the ratio's range across the runs. No average is given.")
@@ -119,7 +119,7 @@ def main():
          "the artifact carries as bytes, maps once, and calls as it calls any function.")
 
     worst = max(R.values(), key=lambda r: r.noise)
-    para(f"A call through Driver::execute of an entry that does nothing takes {noop:.1f} ns, "
+    para(f"A call of an entry that does nothing takes {noop:.1f} ns, "
          f"in every Base time above. Noise is the spread of a column's time between runs; "
          f"the largest here is {worst.noise * 100:.1f}%, on {worst.w}.")
 

@@ -112,7 +112,7 @@ def load_cifar() -> tuple:
 
 def main() -> None:
     path = find_artifact()
-    art = py_base.load_artifact(path)
+    art = open(path, "rb").read()
     print(f"artifact : {os.path.relpath(path, ROOT)}")
 
     xtr, ytr, xte, yte = load_cifar()
@@ -129,7 +129,7 @@ def main() -> None:
     # The published layout, read from the image the artifact starts from.
     HOST_LEN_OFF = 0x0080
     base = py_base.Driver(art)
-    want = struct.unpack_from("<I", base.read(HOST_LEN_OFF, 4))[0]
+    want = struct.unpack_from("<I", base.arena, HOST_LEN_OFF)[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean's hostIn {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's hostIn")
 

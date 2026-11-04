@@ -1,13 +1,9 @@
-use base::{run, Artifact};
+use crate::run;
 
 const ARTIFACT_BINARY: &[u8] = lean_artifacts::COMPRESS_APP;
 
-
-/// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
-const INPUT_FILENAME_OFF: u64 = 0x4200;
-
 pub fn main(args: Vec<String>) {
-        if args.len() < 2 {
+    if args.len() < 2 {
         eprintln!("Usage: compress <input_file>");
         std::process::exit(1);
     }
@@ -20,19 +16,10 @@ pub fn main(args: Vec<String>) {
         })
         .len();
 
-    let mut artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
-
-    // Write the input filename into the memory the program starts from
-    let path_bytes = input_path.as_bytes();
-    assert!(
-        path_bytes.len() < 255,
-        "Input path too long (max 254 chars)"
-    );
-    artifact.write(INPUT_FILENAME_OFF, &[path_bytes, &[0]].concat());
-
     let start = std::time::Instant::now();
-    // SAFETY: the artifact is the one Lean built for this application.
-    match unsafe { run(artifact, "main") } {
+    // SAFETY: the artifact is the one Lean built for this application; its input
+    // names the file it reads.
+    match unsafe { run(ARTIFACT_BINARY, "main", input_path.as_bytes()) } {
         Ok(_) => {
             let elapsed = start.elapsed();
             // Parse standard LZ4 frame to compute actual compressed data size

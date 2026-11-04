@@ -82,7 +82,7 @@ def main():
     path = sys.argv[1] if len(sys.argv) > 1 else None
     if not path or not os.path.exists(path):
         sys.exit("usage: run.py <ten_qwen_block.cbor>")
-    art = py_base.load_artifact(path)
+    art = open(path, "rb").read()
     w = make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)   # spans the widest reduction
 
@@ -92,7 +92,7 @@ def main():
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in order)
 
     base = py_base.Driver(art)
-    want = struct.unpack_from("<I", base.read(QHOST_LEN_OFF, 4))[0]
+    want = struct.unpack_from("<I", base.arena, QHOST_LEN_OFF)[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean layout {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's qHostIn ({want})")
 

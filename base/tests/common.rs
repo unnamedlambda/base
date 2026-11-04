@@ -10,7 +10,6 @@ use base_types::{Artifact, Segment};
 
 pub const I32: ClifTy = ClifTy::I32;
 pub const I64: ClifTy = ClifTy::I64;
-pub const F32: ClifTy = ClifTy::F32;
 pub const F64: ClifTy = ClifTy::F64;
 pub const F32X4: ClifTy = ClifTy::F32X4;
 pub const I8X16: ClifTy = ClifTy::I8X16;
@@ -120,26 +119,21 @@ pub fn main_of(insts: Vec<Inst>) -> Artifact {
 }
 
 pub fn driver(a: Artifact) -> Driver {
-    Driver::load(a).unwrap()
+    Driver::load(&a.to_bytes()).unwrap()
 }
 
 /// Calls `name` with `input` and `output`, answering its status.
 pub fn call_with(d: &Driver, name: &str, input: &[u8], output: &mut [u8]) -> i64 {
-    unsafe { d.function(name).unwrap().call(input, output) }
+    unsafe { d.function(name) }.unwrap()(input, output)
+}
+
+/// The `n` bytes of the arena from `offset`.
+pub fn read(d: &Driver, offset: usize, n: usize) -> Vec<u8> {
+    d.arena()[offset..offset + n].iter().map(|b| b.load(std::sync::atomic::Ordering::Relaxed)).collect()
 }
 
 pub fn read_i64(d: &Driver, offset: usize) -> i64 {
-    let mut w = [0u8; 8];
-    d.read(offset, &mut w).unwrap();
-    i64::from_le_bytes(w)
-}
-
-/// Why `a` is refused.
-pub fn refusal(a: Artifact) -> String {
-    match Driver::load(a) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("expected the artifact to be refused"),
-    }
+    i64::from_le_bytes(read(d, offset, 8).try_into().unwrap())
 }
 
 // --- instructions -------------------------------------------------------------
@@ -156,7 +150,6 @@ pub fn iconst64(d: Val, k: i64) -> Inst { iconst(d, I64, k) }
 pub fn iconst32(d: Val, k: i64) -> Inst { iconst(d, I32, k) }
 pub fn iadd(d: Val, a: Val, b: Val) -> Inst { bin(d, "iadd", a, b) }
 pub fn iadd_imm(d: Val, a: Val, k: i64) -> Inst { Inst::BinaryImm64(vec![d], "iadd_imm".into(), None, a, k) }
-pub fn isub(d: Val, a: Val, b: Val) -> Inst { bin(d, "isub", a, b) }
 pub fn imul(d: Val, a: Val, b: Val) -> Inst { bin(d, "imul", a, b) }
 pub fn udiv(d: Val, a: Val, b: Val) -> Inst { bin(d, "udiv", a, b) }
 pub fn ineg(d: Val, a: Val) -> Inst { un(d, "ineg", a) }
