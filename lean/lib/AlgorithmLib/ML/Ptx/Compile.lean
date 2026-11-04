@@ -11,10 +11,9 @@ import all Init.Data.List.Sort.Basic
   # Compiling a model spec onto the machine that actually runs
 
   `compileW` takes any `Expr` to an `EWStmt` — the one representation that both
-  elaborates into the proven warp machine *and* lowers to PTX.  So a spec
+  runs on the proven warp machine *and* lowers to PTX.  So a spec
   compiled here is a spec that runs, on the same machine the theorems are about.
-  (`compileE` targets `Stmt`, which has no emitter; `WStmt` has an emitter but
-  no compiler from `Expr`.  `EWStmt` is the intersection.)
+  (`compileE` targets `Stmt`, which has no emitter.)
 
   ## SIMT semantics of the spec
 
@@ -153,7 +152,7 @@ def compileW : {Γ : Nat} → (Fin Γ → WFExp) → Nat → Expr Γ → EWStmt 
 
 /-- Run a compiled fragment.  The fragment contains no loops or memory ops, so
     elaboration is structural and independent of the block index. -/
-def runW (s : EWStmt) (st : WSt R) : WSt R := (EWStmt.expand s).run st
+def runW (s : EWStmt) (st : WSt R) : WSt R := s.run st 0 0
 
 /-! ### Fragments that do not depend on where they run
 
@@ -161,8 +160,8 @@ def runW (s : EWStmt) (st : WSt R) : WSt R := (EWStmt.expand s).run st
     needs its correctness at iteration `j`, so the independence has to be stated
     rather than assumed.
 
-    `AddrFree` says a fragment carries no address at all, and `elabAt_addrFree`
-    turns that into "elaborates the same everywhere".  With it, everything proven
+    `AddrFree` says a fragment carries no address at all, and `run_addrFree`
+    turns that into "runs the same everywhere".  With it, everything proven
     about `runW` transfers to any `(block, iteration)`. -/
 
 /-- No address anywhere: only register arithmetic, shuffles and barriers. -/
@@ -174,22 +173,20 @@ def EWStmt.AddrFree : EWStmt → Prop
   | .seq a b       => a.AddrFree ∧ b.AddrFree
   | _              => False
 
-/-- **An address-free fragment elaborates identically at every block and
+/-- **An address-free fragment runs identically at every block and
     iteration.**  This is what lets a compiled expression live in a loop. -/
-theorem elabAt_addrFree : ∀ (s : EWStmt), s.AddrFree →
-    ∀ (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat),
-      s.elabAt cta i ir im = s.expand := by
+theorem run_addrFree : ∀ (s : EWStmt), s.AddrFree →
+    ∀ (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R),
+      s.run st cta i ir im = runW s st := by
   intro s
   induction s with
-  | skip => intro _ _ _ _ _; rfl
-  | setR _ _ => intro _ _ _ _ _; rfl
-  | shflXor _ _ _ => intro _ _ _ _ _; rfl
-  | barrier => intro _ _ _ _ _; rfl
+  | skip => intro _ _ _ _ _ _; rfl
+  | setR _ _ => intro _ _ _ _ _ _; rfl
+  | shflXor _ _ _ => intro _ _ _ _ _ _; rfl
+  | barrier => intro _ _ _ _ _ _; rfl
   | seq a b iha ihb =>
-      intro h cta i ir im
-      show WStmt.seq (a.elabAt cta i ir im) (b.elabAt cta i ir im)
-            = WStmt.seq (a.elabAt 0 0 _ _) (b.elabAt 0 0 _ _)
-      rw [iha h.1 cta i ir im, ihb h.2 cta i ir im]
+      intro h cta i ir im st
+      rw [erun_seq, iha h.1 cta i ir im, ihb h.2 cta i ir im]
       rfl
   | loadIdx _ _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
   | loadV4 _ _ _ _ _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
@@ -200,6 +197,7 @@ theorem elabAt_addrFree : ∀ (s : EWStmt), s.AddrFree →
   | forN _ _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
   | forM _ _ _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
   | cvtIF _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
+  | _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
 
 theorem sumSeq_addrFree (acc : Nat) :
     ∀ (bodies : List (EWStmt × WFExp)), (∀ p ∈ bodies, p.1.AddrFree) →
@@ -264,6 +262,7 @@ theorem addrFree_mem : ∀ (s : EWStmt), s.AddrFree → ∀ (st : WSt R), (runW 
   | forN _ _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
   | forM _ _ _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
   | cvtIF _ _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
+  | _ => intro h; exact absurd h (by simp [EWStmt.AddrFree])
 
 /-- The compiled body leaves memory alone. -/
 theorem compileW_mem {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat) (st : WSt R) :
@@ -271,11 +270,10 @@ theorem compileW_mem {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat) 
   addrFree_mem _ (compileW_addrFree e ve c) st
 
 /-- The compiled body runs the same at any block and iteration. -/
-theorem compileW_elabAt {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat)
+theorem compileW_run {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat)
     (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
-    (((compileW ve c e).1.elabAt cta i ir im).run st) = runW (compileW ve c e).1 st := by
-  rw [elabAt_addrFree _ (compileW_addrFree e ve c) cta i ir im]
-  rfl
+    (compileW ve c e).1.run st cta i ir im = runW (compileW ve c e).1 st :=
+  run_addrFree _ (compileW_addrFree e ve c) cta i ir im st
 
 @[simp] theorem runW_skip (st : WSt R) : runW .skip st = st := rfl
 /-- The generated body only reads registers below the end of its range. -/
@@ -598,33 +596,32 @@ theorem loadSeqN_regs (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt 
 theorem loadSeqN_memAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE)
     (cta j : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (k : Nat) (st : WSt R),
-      (((loadSeqN inB inIx k).elabAt cta j ir im).run st).mem = st.mem := by
+      ((loadSeqN inB inIx k).run st cta j ir im).mem = st.mem := by
   intro k
   induction k with
   | zero => intro st; rfl
   | succ k ih =>
       intro st
-      show (((if _ : _ then _ else _ : EWStmt).elabAt cta j ir im).run
-              (((loadSeqN inB inIx k).elabAt cta j ir im).run st)).mem = _
+      show ((if _ : _ then _ else _ : EWStmt).run
+              ((loadSeqN inB inIx k).run st cta j ir im) cta j ir im).mem = _
       split
       · show (WSt.setReg _ k _).mem = _; rw [WSt.mem_setReg, ih st]
-      · show (WStmt.run .skip _).mem = _
-        show (((loadSeqN inB inIx k).elabAt cta j ir im).run st).mem = _
+      · show ((loadSeqN inB inIx k).run st cta j ir im).mem = _
         rw [ih st]
 
 /-- `loadSeqN_regs` at an arbitrary block and iteration. -/
 theorem loadSeqN_regsAt (inB : Fin Γ → Buf) (inIx : Fin Γ → IdxE) (st : WSt R)
     (l : Lane) (cta j : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (k : Nat) (i : Fin Γ), i.val < k →
-      (((loadSeqN inB inIx k).elabAt cta j ir im).run st).regs i.val l
+      ((loadSeqN inB inIx k).run st cta j ir im).regs i.val l
         = st.mem (inB i) ((inIx i).eval cta j l ir im) := by
   intro k
   induction k with
   | zero => intro i h; exact absurd h (Nat.not_lt_zero _)
   | succ k ih =>
       intro i hi
-      show (((if _ : _ then _ else _ : EWStmt).elabAt cta j ir im).run
-            (((loadSeqN inB inIx k).elabAt cta j ir im).run st)).regs i.val l = _
+      show ((if _ : _ then _ else _ : EWStmt).run
+            ((loadSeqN inB inIx k).run st cta j ir im) cta j ir im).regs i.val l = _
       by_cases hik : i.val = k
       · have hk : k < Γ := hik ▸ i.isLt
         rw [dif_pos hk]
@@ -680,10 +677,10 @@ theorem compileWKernel_correctAt [LitNat R] (inB : Fin Γ → Buf) (inIx : Fin �
     (e : Expr Γ) (st : WSt R) (l : Lane) (cta j : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) :
     ((compileW (fun i => .reg i.val) Γ e).2).eval
-        ((((compileW (fun i => .reg i.val) Γ e).1).elabAt cta j ir im).run
-          (((loadSeq inB inIx).elabAt cta j ir im).run st)) l
+        ((compileW (fun i => .reg i.val) Γ e).1.run
+          ((loadSeq inB inIx).run st cta j ir im) cta j ir im) l
       = denote (fun i => st.mem (inB i) ((inIx i).eval cta j l ir im)) e := by
-  rw [compileW_elabAt e (fun i => .reg i.val) Γ cta j ir im,
+  rw [compileW_run e (fun i => .reg i.val) Γ cta j ir im,
       compileW_sound e (fun i => .reg i.val) Γ (fun i => ⟨Nat.zero_le _, i.isLt⟩) _ l]
   congr 1
   funext i
@@ -705,21 +702,20 @@ theorem compileWKernel_stores [LitNat R] (inB : Fin Γ → Buf) (out : Buf) (inI
     (hagree : ∀ l, oix.eval 0 0 l = oix.eval 0 0 l0 →
       denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l)) e
         = denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l0)) e) :
-    (((compileWKernel inB out inIx e oix resReg).elabIn 0).run st).mem out
-        (oix.eval 0 0 l0)
+    ((compileWKernel inB out inIx e oix resReg).run st 0 0).mem out (oix.eval 0 0 l0)
       = denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l0)) e := by
-  show ((WStmt.storeLane out (fun l => oix.eval 0 0 l) resReg).run
-          ((WStmt.setR resReg (compileW (fun i => .reg i.val) Γ e).2).run
-            (runW (compileW (fun i => .reg i.val) Γ e).1
-              (runW (loadSeq inB inIx) st)))).mem out (oix.eval 0 0 l0) = _
+  show ((WSt.setReg (runW (compileW (fun i => .reg i.val) Γ e).1 (runW (loadSeq inB inIx) st)) resReg
+          (fun l => (compileW (fun i => .reg i.val) Γ e).2.eval
+            (runW (compileW (fun i => .reg i.val) Γ e).1 (runW (loadSeq inB inIx) st)) l)).storeLanes
+          out (fun l => oix.eval 0 0 l) resReg).mem out (oix.eval 0 0 l0) = _
   rw [storeLane_at out (fun l => oix.eval 0 0 l) resReg _ l0
         (fun l h => by
           have hb : oix.eval 0 0 l = oix.eval 0 0 l0 := h
-          simp only [wrun_setR, WSt.regs_setReg_same]
+          simp only [WSt.regs_setReg_same]
           rw [compileWKernel_correct inB inIx e st l,
               compileWKernel_correct inB inIx e st l0]
           exact hagree l hb),
-      wrun_setR, WSt.regs_setReg_same]
+      WSt.regs_setReg_same]
   exact compileWKernel_correct inB inIx e st l0
 
 /-- **The store theorem at any block and iteration.**
@@ -732,36 +728,37 @@ theorem compileWKernel_storesAt [LitNat R] (inB : Fin Γ → Buf) (out : Buf) (i
     (hagree : ∀ l, oix.eval cta j l ir im = oix.eval cta j l0 ir im →
       denote (fun i => st.mem (inB i) ((inIx i).eval cta j l ir im)) e
         = denote (fun i => st.mem (inB i) ((inIx i).eval cta j l0 ir im)) e) :
-    (((compileWKernel inB out inIx e oix resReg).elabAt cta j ir im).run st).mem out
+    ((compileWKernel inB out inIx e oix resReg).run st cta j ir im).mem out
         (oix.eval cta j l0 ir im)
       = denote (fun i => st.mem (inB i) ((inIx i).eval cta j l0 ir im)) e := by
-  show ((WStmt.storeLane out (fun l => oix.eval cta j l ir im) resReg).run
-          ((WStmt.setR resReg (compileW (fun i => .reg i.val) Γ e).2).run
-            (((compileW (fun i => .reg i.val) Γ e).1.elabAt cta j ir im).run
-              (((loadSeq inB inIx).elabAt cta j ir im).run st)))).mem out
+  show ((WSt.setReg ((compileW (fun i => .reg i.val) Γ e).1.run
+              ((loadSeq inB inIx).run st cta j ir im) cta j ir im) resReg
+          (fun l => (compileW (fun i => .reg i.val) Γ e).2.eval
+            ((compileW (fun i => .reg i.val) Γ e).1.run
+              ((loadSeq inB inIx).run st cta j ir im) cta j ir im) l)).storeLanes out (fun l => oix.eval cta j l ir im) resReg).mem out
         (oix.eval cta j l0 ir im) = _
   rw [storeLane_at out (fun l => oix.eval cta j l ir im) resReg _ l0
         (fun l h => by
           have hb : oix.eval cta j l ir im = oix.eval cta j l0 ir im := h
-          simp only [wrun_setR, WSt.regs_setReg_same]
+          simp only [WSt.regs_setReg_same]
           rw [compileWKernel_correctAt inB inIx e st l cta j ir im,
               compileWKernel_correctAt inB inIx e st l0 cta j ir im]
           exact hagree l hb),
-      wrun_setR, WSt.regs_setReg_same]
+      WSt.regs_setReg_same]
   exact compileWKernel_correctAt inB inIx e st l0 cta j ir im
 
 /-- **A compiled kernel writes only its output buffer.** -/
 theorem compileWKernel_otherBuf (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin Γ → IdxE)
     (e : Expr Γ) (oix : IdxE) (resReg : Nat) (cta j : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) (c : Buf) (hc : c ≠ out) :
-    (((compileWKernel inB out inIx e oix resReg).elabAt cta j ir im).run st).mem c
-      = st.mem c := by
-  show ((WStmt.storeLane out (fun l => oix.eval cta j l ir im) resReg).run
-          ((WStmt.setR resReg (compileW (fun i => .reg i.val) Γ e).2).run
-            (((compileW (fun i => .reg i.val) Γ e).1.elabAt cta j ir im).run
-              (((loadSeq inB inIx).elabAt cta j ir im).run st)))).mem c = _
+    ((compileWKernel inB out inIx e oix resReg).run st cta j ir im).mem c = st.mem c := by
+  show ((WSt.setReg ((compileW (fun i => .reg i.val) Γ e).1.run
+              ((loadSeq inB inIx).run st cta j ir im) cta j ir im) resReg
+          (fun l => (compileW (fun i => .reg i.val) Γ e).2.eval
+            ((compileW (fun i => .reg i.val) Γ e).1.run
+              ((loadSeq inB inIx).run st cta j ir im) cta j ir im) l)).storeLanes out (fun l => oix.eval cta j l ir im) resReg).mem c = _
   rw [storeLane_otherBuf out (fun l => oix.eval cta j l ir im) resReg _ c hc,
-      wrun_setR, WSt.mem_setReg, compileW_elabAt, compileW_mem]
+      WSt.mem_setReg, compileW_run, compileW_mem]
   exact congrFun (loadSeqN_memAt inB inIx cta j ir im Γ st) c
 
 /-- **…and only at the addresses some lane owns.** -/
@@ -769,14 +766,14 @@ theorem compileWKernel_otherAddr (inB : Fin Γ → Buf) (out : Buf) (inIx : Fin 
     (e : Expr Γ) (oix : IdxE) (resReg : Nat) (cta j : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) (a : Nat)
     (ha : ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
-    (((compileWKernel inB out inIx e oix resReg).elabAt cta j ir im).run st).mem out a
-      = st.mem out a := by
-  show ((WStmt.storeLane out (fun l => oix.eval cta j l ir im) resReg).run
-          ((WStmt.setR resReg (compileW (fun i => .reg i.val) Γ e).2).run
-            (((compileW (fun i => .reg i.val) Γ e).1.elabAt cta j ir im).run
-              (((loadSeq inB inIx).elabAt cta j ir im).run st)))).mem out a = _
+    ((compileWKernel inB out inIx e oix resReg).run st cta j ir im).mem out a = st.mem out a := by
+  show ((WSt.setReg ((compileW (fun i => .reg i.val) Γ e).1.run
+              ((loadSeq inB inIx).run st cta j ir im) cta j ir im) resReg
+          (fun l => (compileW (fun i => .reg i.val) Γ e).2.eval
+            ((compileW (fun i => .reg i.val) Γ e).1.run
+              ((loadSeq inB inIx).run st cta j ir im) cta j ir im) l)).storeLanes out (fun l => oix.eval cta j l ir im) resReg).mem out a = _
   rw [storeLane_otherAddr out (fun l => oix.eval cta j l ir im) resReg _ a ha,
-      wrun_setR, WSt.mem_setReg, compileW_elabAt, compileW_mem]
+      WSt.mem_setReg, compileW_run, compileW_mem]
   exact congrFun (congrFun (loadSeqN_memAt inB inIx cta j ir im Γ st) out) a
 
 -- ---------------------------------------------------------------------------
@@ -997,21 +994,19 @@ theorem compileVWKernel_idxFree {m : Nat} (inB : Fin Γ → Buf) (out : Buf)
 theorem storeOut_frame {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFExp)
     (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (i : Fin m) (st : WSt R)
     (b : Buf) (A : Nat) (h : b ≠ out ∨ ∀ l : Lane, (oix i).eval 0 0 l ≠ A) :
-    (((storeOut out p ve c oix resReg i).elabIn 0).run st).mem b A = st.mem b A := by
-  show ((WStmt.storeLane out (fun l => (oix i).eval 0 0 l) resReg).run
-          ((WStmt.setR resReg _).run
-            (((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1).elabIn 0
-              |>.run st))).mem b A = _
+    (runW (storeOut out p ve c oix resReg i) st).mem b A = st.mem b A := by
+  show ((WSt.setReg (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st) resReg _).storeLanes out (fun l => (oix i).eval 0 0 l)
+          resReg).mem b A = _
   rcases h with hb | hl
-  · rw [storeLane_otherBuf out _ resReg _ b hb, wrun_setR, WSt.mem_setReg]
+  · rw [storeLane_otherBuf out _ resReg _ b hb, WSt.mem_setReg]
     show (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st).mem b A = _
     rw [compileW_mem]
   · by_cases hbo : b = out
     · subst hbo
-      rw [storeLane_otherAddr _ _ resReg _ A hl, wrun_setR, WSt.mem_setReg]
+      rw [storeLane_otherAddr _ _ resReg _ A hl, WSt.mem_setReg]
       show (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st).mem b A = _
       rw [compileW_mem]
-    · rw [storeLane_otherBuf out _ resReg _ b hbo, wrun_setR, WSt.mem_setReg]
+    · rw [storeLane_otherBuf out _ resReg _ b hbo, WSt.mem_setReg]
       show (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st).mem b A = _
       rw [compileW_mem]
 
@@ -1023,27 +1018,24 @@ theorem storeOut_at {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFEx
         (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st) l
       = ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
         (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st) l0) :
-    (((storeOut out p ve c oix resReg i).elabIn 0).run st).mem out
-        ((oix i).eval 0 0 l0)
+    (runW (storeOut out p ve c oix resReg i) st).mem out ((oix i).eval 0 0 l0)
       = ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
           (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st) l0 := by
-  show ((WStmt.storeLane out (fun l => (oix i).eval 0 0 l) resReg).run
-          ((WStmt.setR resReg _).run
-            (((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1).elabIn 0
-              |>.run st))).mem out _ = _
+  show ((WSt.setReg (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st) resReg
+          (fun l => (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2.eval (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 st) l)).storeLanes out
+          (fun l => (oix i).eval 0 0 l) resReg).mem out _ = _
   rw [storeLane_at out (fun l => (oix i).eval 0 0 l) resReg _ l0
         (fun l h => by
-          simp only [wrun_setR, WSt.regs_setReg_same]
+          simp only [WSt.regs_setReg_same]
           exact hagree l h),
-      wrun_setR, WSt.regs_setReg_same]
-  rfl
+      WSt.regs_setReg_same]
 
 /-- **The fold over outputs preserves an address no later output touches.** -/
 theorem storeOutFold_keeps {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → WFExp)
     (c : Nat) (oix : Fin m → IdxE) (resReg : Nat) (A : Nat) :
     ∀ (L : List (Fin m)) (s : WSt R),
       (∀ j ∈ L, ∀ l : Lane, (oix j).eval 0 0 l ≠ A) →
-      ((L.foldl (fun s' j => ((storeOut out p ve c oix resReg j).elabIn 0).run s') s).mem
+      ((L.foldl (fun s' j => runW (storeOut out p ve c oix resReg j) s') s).mem
         out A) = s.mem out A := by
   intro L
   induction L with
@@ -1073,11 +1065,11 @@ theorem storeOutFold_at {m : Nat} (out : Buf) (p : VProg Γ m) (ve : Fin Γ → 
       = ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
         (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1 s') l0) :
     (((pre ++ i :: post).foldl
-        (fun s' j => ((storeOut out p ve c oix resReg j).elabIn 0).run s') s).mem
+        (fun s' j => runW (storeOut out p ve c oix resReg j) s') s).mem
       out ((oix i).eval 0 0 l0))
       = ((compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).2).eval
           (runW (compileW (teleEnv ve c p.binds) (c + teleSlots p.binds) (p.outs i)).1
-            (pre.foldl (fun s' j => ((storeOut out p ve c oix resReg j).elabIn 0).run s') s))
+            (pre.foldl (fun s' j => runW (storeOut out p ve c oix resReg j) s') s))
           l0 := by
   rw [List.foldl_append, List.foldl_cons,
       storeOutFold_keeps out p ve c oix resReg _ post _ hpost]
@@ -1115,8 +1107,8 @@ theorem compileVWKernel_value [LitNat R] {m : Nat} (inB : Fin Γ → Buf)
     definitionally. -/
 theorem seqFold_run {α : Type} : ∀ (L : List α) (f : α → EWStmt) (init : EWStmt)
     (st : WSt R),
-    (((L.foldl (fun s a => EWStmt.seq s (f a)) init).elabIn 0).run st)
-      = L.foldl (fun s' a => ((f a).elabIn 0).run s') ((init.elabIn 0).run st) := by
+    runW (L.foldl (fun s a => EWStmt.seq s (f a)) init) st
+      = L.foldl (fun s' a => runW (f a) s') (runW init st) := by
   intro L
   induction L with
   | nil => intro _ _ _; rfl
@@ -1149,20 +1141,18 @@ theorem compileVWKernel_stores {m : Nat} (inB : Fin Γ → Buf) (out : Buf)
         (runW (compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)
           (p.outs i)).1 s') l0) :
     ∃ s0 : WSt R,
-      (((compileVWKernel inB out inIx p oix resReg).elabIn 0).run st).mem out
+      (runW (compileVWKernel inB out inIx p oix resReg) st).mem out
           ((oix i).eval 0 0 l0)
         = ((compileW (teleEnv (fun k => .reg k.val) Γ p.binds) (Γ + teleSlots p.binds)
             (p.outs i)).2).eval
             (runW (compileW (teleEnv (fun k => .reg k.val) Γ p.binds)
               (Γ + teleSlots p.binds) (p.outs i)).1 s0) l0 := by
-  refine ⟨pre.foldl (fun s' j => ((storeOut out p (fun k => .reg k.val) Γ oix resReg j).elabIn 0).run s')
-    ((compileTele (fun k => .reg k.val) Γ p.binds).elabIn 0 |>.run
-      ((loadSeq inB inIx).elabIn 0 |>.run st)), ?_⟩
-  show ((((List.finRange m).foldl
-      (fun s a => EWStmt.seq s (storeOut out p (fun k => .reg k.val) Γ oix resReg a))
-      .skip).elabIn 0).run
-        (((compileTele (fun k => .reg k.val) Γ p.binds).elabIn 0).run
-          (((loadSeq inB inIx).elabIn 0).run st))).mem out _ = _
+  refine ⟨pre.foldl (fun s' j => runW (storeOut out p (fun k => .reg k.val) Γ oix resReg j) s')
+    (runW (compileTele (fun k => .reg k.val) Γ p.binds) (runW (loadSeq inB inIx) st)), ?_⟩
+  show (runW ((List.finRange m).foldl
+      (fun s a => EWStmt.seq s (storeOut out p (fun k => .reg k.val) Γ oix resReg a)) .skip)
+        (runW (compileTele (fun k => .reg k.val) Γ p.binds) (runW (loadSeq inB inIx) st))).mem
+      out _ = _
   rw [seqFold_run (List.finRange m) _ .skip, hsplit]
   exact storeOutFold_at out p (fun k => .reg k.val) Γ oix resReg i l0 pre post _ hpost hag
 

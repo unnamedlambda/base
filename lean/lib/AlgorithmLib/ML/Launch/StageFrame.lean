@@ -47,35 +47,39 @@ variable {R : Type} [NumOps R] [NumLit R]
 -- ---------------------------------------------------------------------------
 
 /-- A loop preserves whatever every one of its bodies preserves — buffer
-    version.  Stated over the elaborated `WStmt` because that is what `run`
-    consumes; the `EWStmt` cases below feed it. -/
-theorem wforN_otherBuf (f : Nat → WStmt) (b : Buf)
-    (h : ∀ j (st : WSt R), ((f j).run st).mem b = st.mem b) :
-    ∀ (n : Nat) (st : WSt R), ((WStmt.forN n f).run st).mem b = st.mem b := by
-  intro n
-  induction n with
-  | zero => intro _; rfl
-  | succ n ih =>
-      intro st
-      show ((List.range (n + 1)).foldl (fun s' i => (f i).run s') st).mem b = _
-      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
-      rw [h n _]
-      exact ih st
+    version, over any list of trips (`forN` runs `List.range n`, `forM` the
+    range integer memory names). -/
+theorem foldl_otherBuf (f : Nat → WSt R → WSt R) (b : Buf)
+    (h : ∀ j (st : WSt R), (f j st).mem b = st.mem b) :
+    ∀ (L : List Nat) (st : WSt R), (L.foldl (fun s' j => f j s') st).mem b = st.mem b := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons j L ih => intro st; rw [List.foldl_cons, ih, h]
 
 /-- …and the address version, where the hypothesis need only hold for the
-    iterations the loop actually runs. -/
-theorem wforN_otherAddr (f : Nat → WStmt) (b : Buf) (a : Nat) :
-    ∀ (n : Nat), (∀ j, j < n → ∀ (st : WSt R), ((f j).run st).mem b a = st.mem b a) →
-      ∀ (st : WSt R), ((WStmt.forN n f).run st).mem b a = st.mem b a := by
-  intro n
-  induction n with
-  | zero => intro _ _; rfl
-  | succ n ih =>
+    trips the loop actually runs. -/
+theorem foldl_otherAddr (f : Nat → WSt R → WSt R) (b : Buf) (a : Nat) :
+    ∀ (L : List Nat), (∀ j ∈ L, ∀ (st : WSt R), (f j st).mem b a = st.mem b a) →
+      ∀ (st : WSt R), (L.foldl (fun s' j => f j s') st).mem b a = st.mem b a := by
+  intro L
+  induction L with
+  | nil => intro _ _; rfl
+  | cons j L ih =>
       intro h st
-      show ((List.range (n + 1)).foldl (fun s' i => (f i).run s') st).mem b a = _
-      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
-      rw [h n (by omega) _]
-      exact ih (fun j hj => h j (by omega)) st
+      rw [List.foldl_cons, ih (fun j' hj' => h j' (List.mem_cons_of_mem j hj')),
+        h j List.mem_cons_self]
+
+/-- A `while` loop keeps what each trip of its body keeps. -/
+theorem iwhile_inv (n : Nat) (c : IExp) (cs : List Nat) (body : EWStmt) (cta i : Nat)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) (P : WSt R → Prop)
+    (hb : ∀ s, P s → P ((body.run s cta i ir im).withInt (ISt.keep cs st.int (body.run s cta i ir im).int)))
+    (h0 : P st) : P ((EWStmt.iwhile n c cs body).run st cta i ir im) := by
+  simp only [EWStmt.run]
+  refine foldl_inv _ P (fun s _ hs => ?_) _ st h0
+  split
+  · exact hb s hs
+  · exact hs
 
 -- ---------------------------------------------------------------------------
 -- Which buffers a kernel can write
@@ -92,6 +96,9 @@ def EWStmt.wbufs : EWStmt → List Buf
   | .storeLane c _ _  => [c]
   | .forN _ body      => body.wbufs
   | .forM _ _ body    => body.wbufs
+  | .iif _ x y        => x.wbufs ++ y.wbufs
+  | .iwhile _ _ _ body => body.wbufs
+  | .locals _ body    => body.wbufs
   | _                 => []
 
 /-- The list is complete: if the predicate says a buffer is written, it is in
@@ -113,6 +120,14 @@ theorem EWStmt.mem_wbufs_of_writes (b : Buf) :
   | storeLane c _ _  => intro h; exact List.mem_singleton.mpr (of_decide_eq_true h).symm
   | forN _ body ih   => intro h; exact ih h
   | forM _ _ body ih => intro h; exact ih h
+  | iif _ x y ihx ihy =>
+      intro h
+      show b ∈ x.wbufs ++ y.wbufs
+      rcases Bool.or_eq_true_iff.mp h with h | h
+      · exact List.mem_append_left _ (ihx h)
+      · exact List.mem_append_right _ (ihy h)
+  | iwhile _ _ _ body ih => intro h; exact ih h
+  | locals _ body ih => intro h; exact ih h
   | _ => intro h; exact absurd h (by simp [EWStmt.WritesBufB])
 
 /-- **A kernel leaves untouched every buffer it does not name.**
@@ -123,13 +138,13 @@ theorem EWStmt.mem_wbufs_of_writes (b : Buf) :
 theorem EWStmt.run_otherBuf (b : Buf) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (s : EWStmt), (∀ c ∈ s.wbufs, c ≠ b) →
-      ∀ (i : Nat) (st : WSt R), ((s.elabAt cta i ir im).run st).mem b = st.mem b := by
+      ∀ (i : Nat) (st : WSt R), (s.run st cta i ir im).mem b = st.mem b := by
   intro s
   induction s with
   | skip => intro _ _ _; rfl
   | seq x y ihx ihy =>
       intro h i st
-      show ((y.elabAt cta i ir im).run ((x.elabAt cta i ir im).run st)).mem b = _
+      show (y.run (x.run st cta i ir im) cta i ir im).mem b = _
       rw [ihy (fun c hc => h c (List.mem_append_right _ hc)) i _,
           ihx (fun c hc => h c (List.mem_append_left _ hc)) i st]
   | setR _ _ => intro _ _ _; rfl
@@ -152,11 +167,23 @@ theorem EWStmt.run_otherBuf (b : Buf) (cta : Nat)
   | barrier => intro _ _ _; rfl
   | forN n body ih =>
       intro h _ st
-      exact wforN_otherBuf _ b (fun j s' => ih h j s') n st
+      exact foldl_otherBuf _ b (fun j s' => ih h j s') (List.range n) st
   | forM bu a body ih =>
       intro h _ st
-      exact wforN_otherBuf _ b (fun j s' => ih h j s') (im bu a) st
+      exact foldl_otherBuf _ b (fun j s' => ih h j s') (List.range (im bu a)) st
   | cvtIF _ _ => intro _ _ _; rfl
+  | iif c x y ihx ihy =>
+      intro h i st
+      simp only [EWStmt.run]
+      split
+      · exact ihx (fun c hc => h c (List.mem_append_left _ hc)) i st
+      · exact ihy (fun c hc => h c (List.mem_append_right _ hc)) i st
+  | iwhile n c cs body ih =>
+      intro h i st
+      exact iwhile_inv n c cs body cta i ir im st (fun s => s.mem b = st.mem b)
+        (fun s hs => (ih h i s).trans hs) rfl
+  | locals rs body ih => intro h i st; exact ih h i st
+  | _ => intro _ _ _; rfl
 
 -- ---------------------------------------------------------------------------
 -- Which registers a kernel can write
@@ -179,31 +206,30 @@ def EWStmt.wregs : EWStmt → List Nat
   | .cvtIF d _            => [d]
   | .forN _ body          => body.wregs
   | .forM _ _ body        => body.wregs
+  | .iif _ x y            => x.wregs ++ y.wregs
+  | .iwhile _ _ _ body    => body.wregs
+  | .locals _ body        => body.wregs
   | _                     => []
 
-theorem wforN_otherReg (f : Nat → WStmt) (r : Nat)
-    (h : ∀ j (st : WSt R), ((f j).run st).regs r = st.regs r) :
-    ∀ (n : Nat) (st : WSt R), ((WStmt.forN n f).run st).regs r = st.regs r := by
-  intro n
-  induction n with
-  | zero => intro _; rfl
-  | succ n ih =>
-      intro st
-      show ((List.range (n + 1)).foldl (fun s' i => (f i).run s') st).regs r = _
-      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil, h n _]
-      exact ih st
+theorem foldl_otherReg (f : Nat → WSt R → WSt R) (r : Nat)
+    (h : ∀ j (st : WSt R), (f j st).regs r = st.regs r) :
+    ∀ (L : List Nat) (st : WSt R), (L.foldl (fun s' j => f j s') st).regs r = st.regs r := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons j L ih => intro st; rw [List.foldl_cons, ih, h]
 
 /-- **A kernel leaves untouched every register it does not assign.** -/
 theorem EWStmt.run_otherReg (r : Nat) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (s : EWStmt), (∀ d ∈ s.wregs, d ≠ r) →
-      ∀ (i : Nat) (st : WSt R), ((s.elabAt cta i ir im).run st).regs r = st.regs r := by
+      ∀ (i : Nat) (st : WSt R), (s.run st cta i ir im).regs r = st.regs r := by
   intro s
   induction s with
   | skip => intro _ _ _; rfl
   | seq x y ihx ihy =>
       intro h i st
-      show ((y.elabAt cta i ir im).run ((x.elabAt cta i ir im).run st)).regs r = _
+      show (y.run (x.run st cta i ir im) cta i ir im).regs r = _
       rw [ihy (fun d hd => h d (List.mem_append_right _ hd)) i _,
           ihx (fun d hd => h d (List.mem_append_left _ hd)) i st]
   | setR d _ =>
@@ -236,10 +262,22 @@ theorem EWStmt.run_otherReg (r : Nat) (cta : Nat)
   | barrier => intro _ _ _; rfl
   | forN n body ih =>
       intro h _ st
-      exact wforN_otherReg _ r (fun j s' => ih h j s') n st
+      exact foldl_otherReg _ r (fun j s' => ih h j s') (List.range n) st
   | forM bu a body ih =>
       intro h _ st
-      exact wforN_otherReg _ r (fun j s' => ih h j s') (im bu a) st
+      exact foldl_otherReg _ r (fun j s' => ih h j s') (List.range (im bu a)) st
+  | iif c x y ihx ihy =>
+      intro h i st
+      simp only [EWStmt.run]
+      split
+      · exact ihx (fun d hd => h d (List.mem_append_left _ hd)) i st
+      · exact ihy (fun d hd => h d (List.mem_append_right _ hd)) i st
+  | iwhile n c cs body ih =>
+      intro h i st
+      exact iwhile_inv n c cs body cta i ir im st (fun s => s.regs r = st.regs r)
+        (fun s hs => (ih h i s).trans hs) rfl
+  | locals rs body ih => intro h i st; exact ih h i st
+  | _ => intro _ _ _; rfl
 
 -- ---------------------------------------------------------------------------
 -- Which addresses a kernel can write
@@ -247,8 +285,8 @@ theorem EWStmt.run_otherReg (r : Nat) (cta : Nat)
 
 /-- **Every store to `b` lands inside `P`.**
 
-    The recursion mirrors `elabAt`, so a loop's obligation is stated at the
-    iteration index the body is elaborated at — which is what makes the
+    The recursion mirrors `EWStmt.run`, so a loop's obligation is stated at the
+    iteration index the body runs at — which is what makes the
     predicate usable for a stage whose `dom` depends on the loop counter, such
     as RMSNorm's strided store or softmax's chunk sweep. -/
 def EWStmt.StoresWithin (b : Buf) (P : Nat → Prop) (cta : Nat)
@@ -258,6 +296,9 @@ def EWStmt.StoresWithin (b : Buf) (P : Nat → Prop) (cta : Nat)
   | i, .storeLane c ix _  => c = b → ∀ l, P (ix.eval cta i l ir im)
   | _, .forN n body      => ∀ j, j < n → StoresWithin b P cta ir im j body
   | _, .forM bu a body   => ∀ j, j < im bu a → StoresWithin b P cta ir im j body
+  | i, .iif _ x y        => StoresWithin b P cta ir im i x ∧ StoresWithin b P cta ir im i y
+  | i, .iwhile _ _ _ body => StoresWithin b P cta ir im i body
+  | i, .locals _ body => StoresWithin b P cta ir im i body
   | _, _                 => True
 
 /-- **A kernel that never writes `b` stores within anything.**
@@ -282,6 +323,12 @@ theorem EWStmt.storesWithin_of_notWrites (b : Buf) (P : Nat → Prop) (cta : Nat
       exact absurd (h.symm.trans (decide_eq_true hc)) (by simp)
   | forN _ body ih   => intro _ h j _; exact ih j h
   | forM _ _ body ih => intro _ h j _; exact ih j h
+  | iif _ x y ihx ihy =>
+      intro i h
+      have h' := Bool.or_eq_false_iff.mp h
+      exact ⟨ihx i h'.1, ihy i h'.2⟩
+  | iwhile _ _ _ body ih => intro i h; exact ih i h
+  | locals _ body ih => intro i h; exact ih i h
   | _ => intro _ _; trivial
 
 /-- **A kernel leaves untouched every address of its output buffer that it does
@@ -290,13 +337,13 @@ theorem EWStmt.storesWithin_of_notWrites (b : Buf) (P : Nat → Prop) (cta : Nat
 theorem EWStmt.run_otherAddr (b : Buf) (P : Nat → Prop) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (a : Nat) (ha : ¬ P a) :
     ∀ (s : EWStmt) (i : Nat) (st : WSt R), s.StoresWithin b P cta ir im i →
-      ((s.elabAt cta i ir im).run st).mem b a = st.mem b a := by
+      (s.run st cta i ir im).mem b a = st.mem b a := by
   intro s
   induction s with
   | skip => intro _ _ _; rfl
   | seq x y ihx ihy =>
       intro i st h
-      show ((y.elabAt cta i ir im).run ((x.elabAt cta i ir im).run st)).mem b a = _
+      show (y.run (x.run st cta i ir im) cta i ir im).mem b a = _
       rw [ihy i _ h.2, ihx i st h.1]
   | setR _ _ => intro _ _ _; rfl
   | shflXor _ _ _ => intro _ _ _; rfl
@@ -322,11 +369,24 @@ theorem EWStmt.run_otherAddr (b : Buf) (P : Nat → Prop) (cta : Nat)
   | barrier => intro _ _ _; rfl
   | forN n body ih =>
       intro _ st h
-      exact wforN_otherAddr _ b a n (fun j hj s' => ih j s' (h j hj)) st
+      exact foldl_otherAddr _ b a (List.range n) (fun j hj s' => ih j s' (h j (List.mem_range.mp hj))) st
   | forM bu c body ih =>
       intro _ st h
-      exact wforN_otherAddr _ b a (im bu c) (fun j hj s' => ih j s' (h j hj)) st
+      exact foldl_otherAddr _ b a (List.range (im bu c))
+        (fun j hj s' => ih j s' (h j (List.mem_range.mp hj))) st
   | cvtIF _ _ => intro _ _ _; rfl
+  | iif c x y ihx ihy =>
+      intro i st h
+      simp only [EWStmt.run]
+      split
+      · exact ihx i st h.1
+      · exact ihy i st h.2
+  | iwhile n c cs body ih =>
+      intro i st h
+      exact iwhile_inv n c cs body cta i ir im st (fun s => s.mem b a = st.mem b a)
+        (fun s hs => (ih i s h).trans hs) rfl
+  | locals rs body ih => intro i st h; exact ih i st h
+  | _ => intro _ _ _; rfl
 
 -- ---------------------------------------------------------------------------
 -- The frame field, assembled
@@ -346,7 +406,7 @@ theorem EWStmt.frame_of (s : EWStmt) (out : Buf) (dom : Nat → Nat → Prop)
     (hb : ∀ c ∈ s.wbufs, c = out)
     (hd : ∀ cta, s.StoresWithin out (dom cta) cta ir im 0) :
     ∀ (cta : Nat) (st : WSt R) (b : Buf) (a : Nat), (b ≠ out ∨ ¬ dom cta a) →
-      ((s.elabAt cta 0 ir im).run st).mem b a = st.mem b a := by
+      (s.run st cta 0 ir im).mem b a = st.mem b a := by
   intro cta st b a h
   rcases h with h | h
   · exact congrFun (EWStmt.run_otherBuf b cta _ _ s
@@ -384,7 +444,7 @@ def stageOfEW (s : EWStmt) (out : Buf) (g : Nat) (dm : Nat → Nat → Prop)
     (hb : ∀ c ∈ s.wbufs, c = out)
     (hd : ∀ cta, s.StoresWithin out (dm cta) cta ir im 0)
     (hv : ∀ (cta : Nat) (st : WSt R) (a : Nat), dm cta a →
-        ((s.elabAt cta 0 ir im).run st).mem out a = vl st.mem cta a)
+        (s.run st cta 0 ir im).mem out a = vl st.mem cta a)
     (hvo : ∀ (m m' : Buf → Nat → R) (cta a : Nat), dm cta a →
         (∀ b, b ≠ out → m b = m' b) → (∀ a', dm cta a' → m out a' = m' out a') →
         vl m cta a = vl m' cta a) : (StageSpec R) where

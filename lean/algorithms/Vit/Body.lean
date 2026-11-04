@@ -71,8 +71,7 @@ theorem vit_body (u : List Nat) (hu : u ∈ vProvenUnits) (hw : Hw) (hw32 : ∀ 
     (hr : vLayout.LaunchRuns (vUnitOps u) hw bufs bufs') :
     ∀ cta (l : Lane) b j, cta < vUnitGrid u → (b, j) ∈ touchL cta l 0 (vUnitStmt u) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW (vUnitBufs u).length b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((vUnitStmt u).elabAt cta 0)
-          (ws0 (vUnitBufs u).length (kmem bufs))).mem b j).bits :=
+        some ((@EWStmt.run F32 (F32.ops hw) _ (vUnitStmt u) (ws0 (vUnitBufs u).length (kmem bufs)) cta 0).mem b j).bits :=
   TapeLayout.unit_body (vit_unit_ok u hu) hw hw32 bufs bufs' hsz hr
 
 /-- **Launching a group's kernel performs its members' denotations.**  Each

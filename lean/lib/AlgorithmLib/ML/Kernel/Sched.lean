@@ -70,7 +70,7 @@ def Sched.idx : Sched → Nat → Nat → Nat → Lane → Nat
     this a menu rather than a rewrite of the compiler. -/
 theorem Sched.realize_spec (s : Sched) (bA bB : Buf) (ixA ixB : IdxE) (out : Buf)
     (oi : IdxE) (n cta : Nat) (st : WSt) :
-    (((s.realize bA bB ixA ixB out oi n).elabIn cta).run st).mem out
+    (((s.realize bA bB ixA ixB out oi n).run st cta 0)).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFold (s.fold (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) n)

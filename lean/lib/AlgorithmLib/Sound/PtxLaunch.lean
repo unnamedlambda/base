@@ -1,5 +1,6 @@
 module
 public import AlgorithmLib.Sound.PtxThread
+public import AlgorithmLib.Sound.PtxCoalesce
 public import AlgorithmLib.Kernel.Warp
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
@@ -146,6 +147,10 @@ theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array B
   | ex2Approx => rfl
   | rcpApprox => rfl
   | lg2Approx => rfl
+  | sinApprox => rfl
+  | cosApprox => rfl
+  | sqrtApprox => rfl
+  | rsqrtApprox => rfl
 
 /-- **The laws read the records only as their view.** -/
 theorem answers_view (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
@@ -493,5 +498,18 @@ theorem launch_sound_bits (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) 
     (bufs bufs' : Nat → ByteArray) (h : LaunchRuns k grid bd (paramsOf k ps) bufs bufs' hw) :
     RunsLaunch (PtxRun.runner e hw) k.smem grid bd (paramsOf k ps) bufs bufs' hw.nan :=
   launch_sound k e he hw hhw grid bd _ (fun b t => threadArgs_ok k ps hps hn b bd t hbd) bufs bufs' h
+
+/-! ## The entry that ships -/
+
+/-- A kernel's shipped entry is its compiled entry coalesced. -/
+theorem shipped_ok (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) : k.shipped = .ok (Coalesce.run e) := by
+  simp [Kernel.shipped, he, Except.map]
+
+/-- **The shipped entry runs as the compiled one does**, on a GPU: coalescing
+    its registers changes no thread's end (`PtxCoalesce.thread_run`). -/
+theorem runner_shipped (e : PtxIr.Entry) (hw : Hw) (hhw : HwOk hw) :
+    PtxRun.runner (Coalesce.run e) hw = PtxRun.runner e hw := by
+  funext steps
+  exact PtxCoalesce.runner_run e hw hhw.approx steps
 
 end AlgorithmLib.Kernel.PtxSound

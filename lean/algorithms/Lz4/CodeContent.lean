@@ -19,6 +19,8 @@ warp's run of that block does (`launch_output`).
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.Prog
   AlgorithmLib.LZ4WarpDSL AlgorithmLib.LibSpec AlgorithmLib.Kernel
 
+open AlgorithmLib.ML.LaneWarp (NotArena Writable)
+
 namespace Lz4Code
 
 /-- A copy's bytes, where the bytes it reads are not among those it writes:
@@ -344,10 +346,10 @@ set_option maxHeartbeats 2000000 in
     block's input. Every byte outside the outputs is as it was. -/
 theorem launch_output (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxIr.Entry}
     {numBlocks inStride outStride lenOff hashLog f : Nat} {inP outA : UInt64}
-    (he : (codeKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e)
+    (he : (compressorKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e)
     (I O : Nat → UInt64 → Prop) (G : Nat → Array UInt8) (bufs : Nat → ByteArray)
-    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36)
-    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (compressor numBlocks inStride outStride lenOff hashLog))
+    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (h5 : 5 ≤ hashLog) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36) (hf : f ≤ 2 ^ 64)
+    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (ML.Body.body 2 (compressorS numBlocks inStride outStride lenOff hashLog)))
       ⟨(idParams ++ [ClifTy.i64, .i64]).length, 0, [], [], [], none⟩).2)
     (hflags : ∀ r, r ∈ ["inBase","outBase","tbl","op","searchPos","litAnchor"] →
       (flagRegs (compressorBodyWStmt inStride lenOff hashLog)).contains r = false)
@@ -359,20 +361,20 @@ theorem launch_output (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : Pt
     (hI : ∀ c, c < numBlocks → ∀ a, I c a ∨ O c a →
       (launchWorld bufs hw.nan).mem.load a 1 = some ((G c).getD a.toNat 0).toUInt64)
     (hOsz : ∀ c, c < numBlocks → ∀ a, O c a → a.toNat < (G c).size)
-    (hO : ∀ c, c < numBlocks → ∀ a, O c a → Writable (launchWorld bufs hw.nan).mem a)
+    (hO : ∀ c, c < numBlocks → ∀ a, O c a → Writable (launchWorld bufs hw.nan).mem a 1)
     (hdis : ∀ c c', c' < c → c < numBlocks → ∀ a, O c' a → ¬ I c a)
     (hOdis : ∀ c c', c < numBlocks → c' < numBlocks → c' ≠ c → ∀ a, O c' a → ¬ O c a) :
-    ∃ u : World, LaunchRuns (codeKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
+    ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (codeKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
         [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
       (∀ c, c < numBlocks → ∀ a, O c a → u.mem.load a 1 = some (((compressorBodyWStmt inStride lenOff hashLog).eval f
         (startWS numBlocks inStride outStride hashLog c inP (G c))).gmem.getD a.toNat 0).toUInt64) ∧
       ∀ a, NotArena a → (∀ c, c < numBlocks → ¬ O c a) → u.mem.load a 1 = (launchWorld bufs hw.nan).mem.load a 1 := by
-  obtain ⟨u, hL, hP, hum⟩ := launch_runs (outA := outA) hw hhw name he I O G bufs hnb hh hfine hflags hIna hOna hok
+  obtain ⟨u, hL, hP, hum⟩ := launch_runs (outA := outA) hw hhw name he I O G bufs hnb h5 hh hf hfine hflags hIna hOna hok
     (fun c hc a ha => hI c hc a (.inl ha)) hO hdis
   refine ⟨u, hL, hP, fun c hc a ha => ?_, fun a hna hnO => by
-    rw [hum a hna, replay_none]
+    rw [hum a hna, replay_notin]
     intro x hx
     simp only [List.mem_flatMap, List.mem_range] at hx
     obtain ⟨c, hc, hx⟩ := hx

@@ -146,8 +146,8 @@ def dPtx : List String :=
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.argmax
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.widen
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.sample
-  , GptOssKernels.moduleFor GptOssKernels.fusedAttnTile
-  , GptOssKernels.moduleFor GptOssKernels.fusedAttnCombine ]
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.attnTile
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.attnCombine ]
 
 def S_RMS := 0
 def S_ADD := 1

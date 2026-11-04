@@ -56,7 +56,7 @@ theorem StageSpec.applyAt_off (S : (StageSpec R)) (cta : Nat) (m : Buf → Nat �
     them the resulting memory is determined by the entering memory alone —
     registers included in the state but not in the answer. -/
 theorem StageSpec.run_applyAt (S : (StageSpec R)) (cta : Nat) (st : WSt R) :
-    ((S.blk cta).run st).mem = S.applyAt cta st.mem := by
+    (S.blk cta st).mem = S.applyAt cta st.mem := by
   funext b a
   by_cases h : b = S.out ∧ S.dom cta a
   · obtain ⟨hb, hd⟩ := h
@@ -70,63 +70,49 @@ theorem StageSpec.run_applyAt (S : (StageSpec R)) (cta : Nat) (st : WSt R) :
 -- The fused block
 -- ---------------------------------------------------------------------------
 
-/-- **The block a fused launch runs**: the members in order, joined by `.seq`.
+/-- **What one block of a fused launch does**: its members' blocks, in order.
 
-    The same shape as `TOp.groupStmt` — a left fold from `.skip` — because
-    `EWStmt.elabAt` distributes over `.seq`, so elaborating a group's statement
-    at block `cta` is exactly this. -/
-def groupBlk (ss : List (StageSpec R)) (cta : Nat) : WStmt :=
-  ss.foldl (fun acc S => .seq acc (S.blk cta)) .skip
+    The same shape as `TOp.groupStmt` — a left fold of `.seq` — because running
+    a `.seq` runs its halves in order. -/
+def groupBlk (ss : List (StageSpec R)) (cta : Nat) (st : WSt R) : WSt R :=
+  ss.foldl (fun s S => S.blk cta s) st
 
 /-- What the members do to memory, in order, at one block. -/
 noncomputable def blockApply (ss : List (StageSpec R)) (cta : Nat)
     (m : Buf → Nat → R) : Buf → Nat → R :=
   ss.foldl (fun mm S => S.applyAt cta mm) m
 
-theorem groupBlk_run_aux (cta : Nat) : ∀ (ss : List (StageSpec R)) (p : WStmt) (st : WSt R),
-    ((ss.foldl (fun acc S => .seq acc (S.blk cta)) p).run st)
-      = ss.foldl (fun s S => (S.blk cta).run s) (p.run st) := by
-  intro ss
-  induction ss with
-  | nil => intro _ _; rfl
-  | cons S rest ih =>
-      intro p st
-      show ((rest.foldl _ (WStmt.seq p (S.blk cta))).run st) = _
-      rw [ih (WStmt.seq p (S.blk cta)) st]
-      rfl
-
 theorem foldl_run_mem (cta : Nat) : ∀ (ss : List (StageSpec R)) (st : WSt R),
-    (ss.foldl (fun s S => (S.blk cta).run s) st).mem = blockApply ss cta st.mem := by
+    (ss.foldl (fun s S => S.blk cta s) st).mem = blockApply ss cta st.mem := by
   intro ss
   induction ss with
   | nil => intro _; rfl
   | cons S rest ih =>
       intro st
-      show (rest.foldl _ ((S.blk cta).run st)).mem
+      show (rest.foldl _ (S.blk cta st)).mem
           = rest.foldl (fun mm T => T.applyAt cta mm) (S.applyAt cta st.mem)
-      rw [ih ((S.blk cta).run st), blockApply, S.run_applyAt cta st]
+      rw [ih (S.blk cta st), blockApply, S.run_applyAt cta st]
 
 /-- **One block of the fused launch does what its members do, in order.** -/
 theorem groupBlk_mem (ss : List (StageSpec R)) (cta : Nat) (st : WSt R) :
-    ((groupBlk ss cta).run st).mem = blockApply ss cta st.mem := by
-  rw [groupBlk, groupBlk_run_aux cta ss WStmt.skip st, foldl_run_mem cta ss]
-  rfl
+    (groupBlk ss cta st).mem = blockApply ss cta st.mem :=
+  foldl_run_mem cta ss st
 
 /-- A whole grid, as a fold on memory. -/
-theorem runGrid_mem (blk : Nat → WStmt) (g : Nat)
+theorem runGrid_mem (blk : Nat → WSt R → WSt R) (g : Nat)
     (f : Nat → (Buf → Nat → R) → (Buf → Nat → R))
-    (hf : ∀ cta st, ((blk cta).run st).mem = f cta st.mem) : ∀ (st : WSt R),
+    (hf : ∀ cta st, (blk cta st).mem = f cta st.mem) : ∀ (st : WSt R),
     (runGrid blk g st).mem = (List.range g).foldl (fun m cta => f cta m) st.mem := by
   have key : ∀ (l : List Nat) (st : WSt R),
-      (l.foldl (fun s cta => (blk cta).run s) st).mem
+      (l.foldl (fun s cta => blk cta s) st).mem
         = l.foldl (fun m cta => f cta m) st.mem := by
     intro l
     induction l with
     | nil => intro _; rfl
     | cons c t ih =>
         intro st
-        show (t.foldl _ ((blk c).run st)).mem = t.foldl _ (f c st.mem)
-        rw [ih ((blk c).run st), hf c st]
+        show (t.foldl _ (blk c st)).mem = t.foldl _ (f c st.mem)
+        rw [ih (blk c st), hf c st]
   intro st; exact key (List.range g) st
 
 -- ---------------------------------------------------------------------------
@@ -431,7 +417,7 @@ theorem foldl_pullout (A G : Nat → (Buf → Nat → R) → (Buf → Nat → R)
 theorem step_eq_foldl_applyAt (S : (StageSpec R)) (hex : S.Exclusive)
     (m : Buf → Nat → R) :
     (List.range S.grid).foldl (fun mm cta => S.applyAt cta mm) m = S.step m := by
-  let st : WSt R := ⟨fun _ _ => NumOps.ofNat 0, m, fun _ => NumOps.ofNat 0⟩
+  let st : WSt R := { regs := fun _ _ => NumOps.ofNat 0, mem := m, smem := fun _ => NumOps.ofNat 0 }
   have h1 : (runGrid S.blk S.grid st).mem
       = (List.range S.grid).foldl (fun mm cta => S.applyAt cta mm) st.mem :=
     runGrid_mem S.blk S.grid (fun cta mm => S.applyAt cta mm)
@@ -481,9 +467,9 @@ theorem group_runs_as_pipeline : ∀ (ss : List (StageSpec R)) (g : Nat),
                 ((List.range g).foldl (fun m cta => S.applyAt cta m) st.mem) := by
         have := ih g (fun T hT => hg T (by simp [hT])) (fun T hT => hex T (by simp [hT]))
           (fun T hT U hU => hc T (by simp [hT]) U (by simp [hU]))
-          ⟨fun _ _ => NumOps.ofNat 0,
-           (List.range g).foldl (fun m cta => S.applyAt cta m) st.mem,
-           fun _ => NumOps.ofNat 0⟩
+          { regs := fun _ _ => NumOps.ofNat 0,
+            mem := (List.range g).foldl (fun m cta => S.applyAt cta m) st.mem,
+            smem := fun _ => NumOps.ofNat 0 }
         rw [runGrid_mem (groupBlk rest) g (fun cta m => blockApply rest cta m)
               (fun cta s => groupBlk_mem rest cta s)] at this
         exact this

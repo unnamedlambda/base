@@ -1,6 +1,6 @@
 module
-public import Lz4.CodeKernel
-meta import Lz4.CodeKernel
+public import Lz4.Compressor
+meta import Lz4.Compressor
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -14,7 +14,6 @@ the kernel's PTX text.
 -/
 
 open AlgorithmLib
-open AlgorithmLib.PTX
 
 namespace Lz4Ship
 
@@ -42,14 +41,14 @@ def WP.totOut    (w : WP) : Nat := w.numBlk * w.outStride
     which is all `Lz4Code.shipped_roundtrips` asks for (`WP.bytes`). -/
 def WP.outAlloc  (w : WP) : Nat := w.totOut
 /-- Where warp 0's output begins.  `copySlack` is the KERNEL's constant
-    (`LZ4WarpDSL.copySlack`, the offset `Lz4Code.compressor` puts the outputs at); using it
+    (`LZ4WarpDSL.copySlack`, the offset `Lz4Code.compressorS` puts the outputs at); using it
     here is what keeps the host allocation and the kernel's own base in step. -/
 def WP.outOff    (w : WP) : Nat := w.totIn + AlgorithmLib.LZ4WarpDSL.copySlack
 
 /-- The kernel this artifact ships: the warp language's compressor as Code,
     its entry point `main` (`Lz4Code.shipped_roundtrips` is stated about it). -/
 def WP.code (w : WP) : AlgorithmLib.Kernel.Kernel :=
-  Lz4Code.codeKernel "main" w.numBlk w.inStride w.outStride w.lenOff wHashLog
+  Lz4Code.compressorKernel "main" w.numBlk w.inStride w.outStride w.lenOff wHashLog
 
 /-- The PTX text the artifact carries: `WP.code`'s module, printed. Empty if it
     does not compile, which `Lz4.Comp.warpArtifactDSL` refuses. -/

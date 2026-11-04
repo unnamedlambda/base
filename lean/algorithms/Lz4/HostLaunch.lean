@@ -45,7 +45,7 @@ theorem shipped_geometry (b : Nat) (hb : b = 15 ∨ b = 16) :
     buffer 0 as `lz4Machine` says. -/
 theorem lz4Machine_realized (b : Nat) (hb : b = 15 ∨ b = 16) (hw : Hw) (hhw : PtxSound.HwOk hw) (outA : UInt64)
     (bufs : Nat → ByteArray) (hsize : (WP.mk b).bytes ≤ (bufs 0).size) :
-    ∃ e, (WP.mk b).code.entry = .ok e ∧ ∃ bufs', RunsLaunch (PtxRun.runner e hw) (WP.mk b).code.smem
+    ∃ e, (WP.mk b).code.shipped = .ok e ∧ ∃ bufs', RunsLaunch (PtxRun.runner e hw) (WP.mk b).code.smem
       (WP.mk b).numBlk 32 [.sc .i64 base0, .sc .i64 outA] bufs bufs' hw.nan ∧
       lz4Machine b [bufs 0] [bufs' 0] := by
   have hc : ∀ k : Kernel, k.entry.isOk = true → ∃ e, k.entry = .ok e := fun k h => by
@@ -57,15 +57,17 @@ theorem lz4Machine_realized (b : Nat) (hb : b = 15 ∨ b = 16) (hw : Hw) (hhw : 
   · obtain ⟨e, he⟩ := hc _ compiles15
     have he' := he
     rw [code15] at he'
-    obtain ⟨u, -, hP, hd⟩ := launch_denotes hw hhw "main" outA he' bufs (by decide) (by decide) (by decide)
+    obtain ⟨u, -, hP, hd⟩ := launch_denotes hw hhw "main" outA he' bufs (by decide) (by decide) (by decide) (by decide)
       fine15 flags15 (by decide) (by decide) (by decide) (by decide) hsize (by decide)
-    exact ⟨e, he, u.mem.bufs, by rw [code15]; exact hP, hd⟩
+    exact ⟨Coalesce.run e, PtxSound.shipped_ok _ e he, u.mem.bufs,
+      by rw [PtxSound.runner_shipped e hw hhw, code15]; exact hP, hd⟩
   · obtain ⟨e, he⟩ := hc _ compiles16
     have he' := he
     rw [code16] at he'
-    obtain ⟨u, -, hP, hd⟩ := launch_denotes hw hhw "main" outA he' bufs (by decide) (by decide) (by decide)
+    obtain ⟨u, -, hP, hd⟩ := launch_denotes hw hhw "main" outA he' bufs (by decide) (by decide) (by decide) (by decide)
       fine16 flags16 (by decide) (by decide) (by decide) (by decide) hsize (by decide)
-    exact ⟨e, he, u.mem.bufs, by rw [code16]; exact hP, hd⟩
+    exact ⟨Coalesce.run e, PtxSound.shipped_ok _ e he, u.mem.bufs,
+      by rw [PtxSound.runner_shipped e hw hhw, code16]; exact hP, hd⟩
 
 /-- **The LZ4 launch triple, through the driver.** From a world where
     `cuLaunchKernel` answers with both its parameters pointing into allocation

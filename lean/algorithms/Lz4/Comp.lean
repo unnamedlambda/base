@@ -13,7 +13,6 @@ import all Init.Data.List.Sort.Basic
 
 open Lean (Json)
 open AlgorithmLib
-open AlgorithmLib.PTX
 
 namespace Lz4Ship
 

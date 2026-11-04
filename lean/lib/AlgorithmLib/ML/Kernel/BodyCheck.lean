@@ -45,6 +45,9 @@ def touchL : Nat → EWStmt → List (Buf × Nat)
   | i, .storeLane0 b ix _ => if l = lane0 then [(b, ix.eval cta i lane0)] else []
   | i, .seq x y => touchL i x ++ touchL i y
   | _, .forN n body => (List.range n).flatMap fun t => touchL t body
+  | i, .iif _ x y => touchL i x ++ touchL i y
+  | i, .iwhile _ _ _ body => touchL i body
+  | i, .locals _ body => touchL i body
   | _, _ => []
 
 /-- The words lane `l` of block `cta` stores, at trip `i`. -/
@@ -53,6 +56,9 @@ def storeL : Nat → EWStmt → List (Buf × Nat)
   | i, .storeLane0 b ix _ => if l = lane0 then [(b, ix.eval cta i lane0)] else []
   | i, .seq x y => storeL i x ++ storeL i y
   | _, .forN n body => (List.range n).flatMap fun t => storeL t body
+  | i, .iif _ x y => storeL i x ++ storeL i y
+  | i, .iwhile _ _ _ body => storeL i body
+  | i, .locals _ body => storeL i body
   | _, _ => []
 
 end
@@ -73,6 +79,13 @@ theorem storeL_sub (cta : Nat) (l : Lane) : ∀ (s : EWStmt) (i : Nat), storeL c
     obtain ⟨t, ht, he⟩ := he
     simp only [touchL, List.mem_flatMap]
     exact ⟨t, ht, ih t he⟩
+  | iif _ x y ihx ihy =>
+    intro i e he
+    rcases List.mem_append.mp he with h | h
+    · exact List.mem_append_left _ (ihx i h)
+    · exact List.mem_append_right _ (ihy i h)
+  | iwhile _ _ _ body ih => intro i e he; exact ih i he
+  | locals _ body ih => intro i e he; exact ih i he
   | _ => intro i e he; simp [storeL] at he
 
 /-- **What the lists say, the access map allows**: where every word a lane's
@@ -110,6 +123,12 @@ theorem accOk_sub (cta : Nat) (T S : Lane → List (Buf × Nat))
     · simp only [touchL, List.mem_flatMap, List.mem_range]; exact ⟨j, hj, he⟩
     · simp only [storeL, List.mem_flatMap, List.mem_range]; exact ⟨j, hj, he⟩
   | forM bb a body _ => intro i _ _ j hj; simp [imOf] at hj
+  | iif _ x y ihx ihy =>
+    intro i hT hS
+    exact ⟨ihx i (fun l e he => hT l (List.mem_append_left _ he)) (fun l e he => hS l (List.mem_append_left _ he)),
+      ihy i (fun l e he => hT l (List.mem_append_right _ he)) (fun l e he => hS l (List.mem_append_right _ he))⟩
+  | iwhile _ _ _ body ih => intro i hT hS; exact ih i hT hS
+  | locals _ body ih => intro i hT hS; exact ih i hT hS
   | _ => intro i _ _; trivial
 
 /-- What a lane may store, its list holds. -/
@@ -130,6 +149,13 @@ theorem storesL_mem (cta : Nat) (l : Lane) :
     simp only [storeL, List.mem_flatMap, List.mem_range]
     exact ⟨t, ht, ih t b j h⟩
   | forM bb a body ih => intro i b j ⟨t, ht, _⟩; simp [imOf] at ht
+  | iif _ x y ihx ihy =>
+    intro i b j h
+    rcases h with h | h
+    · exact List.mem_append_left _ (ihx i b j h)
+    · exact List.mem_append_right _ (ihy i b j h)
+  | iwhile _ _ _ body ih => intro i b j h; exact ih i b j h
+  | locals _ body ih => intro i b j h; exact ih i b j h
   | _ => intro i b j h; exact absurd h id
 
 /-- The range of a list of numbers, none if it is empty. -/
@@ -178,19 +204,9 @@ def spine : EWStmt → List EWStmt
 
 theorem split_spine : ∀ s, Split s (spine s)
   | .seq a b => Split.seq (split_spine a) (Split.one b)
-  | .skip => Split.one _
-  | .setR _ _ => Split.one _
-  | .shflXor _ _ _ => Split.one _
-  | .loadIdx _ _ _ => Split.one _
-  | .loadV4 _ _ _ _ _ _ => Split.one _
-  | .storeLane0 _ _ _ => Split.one _
-  | .storeLane _ _ _ => Split.one _
-  | .stSm _ _ => Split.one _
-  | .ldSm _ _ => Split.one _
-  | .barrier => Split.one _
-  | .forN _ _ => Split.one _
-  | .forM _ _ _ => Split.one _
-  | .cvtIF _ _ => Split.one _
+  | .skip | .setR .. | .shflXor .. | .loadIdx .. | .loadV4 .. | .storeLane0 .. | .storeLane ..
+  | .stSm .. | .ldSm .. | .barrier | .forN .. | .forM .. | .cvtIF .. | .setI .. | .ldB .. | .stB ..
+  | .ldH .. | .stH .. | .ballot .. | .shflIdx .. | .iif .. | .iwhile .. | .locals .. => Split.one _
 
 theorem touchL_split (cta : Nat) (l : Lane) (i : Nat) :
     ∀ {s : EWStmt} {ps : List EWStmt}, Split s ps → ∀ p ∈ ps, touchL cta l i p ⊆ touchL cta l i s := by
@@ -392,6 +408,9 @@ def strideOk (S : Buf → Nat) : EWStmt → Bool
   | .storeLane0 b ix _ => coefC ix == some (S b)
   | .seq x y => strideOk S x && strideOk S y
   | .forN _ body => strideOk S body
+  | .iif _ x y => strideOk S x && strideOk S y
+  | .iwhile _ _ _ body => strideOk S body
+  | .locals _ body => strideOk S body
   | _ => true
 
 theorem strideOk_split (S : Buf → Nat) :
@@ -448,6 +467,15 @@ theorem touchL_shift (S : Buf → Nat) (cta : Nat) (l : Lane) :
     intro i h; simp only [strideOk] at h
     simp only [touchL, List.map_flatMap]
     congr 1; funext t; exact ih t h
+  | iif _ x y ihx ihy =>
+    intro i h; simp only [strideOk, Bool.and_eq_true] at h
+    simp only [touchL, List.map_append, ihx i h.1, ihy i h.2]
+  | iwhile _ _ _ body ih =>
+    intro i h; simp only [strideOk] at h
+    simp only [touchL, ih i h]
+  | locals _ body ih =>
+    intro i h; simp only [strideOk] at h
+    simp only [touchL, ih i h]
   | _ => intro i _; rfl
 
 theorem storeL_shift (S : Buf → Nat) (cta : Nat) (l : Lane) :
@@ -467,6 +495,15 @@ theorem storeL_shift (S : Buf → Nat) (cta : Nat) (l : Lane) :
     intro i h; simp only [strideOk] at h
     simp only [storeL, List.map_flatMap]
     congr 1; funext t; exact ih t h
+  | iif _ x y ihx ihy =>
+    intro i h; simp only [strideOk, Bool.and_eq_true] at h
+    simp only [storeL, List.map_append, ihx i h.1, ihy i h.2]
+  | iwhile _ _ _ body ih =>
+    intro i h; simp only [strideOk] at h
+    simp only [storeL, ih i h]
+  | locals _ body ih =>
+    intro i h; simp only [strideOk] at h
+    simp only [storeL, ih i h]
   | _ => intro i _; rfl
 
 theorem shiftE_inj {S : Buf → Nat} {cta : Nat} {e e' : Buf × Nat} (h : shiftE S cta e = shiftE S cta e') : e = e' := by
@@ -709,12 +746,19 @@ theorem accs_erase : ∀ s : EWStmt, strides.accs (erase s) = strides.accs s := 
 theorem strides_erase (s : EWStmt) : strides (erase s) = strides s := by
   unfold strides; rw [accs_erase]
 
+theorem setsI_erase : ∀ s : EWStmt, Body.setsI (erase s) = Body.setsI s := by
+  intro s; induction s with
+  | seq a b iha ihb => simp only [erase, Body.setsI, iha, ihb]
+  | forN n b ih => simp only [erase, Body.setsI, ih]
+  | forM bb a b ih => simp only [erase, Body.setsI, ih]
+  | _ => rfl
+
 theorem fits_erase (rd : Buf → Nat → Option Nat) (cta : Nat) :
     ∀ (s : EWStmt) (i : Nat), fits rd cta i (erase s) = fits rd cta i s := by
   intro s; induction s with
   | seq a b iha ihb => intro i; simp only [erase, fits, iha, ihb]
   | forN n b ih => intro i; simp only [erase, fits, ih]
-  | forM bb a b ih => intro i; simp only [erase, fits, ih]
+  | forM bb a b ih => intro i; simp only [erase, fits, ih, setsI_erase]
   | _ => intro i; rfl
 
 theorem spine_erase : ∀ s : EWStmt, spine (erase s) = (spine s).map erase := by
@@ -968,7 +1012,7 @@ theorem launch_static_both (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 
     (hr : LaunchRuns (Body.kernel name nbuf smem s nw) grid (32 * nw) (bufArgs nbuf) bufs bufs' hw) :
     (∀ cta (l : Lane) b j, cta < grid * nw → (b, j) ∈ touchL cta l 0 s →
       ({ kmem bufs with bufs := bufs' } : Mem).load (bufW nbuf b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ (s.elabAt cta 0) (ws0 nbuf (kmem bufs))).mem b j).bits) ∧
+        some ((@EWStmt.run F32 (F32.ops hw) _ s (ws0 nbuf (kmem bufs)) cta 0).mem b j).bits) ∧
     (∀ b j, (b < nbuf ∧ b < 268435449 ∧ j < 2 ^ 32) →
       (∀ cta, cta < grid * nw → ∀ (l : Lane), (b, j) ∉ storeL cta l 0 s) →
       ({ kmem bufs with bufs := bufs' } : Mem).load (bufW nbuf b j) 4 = (kmem bufs).load (bufW nbuf b j) 4):= by
@@ -1000,7 +1044,7 @@ theorem launch_static (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32)
     (hr : LaunchRuns (Body.kernel name nbuf smem s nw) grid (32 * nw) (bufArgs nbuf) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < grid * nw → (b, j) ∈ touchL cta l 0 s →
       ({ kmem bufs with bufs := bufs' } : Mem).load (bufW nbuf b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ (s.elabAt cta 0) (ws0 nbuf (kmem bufs))).mem b j).bits :=
+        some ((@EWStmt.run F32 (F32.ops hw) _ s (ws0 nbuf (kmem bufs)) cta 0).mem b j).bits :=
   (launch_static_both hw hw32 name nbuf smem s ps hsp nw hnw hnw31 grid hgrid hN sz hok hfine bufs bufs' hsz hr).1
 
 /-- **…and leave every word no lane stores as it was.** -/
@@ -1038,7 +1082,7 @@ theorem launch_body (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
     (hr : LaunchRuns (Body.kernel name nbuf smem s nw) grid (32 * nw) (bufArgs nbuf) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < grid * nw → (b, j) ∈ touchL cta l 0 s →
       ({ kmem bufs with bufs := bufs' } : Mem).load (bufW nbuf b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ (s.elabAt cta 0) (ws0 nbuf (kmem bufs))).mem b j).bits := by
+        some ((@EWStmt.run F32 (F32.ops hw) _ s (ws0 nbuf (kmem bufs)) cta 0).mem b j).bits := by
   simp only [launchOk, fineB, Bool.and_eq_true, decide_eq_true_eq] at hok
   obtain ⟨⟨hst, herr, hneed⟩, h0, h31, hg, hN⟩ := hok
   exact launch_static hw hw32 name nbuf smem s (spine s) (split_spine s) nw h0 h31 grid hg hN sz hst

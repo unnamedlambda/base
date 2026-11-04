@@ -1,8 +1,8 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Kernel.Block
+meta import AlgorithmLib.Kernel.Block
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
 public import AlgorithmLib.Surface.Drv
@@ -14,7 +14,7 @@ import all Init.Data.List.Sort.Basic
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
-open AlgorithmLib.PTX
+open AlgorithmLib.Kernel
 
 namespace CudaSoftmaxPersist
 
@@ -56,135 +56,116 @@ def NB_OFF : Nat := 0x40
 def META_OFF : Nat := 0x48
 def ORG : Nat := 0x100
 def PTX_OFF : Nat := 0x800
-def PTX_LEN : Nat := 0x4800
+def PTX_LEN : Nat := 0x8000
 
-/-
-  PTX: three kernels share one module. smem[0..31] = 8 warp maxes,
-  smem[32..63] = 8 warp sums. Online combination: given (m1,s1)+(m2,s2),
-  new_max = max(m1,m2), new_sum = s1*ex2((m1-new_max)*log2e) + s2*ex2((m2-new_max)*log2e).
--/
-def ptxSource : String := buildModule 64
-  [ -- ── small_softmax: single-block fused path for n ≤ 2048 ─────────────────
-    { name := "small_softmax", params := ["x_buf", "meta_buf", "y_buf"], body := do
-      let xPtr    ← ldParam "x_buf"
-      let metaPtr ← ldParam "meta_buf"
-      let yPtr    ← ldParam "y_buf"
-      let nReg ← freshR; ldGlobalU nReg metaPtr
-      let (tid, wid, lid) ← getWarpIds
-      let log2e ← freshF; movFC log2e f32_log2e
-      -- Phase 1: max reduction
-      let lMax ← freshF; movFC lMax f32_0
-      let mTmp ← freshF
-      strideLoop tid nReg 256 "sm_loop_max" "sm_done_max" fun i => do
-        let addr ← elemAddr xPtr i; ldGlobalF mTmp addr; maxF lMax lMax mTmp
-      warpReduceMax lMax mTmp
-      lane0WriteSmem lid wid "sm_skip_max_store" fun wAddr => stSharedFD wAddr lMax
-      thread0Op tid "sm_skip_max_reduce" do
-        let sBase ← smemBase; let gMax ← freshF
-        crossWarp8 gMax mTmp sBase 0 maxF; stSharedF sBase 32 gMax
-      let sBase1 ← smemBase
-      let gMax ← freshF; ldSharedF gMax sBase1 32
-      -- Phase 2: sum of exp
-      let lSum ← freshF; movFC lSum f32_0
-      let sTmp ← freshF
-      strideLoop tid nReg 256 "sm_loop_sum" "sm_done_sum" fun i => do
-        let addr ← elemAddr xPtr i; let xi ← freshF; ldGlobalF xi addr
-        subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; addF lSum lSum xi
-      warpReduceSum lSum sTmp
-      lane0WriteSmem lid wid "sm_skip_sum_store" fun wAddr => stSharedFD wAddr lSum
-      thread0Op tid "sm_skip_sum_reduce" do
-        let sBase ← smemBase
-        crossWarp8 lSum sTmp sBase 0 addF; rcp lSum lSum; stSharedF sBase 36 lSum
-      let sBase2 ← smemBase
-      let invSum ← freshF; ldSharedF invSum sBase2 36
-      -- Phase 3: output
-      strideLoop tid nReg 256 "sm_loop_out" "sm_done_out" fun i => do
-        let xAddr ← elemAddr xPtr i; let yAddr ← elemAddr yPtr i
-        let xi ← freshF; ldGlobalF xi xAddr
-        subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
-        stGlobalF yAddr xi
-      ptxRet },
-    -- ── block_reduce: each block → (local_max, local_sum) via online softmax ──
-    { name := "block_reduce", params := ["x_buf", "meta_buf", "partials_buf"], body := do
-      let xPtr        ← ldParam "x_buf"
-      let metaPtr     ← ldParam "meta_buf"
-      let partialsPtr ← ldParam "partials_buf"
-      let nReg ← freshR; ldGlobalU nReg metaPtr
-      let bid ← freshR; movR bid ctaX
-      let bsz ← freshR; movR bsz ntidX
-      let tid ← freshR; movR tid tidX
-      let wid ← freshR; shrR wid tid 5
-      let lid ← freshR; andR lid tid 31
-      let gid ← freshR; madLoS gid bid bsz tid
-      let log2e ← freshF; movFC log2e f32_log2e
-      let lMax ← freshF; let lSum ← freshF
-      let p ← freshP; setpGe p gid nReg; braIf p "br_oob"
-      let xAddr ← elemAddr xPtr gid; ldGlobalF lMax xAddr; movFC lSum f32_1
-      bra "br_reduce"
-      label "br_oob"; movFC lMax f32_0; movFC lSum f32_0
-      label "br_reduce"
-      let t0 ← freshF; let t1 ← freshF; let nm ← freshF; let adj ← freshF
-      warpReduceOnline lMax lSum t0 t1 nm adj log2e
-      lane0WriteSmem lid wid "br_skip_wst" fun wAddr => do
-        stSharedFD wAddr lMax
-        let sumAddr ← freshR; addRI sumAddr wAddr 32; stSharedFD sumAddr lSum
-      thread0Op tid "br_skip_bred" do
-        let sBase ← smemBase; let bMax ← freshF; let bSum ← freshF
-        crossWarp8Online bMax bSum t0 t1 nm adj log2e sBase 0 32
-        let bid64 ← freshRd; cvtU64 bid64 bid
-        let pOff ← freshRd; shlRd pOff bid64 3
-        let pAddr ← freshRd; addRd pAddr partialsPtr pOff
-        stGlobalF pAddr bMax; stGlobalFO pAddr 4 bSum
-      ptxRet },
-    -- ── global_reduce: combine partials → (global_max, global_inv_sum) ────────
-    { name := "global_reduce", params := ["meta_buf", "partials_buf", "params_buf"], body := do
-      let metaPtr     ← ldParam "meta_buf"
-      let partialsPtr ← ldParam "partials_buf"
-      let paramsPtr   ← ldParam "params_buf"
-      let nbPtr ← freshRd; addRdI nbPtr metaPtr 4
-      let numBlocks ← freshR; ldGlobalU numBlocks nbPtr
-      let tid ← freshR; movR tid tidX
-      let wid ← freshR; shrR wid tid 5
-      let lid ← freshR; andR lid tid 31
-      let log2e ← freshF; movFC log2e f32_log2e
-      let lMax ← freshF; movFC lMax f32_0
-      let lSum ← freshF; movFC lSum f32_0
-      let nm ← freshF; let adj ← freshF; let t0 ← freshF; let t1 ← freshF
-      strideLoop tid numBlocks 256 "gr_loop" "gr_done" fun i => do
-        let i64 ← freshRd; cvtU64 i64 i
-        let pOff ← freshRd; shlRd pOff i64 3
-        let pAddr ← freshRd; addRd pAddr partialsPtr pOff
-        let pMax ← freshF; ldGlobalF pMax pAddr
-        let pSum ← freshF; ldGlobalFO pSum pAddr 4
-        maxF nm lMax pMax
-        subF adj lMax nm; mulF adj adj log2e; ex2 adj adj; mulF lSum lSum adj
-        subF adj pMax nm; mulF adj adj log2e; ex2 adj adj; mulF pSum pSum adj
-        addF lSum lSum pSum; movF lMax nm
-      warpReduceOnline lMax lSum t0 t1 nm adj log2e
-      lane0WriteSmem lid wid "gr_skip_wst" fun wAddr => do
-        stSharedFD wAddr lMax
-        let sumAddr ← freshR; addRI sumAddr wAddr 32; stSharedFD sumAddr lSum
-      thread0Op tid "gr_skip_bred" do
-        let sBase ← smemBase; let bMax ← freshF; let bSum ← freshF
-        crossWarp8Online bMax bSum t0 t1 nm adj log2e sBase 0 32
-        rcp bSum bSum; stGlobalF paramsPtr bMax; stGlobalFO paramsPtr 4 bSum
-      ptxRet },
-    -- ── normalize: y[i] = exp((x[i]-global_max)*log2e) * global_inv_sum ───────
-    { name := "normalize", params := ["x_buf", "meta_buf", "params_buf", "y_buf"], body := do
-      let xPtr      ← ldParam "x_buf"
-      let metaPtr   ← ldParam "meta_buf"
-      let paramsPtr ← ldParam "params_buf"
-      let yPtr      ← ldParam "y_buf"
-      let nReg   ← freshR; ldGlobalU nReg metaPtr
-      let gMax   ← freshF; ldGlobalF gMax paramsPtr
-      let invSum ← freshF; ldGlobalFO invSum paramsPtr 4
-      let log2e  ← freshF; movFC log2e f32_log2e
-      let (gid, _) ← gridStrideSetup nReg "nrm_end"
-      let xAddr ← elemAddr xPtr gid; let yAddr ← elemAddr yPtr gid
-      let xi ← freshF; ldGlobalF xi xAddr
-      subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
-      stGlobalF yAddr xi
-      label "nrm_end"; ptxRet } ]
+namespace Body
+open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog AlgorithmLib.Kernel AlgorithmLib.Kernel.Block
+
+section
+variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
+
+/-- **Softmax over one row per block**: `n`, the word at `meta`, floats a row,
+    row `blockIdx` of `x` into the same row of `y`. Blocks of 256 threads,
+    each striding the row three times: the maximum, the sum of
+    `2^((x - max)·log₂ e)`, then each such term times the sum's reciprocal,
+    the last two by the hardware's approximations. -/
+def rowSoftmax : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let cta := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
+  let x := (ps.drop 4).head; let m := (ps.drop 5).head; let y := (ps.drop 6).head
+  let n ← load32 m
+  let off ← ishlImm (← imul (← ext cta) (← ext n)) 2
+  let xr ← iadd x off
+  let yr ← iadd y off
+  let ninf ← f32c negInfBits
+  let lMax ← strided tid n 256 ninf fun i acc => do fmax acc (← loadF32 (← at4 xr i))
+  let gMax ← blockAll tid sm 0 8 fmax lMax
+  let lSum ← strided tid n 256 (← f32c 0) fun i acc => do
+    fadd acc (← expA (← fsub (← loadF32 (← at4 xr i)) gMax))
+  let inv ← callLocal rcpApprox %[← blockAll tid sm 32 8 fadd lSum]
+  stridedDo tid n 256 fun i => do
+    store (← fmul (← expA (← fsub (← loadF32 (← at4 xr i)) gMax)) inv) (← at4 yr i)
+
+/-- **Each block's softmax state**: thread `g = blockIdx·256 + threadIdx`
+    starts from `(x[g], 1)`, or the empty state past `n` (`lowestBits`, `0`),
+    and thread 0 writes the block's merged state as two floats at
+    `partials + 8·blockIdx`. -/
+def blockReduce : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let cta := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
+  let x := (ps.drop 4).head; let m := (ps.drop 5).head; let parts := (ps.drop 6).head
+  let n ← load32 m
+  let g ← iadd (← imul cta (← c32 256)) tid
+  let inb ← icmp .ult g n
+  -- past `n` the load reads element 0, which the select then drops
+  let xv ← loadF32 (← at4 x (← select inb g (← c32 0)))
+  let low ← f32c lowestBits
+  let m0 ← select inb (← fmax xv low) low
+  let s0 ← select inb (← f32c 0x3F800000) (← f32c 0)
+  blockOnline tid sm 8 m0 s0 fun bm bs => do
+    let pa ← iadd parts (← ishlImm (← ext cta) 3)
+    store bm pa
+    store bs (← at_ pa 4)
+
+/-- **The blocks' states merged**: one block strides the `num_blocks` (the
+    word at `meta + 4`) partial states, and thread 0 writes the maximum and the
+    reciprocal of the sum to `params`. -/
+def globalReduce : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let tid := ps.snd; let sm := (ps.drop 3).head
+  let m := (ps.drop 4).head; let parts := (ps.drop 5).head; let prm := (ps.drop 6).head
+  let nb ← load32 (← at_ m 4)
+  let r ← wloop %[tid, ← f32c lowestBits, ← f32c 0]
+    (fun cs => pure (contIfULt cs.head nb, %[cs.snd, cs.thd], ()))
+    (fun cs _ => do
+      let pa ← iadd parts (← ishlImm (← ext cs.head) 3)
+      let (nm, ns) ← online cs.snd cs.thd (← loadF32 pa) (← loadF32 (← at_ pa 4))
+      pure %[← iadd cs.head (← c32 256), nm, ns])
+  blockOnline tid sm 8 r.head r.snd fun gm gs => do
+    store gm prm
+    store (← callLocal rcpApprox %[gs]) (← at_ prm 4)
+
+/-- **The output**: `y[g] = 2^((x[g] - max)·log₂ e) · inv` for `g < n`, the
+    maximum and `inv` from `params`, a thread an element. -/
+def normalize : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64])
+  let cta := ps.head; let tid := ps.snd
+  let x := (ps.drop 4).head; let m := (ps.drop 5).head
+  let prm := (ps.drop 6).head; let y := (ps.drop 7).head
+  let n ← load32 m
+  let gMax ← loadF32 prm
+  let inv ← loadF32 (← at_ prm 4)
+  let g ← iadd (← imul cta (← c32 256)) tid
+  when .ult g n do
+    store (← fmul (← expA (← fsub (← loadF32 (← at4 x g)) gMax)) inv) (← at4 y g)
+
+end
+
+/-- Shared bytes: two reductions of eight warps' floats each. -/
+def smemBytes : Nat := 64
+
+/-- `rowSoftmax` as a kernel named `name`, over `(x, meta, y)`. -/
+def rowKernel (name : String) : Kernel :=
+  { name, params := [.i64, .i64, .i64],
+    code := emit rowSoftmax (idParams ++ [.i64, .i64, .i64]), smem := smemBytes }
+
+def kernels : List Kernel :=
+  [rowKernel "small_softmax",
+   { name := "block_reduce", params := [.i64, .i64, .i64],
+     code := emit blockReduce (idParams ++ [.i64, .i64, .i64]), smem := smemBytes },
+   { name := "global_reduce", params := [.i64, .i64, .i64],
+     code := emit globalReduce (idParams ++ [.i64, .i64, .i64]), smem := smemBytes },
+   { name := "normalize", params := [.i64, .i64, .i64, .i64],
+     code := emit normalize (idParams ++ [.i64, .i64, .i64, .i64]) }]
+
+end Body
+
+/-- The four kernels as one module, or empty where the printer refuses one
+    (which `ptx_fits` would then not prove). -/
+def ptxSource : String :=
+  match Kernel.module Body.kernels with
+  | .ok s => s
+  | .error _ => ""
 
 -- CLIF: u0:0 noop, u0:1 load, u0:2 prep, u0:3 core, u0:4 finalize
 -- Load: init CUDA, alloc 5 bufs, pack/upload meta, store n/num_blocks
@@ -275,6 +256,10 @@ def clifIR : Except String (List FuncData) :=
      Prog.compileProg 4 finalizeCode,
      Prog.entry "infer" (Prog.compileProg 5 (Prog.sequenceWrapper [3, 4])),
      Prog.entry "stack" (Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4])))]
+
+/-- The module prints, and fits where it is placed with its terminating zero. -/
+theorem ptx_fits : 0 < ptxSource.utf8ByteSize ∧ ptxSource.utf8ByteSize < PTX_LEN := by
+  native_decide
 
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,

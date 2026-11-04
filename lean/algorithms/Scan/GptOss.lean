@@ -29,7 +29,8 @@ import GptOss.BodyProofs
   `fp4Val`, `mxDeq`, and `mxDot_spec`, which proves a dequantised dot is the
   same proven fold at different numbers). A kernel that unpacks nibbles is
   therefore outside the proven machine as it stands — not hard to write, and
-  written here in the string builder that has no semantics attached, but outside.
+  written here as kernel bodies the proven PTX compiler compiles, but with
+  nothing stating what they compute.
 
   Extending the machine is what closes most of this ledger, and it is a
   five-file change to the emitter with a decidable predicate per new

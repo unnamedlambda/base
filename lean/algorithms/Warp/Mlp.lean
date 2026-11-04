@@ -69,7 +69,7 @@ def kernel : EWStmt := compileWKernel (fun _ => inBuf) outBuf inIx spec outIx (D
 def ptx : String := Body.text "main" 2 0 kernel
 
 theorem mlp_stores (st : WSt) (l0 : Lane) :
-    ((kernel.elabIn 0).run st).mem outBuf (outIx.eval 0 0 l0)
+    ((kernel.run st 0 0)).mem outBuf (outIx.eval 0 0 l0)
       = denote (fun i => st.mem inBuf ((inIx i).eval 0 0 l0)) spec :=
   compileWKernel_stores (fun _ => inBuf) outBuf inIx spec outIx _ st l0
     (fun l h => by rw [elemIx_inj l l0 h])

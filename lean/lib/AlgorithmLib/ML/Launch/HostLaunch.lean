@@ -74,7 +74,7 @@ theorem stage_drv_launch {w : World} {hf gx gy gz bx by_ bz shmem hstream params
     hl hcap hk h1 h2 h3 h4 h5 h6 hdims hr hM
   refine ⟨r, w', h, fun a hown => ?_⟩
   have e := hMr ⟨fun _ _ => 0, viewMem (boundMem _ ((DrvLaunch.bindsOf w.dev args).map (devMem w.dev))),
-    fun _ => 0⟩ rfl a hown
+    fun _ => 0, {}⟩ rfl a hown
   rw [boundMem_map hnd _ hout, runGrid_step S hex] at e
   exact e
 

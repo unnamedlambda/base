@@ -42,6 +42,8 @@ inductive Kind where
   | sh
   /-- A divisor: never zero. -/
   | nz32 | nz64
+  /-- An f32 in `[-π, π]`, where `sin.approx` and `cos.approx` state their error. -/
+  | angle
   deriving BEq
 
 /-- A register named freely. -/
@@ -50,7 +52,7 @@ def R (s : String) : PtxIr.Reg := .name s
 /-- The register an operand of this kind is held in, for operand `x`. -/
 def Kind.reg (k : Kind) (x : String) : PtxIr.Reg :=
   match k with
-  | .i32 | .sh | .nz32 => (R s!"r{x}") | .i64 | .nz64 => (R s!"d{x}") | .f32 => (R s!"f{x}")
+  | .i32 | .sh | .nz32 => (R s!"r{x}") | .i64 | .nz64 => (R s!"d{x}") | .f32 | .angle => (R s!"f{x}")
   | .f64 => (R s!"e{x}") | .pred => (R s!"p{x}")
 
 def N : Nat := 256
@@ -86,6 +88,8 @@ def values (k : Kind) (seed : Nat) : List Nat :=
     | .sh => (List.range 72) ++ w32
     | .pred => w32.map (· % 2)
     | .f32 => f32Specials ++ (List.range N).map fun i => if i % 2 == 0 then nice.getD i 0 else w32.getD i 0
+    | .angle => [0, 0x80000000] ++ (r.take N).map fun x =>
+        ((x % 65536).toFloat / 65536.0 * 6.283185 - 3.1415925).toFloat32.toBits.toNat
     | .f64 => f64Specials ++ (List.range N).map fun i =>
         if i % 2 == 0 then ((nice.getD i 0 : Nat).toUInt32 |> Float32.ofBits |>.toFloat |>.toBits |>.toNat)
         else w64.getD i 0
@@ -101,6 +105,9 @@ structure T where
   res : Kind
   ins : List PtxIr.Reg → PtxIr.Reg → Instr
   ulps : Nat := 0
+  /-- An absolute tolerance on an f32 result, for an approximation whose error
+      is stated absolutely. -/
+  absTol : Float := 0
 
 /-- Load operand `x` (parameter `p{i}`) into its register. -/
 def loadOp (k : Kind) (i : Nat) (x : String) : List Line :=
@@ -110,7 +117,8 @@ def loadOp (k : Kind) (i : Nat) (x : String) : List Line :=
    ins (.ld .global false .b64 (R s!"d{x}") { base := .reg (R s!"b{x}") })] ++
   (match k with
    | .i32 | .sh | .nz32 => [ins (.cvt none .u32 .u64 (R s!"r{x}") (.reg (R s!"d{x}")))]
-   | .f32 => [ins (.cvt none .u32 .u64 (R s!"r{x}") (.reg (R s!"d{x}"))), ins (.mov .b32 (R s!"f{x}") (.reg (R s!"r{x}")))]
+   | .f32 | .angle =>
+       [ins (.cvt none .u32 .u64 (R s!"r{x}") (.reg (R s!"d{x}"))), ins (.mov .b32 (R s!"f{x}") (.reg (R s!"r{x}")))]
    | .f64 => [ins (.mov .b64 (R s!"e{x}") (.reg (R s!"d{x}")))]
    | .pred => [ins (.setp .ne .u64 (R s!"p{x}") (.reg (R s!"d{x}")) (.imm 0))]
    | .i64 | .nz64 => [])
@@ -122,7 +130,7 @@ def storeRes (k : Kind) : List Line :=
    ins (.bin .add none .u64 (R "bo") (.reg (R "bo")) (.reg (R "off")))] ++
   (match k with
    | .i32 | .sh | .nz32 => [ins (.cvt none .u64 .u32 (R "do") (.reg (R "ro")))]
-   | .f32 => [ins (.mov .b32 (R "ro") (.reg (R "fo"))), ins (.cvt none .u64 .u32 (R "do") (.reg (R "ro")))]
+   | .f32 | .angle => [ins (.mov .b32 (R "ro") (.reg (R "fo"))), ins (.cvt none .u64 .u32 (R "do") (.reg (R "ro")))]
    | .f64 => [ins (.mov .b64 (R "do") (.reg (R "eo")))]
    | .pred => [ins (.selp .u64 (R "do") (.imm 1) (.imm 0) (.reg (R "po")))]
    | .i64 | .nz64 => []) ++
@@ -174,6 +182,12 @@ def tests : List T :=
    -- within 2 ulps but near an answer of zero, where the hardware's
    -- error is absolute: 5 ulps there, measured
    { u1 "lg2_approx_f32" .lg2Approx none .f32 .f32 with ulps := 8 },
+   { u1 "sqrt_approx_f32" .sqrtApprox none .f32 .f32 with ulps := 4 },
+   { u1 "rsqrt_approx_f32" .rsqrtApprox none .f32 .f32 with ulps := 4 },
+   -- within 2^-20.9 of the root on [-π, π], as PTX states it
+   { u1 "sin_approx_f32" .sinApprox none .f32 .angle .f32 with absTol := 1.0e-6 },
+   { u1 "cos_approx_f32" .cosApprox none .f32 .angle .f32 with absTol := 1.0e-6 },
+   cv "cvt_rzi_s32_f32" (some .rzi) .s32 .f32 .f32 .i32,
    cv "cvt_rn_f32_s32" (some .rn) .f32 .s32 .i32 .f32, cv "cvt_rn_f32_u32" (some .rn) .f32 .u32 .i32 .f32,
    cv "cvt_rn_f32_s64" (some .rn) .f32 .s64 .i64 .f32, cv "cvt_rn_f32_u64" (some .rn) .f32 .u64 .i64 .f32,
    cv "cvt_rn_f32_f64" (some .rn) .f32 .f64 .f64 .f32,
@@ -214,7 +228,8 @@ def write (dir : System.FilePath) : IO Unit := do
       IO.FS.writeBinFile (d / s!"in{i}.bin") b
       IO.FS.writeBinFile (d / s!"out{i}.bin") (out i)
     index := index.push <| Json.mkObj [("name", toJson t.name), ("grid", toJson 1), ("block", toJson N),
-      ("nbufs", toJson 4), ("scalars", Json.arr #[]), ("ulps", toJson t.ulps), ("exact", toJson true)]
+      ("nbufs", toJson 4), ("scalars", Json.arr #[]), ("ulps", toJson t.ulps), ("abs", toJson t.absTol),
+      ("exact", toJson true)]
   IO.FS.writeFile (dir / "kernel_corpus" / "index.json") (Json.arr index).compress
   IO.println s!"{tests.length} instructions"
 

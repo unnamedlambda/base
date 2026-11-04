@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Ptx.BodyWarp
-meta import AlgorithmLib.ML.Ptx.BodyWarp
+public import AlgorithmLib.ML.Ptx.BodyPhase
+meta import AlgorithmLib.ML.Ptx.BodyPhase
 public import AlgorithmLib.ML.Kernel.Library
 meta import AlgorithmLib.ML.Kernel.Library
 import all Init.Data.Repr
@@ -21,7 +21,7 @@ lane's own element (`elemAcc`), and `launch_lockstep` does the rest.
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 open AlgorithmLib.HProg.Hoare AlgorithmLib.LibSpec AlgorithmLib.Kernel AlgorithmLib.ML AlgorithmLib.ML.BodyProof
-open AlgorithmLib.ML.BodyWarp
+open AlgorithmLib.ML.BodyWarp AlgorithmLib.ML.BodyPhase
 
 namespace AlgorithmLib.ML.BodyMap
 

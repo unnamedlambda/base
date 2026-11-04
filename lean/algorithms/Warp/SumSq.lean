@@ -25,11 +25,10 @@ import all Init.Data.List.Sort.Basic
   # A proven warp kernel, wired into a real `Artifact`
 
   The kernel body is `AlgorithmLib.ML.warpSumSqV4Store`, which is proven to
-  compute `denote env spec` exactly (`warpSumSqV4Store_implements`).  It is
-  written in the emittable mirror `EWStmt`, whose expansion into the proven
-  machine language is `rfl` (`eKernel_elab` below), and its body kernel
-  (`Body.kernel`) is what ships: launching it lands the spec in each block's
-  output word (`sumsq_body`).
+  compute `denote env spec` exactly (`warpSumSqV4Store_implements`).  The
+  shipped `eKernel` is that kernel by `rfl` (`eKernel_eq` below), and its body
+  kernel (`Body.kernel`) is what ships: launching it lands the spec in each
+  block's output word (`sumsq_body`).
 
   This file supplies the surrounding CLIF: allocate device buffers, upload the
   caller's input, launch one warp, sync, download the single-float result.
@@ -75,10 +74,12 @@ def eKernel : EWStmt :=
                (.seq (eRound 2) (eRound 1))))))
        (.storeLane0 outBuf .ctaId 0)
 
-/-- **The emitted kernel is the proven kernel — for every block.**
-    Machine-checked, by `rfl`, uniformly in the block index. -/
-theorem eKernel_elab (cta : Nat) :
-    eKernel.elabIn cta = warpSumSqV4Store (cta * CHUNK) inBuf outBuf cta K := rfl
+/-- **The emitted kernel is the proven kernel**, by `rfl`: the quad base is
+    `strideIxV4Cta CHUNK`, which is `v4BaseOff (cta·CHUNK)` in every block. -/
+theorem eKernel_eq : eKernel = warpSumSqV4Store inBuf outBuf (strideIxV4Cta CHUNK) .ctaId K := rfl
+
+theorem eKernel_base (cta : Nat) :
+    ∀ i l, (strideIxV4Cta CHUNK).eval cta i l = v4BaseOff (cta * CHUNK) i l := fun _ _ => rfl
 
 def ptx : String := Body.text "main" 2 0 eKernel
 

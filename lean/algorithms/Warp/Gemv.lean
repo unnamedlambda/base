@@ -130,8 +130,8 @@ theorem schedules_agree_at (hl : AllHold [Law.laneRegroup]) (sh : Shape)
     (bA bB : Buf) (ia ib : Sched → IdxE) (baseA baseB : Nat)
     (hia : ∀ u : Sched, (fun i l => (ia u).eval cta i l) = Sched.idx u sh.n baseA)
     (hib : ∀ u : Sched, (fun i l => (ib u).eval cta i l) = Sched.idx u sh.n baseB) :
-    (((s.realize bA bB (ia s) (ib s) yB .ctaId sh.n).elabIn cta).run st).mem yB cta
-      = (((t.realize bA bB (ia t) (ib t) yB .ctaId sh.n).elabIn cta).run st).mem yB cta := by
+    (((s.realize bA bB (ia s) (ib s) yB .ctaId sh.n).run st cta 0)).mem yB cta
+      = (((t.realize bA bB (ia t) (ib t) yB .ctaId sh.n).run st cta 0)).mem yB cta := by
   have hs := Sched.realize_spec s bA bB (ia s) (ib s) yB .ctaId sh.n cta st
   have ht := Sched.realize_spec t bA bB (ia t) (ib t) yB .ctaId sh.n cta st
   simp only [IdxE.eval] at hs ht
@@ -144,8 +144,8 @@ theorem schedules_agree_at (hl : AllHold [Law.laneRegroup]) (sh : Shape)
     orders and fold orders, and each is proven against its own order exactly. -/
 theorem gemv_schedules_agree (hl : AllHold [Law.laneRegroup]) (sh : Shape)
     (hn : sh.n % 128 = 0) (s t : Sched) (cta : Nat) (st : WSt) :
-    (((kernelOf sh s).elabIn cta).run st).mem yB cta
-      = (((kernelOf sh t).elabIn cta).run st).mem yB cta :=
+    (((kernelOf sh s).run st cta 0)).mem yB cta
+      = (((kernelOf sh t).run st cta 0)).mem yB cta :=
   schedules_agree_at hl sh hn s t cta st aB xB (rowIx sh) (vecIx sh) (cta * sh.n) 0
     (fun u => by cases u <;> rfl) (fun u => by cases u <;> rfl)
 
@@ -166,8 +166,8 @@ example : sumsqOf qwen .vec4
     over the walk instead of over the GEMV. -/
 theorem sumsq_schedules_agree (hl : AllHold [Law.laneRegroup]) (sh : Shape)
     (hn : sh.n % 128 = 0) (s t : Sched) (cta : Nat) (st : WSt) :
-    (((sumsqOf sh s).elabIn cta).run st).mem yB cta
-      = (((sumsqOf sh t).elabIn cta).run st).mem yB cta :=
+    (((sumsqOf sh s).run st cta 0)).mem yB cta
+      = (((sumsqOf sh t).run st cta 0)).mem yB cta :=
   schedules_agree_at hl sh hn s t cta st aB aB (rowIx sh) (rowIx sh)
     (cta * sh.n) (cta * sh.n)
     (fun u => by cases u <;> rfl) (fun u => by cases u <;> rfl)
@@ -339,7 +339,7 @@ theorem gemv_computes_spec (sh : Shape) (cta : Nat) (st : WSt) {Γ : Nat}
     (env : Fin Γ → Float32) (ae be : Nat → Expr Γ)
     (ha : ∀ i, denote env (ae i) = st.mem aB i)
     (hb : ∀ i, denote env (be i) = st.mem xB i) :
-    (((kernel sh).elabIn cta).run st).mem yB cta
+    (((kernel sh).run st cta 0)).mem yB cta
       = denote env (warpDotV4E ae be
           (fun i l => (aIx sh).eval cta i l) (fun i l => xIx.eval cta i l)
           (sh.n / 128)) :=

@@ -19,6 +19,8 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem Algo
   AlgorithmLib.LZ4WarpDSL AlgorithmLib.LibSpec AlgorithmLib.Kernel LZ4WarpEvalBytes
   AlgorithmLib.LZ4Plan
 
+open AlgorithmLib.ML.LaneWarp (NotArena Writable)
+
 namespace Lz4Code
 
 /-- Device buffer 0's address. -/
@@ -59,7 +61,7 @@ theorem buf0_load {bufs : Nat → ByteArray} {nan : ClifTy → UInt64 → UInt64
   simp
 
 theorem buf0_writable {bufs : Nat → ByteArray} {nan : ClifTy → UInt64 → UInt64} {o : Nat} (ho : o < 2 ^ 36)
-    (hs : o < (bufs 0).size) : Writable (launchWorld bufs nan).mem (base0 + UInt64.ofNat o) :=
+    (hs : o < (bufs 0).size) : Writable (launchWorld bufs nan).mem (base0 + UInt64.ofNat o) 1 :=
   ⟨.buf 0, o, buf0_decode ho, by simp [Mem.region]; omega, by simp⟩
 
 /-- A byte of buffer 0 that loads is the byte the buffer holds. -/
@@ -183,9 +185,9 @@ set_option maxHeartbeats 4000000 in
     buffer 0 after it is as `Denotes` says. -/
 theorem launch_denotes (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxIr.Entry}
     {numBlocks inStride outStride lenOff hashLog : Nat} (outA : UInt64)
-    (he : (codeKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e) (bufs : Nat → ByteArray)
-    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36) (hh32 : hashLog ≤ 32)
-    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (compressor numBlocks inStride outStride lenOff hashLog))
+    (he : (compressorKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e) (bufs : Nat → ByteArray)
+    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (h5 : 5 ≤ hashLog) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36) (hh32 : hashLog ≤ 32)
+    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (ML.Body.body 2 (compressorS numBlocks inStride outStride lenOff hashLog)))
       ⟨(idParams ++ [ClifTy.i64, .i64]).length, 0, [], [], [], none⟩).2)
     (hflags : ∀ r, r ∈ ["inBase","outBase","tbl","op","searchPos","litAnchor"] →
       (flagRegs (compressorBodyWStmt inStride lenOff hashLog)).contains r = false)
@@ -193,9 +195,9 @@ theorem launch_denotes (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : P
     (hlo : lenOff + 4 ≤ outStride)
     (hend : numBlocks * inStride + copySlack + numBlocks * outStride ≤ (bufs 0).size)
     (hend36 : numBlocks * inStride + copySlack + numBlocks * outStride ≤ 2 ^ 36) :
-    ∃ u : World, LaunchRuns (codeKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
+    ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (codeKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
         [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
       Denotes numBlocks inStride outStride lenOff hashLog (bufs 0) (u.mem.bufs 0) := by
   have hcs : copySlack = 32 := rfl
@@ -252,7 +254,7 @@ theorem launch_denotes (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : P
       exact ⟨_, by have := houtc c h.1; omega, rfl⟩
   obtain ⟨u, hL, hP, hout, hframe⟩ := launch_output (outA := outA) (f := F) hw hhw name he
     (inputs numBlocks inStride) (outputs numBlocks inStride outStride lenOff) (fun _ => image (bufs 0)) bufs
-    hnb hh hfine hflags
+    hnb h5 hh (by omega) hfine hflags
     (fun c a h => by obtain ⟨o, ho, rfl⟩ := hbyte c a (.inl h); exact buf0_notArena (by omega))
     (fun c a h => by obtain ⟨o, ho, rfl⟩ := hbyte c a (.inr h); exact buf0_notArena (by omega))
     (fun c hc => by rw [hI c hc, hO c hc]; exact (hbo c hc).1)
@@ -454,9 +456,9 @@ set_option maxHeartbeats 4000000 in
     buffer 0 still holds the whole layout, so the launch can run again. -/
 theorem launch_roundtrips (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxIr.Entry}
     {numBlocks inStride outStride lenOff hashLog : Nat} (outA : UInt64)
-    (he : (codeKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e) (bufs : Nat → ByteArray)
-    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36) (hh32 : hashLog ≤ 32)
-    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (compressor numBlocks inStride outStride lenOff hashLog))
+    (he : (compressorKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e) (bufs : Nat → ByteArray)
+    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (h5 : 5 ≤ hashLog) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36) (hh32 : hashLog ≤ 32)
+    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (ML.Body.body 2 (compressorS numBlocks inStride outStride lenOff hashLog)))
       ⟨(idParams ++ [ClifTy.i64, .i64]).length, 0, [], [], [], none⟩).2)
     (hflags : ∀ r, r ∈ ["inBase","outBase","tbl","op","searchPos","litAnchor"] →
       (flagRegs (compressorBodyWStmt inStride lenOff hashLog)).contains r = false)
@@ -464,9 +466,9 @@ theorem launch_roundtrips (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e 
     (hlo : lenOff + 4 ≤ outStride)
     (hend : numBlocks * inStride + copySlack + numBlocks * outStride ≤ (bufs 0).size)
     (hend36 : numBlocks * inStride + copySlack + numBlocks * outStride ≤ 2 ^ 36) :
-    ∃ u : World, LaunchRuns (codeKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
+    ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (codeKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
         [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
       (∀ o, o < numBlocks * inStride + copySlack → (u.mem.bufs 0).get! o = (bufs 0).get! o) ∧
       numBlocks * inStride + copySlack + numBlocks * outStride ≤ (u.mem.bufs 0).size ∧
@@ -475,7 +477,7 @@ theorem launch_roundtrips (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e 
         AlgorithmLib.LZ4Imp.decompress ((List.range n).map fun i =>
             (u.mem.bufs 0).get! (numBlocks * inStride + copySlack + c * outStride + i)) inStride
           = some ((List.range inStride).map fun j => (bufs 0).get! (c * inStride + j)) := by
-  obtain ⟨u, hL, hP, hd⟩ := launch_denotes hw hhw name outA he bufs hnb hh hh32 hfine hflags hst hst2 hlen hlo hend hend36
+  obtain ⟨u, hL, hP, hd⟩ := launch_denotes hw hhw name outA he bufs hnb h5 hh hh32 hfine hflags hst hst2 hlen hlo hend hend36
   exact ⟨u, hL, hP, hd.1, hd.2.1,
     decode_of_denotes hst hst2 hh32 hh hlen hlo hend36 hend hd⟩
 

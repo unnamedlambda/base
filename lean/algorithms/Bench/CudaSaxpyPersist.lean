@@ -1,32 +1,19 @@
 module
-public import Lean
-public import Std
-public import AlgorithmLib.Surface.CudaPipeline
-meta import AlgorithmLib.Surface.CudaPipeline
+public import AlgorithmLib.ML.Kernel.Pipeline
+meta import AlgorithmLib.ML.Kernel.Pipeline
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
-open Lean
 open AlgorithmLib
-open AlgorithmLib.CudaPipeline
+open AlgorithmLib.ML
 
 namespace CudaSaxpyPersist
 
-def alpha : Expr 2 := Expr.scalarBits "0f40000000"
-def x : Expr 2 := Expr.input0
-def y : Expr 2 := Expr.input1
+/-- `a·x + y` at `a = 2`, over inputs `x` and `y`. -/
+def spec : Expr 2 := 2 * x 0 + x 1
 
-def result : Except String Artifact := (Expr.saxpy alpha x y).compileTo 1
-
--- Uncomment to see elaboration-time rejection:
---
--- def badOutput : Except String Artifact := (Expr.saxpy alpha x y).compileTo 3
--- -- impossible: output index 3 ∉ Fin 2
---
--- def badMixedArity : Except String Artifact :=
---   (alpha * x + (Expr.input0 : Expr 1)).compileTo 1
--- -- type error: Expr 2 and Expr 1 cannot be combined
+def result : Except String Artifact := Pipeline.compile spec
 
 def artifacts (r : Artifact) : Array ArtifactEntry := #[artifactEntry "cuda_saxpy_persist" r]
 

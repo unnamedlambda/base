@@ -85,7 +85,7 @@ structure Anchors where
   /-- The artifact's repeated launches, at both shipped geometries. -/
   launches : ∀ (b : Nat), b = 15 ∨ b = 16 → ∀ (hw : Hw), PtxSound.HwOk hw → ∀ (outA : UInt64)
     (bufs : Nat → ByteArray), (WP.mk b).bytes ≤ (bufs 0).size →
-    ∃ e, (WP.mk b).code.entry = .ok e ∧ ∃ bN, LaunchesRun (WP.mk b).code e (WP.mk b).numBlk
+    ∃ e, (WP.mk b).code.shipped = .ok e ∧ ∃ bN, LaunchesRun (WP.mk b).code e (WP.mk b).numBlk
       [.sc .i64 base0, .sc .i64 outA] hw rLaunches bufs bN ∧
       ∀ c, c < (WP.mk b).numBlk → ∃ m, m ≤ (WP.mk b).lenOff ∧
         u32At (bN 0) ((WP.mk b).numBlk * (WP.mk b).inStride + LZ4WarpDSL.copySlack + c * (WP.mk b).outStride +

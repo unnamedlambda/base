@@ -612,7 +612,7 @@ def setup (clif : List FuncData) : Artifact := {
     batching changed which warp does the work and how often the weight row is
     fetched, not what is computed. -/
 theorem fwd1_computes_spec (cta s : Nat) (hs : s < B) (st : WSt) :
-    ((fwd1Kernel.elabIn cta).run st).mem z1B ((z1Oi s).eval cta 0 ⟨0, by decide⟩)
+    ((fwd1Kernel.run st cta 0)).mem z1B ((z1Oi s).eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotStridedLane (st.mem w1B) (st.mem xB)
           (fun i l => w1Ix.eval cta i l) (fun i l => (xIx s).eval cta i l) (IN / 32))
           ⟨0, by decide⟩ :=
@@ -622,7 +622,7 @@ theorem fwd1_computes_spec (cta s : Nat) (hs : s < B) (st : WSt) :
 /-- **The second matvec computes its spec**, same schema at a different row
     stride and trip count. -/
 theorem fwd2_computes_spec (cta s : Nat) (hs : s < B) (st : WSt) :
-    ((fwd2Kernel.elabIn cta).run st).mem logB ((logOi s).eval cta 0 ⟨0, by decide⟩)
+    ((fwd2Kernel.run st cta 0)).mem logB ((logOi s).eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotStridedLane (st.mem w2B) (st.mem hB)
           (fun i l => w2Ix.eval cta i l) (fun i l => (hIx s).eval cta i l) (H / 32))
           ⟨0, by decide⟩ :=
@@ -633,7 +633,7 @@ theorem fwd2_computes_spec (cta s : Nat) (hs : s < B) (st : WSt) :
     the hidden layer, with the `W2` column as the operand shared across the
     batch. -/
 theorem dh_computes_spec (cta s : Nat) (hs : s < B) (st : WSt) :
-    ((dhKernel.elabIn cta).run st).mem dhB ((dhOi s).eval cta 0 ⟨0, by decide⟩)
+    ((dhKernel.run st cta 0)).mem dhB ((dhOi s).eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotStridedLane (st.mem w2B) (st.mem dlogB)
           (fun i l => w2TIx.eval cta i l) (fun i l => (dlIx s).eval cta i l) (C / 32))
           ⟨0, by decide⟩ :=
@@ -648,15 +648,15 @@ theorem dh_computes_spec (cta s : Nat) (hs : s < B) (st : WSt) :
     scheduling decision, and it is checked to be one. -/
 theorem fwd1_agrees_unbatched (cta s : Nat) (hs : s < B) (st : WSt)
     (out' : Buf) (oi' : IdxE) :
-    ((fwd1Kernel.elabIn cta).run st).mem z1B ((z1Oi s).eval cta 0 ⟨0, by decide⟩)
-      = (((dotStrided w1B xB w1Ix (xIx s) out' oi' (IN / 32)).elabIn cta).run st).mem
+    ((fwd1Kernel.run st cta 0)).mem z1B ((z1Oi s).eval cta 0 ⟨0, by decide⟩)
+      = (((dotStrided w1B xB w1Ix (xIx s) out' oi' (IN / 32)).run st cta 0)).mem
           out' (oi'.eval cta 0 ⟨0, by decide⟩) :=
   dotBatched_agrees w1B xB w1Ix xIx z1B out' z1Oi oi' B (IN / 32) s cta hs st
     (fun s' _ hne => batch_addr_inj H (by decide) cta s s' hne)
 
 /-- **The activation stores `silu`.** -/
 theorem h_stores (st : WSt) (l : Lane) :
-    ((hKernel.ew.elabIn 0).run st).mem hB (elemIx.eval 0 0 l)
+    ((hKernel.ew.run st 0 0)).mem hB (elemIx.eval 0 0 l)
       = denote (fun _ => st.mem z1B (elemIx.eval 0 0 l)) hSpec :=
   hKernel.stores st l
 
@@ -664,7 +664,7 @@ theorem h_stores (st : WSt) (l : Lane) :
     same `Transformer.silu` the forward kernel evaluates, so there is no
     hand-written backward formula anywhere in this chain. -/
 theorem adj_stores (st : WSt) (l : Lane) :
-    ((adjKernel.ew.elabIn 0).run st).mem adjB (elemIx.eval 0 0 l)
+    ((adjKernel.ew.run st 0 0)).mem adjB (elemIx.eval 0 0 l)
       = denote (fun i => st.mem (adjIn i) (elemIx.eval 0 0 l)) adjSpec :=
   adjKernel.stores st l
 
@@ -677,7 +677,7 @@ theorem adj_stores (st : WSt) (l : Lane) :
     buffer disequalities. -/
 theorem dw1_stores (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (st : WSt) (j0 : Nat) (l0 : Lane) (hj0 : j0 < IN / 32) :
-    (((dw1Kernel.elabAt cta 0 ir im).run st).mem dw1B
+    (((dw1Kernel.run st cta 0 ir im)).mem dw1B
         ((stride32 dw1Base).eval cta j0 l0 ir im))
       = dotStridedLane (st.mem adjB) (st.mem xB)
           (fun s l => (dw1AIx s).eval cta j0 l ir im)
@@ -688,7 +688,7 @@ theorem dw1_stores (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat →
 /-- **The second layer's weight gradient, same schema at 256 columns.** -/
 theorem dw2_stores (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (st : WSt) (j0 : Nat) (l0 : Lane) (hj0 : j0 < H / 32) :
-    (((dw2Kernel.elabAt cta 0 ir im).run st).mem dw2B
+    (((dw2Kernel.run st cta 0 ir im)).mem dw2B
         ((stride32 dw2Base).eval cta j0 l0 ir im))
       = dotStridedLane (st.mem dlogB) (st.mem hB)
           (fun s l => (dw2AIx s).eval cta j0 l ir im)
@@ -700,12 +700,12 @@ theorem dw2_stores (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat →
     weight.  The `B` in the rate is what makes the update the *mean* gradient,
     since the two kernels above accumulate a sum. -/
 theorem sgd1_stores (st : WSt) (l : Lane) :
-    ((sgd1Kernel.ew.elabIn 0).run st).mem w1B (elemIx.eval 0 0 l)
+    ((sgd1Kernel.ew.run st 0 0)).mem w1B (elemIx.eval 0 0 l)
       = denote (fun i => st.mem (sgd1In i) (elemIx.eval 0 0 l)) sgdSpec :=
   sgd1Kernel.stores st l
 
 theorem sgd2_stores (st : WSt) (l : Lane) :
-    ((sgd2Kernel.ew.elabIn 0).run st).mem w2B (elemIx.eval 0 0 l)
+    ((sgd2Kernel.ew.run st 0 0)).mem w2B (elemIx.eval 0 0 l)
       = denote (fun i => st.mem (sgd2In i) (elemIx.eval 0 0 l)) sgdSpec :=
   sgd2Kernel.stores st l
 

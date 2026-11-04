@@ -1,105 +1,20 @@
 module
 public import AlgorithmLib.ML.Machine.Warp
 meta import AlgorithmLib.ML.Machine.Warp
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 /-!
-  # Lowering a proven warp kernel to PTX
+  # What an emitted statement's addresses may read
 
-  `Warp.lean` proves kernels against a 32-lane machine model.  Nothing there
-  emits anything — which is why, until now, the ML stack produced theorems and
-  no executable code.
-
-  This file defines `EWStmt`, the *emittable* mirror of `WStmt`: loops carry a
-  syntactic body and addresses are `IdxE` terms rather than Lean closures, so a
-  kernel written here can both be proven (via `elabAt`, which expands it into
-  the proven machine language) and compiled.
-
-  The lowering to PTX is not in this file: `ML.Ptx.Body` emits a statement's
-  body kernel, and `BodyWarp`/`BodyCheck` prove what launching it does.
+  The two fragments of `EWStmt` the PTX lowering (`ML.Ptx.Body`) is stated
+  over: `IdxFree`, no data-dependent index at all, and `IdxBelow n`, every
+  data-dependent index read from an integer register below the emitter's
+  allocation watermark `n`.
 -/
 
 namespace AlgorithmLib.ML
-open AlgorithmLib.PTX
-
--- ---------------------------------------------------------------------------
--- An emittable mirror of `WStmt`
--- ---------------------------------------------------------------------------
-
-/-! `WStmt.forN` takes a Lean function `Nat → WStmt`, and `loadIdx` a function
-    `Lane → Nat`.  Both are convenient for proving and impossible to emit — PTX
-    cannot evaluate a Lean closure.
-
-    `EWStmt` is the emittable mirror: loops carry a *syntactic* body and
-    addresses are `IdxE` terms.  `elab` expands it into the proven `WStmt`, so
-    a kernel is written once in `EWStmt`, proven via `elab`, and emitted
-    directly.  Nothing already proven changes. -/
-inductive EWStmt where
-  | skip       : EWStmt
-  | seq        : EWStmt → EWStmt → EWStmt
-  | setR       : Nat → WFExp → EWStmt
-  | shflXor    : Nat → Nat → Nat → EWStmt
-  | loadIdx    : Nat → Buf → IdxE → EWStmt
-  | loadV4     : Nat → Nat → Nat → Nat → Buf → IdxE → EWStmt
-  | storeLane0 : Buf → IdxE → Nat → EWStmt
-  | storeLane  : Buf → IdxE → Nat → EWStmt
-  /-- `st.shared.f32` — stage a register into on-chip memory.  With `barrier`,
-      this is what makes a *block* kernel writable in the emittable language
-      rather than only in the machine language. -/
-  | stSm       : IdxE → Nat → EWStmt
-  /-- `ld.shared.f32` — read a slot back, possibly one another warp wrote. -/
-  | ldSm       : Nat → IdxE → EWStmt
-  /-- `bar.sync` — a no-op within a warp, and the synchronisation point of a
-      block's shared memory. -/
-  | barrier    : EWStmt
-  | forN       : Nat → EWStmt → EWStmt
-  /-- A loop whose trip count is read from integer memory at a fixed address —
-      lane-uniform by construction.  This is what a sequence-length-dependent
-      kernel needs, and `forN` covers every static shape. -/
-  | forM       : Buf → Nat → EWStmt → EWStmt
-  /-- `cvt.rn.f32.u32` — put an *index* where a float expression can see it.
-      The only bridge between `IdxE` and `WFExp`, and the reason an argmax is
-      expressible: its arithmetic mixes an element's value with the element's
-      own index. -/
-  | cvtIF      : Nat → IdxE → EWStmt
-
-/-- Expand an emittable statement into the proven machine language, given the
-    enclosing loop counter. -/
-def EWStmt.elabAt (cta i : Nat) (ir : Nat → Lane → Nat := fun _ _ => 0)
-    (im : Buf → Nat → Nat := fun _ _ => 0) : EWStmt → WStmt
-  | .skip                 => .skip
-  | .seq a b              => .seq (a.elabAt cta i ir im) (b.elabAt cta i ir im)
-  | .setR r e             => .setR r e
-  | .shflXor d s m        => .shflXor d s m
-  | .loadIdx d b ix       => .loadIdx d b (fun l => ix.eval cta i l ir im)
-  | .loadV4 a b c d bu ix => .loadV4 a b c d bu (fun l => ix.eval cta i l ir im)
-  | .storeLane0 b ix r    => .storeLane0 b (ix.eval cta i ⟨0, by decide⟩ ir im) r
-  | .storeLane b ix r     => .storeLane b (fun l => ix.eval cta i l ir im) r
-  | .stSm ix r            => .stSmem (fun l => ix.eval cta i l ir im) r
-  | .ldSm d ix            => .ldSmem d (fun l => ix.eval cta i l ir im)
-  | .barrier              => .barrier
-  | .forN n body          => .forN n (fun j => body.elabAt cta j ir im)
-  | .forM bu a body       => .forN (im bu a) (fun j => body.elabAt cta j ir im)
-  | .cvtIF d ix           => .setLaneF d (fun l => ix.eval cta i l ir im)
-
-/-- Top-level expansion for block `cta`.  The machine model describes **one
-    warp in one block**, so the block id is a parameter of elaboration and the
-    proof holds per block. -/
-def EWStmt.elabIn (cta : Nat) (s : EWStmt) : WStmt := s.elabAt cta 0
-
-/-- Single-block expansion. -/
-def EWStmt.expand (s : EWStmt) : WStmt := s.elabAt 0 0
-
-/-! ## Lowering
-
-    An `EWStmt` reaches PTX as its body kernel (`Body.kernel`, printed by
-    `Kernel.Ptx`), and launching that kernel runs the statement on the warp
-    machine (`BodyWarp.launch_lockstep`, decided per launch by
-    `BodyCheck.launch_body`). -/
 
 /-- Addresses only: no data-dependent index anywhere. -/
 def EWStmt.IdxFree : EWStmt → Prop
@@ -117,6 +32,10 @@ def EWStmt.IdxFree : EWStmt → Prop
   | .forN _ body => body.IdxFree
   | .forM _ _ _ => False
   | .cvtIF _ ix => ix.IregFree
+  | .iif _ t e => t.IdxFree ∧ e.IdxFree
+  | .iwhile _ _ _ body => body.IdxFree
+  | .locals _ body => body.IdxFree
+  | _ => True
 
 instance EWStmt.decIdxFree : ∀ s : EWStmt, Decidable s.IdxFree
   | .skip => .isTrue trivial
@@ -133,60 +52,10 @@ instance EWStmt.decIdxFree : ∀ s : EWStmt, Decidable s.IdxFree
   | .forN _ body => decIdxFree body
   | .forM _ _ _ => .isFalse (fun h => h)
   | .cvtIF _ ix => IdxE.decIregFree ix
-
-/-- **On the address-free fragment the register file is irrelevant.**
-
-    This is what keeps the existing lowering theorems literally unchanged after
-    `elabAt` gained an integer register file: every kernel written before
-    `IdxE.ireg` is `IdxFree`, so its elaboration does not depend on `ir` at all.
-    It is also the bridge the `ireg` lowering will need, since the interesting
-    case is exactly where this lemma stops applying. -/
-theorem EWStmt.elabAt_idxFree (cta : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) :
-    ∀ (s : EWStmt) (i : Nat), s.IdxFree → s.elabAt cta i ir im = s.elabAt cta i := by
-  intro s
-  induction s with
-  | skip => intro _ _; rfl
-  | seq a b iha ihb =>
-      intro i h; show WStmt.seq _ _ = WStmt.seq _ _; rw [iha i h.1, ihb i h.2]
-  | setR _ _ => intro _ _; rfl
-  | shflXor _ _ _ => intro _ _; rfl
-  | loadIdx d b ix =>
-      intro i h
-      show WStmt.loadIdx _ _ _ = WStmt.loadIdx _ _ _
-      exact congrArg _ (funext fun l => IdxE.eval_iregFree cta i l ir im ix h)
-  | loadV4 a b c d bu ix =>
-      intro i h
-      show WStmt.loadV4 _ _ _ _ _ _ = WStmt.loadV4 _ _ _ _ _ _
-      exact congrArg _ (funext fun l => IdxE.eval_iregFree cta i l ir im ix h)
-  | storeLane0 b ix r =>
-      intro i h
-      show WStmt.storeLane0 _ _ _ = WStmt.storeLane0 _ _ _
-      rw [IdxE.eval_iregFree cta i ⟨0, by decide⟩ ir im ix h]
-  | storeLane b ix r =>
-      intro i h
-      show WStmt.storeLane _ _ _ = WStmt.storeLane _ _ _
-      exact congrArg (fun f => WStmt.storeLane b f r)
-        (funext fun l => IdxE.eval_iregFree cta i l ir im ix h)
-  | stSm ix r =>
-      intro i h
-      show WStmt.stSmem _ _ = WStmt.stSmem _ _
-      exact congrArg (fun f => WStmt.stSmem f r)
-        (funext fun l => IdxE.eval_iregFree cta i l ir im ix h)
-  | ldSm d ix =>
-      intro i h
-      show WStmt.ldSmem _ _ = WStmt.ldSmem _ _
-      exact congrArg _ (funext fun l => IdxE.eval_iregFree cta i l ir im ix h)
-  | barrier => intro _ _; rfl
-  | forN n body ih =>
-      intro i h
-      show WStmt.forN _ _ = WStmt.forN _ _
-      exact congrArg _ (funext fun j => ih j h)
-  | forM _ _ _ _ => intro _ h; exact (h : False).elim
-  | cvtIF d ix =>
-      intro i h
-      show WStmt.setLaneF _ _ = WStmt.setLaneF _ _
-      exact congrArg _ (funext fun l => IdxE.eval_iregFree cta i l ir im ix h)
+  | .iif _ t e => @instDecidableAnd _ _ (decIdxFree t) (decIdxFree e)
+  | .iwhile _ _ _ body => decIdxFree body
+  | .locals _ body => decIdxFree body
+  | .setI .. | .ldB .. | .stB .. | .ldH .. | .stH .. | .ballot .. | .shflIdx .. => .isTrue trivial
 
 /-- Every data-dependent index the statement mentions was loaded into a register
     below `n` — the emitter's allocation watermark.  This is what makes an
@@ -206,6 +75,10 @@ def EWStmt.IdxBelow (n : Nat) : EWStmt → Prop
   | .forN _ body => body.IdxBelow n
   | .forM _ _ body => body.IdxBelow n
   | .cvtIF _ ix => ix.regsBelow n
+  | .iif _ t e => t.IdxBelow n ∧ e.IdxBelow n
+  | .iwhile _ _ _ body => body.IdxBelow n
+  | .locals _ body => body.IdxBelow n
+  | _ => True
 
 instance EWStmt.decIdxBelow (n : Nat) : ∀ s : EWStmt, Decidable (s.IdxBelow n)
   | .skip => .isTrue trivial
@@ -222,6 +95,10 @@ instance EWStmt.decIdxBelow (n : Nat) : ∀ s : EWStmt, Decidable (s.IdxBelow n)
   | .forN _ body => decIdxBelow n body
   | .forM _ _ body => decIdxBelow n body
   | .cvtIF _ ix => IdxE.decRegsBelow n ix
+  | .iif _ t e => @instDecidableAnd _ _ (decIdxBelow n t) (decIdxBelow n e)
+  | .iwhile _ _ _ body => decIdxBelow n body
+  | .locals _ body => decIdxBelow n body
+  | .setI .. | .ldB .. | .stB .. | .ldH .. | .stH .. | .ballot .. | .shflIdx .. => .isTrue trivial
 
 theorem IdxE.regsBelow_of_iregFree (n : Nat) : ∀ e : IdxE, e.IregFree → e.regsBelow n := by
   intro e
@@ -252,6 +129,10 @@ theorem EWStmt.idxBelow_of_idxFree (n : Nat) : ∀ s : EWStmt, s.IdxFree → s.I
   | forN _ body ih => intro h; exact ih h
   | forM _ _ _ _ => intro h; exact (h : False).elim
   | cvtIF _ ix => intro h; exact IdxE.regsBelow_of_iregFree n ix h
+  | iif _ t e iht ihe => intro h; exact ⟨iht h.1, ihe h.2⟩
+  | iwhile _ _ _ body ih => intro h; exact ih h
+  | locals _ body ih => intro h; exact ih h
+  | _ => intro _; trivial
 
 theorem EWStmt.idxBelow_mono {n n' : Nat} (h : n ≤ n') :
     ∀ s : EWStmt, s.IdxBelow n → s.IdxBelow n' := by
@@ -271,58 +152,9 @@ theorem EWStmt.idxBelow_mono {n n' : Nat} (h : n ≤ n') :
   | forN _ body ih => intro hs; exact ih hs
   | forM _ _ body ih => intro hs; exact ih hs
   | cvtIF _ ix => intro hs; exact IdxE.regsBelow_mono h ix hs
-
-/-- **Elaboration only reads index registers below the watermark.**  The spec-side
-    frame property, and the reason a `seq` can be elaborated once against the
-    *initial* register file even though the first half may write registers. -/
-theorem EWStmt.elabAt_frame (cta n : Nat) (ir ir' : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (hir : ∀ x, x < n → ir' x = ir x) :
-    ∀ (s : EWStmt) (i : Nat), s.IdxBelow n → s.elabAt cta i ir' im = s.elabAt cta i ir im := by
-  intro s
-  induction s with
-  | skip => intro _ _; rfl
-  | seq a b iha ihb =>
-      intro i h; show WStmt.seq _ _ = WStmt.seq _ _; rw [iha i h.1, ihb i h.2]
-  | setR _ _ => intro _ _; rfl
-  | shflXor _ _ _ => intro _ _; rfl
-  | loadIdx d b ix =>
-      intro i h
-      show WStmt.loadIdx _ _ _ = WStmt.loadIdx _ _ _
-      exact congrArg _ (funext fun l => IdxE.eval_frame cta i l n ir ir' im hir ix h)
-  | loadV4 a b c d bu ix =>
-      intro i h
-      show WStmt.loadV4 _ _ _ _ _ _ = WStmt.loadV4 _ _ _ _ _ _
-      exact congrArg _ (funext fun l => IdxE.eval_frame cta i l n ir ir' im hir ix h)
-  | storeLane0 b ix r =>
-      intro i h
-      show WStmt.storeLane0 _ _ _ = WStmt.storeLane0 _ _ _
-      rw [IdxE.eval_frame cta i ⟨0, by decide⟩ n ir ir' im hir ix h]
-  | storeLane b ix r =>
-      intro i h
-      show WStmt.storeLane _ _ _ = WStmt.storeLane _ _ _
-      exact congrArg (fun f => WStmt.storeLane b f r)
-        (funext fun l => IdxE.eval_frame cta i l n ir ir' im hir ix h)
-  | stSm ix r =>
-      intro i h
-      show WStmt.stSmem _ _ = WStmt.stSmem _ _
-      exact congrArg (fun f => WStmt.stSmem f r)
-        (funext fun l => IdxE.eval_frame cta i l n ir ir' im hir ix h)
-  | ldSm d ix =>
-      intro i h
-      show WStmt.ldSmem _ _ = WStmt.ldSmem _ _
-      exact congrArg _ (funext fun l => IdxE.eval_frame cta i l n ir ir' im hir ix h)
-  | barrier => intro _ _; rfl
-  | forN n body ih =>
-      intro i h
-      show WStmt.forN _ _ = WStmt.forN _ _
-      exact congrArg _ (funext fun j => ih j h)
-  | forM bu a body ih =>
-      intro i h
-      show WStmt.forN _ _ = WStmt.forN _ _
-      exact congrArg _ (funext fun j => ih j h)
-  | cvtIF d ix =>
-      intro i h
-      show WStmt.setLaneF _ _ = WStmt.setLaneF _ _
-      exact congrArg _ (funext fun l => IdxE.eval_frame cta i l n ir ir' im hir ix h)
+  | iif _ t e iht ihe => intro hs; exact ⟨iht hs.1, ihe hs.2⟩
+  | iwhile _ _ _ body ih => intro hs; exact ih hs
+  | locals _ body ih => intro hs; exact ih hs
+  | _ => intro _; trivial
 
 end AlgorithmLib.ML

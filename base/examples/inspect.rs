@@ -12,14 +12,16 @@ use base_types::Artifact;
 
 /// The decoded functions, and the name each `FuncId` stands for.
 fn decoded(artifact: &Artifact) -> Result<(Vec<cranelift_codegen::ir::Function>, Vec<String>), String> {
-    let d = clif_decode::decode(&artifact.primitives, &artifact.functions, clif_decode::isa().default_call_conv())?;
+    let m = clif_decode::decode(&artifact.primitives, &artifact.functions, clif_decode::isa().default_call_conv())?;
+    let functions =
+        artifact.functions.iter().enumerate().map(|(i, f)| m.function(f, i)).collect::<Result<Vec<_>, _>>()?;
     let names = artifact
         .primitives
         .iter()
         .map(|p| format!("%{}!{}", p.lib, p.symbol))
         .chain((0..artifact.functions.len()).map(|n| format!("u0:{n}")))
         .collect();
-    Ok((d.functions, names))
+    Ok((functions, names))
 }
 
 /// The program as CLIF text, each callee by its name.

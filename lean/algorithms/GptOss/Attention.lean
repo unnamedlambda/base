@@ -257,7 +257,7 @@ theorem kvDst_eval (hd cta j : Nat) (l : Lane) (ir : Nat → Lane → Nat)
     `(loop, lane)` the kernel visits — not merely "some lane wrote it". -/
 theorem kvStore_writes {R : Type} [NumOps R] [NumLit R] (base hd : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) (i0 : Nat) (l0 : Lane) (hi0 : i0 < hd / 32) :
-    (((kvStoreEW base hd).elabAt cta 0 ir im).run st).mem 1
+    (((kvStoreEW base hd).run st cta 0 ir im)).mem 1
         ((kvDstIx hd).eval cta i0 l0 ir im)
       = st.mem 0 ((kvSrcIx base hd).eval cta i0 l0 ir im) := by
   refine storeLoop_at 1 0 (kvDstIx hd) (.loadIdx 0 0 (kvSrcIx base hd)) cta ir im st

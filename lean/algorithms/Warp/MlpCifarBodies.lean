@@ -36,8 +36,7 @@ theorem tape_runs (n : Nat) (bytes : List Nat) (t : List (TOp × Nat)) (ht : tap
     (hr : LaunchRuns (Body.kernel "main" (p.1.bufs n).length 0 (p.1.localStmt n)) p.2 32 (bufArgs (p.1.bufs n).length) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < p.2 → (b, j) ∈ touchL cta l 0 (p.1.localStmt n) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW (p.1.bufs n).length b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((p.1.localStmt n).elabAt cta 0)
-          (ws0 (p.1.bufs n).length (kmem bufs))).mem b j).bits := by
+        some ((@EWStmt.run F32 (F32.ops hw) _ (p.1.localStmt n) (ws0 (p.1.bufs n).length (kmem bufs)) cta 0).mem b j).bits := by
   have h := launch_body hw hw32 "main" _ 0 _ 1 p.2 _ (List.all_eq_true.mp ht p hp) bufs bufs' hsz hr
   intro cta l b j hc hm
   exact h cta l b j (by omega) hm
@@ -90,8 +89,7 @@ theorem cifar_runs (p : TOp × Nat) (hp : p ∈ cifarLaunches) (hw : Hw)
     (hr : LaunchRuns (Body.kernel "main" (p.1.bufs B).length 0 (p.1.localStmt B)) p.2 32 (bufArgs (p.1.bufs B).length) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < p.2 → (b, j) ∈ touchL cta l 0 (p.1.localStmt B) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW (p.1.bufs B).length b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((p.1.localStmt B).elabAt cta 0)
-          (ws0 (p.1.bufs B).length (kmem bufs))).mem b j).bits :=
+        some ((@EWStmt.run F32 (F32.ops hw) _ (p.1.localStmt B) (ws0 (p.1.bufs B).length (kmem bufs)) cta 0).mem b j).bits :=
   tape_runs B bufBytes cifarLaunches (by native_decide) p hp hw hw32 bufs bufs' hsz hr
 
 open AlgorithmLib.Prog AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.Hoare AlgorithmLib.LibSpec
@@ -106,8 +104,7 @@ theorem qwen_runs (p : TOp × Nat) (hp : p ∈ qwenLaunches) (hw : Hw)
     (hr : LaunchRuns (Body.kernel "main" (p.1.bufs 1).length 0 (p.1.localStmt 1)) p.2 32 (bufArgs (p.1.bufs 1).length) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < p.2 → (b, j) ∈ touchL cta l 0 (p.1.localStmt 1) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW (p.1.bufs 1).length b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((p.1.localStmt 1).elabAt cta 0)
-          (ws0 (p.1.bufs 1).length (kmem bufs))).mem b j).bits :=
+        some ((@EWStmt.run F32 (F32.ops hw) _ (p.1.localStmt 1) (ws0 (p.1.bufs 1).length (kmem bufs)) cta 0).mem b j).bits :=
   tape_runs 1 qBufBytes qwenLaunches (by native_decide) p hp hw hw32 bufs bufs' hsz hr
 
 open AlgorithmLib.Prog AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.Hoare AlgorithmLib.LibSpec
@@ -122,8 +119,7 @@ theorem moe_runs (p : TOp × Nat) (hp : p ∈ moeLaunches) (hw : Hw)
     (hr : LaunchRuns (Body.kernel "main" (p.1.bufs 1).length 0 (p.1.localStmt 1)) p.2 32 (bufArgs (p.1.bufs 1).length) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < p.2 → (b, j) ∈ touchL cta l 0 (p.1.localStmt 1) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW (p.1.bufs 1).length b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((p.1.localStmt 1).elabAt cta 0)
-          (ws0 (p.1.bufs 1).length (kmem bufs))).mem b j).bits :=
+        some ((@EWStmt.run F32 (F32.ops hw) _ (p.1.localStmt 1) (ws0 (p.1.bufs 1).length (kmem bufs)) cta 0).mem b j).bits :=
   tape_runs 1 moeBytes moeLaunches (by native_decide) p hp hw hw32 bufs bufs' hsz hr
 
 end MlpCifar

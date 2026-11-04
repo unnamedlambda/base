@@ -3,8 +3,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.FFI
 meta import AlgorithmLib.Surface.FFI
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Kernel.Block
+meta import AlgorithmLib.Kernel.Block
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
 public import AlgorithmLib.Surface.Drv
@@ -20,7 +20,6 @@ open Lean (Json toJson)
 open AlgorithmLib
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
-open AlgorithmLib.PTX
 
 namespace Matmul
 
@@ -74,99 +73,73 @@ def genMatrixBytesBA (count : Nat) (seed : UInt32) : ByteArray :=
 def genMatrixBytes (count : Nat) (seed : UInt32) : List UInt8 :=
   (genMatrixBytesBA count seed).toList
 
--- ---------------------------------------------------------------------------
--- PTX kernel: tiled 16x16 GEMM with shared-memory blocking
---
--- Grid: (ceil(N/16), ceil(M/16)), block: (16, 16).
--- Each block computes a 16x16 sub-block of C.
--- Shared memory holds one 16x16 tile of A and one 16x16 tile of B.
--- ---------------------------------------------------------------------------
+namespace Body
+open AlgorithmLib.Prog AlgorithmLib.Kernel AlgorithmLib.Kernel.Block
 
-def ptxSource : String := buildModuleWith
-  { version := "7.0", target := "sm_50", smemSize := 2048, smemAlign := 16, smemName := "tiles" }
-  [{ name := "main", params := ["p_a", "p_b", "p_c", "p_par"], body := do
-    let pA   ← ldParam "p_a"
-    let pB   ← ldParam "p_b"
-    let pC   ← ldParam "p_c"
-    let pPar ← ldParam "p_par"
-    -- Load M, K, N from params buffer
-    let mReg ← freshR; ldGlobalU  mReg pPar
-    let kReg ← freshR; ldGlobalUO kReg pPar 4
-    let nReg ← freshR; ldGlobalUO nReg pPar 8
-    -- Thread/block coordinates
-    let tx  ← freshR; movR tx  tidX
-    let ty  ← freshR; movR ty  tidY
-    let bx  ← freshR; movR bx  ctaX
-    let by_ ← freshR; movR by_ ctaY
-    -- row = by*16 + ty,  col = bx*16 + tx
-    let row ← freshR; shlR row by_ 4; addR row row ty
-    let col ← freshR; shlR col bx  4; addR col col tx
-    -- Shared memory: A_tile at tiles[0], B_tile at tiles[1024]
-    let aTile ← smemBaseNamed "tiles"
-    let bTile ← freshR; addRI bTile aTile 1024
-    -- Per-thread smem offset: (ty*16 + tx) * 4
-    let tOff ← freshR; shlR tOff ty 4; addR tOff tOff tx; shlR tOff tOff 2
-    -- Accumulator
-    let acc ← freshF; movFC acc f32_0
-    -- Outer loop: step through K in tiles of 16
-    let tileK ← freshR; movRC tileK 0
-    label "L_OUTER"
-    let p0 ← freshP; setpGe p0 tileK kReg; braIf p0 "L_WRITE"
-    -- Load A_tile[ty][tx] = A[row*K + tile_k+tx], or 0.0 if out of bounds
-    let p1 ← freshP; setpLt p1 row mReg
-    let tkTx ← freshR; addR tkTx tileK tx
-    let p2 ← freshP; setpLt p2 tkTx kReg
-    let p3 ← freshP; andPred p3 p1 p2
-    let f1 ← freshF
-    braIfNot p3 "L_A_ZERO"
-    let r14 ← freshR; mulLoR r14 row kReg; addR r14 r14 tkTx
-    let rd4 ← freshRd; cvtU64 rd4 r14; shlRd rd4 rd4 2; addRd rd4 pA rd4
-    ldGlobalF f1 rd4
-    bra "L_A_STORE"
-    label "L_A_ZERO"; movFC f1 f32_0
-    label "L_A_STORE"
-    let r15 ← freshR; addR r15 aTile tOff; stSharedFD r15 f1
-    -- Load B_tile[ty][tx] = B[(tile_k+ty)*N + col], or 0.0 if out of bounds
-    let tkTy ← freshR; addR tkTy tileK ty
-    let p4 ← freshP; setpLt p4 tkTy kReg
-    let p5 ← freshP; setpLt p5 col nReg
-    let p6 ← freshP; andPred p6 p4 p5
-    let f2 ← freshF
-    braIfNot p6 "L_B_ZERO"
-    let r17 ← freshR; mulLoR r17 tkTy nReg; addR r17 r17 col
-    let rd5 ← freshRd; cvtU64 rd5 r17; shlRd rd5 rd5 2; addRd rd5 pB rd5
-    ldGlobalF f2 rd5
-    bra "L_B_STORE"
-    label "L_B_ZERO"; movFC f2 f32_0
-    label "L_B_STORE"
-    let r18 ← freshR; addR r18 bTile tOff; stSharedFD r18 f2
-    barSync
-    -- Inner accumulate: acc += A_tile[ty][kk] * B_tile[kk][tx]
-    let aRowBase ← freshR; shlR aRowBase ty 6; addR aRowBase aTile aRowBase
-    let bColBase ← freshR; shlR bColBase tx 2; addR bColBase bTile bColBase
-    let kk ← freshR; movRC kk 0
-    label "L_INNER"
-    let p7 ← freshP; setpGeI p7 kk 16; braIf p7 "L_INNER_END"
-    let kkBytes  ← freshR; shlR kkBytes kk 2
-    let aAddr    ← freshR; addR aAddr aRowBase kkBytes
-    let f3 ← freshF; ldSharedFD f3 aAddr
-    let kkStride ← freshR; shlR kkStride kk 6
-    let bAddr    ← freshR; addR bAddr bColBase kkStride
-    let f4 ← freshF; ldSharedFD f4 bAddr
-    fmaRn acc f3 f4 acc
-    addRI kk kk 1; bra "L_INNER"
-    label "L_INNER_END"
-    barSync
-    addRI tileK tileK 16; bra "L_OUTER"
-    -- Bounds-checked write: C[row*N + col] = acc
-    label "L_WRITE"
-    let pw1 ← freshP; setpGe pw1 row mReg; braIf pw1 "L_DONE"
-    let pw2 ← freshP; setpGe pw2 col nReg; braIf pw2 "L_DONE"
-    let r26 ← freshR; mulLoR r26 row nReg; addR r26 r26 col
-    let rd6 ← freshRd; cvtU64 rd6 r26; shlRd rd6 rd6 2; addRd rd6 pC rd6
-    stGlobalF rd6 acc
-    label "L_DONE"
-    ptxRet }]
+section
+variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
+
+/-- **Tiled GEMM, `C = A·B`, a 16×16 tile of `C` a block.** `M`, `K`, `N`
+    are the first three words at `par`. A block is 256 threads, thread `t` at
+    `(tx, ty) = (t mod 16, t / 16)` within the tile, and block `b` takes tile
+    `(b mod gx, b / gx)` for `gx = ⌈N / 16⌉`. For each 16 columns of `A`
+    (rows of `B`) every thread stages one element of each tile in shared
+    memory, zero past the matrix's edge, then accumulates its row of the `A`
+    tile against its column of the `B` tile by fused multiply-adds. -/
+def matmulBody : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64])
+  let cta := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
+  let pA := (ps.drop 4).head; let pB := (ps.drop 5).head
+  let pC := (ps.drop 6).head; let par := (ps.drop 7).head
+  let m ← load32 par
+  let k ← load32 (← at_ par 4)
+  let n ← load32 (← at_ par 8)
+  let gx ← ushrImm (← iadd n (← c32 15)) 4
+  let tx ← band tid (← c32 15)
+  let ty ← ushrImm tid 4
+  let by_ ← udiv cta gx
+  let row ← iadd (← ishlImm by_ 4) ty
+  let col ← iadd (← ishlImm (← isub cta (← imul by_ gx)) 4) tx
+  let aT ← at4 sm tid
+  let bT ← at_ aT 1024
+  let aRow ← at4 sm (← ishlImm ty 4)
+  let bCol ← at4 (← at_ sm 1024) tx
+  let rowIn ← icmp .ult row m
+  let colIn ← icmp .ult col n
+  let zero ← f32c 0
+  let r ← wloop %[← c32 0, zero] (fun cs => pure (contIfULt cs.head k, %[cs.snd], ()))
+    (fun cs _ => do
+      let t := cs.head
+      let ka ← iadd t tx
+      let okA ← band rowIn (← icmp .ult ka k)
+      let ia ← select okA (← iadd (← imul row k) ka) (← c32 0)
+      store (← select okA (← loadF32 (← at4 pA ia)) zero) aT
+      let kb ← iadd t ty
+      let okB ← band (← icmp .ult kb k) colIn
+      let ib ← select okB (← iadd (← imul kb n) col) (← c32 0)
+      store (← select okB (← loadF32 (← at4 pB ib)) zero) bT
+      callLocalVoid barrier %[]
+      let mut acc := cs.snd
+      for j in List.range 16 do
+        acc ← fma (← loadF32 (← at_ aRow (4 * j))) (← loadF32 (← at_ bCol (64 * j))) acc
+      callLocalVoid barrier %[]
+      pure %[← iadd t (← c32 16), acc])
+  when .ne (← band rowIn colIn) (← iconst .i8 0) do
+    store r.head (← at4 pC (← iadd (← imul row n) col))
+
+end
+
+def kernel : Kernel :=
+  { name := "main", params := [.i64, .i64, .i64, .i64],
+    code := emit matmulBody (idParams ++ [.i64, .i64, .i64, .i64]), smem := 2048 }
+
+end Body
+
+/-- The kernel's module, or empty where the printer refuses it. -/
+def ptxSource : String :=
+  match Body.kernel.ptx with
+  | .ok s => s
+  | .error _ => ""
 
 -- ---------------------------------------------------------------------------
 -- Layout constants (fixed region offsets; data region base depends on m,k,n)
@@ -187,16 +160,20 @@ def DATA_OFF : Nat := 0x3000
 /-- Where the driver's state starts (`Drv.App`). -/
 def ORG : Nat := 0x2300
 
+/-- The module prints and fits its region with its terminating zero. -/
+theorem ptx_fits : 0 < ptxSource.utf8ByteSize ∧ ptxSource.utf8ByteSize < PTX_REGION := by
+  native_decide
+
 /-- The signature the program's typestate states of its kernel: `main` takes
     four pointers. -/
 theorem matmul_sig : AlgorithmLib.HProg.Sem.ptxParamSizes ptxSource "main" = some [8, 8, 8, 8] := by native_decide
 
 /-- **The program in the driver's standard layout**: `A`, `B`, `C` and the
-    dimensions as four allocations, and one kernel over them, a 16×16 block
-    per 16×16 tile of `C`. -/
+    dimensions as four allocations, and one kernel over them, a block of 256
+    threads per 16×16 tile of `C`. -/
 def app (m k n : Nat) : Drv.App :=
   { bufs := [m * k * 4, k * n * 4, m * n * 4, 16],
-    kernels := [⟨PTX_OFF, PTX_REGION, [0, 1, 2, 3], ((n + 15) / 16, (m + 15) / 16, 1), (16, 16, 1), []⟩],
+    kernels := [⟨PTX_OFF, PTX_REGION, [0, 1, 2, 3], ((n + 15) / 16 * ((m + 15) / 16), 1, 1), (256, 1, 1), []⟩],
     memSize := DATA_OFF + (m * k + k * n + m * n) * 4, org := ORG }
 
 def buildPayload (m k n : Nat) : List UInt8 :=

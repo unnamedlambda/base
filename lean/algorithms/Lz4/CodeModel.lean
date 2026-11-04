@@ -20,6 +20,8 @@ run of consecutive output bytes (`outRun`).
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.Prog
   AlgorithmLib.LZ4WarpDSL AlgorithmLib.LibSpec AlgorithmLib.Kernel LZ4WarpEvalBytes
 
+open AlgorithmLib.ML.LaneWarp (NotArena Writable)
+
 namespace Lz4Code
 
 /-- **What the lanes need of the warp's run, beyond where it stores**: a copy's

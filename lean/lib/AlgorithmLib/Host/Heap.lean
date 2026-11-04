@@ -471,6 +471,13 @@ def leN (bs : List UInt8) (j k : Nat) : UInt64 :=
 /-- The bits of a 64-bit constant. -/
 def c64 (k : Int) : UInt64 := UInt64.ofNat (k.emod (1 <<< 64)).toNat
 
+theorem c64_ofNat (v : Nat) : c64 (v : Int) = UInt64.ofNat v := by
+  apply UInt64.toNat_inj.mp
+  simp only [c64, UInt64.toNat_ofNat']
+  rw [show (1 <<< 64 : Nat) = 2 ^ 64 from rfl,
+    show (v : Int).emod ((2 ^ 64 : Nat) : Int) = (v : Int) % ((2 ^ 64 : Nat) : Int) from rfl]
+  omega
+
 /-- **The heap block at `x` is exactly `n` bytes.** -/
 def Whole (w : World) (x : UInt64) (n : Nat) : Prop := Blk w x n ∧ ∃ off, w.heapAt? x = some (off, n)
 

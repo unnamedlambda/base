@@ -1,8 +1,6 @@
 module
 public import AlgorithmLib.LZ4.Format
 meta import AlgorithmLib.LZ4.Format
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -169,7 +167,5 @@ def defaultFuel (inp cap : Nat) : Nat := 64 * (inp + cap + 8)
 def decompress (inp : List UInt8) (cap : Nat) : Option (List UInt8) :=
   (eval (defaultFuel inp.length cap) decompressProg (St.init inp cap)).map
     fun st => st.out.take (st.vars vOP)
-
-open PTX
 
 end AlgorithmLib.LZ4Imp

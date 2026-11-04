@@ -3,6 +3,8 @@ public import AlgorithmLib.Host.Term
 meta import AlgorithmLib.Host.Term
 public import AlgorithmLib.Kernel.PtxIr
 meta import AlgorithmLib.Kernel.PtxIr
+public import AlgorithmLib.Kernel.Coalesce
+meta import AlgorithmLib.Kernel.Coalesce
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -32,16 +34,23 @@ writes what makes them agree:
   does not contract them, and `div` and `sqrt` are the exactly rounded ones;
 * `fmax` and `fmin` propagate NaN (`.NaN`);
 * a float `ne` holds when unordered (`neu`);
-* a float negation flips the sign bit (`xor`), as `neg.f32` does not of a NaN.
+* a float negation flips the sign bit (`xor`), as `neg.f32` does not of a NaN,
+  and an absolute value clears it (`and`).
 
-Three choices keep the code as fast as hand-written PTX, each local to one
+Four choices keep the code as fast as hand-written PTX, each local to one
 instruction: an address computed from the shared-memory base is held as a
 32-bit offset in the shared window and accessed with `ld.shared`/`st.shared`
 (unless the body uses one as a value, when every shared address is generic);
 a load through a pointer parameter no store goes through takes the read-only
-path (`ld.global.nc`); and a comparison writes its negation beside its flag,
+path (`ld.global.nc`); a comparison writes its negation beside its flag,
 which a branch on the flag tests: `ptxas` unrolls a loop whose exit is so
-tested and not one tested on a negated predicate.
+tested and not one tested on a negated predicate; and, in a kernel that asks
+(`Kernel.mulWide`), a 64-bit product of a value within 32 bits by a constant
+within 32 bits is `mul.wide.u32` of the value's low half (`Facts.wideMul`).
+That last one is the kernel's to choose because `ptxas` schedules some
+kernels faster each way: the fused attention tile keeps its loop control on
+the uniform datapath only with `mul.wide`, and the MXFP4 GEMVs are faster
+with a 64-bit `mul.lo`.
 -/
 
 namespace AlgorithmLib.Kernel
@@ -53,14 +62,16 @@ open AlgorithmLib.IR AlgorithmLib.HProg
 def idParams : List ClifTy := [.i32, .i32, .i32, .i64]
 
 /-- A kernel: its body, the parameters after `idParams`, how many bytes of
-    shared memory a block has, and whether each block is one warp, its barrier
-    then the warp's (`bar.warp.sync`). -/
+    shared memory a block has, whether each block is one warp, its barrier
+    then the warp's (`bar.warp.sync`), and whether its 64-bit products of a
+    value within 32 bits by a constant are `mul.wide.u32` (`Facts.wideMul`). -/
 structure Kernel where
   name : String
   params : List ClifTy
   code : Code
   smem : Nat := 0
   warp : Bool := false
+  mulWide : Bool := false
 
 namespace Ptx
 
@@ -139,7 +150,8 @@ def valBits (origin : Std.HashMap Nat Origin) (mag : Std.HashMap Nat Nat) (v : V
   if origin.get? v.id == some .shared then 64 else offBits origin mag v
 
 /-- The bits an instruction's value spans, from its operands': a constant its
-    literal's, a widened value its source's, a shift by a constant that many
+    literal's, a widened value its source's and at most 32 (it widens an 8-,
+    16- or 32-bit integer), a shift by a constant that many
     more, an and no more than its narrower operand, a sum one more than its
     wider operand, a shared address's sum its
     offset's and the other operand's, at 64 bits; `none` when the instruction
@@ -147,7 +159,7 @@ def valBits (origin : Std.HashMap Nat Origin) (mag : Std.HashMap Nat Nat) (v : V
 def magRule (origin : Std.HashMap Nat Origin) (mag : Std.HashMap Nat Nat) (lits : Std.HashMap Nat Opnd)
     (tys : Std.HashMap Nat ClifTy) : Inst → Option Nat
   | .iconst _ ty k => some (k % (2 ^ ty.width : Int)).toNat.log2.succ
-  | .uextend64 _ a => some (min 64 (valBits origin mag a))
+  | .uextend64 _ a => some (min 32 (valBits origin mag a))
   | .ishl _ a b =>
       let w : Nat := ((tys.get? a.id).map (·.width)).getD 64
       match lits.get? b.id with
@@ -178,6 +190,49 @@ def addrFacts (f : FuncData) (k0 : List ClifTy) (tys : Std.HashMap Nat ClifTy) (
       else if i ≥ 4 && k0[i - 4]? == some ClifTy.i64 then o := o.insert v.id (.global (i - 4))
   let entry := o
   let insts := f.blocks.flatMap (·.insts)
+  -- what each block parameter is passed, as the values themselves
+  let mut incoming : Std.HashMap Nat (List Val) := {}
+  for i in insts do
+    let edges : List (BlockRef × List Val) := match i with
+      | .jump t as => [(t, as)]
+      | .brif _ t as e as' => [(t, as), (e, as')]
+      | _ => []
+    for (t, as) in edges do
+      if let some tb := f.blocks.find? (·.ref.id == t.id) then
+        for ((v, _), a) in tb.params.zip as do
+          incoming := incoming.insert v.id (a :: (incoming.getD v.id []))
+  -- A loop's parameter is passed its own successor, so a fixed point grown
+  -- from the entry never reaches it. Assume each parameter holds the buffer
+  -- every incoming value of known origin points into, then drop any
+  -- assumption an incoming value fails, until none does: what is left is
+  -- consistent, every parameter passed that buffer's addresses on every edge.
+  let grow (seed : Std.HashMap Nat Origin) (strict : Bool) : Std.HashMap Nat Origin := Id.run do
+    let mut o := seed
+    for _ in [0:8] do
+      let mut n := seed
+      for i in insts do
+        if let .iadd d a b := i then
+          if let some x := Origin.ofSum (o.get? a.id) (o.get? b.id) then
+            match x with
+            | .shared => pure ()
+            | g => n := n.insert d.id g
+      for (v, as) in incoming.toList do
+        let os := as.map (o.get? ·.id)
+        match os.filterMap id with
+        | .global p :: rest =>
+            if rest.all (· == .global p) && (!strict || os.all (·.isSome)) then n := n.insert v (.global p)
+        | _ => pure ()
+      o := n
+    return o
+  let opt := grow entry false
+  let mut assumed : Std.HashMap Nat Origin := {}
+  for (v, _) in incoming.toList do
+    if let some g@(.global _) := opt.get? v then assumed := assumed.insert v g
+  for _ in [0:8] do
+    let o' := grow (assumed.fold (fun s k x => s.insert k x) entry) true
+    assumed := assumed.filter fun v g => (incoming.getD v []).all (o'.get? ·.id == some g)
+  for (v, g) in assumed.toList do o := o.insert v g
+  let entry := o
   for _ in [0:8] do
     let mut n := entry
     for i in insts do
@@ -230,6 +285,8 @@ structure Facts where
   window : Bool
   /-- Whether each block is one warp: a barrier is then the warp's. -/
   warp : Bool := false
+  /-- Whether a product `Facts.wideMul` admits is `mul.wide.u32`. -/
+  mulWide : Bool := false
 
 /-- Whether `v` is a shared address held in the window. -/
 def Facts.win (F : Facts) (v : Val) : Bool := F.window && F.origin.get? v.id == some .shared
@@ -240,6 +297,17 @@ def Facts.negated (F : Facts) (v : Val) : Bool :=
   | some (.icmp _ _ a _) => F.tys.get? a.id != some .i8
   | some (.fcmp ..) => true
   | _ => false
+
+/-- Whether a 64-bit product `a * b` of a kernel that asks for it
+    (`Kernel.mulWide`) is a value within 32 bits by a constant within 32 bits:
+    it is then `mul.wide.u32` of `a`'s low half and the constant, which cannot
+    overflow. -/
+def Facts.wideMul (F : Facts) (a b : Val) : Bool :=
+  F.mulWide && F.tys.get? a.id == some .i64 && F.lits.get? a.id == none &&
+    valBits F.origin F.mag a ≤ 32 && valBits F.origin F.mag b ≤ 32 &&
+    match F.lits.get? b.id with
+    | some (.imm _) => true
+    | _ => false
 
 /-- The value an instruction defines and its type, from its operands'. -/
 def resTy (ty : Val → Option ClifTy) : Inst → Option (Val × ClifTy)
@@ -368,6 +436,8 @@ def addr (a : Val) : LM (PtxIr.Space × PtxIr.Addr) := do
 
 def approxOp : Intr → Option PtxIr.UnOp
   | .ex2Approx => some .ex2Approx | .rcpApprox => some .rcpApprox | .lg2Approx => some .lg2Approx
+  | .sinApprox => some .sinApprox | .cosApprox => some .cosApprox | .sqrtApprox => some .sqrtApprox
+  | .rsqrtApprox => some .rsqrtApprox
   | _ => none
 
 /-- A sum of a shared address `sa` in the window and `other`: the offset
@@ -400,7 +470,14 @@ def inst (i : Inst) : LM Unit := do
       else if ← isWin b then iaddWin d b a
       else bin2 d a b .add none (uTy ·.width)
   | .isub d a b => bin2 d a b .sub none (uTy ·.width)
-  | .imul d a b => bin2 d a b .mulLo none (uTy ·.width)
+  | .imul d a b => do
+      if (← facts?).wideMul a b then
+        let x ← r a
+        let w ← own "w" .i32
+        emit (.cvt none .u32 .u64 w (.reg x))
+        let y ← imm b
+        emit (.bin .mulWide none .u32 (regOf .i64 d) (.reg w) y)
+      else bin2 d a b .mulLo none (uTy ·.width)
   | .udiv d a b => bin2 d a b .div none (uTy ·.width)
   | .ibin d .umin a b => bin2 d a b .min none (uTy ·.width)
   | .ibin d .umax a b => bin2 d a b .max none (uTy ·.width)
@@ -463,12 +540,17 @@ def inst (i : Inst) : LM Unit := do
       let t ← tyOf a
       emit (.bin .xor none (bTy t.width) (regOf t d) (← o a) (.imm (2 ^ (t.width - 1))))
   | .fun1 d .sqrt a => do let t ← tyOf a; emit (.un .sqrt (some .rn) (bits t) (regOf t d) (← o a))
+  | .fun1 d .fabs a => do
+      let t ← tyOf a
+      emit (.bin .and none (bTy t.width) (regOf t d) (← o a) (.imm (2 ^ (t.width - 1) - 1)))
   | .fcvtFromSint d ty a => do
       let t ← tyOf a; emit (.cvt (some .rn) (bits ty) (sTy t.width) (regOf ty d) (← o a))
   | .fconv d .fromUint ty a => do
       let t ← tyOf a; emit (.cvt (some .rn) (bits ty) (uTy t.width) (regOf ty d) (← o a))
   | .fconv d .demote ty a => do
       emit (.cvt (some .rn) (bits ty) .f64 (regOf ty d) (← o a))
+  | .fconv d .toSint ty a => do
+      emit (.cvt (some .rzi) (sTy ty.width) .f32 (regOf ty d) (← o a))
   | .fma d a b c => do
       let t ← tyOf a
       let x ← o a; let y ← imm b
@@ -870,12 +952,12 @@ def takes (F : Ptx.Facts) : Inst → Bool
   | .fma _ a _ _ => isTy F a [.f32]
   | .fcvtFromSint _ ty a => ty == .f32 && isTy F a [.i16, .i32, .i64]
   | .fbin _ k a _ => k == .fdiv && isTy F a [.f32]
-  | .fun1 _ k a => k == .sqrt && isTy F a [.f32]
-  | .fconv _ k ty a => ty == .f32 &&
+  | .fun1 _ k a => (k == .sqrt || k == .fabs) && isTy F a [.f32]
+  | .fconv _ k ty a =>
       match k with
-      | .fromUint => isTy F a [.i32, .i64]
-      | .demote => isTy F a [.f64]
-      | .toSint => false
+      | .fromUint => ty == .f32 && isTy F a [.i32, .i64]
+      | .demote => ty == .f32 && isTy F a [.f64]
+      | .toSint => ty == .i32 && isTy F a [.f32]
   | .load _ lo a => isTy F a [.i64] &&
       match lo.kind with
       | .plain => [ClifTy.i16, .i32, .i64, .f32, .f64].contains lo.ty
@@ -917,7 +999,7 @@ def labelsIn (body : List PtxIr.Line) : List PtxIr.Lbl :=
     parameter that is not, or a sum with one leaves shared memory's reach. -/
 def Kernel.factsOf (k : Kernel) (f : FuncData) : Ptx.Facts :=
   let F := Ptx.facts f k.params true
-  { (if winOk F && edgesTyped F && defsOk F then F else Ptx.facts f k.params false) with warp := k.warp }
+  { (if winOk F && edgesTyped F && defsOk F then F else Ptx.facts f k.params false) with warp := k.warp, mulWide := k.mulWide }
 
 /-- The compiler's checks of function `f` of kernel `k`, each with what it
     says when it fails. -/
@@ -976,10 +1058,15 @@ def Kernel.entry (k : Kernel) : Except String PtxIr.Entry :=
     | some m => .error s!"{k.name}: {m}"
     | none => .ok (k.assemble (k.factsOf f))
 
+/-- **The entry that ships**: the compiled entry with its registers merged
+    where they never meet (`Coalesce.run`), which runs every thread to the
+    same world (`PtxCoalesce.thread_run`). -/
+def Kernel.shipped (k : Kernel) : Except String PtxIr.Entry := k.entry.map Coalesce.run
+
 /-- **Kernels as one PTX module**: one shared array, as large as the largest
-    any of them asks for, and each kernel's entry. -/
+    any of them asks for, and each kernel's shipped entry. -/
 def Kernel.ptxModule (ks : List Kernel) : Except String PtxIr.Module := do
-  let entries ← ks.mapM Kernel.entry
+  let entries ← ks.mapM Kernel.shipped
   let smem := ks.foldl (fun m k => max m k.smem) 16
   pure { version := "7.4", target := "sm_80", addressSize := 64,
          shared := [{ align := 16, sym := "smem", bytes := smem }], entries }

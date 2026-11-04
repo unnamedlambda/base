@@ -205,7 +205,10 @@ def un (o : UnOp) (hw : Hw) (t : Ty) (x : UInt64) : Except String UInt64 :=
   | .ex2Approx => pure (hw.approx .ex2Approx x)
   | .lg2Approx => pure (hw.approx .lg2Approx x)
   | .rcpApprox => pure (hw.approx .rcpApprox x)
-  | .rsqrtApprox | .sqrtApprox => .error s!"{o.name}: the hardware's is not modelled"
+  | .sinApprox => pure (hw.approx .sinApprox x)
+  | .cosApprox => pure (hw.approx .cosApprox x)
+  | .sqrtApprox => pure (hw.approx .sqrtApprox x)
+  | .rsqrtApprox => pure (hw.approx .rsqrtApprox x)
 
 def cmp (c : Cmp) (t : Ty) (x y : UInt64) : Except String Bool :=
   if t.isFloat then
@@ -236,6 +239,12 @@ def cvt (r : Option Rnd) (dt st : Ty) (x : UInt64) : Except String UInt64 :=
     pure (ofIntW dt.width (toInt st x))
   else if dt == .f32 && !st.isFloat then
     pure (ofF32 (Float32.ofInt (toInt st x)))
+  else if !dt.isFloat && st == .f32 && r == some .rzi && dt.isSigned && (dt.width == 32 || dt.width == 64) then
+    -- truncation to a signed word is the block semantics' saturating
+    -- conversion: NaN to zero, out of range to the nearer end
+    match satToSint (if dt.width == 64 then .i64 else .i32) (f32b x).toFloat with
+    | .sc _ v => pure v
+    | .vec .. => .error "cvt: a vector"
   else if !dt.isFloat && st == .f32 then
     let v := (f32b x).toFloat
     let i : Float := match r with

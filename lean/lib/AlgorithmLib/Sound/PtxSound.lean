@@ -449,6 +449,35 @@ theorem ofInt_toNat (z : UInt64) : UInt64.ofInt (z.toNat : Int) = z := by
   rw [Int.emod_eq_of_lt (by omega) (by omega)]
   simp
 
+/-- `mul.wide.u32` of the low half of a value within 32 bits and another value
+    within 32 bits is their 64-bit product. -/
+theorem mulWide_low (x y : UInt64) (hx : x.toNat < 2 ^ 32) (hy : y.toNat < 2 ^ 32) :
+    PtxRun.mask (2 * PtxIr.Ty.u32.width)
+      (UInt64.ofInt (PtxRun.toInt .u32 (PtxRun.ofIntW 32 (PtxRun.toInt .u64 x)) * PtxRun.toInt .u32 y)) = x * y := by
+  have hm32 : ∀ z : UInt64, z.toNat < 2 ^ 32 → PtxRun.mask 32 z = z := by
+    intro z hz
+    apply UInt64.toNat_inj.mp
+    simp only [PtxRun.mask]
+    rw [if_neg (by decide), UInt64.toNat_and]
+    have : ((1 : UInt64) <<< UInt64.ofNat 32 - 1).toNat = 2 ^ 32 - 1 := by decide
+    rw [this]
+    exact Nat.and_two_pow_sub_one_of_lt_two_pow hz
+  have hm64 : ∀ z : UInt64, PtxRun.mask 64 z = z := by intro z; simp [PtxRun.mask]
+  have hx64 : PtxRun.toInt .u64 x = (x.toNat : Int) := by
+    simp only [PtxRun.toInt, show PtxIr.Ty.u64.width = 64 from rfl, show PtxIr.Ty.u64.isSigned = false from rfl,
+      hm64, Bool.false_and, Bool.false_eq_true, if_false]
+  have hlow : PtxRun.ofIntW 32 (PtxRun.toInt .u64 x) = x := by
+    rw [hx64, PtxRun.ofIntW, ofInt_toNat]; exact hm32 x hx
+  have hu32 : ∀ z : UInt64, z.toNat < 2 ^ 32 → PtxRun.toInt .u32 z = (z.toNat : Int) := by
+    intro z hz
+    simp only [PtxRun.toInt, show PtxIr.Ty.u32.width = 32 from rfl, show PtxIr.Ty.u32.isSigned = false from rfl,
+      hm32 z hz, Bool.false_and, Bool.false_eq_true, if_false]
+  rw [hlow, hu32 x hx, hu32 y hy]
+  have hp : x.toNat * y.toNat < 2 ^ 64 :=
+    Nat.lt_of_lt_of_le (Nat.mul_lt_mul'' hx hy) (by rw [← Nat.pow_add]; exact Nat.le_refl _)
+  have hxy : (x * y).toNat = x.toNat * y.toNat := by rw [UInt64.toNat_mul, Nat.mod_eq_of_lt hp]
+  rw [show 2 * PtxIr.Ty.u32.width = 64 from rfl, hm64, ← Int.natCast_mul, ← hxy, ofInt_toNat]
+
 theorem zext32 (y : UInt64) : PtxRun.ofIntW 64 (PtxRun.toInt .u32 y) = y &&& 0xffffffff := by
   simp [PtxRun.ofIntW, PtxRun.toInt, PtxRun.mask, PtxIr.Ty.width, PtxIr.Ty.isSigned]
   have h : (y.toNat &&& (((1 : UInt64) <<< 32) - 1).toNat) = (y &&& 4294967295).toNat := by
@@ -588,6 +617,15 @@ theorem lt_min64 {x : UInt64} {p : Nat} (h : x.toNat < 2 ^ p) : x.toNat < 2 ^ (m
   rcases Nat.le_total p 64 with hp | hp
   · rw [Nat.min_eq_right hp]; exact h
   · rw [Nat.min_eq_left hp]; exact x.toNat_lt
+
+/-- A value cut to at most 32 bits spans at most 32 and at most what it already
+    spans. -/
+theorem lt_min32 {x m : UInt64} {p : Nat} (hm : m.toNat < 2 ^ 32) (h : x.toNat < 2 ^ p) :
+    (x &&& m).toNat < 2 ^ (min 32 p) := by
+  rw [UInt64.toNat_and]
+  rcases Nat.le_total p 32 with hp | hp
+  · rw [Nat.min_eq_right hp]; exact Nat.lt_of_le_of_lt Nat.and_le_left h
+  · rw [Nat.min_eq_left hp]; exact Nat.lt_of_le_of_lt Nat.and_le_right hm
 
 theorem add_lt_bits (x y : UInt64) (p q : Nat) (hx : x.toNat < 2 ^ p) (hy : y.toNat < 2 ^ q) :
     (x + y).toNat < 2 ^ (max p q + 1) := by
@@ -2726,43 +2764,43 @@ theorem isub_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d
   · intro t x y ht; rcases ht with rfl | rfl | rfl <;> rfl
   · exact cong_sub
 
+/-- What an integer product computes: its operands at one type, their product
+    cut to it. -/
+theorem step_imul (lc : Sem.Locals) (s s1 : Blocks.BSt) (d a b : Val) (t : ClifTy) (xa : UInt64)
+    (hst : step1 lc s (.imul d a b) = some s1) (hva : Blocks.getV s.vals a = some (.sc t xa)) :
+    ∃ xb, Blocks.getV s.vals b = some (.sc t xb) ∧
+      s1 = { s with vals := Blocks.setV s.vals d (.sc t (xa * xb &&& widthMask t)) } := by
+  cases hb : Blocks.getV s.vals b with
+  | none => simp [step1, Blocks.evalInst, Blocks.evalInst.bin, hva, hb] at hst
+  | some vb =>
+  cases vb with
+  | vec _ _ => simp [step1, Blocks.evalInst, Blocks.evalInst.bin, hva, hb, Blocks.viaOp, evalOp, Sem.bin,
+      Sem.get] at hst
+  | sc tb xb =>
+  simp [step1, Blocks.evalInst, Blocks.evalInst.bin, hva, hb, Blocks.viaOp, evalOp, Sem.bin, Sem.get] at hst
+  by_cases hc : t = tb ∧ t.isInt = true
+  · obtain ⟨rfl, hci⟩ := hc
+    simp [hci] at hst
+    subst hst
+    exact ⟨xb, rfl, by simp [norm]⟩
+  · simp [hc] at hst
+
 open PtxRun in
-/-- **An integer product of values not windowed** meets its obligation. -/
+/-- **An integer product of values not windowed**, not a wide one
+    (`Facts.wideMul`), meets its obligation. -/
 theorem imul_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d a b : Val)
     (hwa : ¬ Win F a) (hwb : ¬ Win F b) (hwd : F.win d = false)
     (hT : ∀ t, F.tys.get? a.id = some t → IntT t ∧ F.tys.get? d.id = some t)
-    (hld : F.lits.get? d.id = none)
+    (hld : F.lits.get? d.id = none) (hnw : F.wideMul a b = false)
     (hmo : magOk F d (.imul d a b) = true) :
     InstOk F lc c start0 (.imul d a b) := by
-  have hwa' : F.win a = false := by
-    cases h : F.win a
-    · rfl
-    · exact absurd ((win_iff F a).mp h) hwa
-  have hwb' : F.win b = false := by
-    cases h : F.win b
-    · rfl
-    · exact absurd ((win_iff F b).mp h) hwb
   apply intbin_ok (hmo := hmo) (hrule := fun _ _ _ _ _ _ _ _ hk => by simp [magRule] at hk) F lc c start0 (.imul d a b) d a b .mulLo (fun t => uTy t.width) (· * ·) rfl
     (by simp [Inst.uses]) (by simp [Inst.uses]) hwa hwb hwd hT hld
   · intro s s1 hst t xa hva
-    cases hb : Blocks.getV s.vals b with
-    | none => simp [step1, Blocks.evalInst, Blocks.evalInst.bin, hva, hb] at hst
-    | some vb =>
-    cases vb with
-    | vec _ _ => simp [step1, Blocks.evalInst, Blocks.evalInst.bin, hva, hb, Blocks.viaOp, evalOp, Sem.bin,
-        Sem.get, zipIntBits] at hst
-    | sc tb xb =>
-    simp [step1, Blocks.evalInst, Blocks.evalInst.bin, hva, hb, Blocks.viaOp, evalOp, Sem.bin, Sem.get,
-      zipIntBits] at hst
-    by_cases hc : t = tb ∧ t.isInt = true
-    · obtain ⟨rfl, hci⟩ := hc
-      simp [hci] at hst
-      subst hst
-      exact ⟨xb, rfl, by simp [norm]⟩
-    · simp [hc] at hst
+    exact step_imul lc s s1 d a b t xa hst hva
   · intro tag t ht
-    simp only [lower_eq, isTerm, Bool.false_eq_true, if_false, inst, isWin, facts?, runLM_bind, runLM_read,
-      runLM_pure, hwa', hwb', tyOf, ht, o, emit, emitL, runLM_modify]
+    simp only [lower_eq, isTerm, Bool.false_eq_true, if_false, inst, facts?, runLM_bind, runLM_read,
+      runLM_pure, hnw, tyOf, ht, o, emit, emitL, runLM_modify]
     all_goals rfl
   · intro t x y ht; rcases ht with rfl | rfl | rfl <;> rfl
   · exact cong_mul
@@ -3133,7 +3171,7 @@ theorem uextend_lit_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : 
   · rw [hraw]; simp [enc, and_wide64]
   · simp only [magRule] at hk; cases hk
     rw [rel_plain (not_shared_of hmo (fun _ _ _ h => by cases h))]
-    exact lt_min64 (Nat.lt_of_le_of_lt (and_le_toNat _ _) (bnd_val (hS.bound a .i32 x hDa hva)))
+    exact lt_min32 (by decide) (bnd_val (hS.bound a .i32 x hDa hva))
 
 /-! ## One-operand instructions -/
 
@@ -3259,10 +3297,10 @@ theorem uextend_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
     InstOk F lc c start0 (.uextend64 d a) := by
   have hld' : d.id ∉ F.lits := by
     rw [Std.HashMap.mem_iff_isSome_getElem?, ← Std.HashMap.get?_eq_getElem?, hld]; simp
-  apply un1_ok (hmo := hmo) (hrule := fun t xa k _ hba hk => by
+  apply un1_ok (hmo := hmo) (hrule := fun t xa k hP hba hk => by
       simp only [magRule] at hk; cases hk
       rw [rel_plain (not_shared_of hmo (fun _ _ _ h => by cases h))]
-      exact lt_min64 (Nat.lt_of_le_of_lt (and_le_toNat _ _) (bnd_val hba))) F lc c start0 _ d a
+      exact lt_min32 (by rcases hP with rfl | rfl | rfl <;> decide) (bnd_val hba)) F lc c start0 _ d a
     (fun t dr xo => if t = .i8 then .selp .u64 dr (.imm 1) (.imm 0) xo else .cvt none .u64 (uTy t.width) dr xo)
     (fun _ => .i64) (fun t x => x &&& widthMask t) (fun t => t = .i8 ∨ t = .i16 ∨ t = .i32) (fun _ _ h => nomatch h) rfl
     (by simp [Inst.uses]) hwa hwd (fun _ _ => htd) hld
@@ -3599,6 +3637,82 @@ theorem lower_inst (F : Facts) (tag : Nat) (i : Inst) (h : isTerm i = false) :
 theorem runLM_tyOf (F : Facts) (tag : Nat) (s : Out) (a : Val) (ta : ClifTy) (hta : F.tys.get? a.id = some ta) :
     runLM (tyOf a) F tag s = (ta, s) := by
   simp only [facts?, tyOf, hta, runLM_bind, runLM_read, runLM_pure]
+
+open PtxRun in
+/-- **A 64-bit product of a value within 32 bits and a constant within 32
+    bits** (`Facts.wideMul`) meets its obligation: the value's low half into a
+    32-bit register of the instruction's own, then `mul.wide.u32` of it and the
+    constant, which cannot overflow. -/
+theorem imulWide_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d a b : Val)
+    (hwa : ¬ Win F a) (hwd : F.win d = false)
+    (hT : ∀ t, F.tys.get? a.id = some t → IntT t ∧ F.tys.get? d.id = some t)
+    (hld : F.lits.get? d.id = none) (hwm : F.wideMul a b = true)
+    (hmo : magOk F d (.imul d a b) = true) :
+    InstOk F lc c start0 (.imul d a b) := by
+  intro tag D s s1 ts hst huses hS hW _ _
+  have hwm' := hwm
+  simp only [Facts.wideMul, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hwm'
+  obtain ⟨⟨⟨⟨⟨-, hta⟩, hla⟩, hba⟩, hbb⟩, hlb⟩ := hwm'
+  obtain ⟨k, hkb⟩ : ∃ k, F.lits.get? b.id = some (.imm k) := by
+    revert hlb
+    cases F.lits.get? b.id with
+    | none => simp
+    | some l => cases l <;> simp
+  have htd : F.tys.get? d.id = some .i64 := (hT _ hta).2
+  have hDa : D a.id := huses a (by simp [Inst.uses])
+  have hDb : D b.id := huses b (by simp [Inst.uses])
+  obtain ⟨ta, xa, hva, hta'⟩ := hS.pres a hDa
+  rw [hta] at hta'; cases hta'
+  obtain ⟨xb, hvb, rfl⟩ := step_imul lc s s1 d a b .i64 xa hst hva
+  have htb : F.tys.get? b.id = some .i64 := by
+    obtain ⟨tb, xb', hvb', htb⟩ := hS.pres b hDb
+    rw [hvb] at hvb'; obtain ⟨rfl, -⟩ := V.sc.inj (Option.some.inj hvb'); exact htb
+  obtain ⟨hil, hraw⟩ := hS.lit b .i64 xb (.imm k) hDb hvb htb hkb
+  have hxa := hS.plain a .i64 xa hDa hva hta hla hwa
+  have he64 : ∀ z : UInt64, enc .i64 z = z := fun z => by simp [enc, and_wide64]
+  rw [he64] at hraw hxa
+  have hxa32 : xa.toNat < 2 ^ 32 :=
+    Nat.lt_of_lt_of_le (bnd_val (hS.bound a .i64 xa hDa hva)) (Nat.pow_le_pow_right (by decide) hba)
+  have hxb32 : xb.toNat < 2 ^ 32 :=
+    Nat.lt_of_lt_of_le (bnd_val (hS.bound b .i64 xb hDb hvb)) (Nat.pow_le_pow_right (by decide) hbb)
+  let w : PtxIr.Reg := .own "w" tag 0
+  let i1 : PtxIr.Instr := .cvt none .u32 .u64 w (.reg (regOf .i64 a))
+  let i2 : PtxIr.Instr := .bin .mulWide none .u32 (regOf .i64 d) (.reg w) (.imm k)
+  have hlow : (lower F tag (.imul d a b)).lines =
+      (([i1, i2] : List PtxIr.Instr).map (PtxIr.Line.ins none)).toArray := by
+    rw [lower_inst F tag _ rfl]
+    simp only [inst, facts?, runLM_bind, runLM_read, runLM_pure, hwm, if_true]
+    rw [runLM_r_plain F tag _ a .i64 hwa hta hla]
+    simp only [Std.HashMap.get?_eq_getElem?] at hkb
+    simp [own, emit, emitL, imm, facts?, hkb, i1, i2, w]
+  refine ⟨by rw [hlow]; exact straight_map _, ?_⟩
+  let wv : UInt64 := PtxRun.ofIntW 32 (PtxRun.toInt .u64 xa)
+  have he1 : (exec c i1).run ts = .ok (.step, { ts with regs := ts.regs.insert w wv }) :=
+    exec_cvt c ts none .u32 .u64 w _ xa wv (opVal_reg c ts _ xa (not_special_val _ _) hxa)
+      (cvt_int none .u32 .u64 xa rfl rfl)
+  have hbin : PtxRun.bin .mulWide .u32 wv xb = .ok (xa * xb) := by
+    rw [← mulWide_low xa xb hxa32 hxb32]; rfl
+  have he2 : (exec c i2).run { ts with regs := ts.regs.insert w wv } =
+      .ok (.step, { ts with regs := (ts.regs.insert w wv).insert (regOf .i64 d) (xa * xb) }) :=
+    exec_bin c _ .mulWide .u32 (regOf .i64 d) (.reg w) (.imm k) wv xb _
+      (opVal_reg c _ w wv (not_special_own _ _ _) (by simp [Std.HashMap.get?_eq_getElem?]))
+      (by rw [← hraw]; exact opVal_lit c _ (.imm k) hil) hbin
+  refine ⟨{ ts with regs := (ts.regs.insert w wv).insert (regOf .i64 d) (xa * xb) }, ?_, ?_, hW⟩
+  · rw [hlow, instrsOf_map]
+    simp only [StateT.run] at he1 he2
+    simp [steps, StateT.run, he1, he2, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+  · apply sim_set (hmo := hmo) (hrule := fun k' hk' => by simp [magRule] at hk') F D s.vals ts.regs _ _ d .i64
+      (xa * xb &&& widthMask .i64) rfl hS htd (by rw [and_wide64, and_wide64])
+    · intro _ _
+      rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert_self, he64, and_wide64]
+    · intro l hl; rw [hld] at hl; cases hl
+    · intro hw; rw [(win_iff F d).mpr hw] at hwd; cases hwd
+    · intro h8; cases h8
+    · intro h8; cases h8
+    · intro c' n hn
+      have hne : PtxIr.Reg.val c' n ≠ regOf .i64 d := by simp [regOf]; omega
+      rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hne),
+        Std.HashMap.getElem?_insert, if_neg (by simp [w]), ← Std.HashMap.get?_eq_getElem?]
 
 theorem inst_select (d cv a b : Val) :
     inst (.select d cv a b) = (do
@@ -4523,6 +4637,50 @@ theorem fneg_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d
       rw [show widthMask .f32 = ((2 ^ 32 - 1 : Nat).toUInt64) from rfl, toNat_and_mask _ _ (by decide : 32 ≤ 64)] at this
       rw [this]; rfl
     · rw [show widthMask .f64 = widthMask .i64 from rfl, and_wide64]
+
+theorem inst_fabs (d a : Val) :
+    inst (.fun1 d .fabs a) = (do
+      let t ← tyOf a
+      emit (.bin .and none (bTy t.width) (regOf t d) (← o a) (.imm (2 ^ (t.width - 1) - 1)))) := by
+  simp only [inst]
+
+open PtxRun in
+/-- **An f32's absolute value** meets its obligation: the and of its bits with
+    all but the sign bit, which keeps a NaN's payload as the block semantics
+    does. -/
+theorem fabs_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d a : Val)
+    (hwa : ¬ Win F a) (hwd : F.win d = false)
+    (hta : F.tys.get? a.id = some .f32) (htd : F.tys.get? d.id = some .f32) (hld : F.lits.get? d.id = none)
+    (hmo : magOk F d (.fun1 d .fabs a) = true) :
+    InstOk F lc c start0 (.fun1 d .fabs a) := by
+  apply un1_ok (hmo := hmo) (hrule := fun _ _ _ _ _ hk => by simp [magRule] at hk) F lc c start0 _ d a
+    (fun t dr xo => .bin .and none (bTy t.width) dr xo (.imm (2 ^ (t.width - 1) - 1))) (fun _ => .f32)
+    (fun _ x => x &&& ~~~fsignMask .f32 &&& widthMask .f32) (· = .f32)
+    (fun _ _ h => by cases h) rfl (by simp [Inst.uses]) hwa hwd (fun t ht => by rw [hta] at ht; cases ht; exact htd) hld
+  · intro s s1 hst _ t xa hva ht
+    rw [hta] at ht; cases ht
+    refine ⟨rfl, ?_⟩
+    simp [step1, Blocks.evalInst, Blocks.evalInst.un, hva, Blocks.viaOp, evalOp, Sem.get, mapFBits, funOp] at hst
+    rw [← hst]
+  · intro tag t ht
+    rw [hta] at ht; cases ht
+    rw [lower_inst F tag _ rfl, inst_fabs, runLM_bind, runLM_tyOf F tag _ a .f32 hta]
+    simp only [runLM_bind, runLM_pure, o, emit, emitL, runLM_modify]
+  · intro t xa ht hn _ c' ts' xo dr hxo
+    subst ht
+    have hk : ~~~fsignMask .f32 &&& widthMask .f32 = UInt64.ofInt (2 ^ 31 - 1) &&& widthMask .i32 := by decide
+    rw [exec_bin c' ts' .and _ dr xo _ _ _ (xa &&& ~~~fsignMask .f32 &&& widthMask .f32) hxo
+      (opVal_lit c' ts' (.imm _) trivial)]
+    · simp only [enc, show ClifTy.f32 ≠ .i8 by decide, if_false, UInt64.and_assoc, UInt64.and_self]
+    · simp only [enc, show ClifTy.f32 ≠ .i8 by decide, if_false, hn]
+      show PtxRun.bin .and .b32 xa (UInt64.ofInt (2 ^ 31 - 1)) = _
+      simp only [PtxRun.bin, PtxIr.Ty.isFloat, Bool.false_eq_true, if_false, PtxRun.binI, PtxIr.Ty.width]
+      rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp), UInt64.and_assoc, ← hk,
+        ← UInt64.and_assoc]
+      rfl
+  · intro t xa ht _
+    subst ht
+    simp only [UInt64.and_assoc, UInt64.and_self]
 
 /-! ## Flags made and compared -/
 
@@ -6142,6 +6300,50 @@ theorem demote_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) 
     exact exec_cvt c' ts' _ _ _ dr xo _ _ hxo hv
   · intro t xa _ _; exact and_f32_lt _ (nanFix_lt _ (ofF32_lt _))
 
+/-- The bits saturating truncation of an f32 to an i32 answers. -/
+def ftosiBits (x : UInt64) : UInt64 :=
+  match satToSint .i32 (f32 x).toFloat with
+  | .sc _ v => v
+  | .vec .. => 0
+
+theorem satToSint_i32 (v : Float) : ∃ b, satToSint .i32 v = .sc .i32 b ∧ b &&& widthMask .i32 = b := by
+  unfold satToSint; simp only [ofInt, norm]
+  split <;> (try split) <;> (try split) <;> (try split) <;>
+    exact ⟨_, rfl, by simp [UInt64.and_assoc]⟩
+
+open PtxRun in
+/-- **An f32 truncated to an i32** meets its obligation: both semantics are the
+    saturating conversion, NaN to zero and out of range to the nearer end. -/
+theorem ftosi_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d a : Val)
+    (hwa : ¬ Win F a) (hwd : F.win d = false) (hta : F.tys.get? a.id = some .f32)
+    (htd : F.tys.get? d.id = some .i32) (hld : F.lits.get? d.id = none)
+    (hmo : magOk F d (.fconv d .toSint .i32 a) = true) :
+    InstOk F lc c start0 (.fconv d .toSint .i32 a) := by
+  apply un1_ok (hmo := hmo) (hrule := fun _ _ _ _ _ hk => by simp [magRule] at hk) F lc c start0 _ d a
+    (fun _ dr xo => .cvt (some .rzi) .s32 .f32 dr xo) (fun _ => .i32) (fun _ x => ftosiBits x) (· = .f32)
+    (fun _ _ h => by cases h) rfl (by simp [Inst.uses]) hwa hwd (fun _ _ => htd) hld
+  · intro s s1 hst _ t xa hva ht
+    rw [hta] at ht; cases ht
+    refine ⟨rfl, ?_⟩
+    obtain ⟨b, hb, -⟩ := satToSint_i32 (f32 xa).toFloat
+    simp [step1, Blocks.evalInst, Blocks.evalInst.un, hva, Blocks.viaOp, evalOp, Sem.get, hb, ClifTy.isInt,
+      ClifTy.width] at hst
+    rw [← hst]; simp [ftosiBits, hb]
+  · intro tag t ht
+    rw [hta] at ht; cases ht
+    have ht' : F.tys[a.id]? = some .f32 := by rw [← Std.HashMap.get?_eq_getElem?]; exact hta
+    simp [lower_eq, isTerm, inst, emit, emitL, o, facts?, tyOf, ht', bits, sTy, ClifTy.width]
+  · intro t xa ht hn _ c' ts' xo dr hxo
+    subst ht
+    obtain ⟨b, hb, hbn⟩ := satToSint_i32 (f32 xa).toFloat
+    have hv : PtxRun.cvt (some .rzi) .s32 .f32 (enc .f32 xa) = .ok (enc .i32 (ftosiBits xa)) := by
+      simp only [enc, show ClifTy.f32 ≠ .i8 by decide, show ClifTy.i32 ≠ .i8 by decide, if_false, hn]
+      simp [PtxRun.cvt, PtxIr.Ty.isFloat, PtxIr.Ty.isSigned, PtxIr.Ty.width, PtxRun.f32b, ftosiBits, hb, hbn]
+    exact exec_cvt c' ts' _ _ _ dr xo _ _ hxo hv
+  · intro t xa _ _
+    obtain ⟨b, hb, hbn⟩ := satToSint_i32 (f32 xa).toFloat
+    simp [ftosiBits, hb, hbn]
+
 /-! ### Float comparisons -/
 
 theorem mask32_and (y : UInt64) : PtxRun.mask 32 y = y &&& 0xffffffff := by
@@ -6793,9 +6995,13 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
       simp only [litOf] at hlit
       simp only [defSide, Bool.and_eq_true, Bool.not_eq_true'] at hside
       simp only [takes] at htk'
-      exact imul_ok (hmo := hmo) F lc c start0 d a b (not_win_of F a (hvu a (by simp [valUses, Inst.uses])))
-        (not_win_of F b (hvu b (by simp [valUses, Inst.uses]))) hside.1
-        (fun t ht => ⟨intT_of_isTy F a htk' t ht, resTy_same F _ d a rfl hty t ht⟩) hlit
+      have hwa := not_win_of F a (hvu a (by simp [valUses, Inst.uses]))
+      have hT : ∀ t, F.tys.get? a.id = some t → IntT t ∧ F.tys.get? d.id = some t :=
+        fun t ht => ⟨intT_of_isTy F a htk' t ht, resTy_same F _ d a rfl hty t ht⟩
+      cases hwm : F.wideMul a b
+      · exact imul_ok (hmo := hmo) F lc c start0 d a b hwa
+          (not_win_of F b (hvu b (by simp [valUses, Inst.uses]))) hside.1 hT hlit hwm
+      · exact imulWide_ok (hmo := hmo) F lc c start0 d a b hwa hside.1 hT hlit hwm
   | udiv d a b =>
       obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd d rfl
       simp only [litOf] at hlit
@@ -6938,6 +7144,15 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
         obtain ⟨t, ht, h32⟩ := isTy_spec F a _ htk'.2
         simp at h32; subst h32
         exact sqrt_ok (hmo := hmo) F lc c start0 d a hhw (not_win_of F a (hvu a (by simp [valUses, Inst.uses]))) hside ht
+          (resTy_same F _ d a rfl hty _ ht) hlit
+      | fabs =>
+        obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd d rfl
+        simp only [litOf] at hlit
+        simp only [defSide, Bool.not_eq_true'] at hside
+        simp only [takes, Bool.and_eq_true] at htk'
+        obtain ⟨t, ht, h32⟩ := isTy_spec F a _ htk'.2
+        simp at h32; subst h32
+        exact fabs_ok (hmo := hmo) F lc c start0 d a (not_win_of F a (hvu a (by simp [valUses, Inst.uses]))) hside ht
           (resTy_same F _ d a rfl hty _ ht) hlit
       | _ => simp only [takes, Bool.and_eq_true] at htk'; exact absurd htk'.1 (by decide)
   | fma d a b e =>
@@ -7168,19 +7383,28 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
       simp only [resTy, Option.map_some] at hty
       simp only [litOf] at hlit
       simp only [defSide, Bool.not_eq_true'] at hside
-      simp only [takes, Bool.and_eq_true, beq_iff_eq] at htk'
-      obtain ⟨rfl, hk⟩ := htk'
+      simp only [takes] at htk'
       cases k with
       | fromUint =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at htk'
+        obtain ⟨rfl, hk⟩ := htk'
         exact uitof_ok (hmo := hmo) F lc c start0 d a (not_win_of F a (hvu a (by simp [valUses, Inst.uses]))) hside
           (fun t ht => by obtain ⟨t', h1, h2⟩ := isTy_spec F a _ hk; rw [h1] at ht; cases ht; simpa using h2)
           hty hlit
       | demote =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at htk'
+        obtain ⟨rfl, hk⟩ := htk'
         obtain ⟨t, ht, h64⟩ := isTy_spec F a _ hk
         simp at h64; subst h64
         exact demote_ok (hmo := hmo) F lc c start0 d a hhw (not_win_of F a (hvu a (by simp [valUses, Inst.uses]))) hside ht
           hty hlit
-      | toSint => cases hk
+      | toSint =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at htk'
+        obtain ⟨rfl, hk⟩ := htk'
+        obtain ⟨t, ht, h32⟩ := isTy_spec F a _ hk
+        simp at h32; subst h32
+        exact ftosi_ok (hmo := hmo) F lc c start0 d a (not_win_of F a (hvu a (by simp [valUses, Inst.uses]))) hside ht
+          hty hlit
   | fbin d k a b =>
       cases k with
       | fdiv =>

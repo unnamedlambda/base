@@ -24,7 +24,8 @@ def gpuNaN (t : ClifTy) (_ : UInt64) : UInt64 :=
   | _ => 0x7fffffff
 
 /-- **The hardware's approximations**: the bits each approximating
-    intrinsic (`ex2.approx.f32`, `rcp.approx.f32`, `lg2.approx.f32`) gives on
+    intrinsic (`ex2`, `rcp`, `lg2`, `sin`, `cos`, `sqrt` and `rsqrt`, each
+    `.approx.f32`) gives on
     each argument's bits. No formula states them; a claim about a kernel that
     uses them holds for every `Hw`, or for those within a stated error.
     `Hw.rounded` is the exactly rounded functions, which the model runs where
@@ -44,6 +45,10 @@ def Hw.rounded : Hw where
     | .ex2Approx => viaFloat Float.exp2
     | .rcpApprox => fun x => ofF32 (1 / f32 x)
     | .lg2Approx => viaFloat Float.log2
+    | .sinApprox => viaFloat Float.sin
+    | .cosApprox => viaFloat Float.cos
+    | .sqrtApprox => viaFloat Float.sqrt
+    | .rsqrtApprox => viaFloat fun v => 1 / v.sqrt
     | _ => id
 
 instance : Inhabited Hw := ⟨Hw.rounded⟩

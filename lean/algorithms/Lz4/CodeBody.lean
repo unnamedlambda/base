@@ -22,6 +22,8 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem Algo
   AlgorithmLib.LZ4WarpDSL AlgorithmLib.LibSpec AlgorithmLib.Kernel LZ4WarpEvalBytes
   AlgorithmLib.LZ4Plan
 
+open AlgorithmLib.ML.LaneWarp (NotArena Writable)
+
 namespace Lz4Code
 
 /-- Two statements the warp runs alike: the same run, the same byte stores,
@@ -86,30 +88,8 @@ theorem lenHeader_base {I : UInt64 → Prop} {okC : WStmt → WState → Prop} (
 /-- The output of a block: `n` bytes from `ob`. -/
 def outputOf (ob : UInt64) (n : Nat) (a : UInt64) : Prop := ∃ j, j < n ∧ a = ob + UInt64.ofNat j
 
-theorem phase_size (all : List (Nat × UInt64 × Nat × UInt64)) (b : Nat) : ∀ c : Mem,
-    (phase all b c).arena.size = c.arena.size := by
-  unfold phase
-  induction all with
-  | nil => intro c; rfl
-  | cons x xs ih =>
-      intro c
-      simp only [List.foldl_cons]
-      rw [ih]
-      split
-      · cases h : c.store x.2.1 x.2.2.1 x.2.2.2 with
-        | none => rfl
-        | some m' =>
-            obtain ⟨r', off', -, hf⟩ := store_frame h
-            simpa [Mem.region] using (hf.same.size .arena).symm
-      · rfl
-
 theorem clearMem_size (hashLog : Nat) : (clearMem hashLog).data.size = 2 ^ hashLog * 2 := by
-  show (clearMem hashLog).size = _
-  unfold clearMem
-  simp only [snapMem]
-  rw [phase_size]
-  show (Array.replicate (2 ^ hashLog * 2) (0 : UInt8)).size = _
-  simp
+  simp [clearMem]
 
 set_option maxHeartbeats 4000000 in
 /-- **The warp's run of a block's body makes only the accesses the lanes

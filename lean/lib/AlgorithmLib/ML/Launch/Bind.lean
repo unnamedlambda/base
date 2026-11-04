@@ -58,6 +58,26 @@ def IdxE.renameBuf (f : Buf → Buf) : IdxE → IdxE
   | .mul a b     => .mul (a.renameBuf f) (b.renameBuf f)
   | x            => x
 
+def IExp.renameBuf (f : Buf → Buf) : IExp → IExp
+  | .ptr b       => .ptr (f b)
+  | .bin o a b   => .bin o (a.renameBuf f) (b.renameBuf f)
+  | .cmp c a b   => .cmp c (a.renameBuf f) (b.renameBuf f)
+  | .ctz a       => .ctz (a.renameBuf f)
+  | x            => x
+
+/-- The integer state as a kernel sees it: its slot `b` at global buffer `f b`. -/
+def ISt.pull (f : Buf → Buf) (i : ISt) : ISt := { i with ptr := fun b => i.ptr (f b) }
+
+/-- A renamed integer expression reads the state as the kernel sees it. -/
+theorem IExp.eval_renameBuf (f : Buf → Buf) (i : ISt) (cta : Nat) (l : Lane) :
+    ∀ e : IExp, (e.renameBuf f).eval i cta l = e.eval (i.pull f) cta l := by
+  intro e
+  induction e with
+  | bin o a b iha ihb => simp only [IExp.renameBuf, IExp.eval, iha, ihb]
+  | cmp c a b iha ihb => simp only [IExp.renameBuf, IExp.eval, iha, ihb]
+  | ctz a ih => simp only [IExp.renameBuf, IExp.eval, ih]
+  | _ => rfl
+
 /-- Evaluating a renamed address against global integer memory is evaluating the
     original against the *view* of it. -/
 theorem IdxE.eval_renameBuf (f : Buf → Buf) (cta i : Nat) (l : Lane)
@@ -86,6 +106,16 @@ def EWStmt.renameBuf (f : Buf → Buf) : EWStmt → EWStmt
   | .forN n body          => .forN n (body.renameBuf f)
   | .forM bu a body       => .forM (f bu) a (body.renameBuf f)
   | .cvtIF d ix           => .cvtIF d (ix.renameBuf f)
+  | .setI d e             => .setI d (e.renameBuf f)
+  | .ldB d a              => .ldB d (a.renameBuf f)
+  | .stB a v g            => .stB (a.renameBuf f) (v.renameBuf f) (g.renameBuf f)
+  | .ldH d a              => .ldH d (a.renameBuf f)
+  | .stH a v g            => .stH (a.renameBuf f) (v.renameBuf f) (g.renameBuf f)
+  | .ballot d p           => .ballot d (p.renameBuf f)
+  | .shflIdx d v s'       => .shflIdx d (v.renameBuf f) (s'.renameBuf f)
+  | .iif c x y            => .iif (c.renameBuf f) (x.renameBuf f) (y.renameBuf f)
+  | .iwhile n c cs body   => .iwhile n (c.renameBuf f) cs (body.renameBuf f)
+  | .locals rs body       => .locals rs (body.renameBuf f)
 
 /-- The renamed kernel writes exactly the renamed buffers — so `run_otherBuf`
     still applies, which is what covers buffers the bind never mentions. -/
@@ -99,6 +129,12 @@ theorem EWStmt.wbufs_renameBuf (f : Buf → Buf) :
       exact List.map_append.symm
   | forN _ _ ih => exact ih
   | forM _ _ _ ih => exact ih
+  | iif _ x y ihx ihy =>
+      show (x.renameBuf f).wbufs ++ (y.renameBuf f).wbufs = _
+      rw [ihx, ihy]
+      exact List.map_append.symm
+  | iwhile _ _ _ _ ih => exact ih
+  | locals _ _ ih => exact ih
   | _ => rfl
 
 -- ---------------------------------------------------------------------------
@@ -108,7 +144,7 @@ theorem EWStmt.wbufs_renameBuf (f : Buf → Buf) :
 /-- `pull f st` is what the kernel sees: its slot `b` is the global buffer
     `f b`.  Registers and shared memory are per-warp and unaffected by a bind. -/
 def WSt.pull (f : Buf → Buf) (st : WSt R) : WSt R :=
-  { st with mem := fun b => st.mem (f b) }
+  { st with mem := fun b => st.mem (f b), int := st.int.pull f }
 
 @[simp] theorem WSt.pull_mem (f : Buf → Buf) (st : WSt R) (b : Buf) :
     (WSt.pull f st).mem b = st.mem (f b) := rfl
@@ -141,7 +177,7 @@ theorem WFExp.eval_pull (f : Buf → Buf) (st : WSt R) (l : Lane) :
 theorem WSt.pull_store1 {f : Buf → Buf} (hf : BufInj f) (st : WSt R) (b : Buf)
     (a : Nat) (v : R) :
     WSt.pull f (st.store1 (f b) a v) = (WSt.pull f st).store1 b a v := by
-  refine WSt.ext rfl ?_ rfl
+  refine WSt.ext rfl ?_ rfl rfl
   funext c j
   show (if f c = f b ∧ j = a then v else st.mem (f c) j)
      = (if c = b ∧ j = a then v else st.mem (f c) j)
@@ -164,25 +200,44 @@ theorem pull_storeFold {f : Buf → Buf} (hf : BufInj f) (b : Buf) (ix : Lane �
       rw [ih, WSt.pull_store1 hf]
       rfl
 
+/-- Byte stores leave where the buffers are. -/
+theorem pull_storeB (f : Buf → Buf) (i : ISt) (a v g : Lane → UInt64) :
+    ISt.pull f (i.storeB a v g) = (ISt.pull f i).storeB a v g := by
+  unfold ISt.storeB
+  generalize List.finRange W = L
+  induction L generalizing i with
+  | nil => rfl
+  | cons l L ih =>
+      simp only [List.foldl_cons]
+      rw [ih]
+      congr 1
+      by_cases hg : g l ≠ 0 <;> simp [hg, ISt.pull]
+
+theorem pull_storeH (f : Buf → Buf) (i : ISt) (a v g : Lane → UInt64) :
+    ISt.pull f (i.storeH a v g) = (ISt.pull f i).storeH a v g := by
+  unfold ISt.storeH
+  generalize List.finRange W = L
+  induction L generalizing i with
+  | nil => rfl
+  | cons l L ih =>
+      simp only [List.foldl_cons]
+      rw [ih]
+      congr 1
+      by_cases hg : g l ≠ 0 <;> simp [hg, ISt.pull]
+
 -- ---------------------------------------------------------------------------
 -- The simulation
 -- ---------------------------------------------------------------------------
 
 /-- Loops: the body commutes at every iteration, so the fold does. -/
-theorem pull_forN (f : Buf → Buf) (g g' : Nat → WStmt)
-    (h : ∀ j (st : WSt R), WSt.pull f ((g' j).run st) = (g j).run (WSt.pull f st)) :
-    ∀ (n : Nat) (st : WSt R),
-      WSt.pull f ((WStmt.forN n g').run st) = (WStmt.forN n g).run (WSt.pull f st) := by
-  intro n
-  induction n with
-  | zero => intro _; rfl
-  | succ n ih =>
-      intro st
-      show WSt.pull f ((List.range (n + 1)).foldl (fun s j => (g' j).run s) st)
-         = (List.range (n + 1)).foldl (fun s j => (g j).run s) (WSt.pull f st)
-      rw [List.range_succ, List.foldl_append, List.foldl_append,
-          List.foldl_cons, List.foldl_nil, List.foldl_cons, List.foldl_nil, h n _]
-      exact congrArg (fun s => (g n).run s) (ih st)
+theorem pull_foldl (f : Buf → Buf) (g g' : Nat → WSt R → WSt R)
+    (h : ∀ j (st : WSt R), WSt.pull f (g' j st) = g j (WSt.pull f st)) :
+    ∀ (L : List Nat) (st : WSt R),
+      WSt.pull f (L.foldl (fun s j => g' j s) st) = L.foldl (fun s j => g j s) (WSt.pull f st) := by
+  intro L
+  induction L with
+  | nil => intro _; rfl
+  | cons j L ih => intro st; rw [List.foldl_cons, List.foldl_cons, ih, h]
 
 /-- **Running the bound kernel, viewed through the bind, is running the kernel.**
 
@@ -198,17 +253,16 @@ theorem pull_forN (f : Buf → Buf) (g g' : Nat → WStmt)
 theorem EWStmt.run_renameBuf {f : Buf → Buf} (hf : BufInj f) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
     ∀ (s : EWStmt) (i : Nat) (st : WSt R),
-      WSt.pull f (((s.renameBuf f).elabAt cta i ir im).run st)
-        = (s.elabAt cta i ir (fun b => im (f b))).run (WSt.pull f st) := by
+      WSt.pull f ((s.renameBuf f).run st cta i ir im)
+        = s.run (WSt.pull f st) cta i ir (fun b => im (f b)) := by
   intro s
   induction s with
   | skip => intro _ _; rfl
   | seq x y ihx ihy =>
       intro i st
-      show WSt.pull f (((y.renameBuf f).elabAt cta i ir im).run
-             (((x.renameBuf f).elabAt cta i ir im).run st)) = _
+      show WSt.pull f ((y.renameBuf f).run ((x.renameBuf f).run st cta i ir im) cta i ir im) = _
       rw [ihy i _]
-      exact congrArg (fun s' => (y.elabAt cta i ir (fun b => im (f b))).run s') (ihx i st)
+      exact congrArg (fun s' => y.run s' cta i ir (fun b => im (f b))) (ihx i st)
   | setR r e =>
       intro i st
       show WSt.pull f (st.setReg r (fun l => e.eval st l)) = _
@@ -262,11 +316,11 @@ theorem EWStmt.run_renameBuf {f : Buf → Buf} (hf : BufInj f) (cta : Nat)
       rw [IdxE.eval_renameBuf]
       rfl
   | barrier => intro _ _; rfl
-  | forN n body ih => intro _ st; exact pull_forN f _ _ (fun j s' => ih j s') n st
+  | forN n body ih => intro _ st; exact pull_foldl f _ _ (fun j s' => ih j s') (List.range n) st
   | forM bu a body ih =>
       intro _ st
-      show WSt.pull f ((WStmt.forN (im (f bu) a) _).run st) = _
-      exact pull_forN f _ _ (fun j s' => ih j s') (im (f bu) a) st
+      show WSt.pull f ((List.range (im (f bu) a)).foldl _ st) = _
+      exact pull_foldl f _ _ (fun j s' => ih j s') (List.range (im (f bu) a)) st
   | cvtIF d ix =>
       intro i st
       show WSt.pull f (st.setReg d (fun l => NumOps.ofNat
@@ -274,14 +328,55 @@ theorem EWStmt.run_renameBuf {f : Buf → Buf} (hf : BufInj f) (cta : Nat)
       rw [WSt.pull_setReg]
       refine congrArg _ (funext fun l => ?_)
       rw [IdxE.eval_renameBuf]
+  | setI d e => intro _ st; simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]; rfl
+  | ldB d a => intro _ st; simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]; rfl
+  | ldH d a => intro _ st; simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]; rfl
+  | ballot d p => intro _ st; simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]; rfl
+  | shflIdx d v s' => intro _ st; simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]; rfl
+  | stB a v g =>
+      intro _ st
+      simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]
+      show WSt.pull f (st.withInt _) = (WSt.pull f st).withInt _
+      simp only [WSt.pull, WSt.withInt, ISt.pull]
+      congr 1
+      exact pull_storeB _ _ _ _ _
+  | stH a v g =>
+      intro _ st
+      simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]
+      show WSt.pull f (st.withInt _) = (WSt.pull f st).withInt _
+      simp only [WSt.pull, WSt.withInt, ISt.pull]
+      congr 1
+      exact pull_storeH _ _ _ _ _
+  | iif c x y ihx ihy =>
+      intro i st
+      simp only [EWStmt.renameBuf, EWStmt.run, IExp.eval_renameBuf]
+      show _ = if IExp.eval (st.int.pull f) cta _ c ≠ 0 then _ else _
+      split
+      · exact ihx i st
+      · exact ihy i st
+  | iwhile n c cs body ih =>
+      intro i st
+      simp only [EWStmt.renameBuf, EWStmt.run]
+      refine pull_foldl f _ _ (fun _ s' => ?_) (List.range n) st
+      simp only [IExp.eval_renameBuf]
+      show _ = if IExp.eval (s'.int.pull f) cta _ c ≠ 0 then _ else _
+      split
+      · rw [← ih i s']
+        rfl
+      · rfl
+  | locals rs body ih =>
+      intro i st
+      simp only [EWStmt.renameBuf, EWStmt.run]
+      rw [← ih i st]
+      rfl
 
 /-- The read-back form: a global buffer in the image of the bind holds what the
     local stage put in the corresponding slot. -/
 theorem EWStmt.run_renameBuf_at {f : Buf → Buf} (hf : BufInj f) (cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (s : EWStmt) (i : Nat) (st : WSt R)
     (b : Buf) (a : Nat) :
-    (((s.renameBuf f).elabAt cta i ir im).run st).mem (f b) a
-      = ((s.elabAt cta i ir (fun c => im (f c))).run (WSt.pull f st)).mem b a := by
+    ((s.renameBuf f).run st cta i ir im).mem (f b) a
+      = (s.run (WSt.pull f st) cta i ir (fun c => im (f c))).mem b a := by
   have h := EWStmt.run_renameBuf hf cta ir im s i st
   exact congrFun (congrFun (congrArg WSt.mem h) b) a
 
@@ -314,6 +409,9 @@ def EWStmt.ibufs : EWStmt → List Buf
   | .cvtIF _ ix           => ix.ibufs
   | .forN _ body          => body.ibufs
   | .forM bu _ body       => bu :: body.ibufs
+  | .iif _ x y            => x.ibufs ++ y.ibufs
+  | .iwhile _ _ _ body    => body.ibufs
+  | .locals _ body        => body.ibufs
   | _                     => []
 
 theorem IdxE.eval_imCongr (cta i : Nat) (l : Lane) (ir : Nat → Lane → Nat)
@@ -339,60 +437,71 @@ theorem IdxE.eval_imCongr (cta i : Nat) (l : Lane) (ir : Nat → Lane → Nat)
           ihb (fun c hc => h c (List.mem_append_right _ hc))]
   | _ => intro _; rfl
 
-/-- **A kernel elaborates the same against any integer memory agreeing on the
+/-- **A kernel runs the same against any integer memory agreeing on the
     buffers it names.** -/
-theorem EWStmt.elabAt_imCongr (cta : Nat) (ir : Nat → Lane → Nat)
+theorem EWStmt.run_imCongr (cta : Nat) (ir : Nat → Lane → Nat)
     (im im' : Buf → Nat → Nat) :
-    ∀ (s : EWStmt) (i : Nat), (∀ b ∈ s.ibufs, im b = im' b) →
-      s.elabAt cta i ir im = s.elabAt cta i ir im' := by
+    ∀ (s : EWStmt) (i : Nat) (st : WSt R), (∀ b ∈ s.ibufs, im b = im' b) →
+      s.run st cta i ir im = s.run st cta i ir im' := by
   intro s
   induction s with
   | seq x y ihx ihy =>
-      intro i h
-      show WStmt.seq _ _ = WStmt.seq _ _
-      rw [ihx i (fun c hc => h c (List.mem_append_left _ hc)),
-          ihy i (fun c hc => h c (List.mem_append_right _ hc))]
+      intro i st h
+      show y.run (x.run st cta i ir im) cta i ir im = y.run (x.run st cta i ir im') cta i ir im'
+      rw [ihx i st (fun c hc => h c (List.mem_append_left _ hc)),
+          ihy i _ (fun c hc => h c (List.mem_append_right _ hc))]
   | loadIdx d b ix =>
-      intro i h
-      show WStmt.loadIdx d b _ = WStmt.loadIdx d b _
-      exact congrArg _ (funext fun l => IdxE.eval_imCongr cta i l ir im im' ix h)
+      intro i st h
+      simp only [erun_loadIdx, show ∀ l, ix.eval cta i l ir im = ix.eval cta i l ir im' from
+        fun l => IdxE.eval_imCongr cta i l ir im im' ix h]
   | loadV4 a b c d bu ix =>
-      intro i h
-      show WStmt.loadV4 a b c d bu _ = WStmt.loadV4 a b c d bu _
-      exact congrArg _ (funext fun l => IdxE.eval_imCongr cta i l ir im im' ix h)
+      intro i st h
+      simp only [erun_loadV4, show ∀ l, ix.eval cta i l ir im = ix.eval cta i l ir im' from
+        fun l => IdxE.eval_imCongr cta i l ir im im' ix h]
   | storeLane0 b ix r =>
-      intro i h
-      show WStmt.storeLane0 b _ r = WStmt.storeLane0 b _ r
-      rw [IdxE.eval_imCongr cta i ⟨0, by decide⟩ ir im im' ix h]
+      intro i st h
+      simp only [erun_storeLane0, IdxE.eval_imCongr cta i ⟨0, by decide⟩ ir im im' ix h]
   | storeLane b ix r =>
-      intro i h
-      show WStmt.storeLane b _ r = WStmt.storeLane b _ r
-      exact congrArg (fun g => WStmt.storeLane b g r)
-        (funext fun l => IdxE.eval_imCongr cta i l ir im im' ix h)
+      intro i st h
+      simp only [erun_storeLane, show ∀ l, ix.eval cta i l ir im = ix.eval cta i l ir im' from
+        fun l => IdxE.eval_imCongr cta i l ir im im' ix h]
   | stSm ix r =>
-      intro i h
-      show WStmt.stSmem _ r = WStmt.stSmem _ r
-      exact congrArg (fun g => WStmt.stSmem g r)
-        (funext fun l => IdxE.eval_imCongr cta i l ir im im' ix h)
+      intro i st h
+      simp only [EWStmt.run, show ∀ l, ix.eval cta i l ir im = ix.eval cta i l ir im' from
+        fun l => IdxE.eval_imCongr cta i l ir im im' ix h]
   | ldSm d ix =>
-      intro i h
-      show WStmt.ldSmem d _ = WStmt.ldSmem d _
-      exact congrArg _ (funext fun l => IdxE.eval_imCongr cta i l ir im im' ix h)
+      intro i st h
+      simp only [erun_ldSm, show ∀ l, ix.eval cta i l ir im = ix.eval cta i l ir im' from
+        fun l => IdxE.eval_imCongr cta i l ir im im' ix h]
   | cvtIF d ix =>
-      intro i h
-      show WStmt.setLaneF d _ = WStmt.setLaneF d _
-      exact congrArg _ (funext fun l => IdxE.eval_imCongr cta i l ir im im' ix h)
+      intro i st h
+      simp only [erun_cvtIF, show ∀ l, ix.eval cta i l ir im = ix.eval cta i l ir im' from
+        fun l => IdxE.eval_imCongr cta i l ir im im' ix h]
   | forN n body ih =>
-      intro _ h
-      show WStmt.forN n _ = WStmt.forN n _
-      exact congrArg _ (funext fun j => ih j h)
+      intro _ st h
+      show (List.range n).foldl (fun s' j => body.run s' cta j ir im) st
+        = (List.range n).foldl (fun s' j => body.run s' cta j ir im') st
+      exact congrArg (fun g => (List.range n).foldl g st) (funext fun s' => funext fun j => ih j s' h)
   | forM bu a body ih =>
-      intro _ h
-      show WStmt.forN (im bu a) _ = WStmt.forN (im' bu a) _
+      intro _ st h
+      show (List.range (im bu a)).foldl (fun s' j => body.run s' cta j ir im) st
+        = (List.range (im' bu a)).foldl (fun s' j => body.run s' cta j ir im') st
       rw [h bu (List.mem_cons_self ..)]
-      exact congrArg _ (funext fun j =>
-        ih j (fun c hc => h c (List.mem_cons_of_mem _ hc)))
-  | _ => intro _ _; rfl
+      exact congrArg (fun g => (List.range (im' bu a)).foldl g st) (funext fun s' => funext fun j =>
+        ih j s' (fun c hc => h c (List.mem_cons_of_mem _ hc)))
+  | iif c x y ihx ihy =>
+      intro i st h
+      simp only [EWStmt.run]
+      rw [ihx i st (fun c hc => h c (List.mem_append_left _ hc)),
+        ihy i st (fun c hc => h c (List.mem_append_right _ hc))]
+  | iwhile n c cs body ih =>
+      intro i st h
+      have key : ∀ s, body.run s cta i ir im = body.run s cta i ir im' := fun s => ih i s h
+      simp only [EWStmt.run, key]
+  | locals rs body ih =>
+      intro i st h
+      simp only [EWStmt.run, ih i st h]
+  | _ => intro _ _ _; rfl
 
 -- ---------------------------------------------------------------------------
 -- A stage, bound
@@ -422,9 +531,9 @@ def StageSpec.rename (S : (StageSpec R)) (f : Buf → Buf) (hf : BufInj f)
   val   := fun m cta a => S.val (fun b => m (f b)) cta a
   frame := by
     intro cta st b a h
-    have hgim : S.ew.elabAt cta 0 S.iregs (fun c => gim (f c))
-        = S.ew.elabAt cta 0 S.iregs S.imem :=
-      EWStmt.elabAt_imCongr cta S.iregs _ _ S.ew 0 him
+    have hgim : S.ew.run (WSt.pull f st) cta 0 S.iregs (fun c => gim (f c))
+        = S.ew.run (WSt.pull f st) cta 0 S.iregs S.imem :=
+      EWStmt.run_imCongr cta S.iregs _ _ S.ew 0 _ him
     by_cases hb : ∃ c, f c = b
     · obtain ⟨c, hc⟩ := hb
       subst hc
@@ -440,9 +549,9 @@ def StageSpec.rename (S : (StageSpec R)) (f : Buf → Buf) (hf : BufInj f)
       exact fun hcon => hb ⟨x, hx.trans hcon⟩
   value := by
     intro cta st a hdom
-    have hgim : S.ew.elabAt cta 0 S.iregs (fun c => gim (f c))
-        = S.ew.elabAt cta 0 S.iregs S.imem :=
-      EWStmt.elabAt_imCongr cta S.iregs _ _ S.ew 0 him
+    have hgim : S.ew.run (WSt.pull f st) cta 0 S.iregs (fun c => gim (f c))
+        = S.ew.run (WSt.pull f st) cta 0 S.iregs S.imem :=
+      EWStmt.run_imCongr cta S.iregs _ _ S.ew 0 _ him
     rw [EWStmt.run_renameBuf_at hf cta S.iregs gim S.ew 0 st S.out a, hgim]
     exact S.value cta (WSt.pull f st) a hdom
   valOnly := by

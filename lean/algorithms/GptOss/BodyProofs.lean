@@ -17,7 +17,7 @@ which build the artifacts and so may not wait on proofs.
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 open AlgorithmLib.HProg.Hoare AlgorithmLib.LibSpec AlgorithmLib.Kernel AlgorithmLib.ML AlgorithmLib.ML.BodyProof
-open AlgorithmLib.ML.BodyWarp GptOssAttention
+open AlgorithmLib.ML.BodyWarp AlgorithmLib.ML.BodyPhase GptOssAttention
 
 namespace GptOssProofs
 
@@ -60,10 +60,10 @@ theorem rms_body (hw : Kernel.Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 3
     (hsz : ∀ b, b < 3 → 4 * H ≤ (bufs b).size)
     (hr : LaunchRuns rmsKernel 1 32 (BodyWarp.bufArgs 3) bufs bufs' hw) :
     ∀ b j, b < 3 → j < H → ({ Kernel.kmem bufs with bufs := bufs' } : HProg.Sem.Mem).load (BodyProof.bufW 3 b j) 4 =
-      some ((@WStmt.run F32 (F32.ops hw) _ (rmsKernelEW.elabAt 0 0) (BodyWarp.ws0 3 (Kernel.kmem bufs))).mem b j).bits := by
+      some ((@EWStmt.run F32 (F32.ops hw) _ rmsKernelEW (BodyWarp.ws0 3 (Kernel.kmem bufs)) 0 0).mem b j).bits := by
   intro b j hb hj
   have hH : H = 2880 := rfl
-  have h := BodyWarp.launch_lockstep_one hw hw32 "rmsNorm" 3 0 rmsKernelEW 1 (by decide) rmsAcc (fun _ _ => none)
+  have h := BodyPhase.launch_lockstep_one hw hw32 "rmsNorm" 3 0 rmsKernelEW 1 (by decide) rmsAcc (fun _ _ => none)
     (fun c hc => by obtain rfl : c = 0 := by omega
                     exact rms_acc)
     (fun c l b j h => by
@@ -326,8 +326,7 @@ theorem rope_launch (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
     (hr : LaunchRuns (ropeKernel base) g 32 (bufArgs 3) bufs bufs' hw) :
     ∀ cta l b j, cta < g → ropeAcc base g pos cta l b j →
       ({ kmem bufs with bufs := bufs' } : Mem).load (bufW 3 b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((ropeEW base).elabAt cta 0 (fun _ _ => 0) (imOf (ropeRd (kmem bufs))))
-          (ws0 3 (kmem bufs))).mem b j).bits := by
+        some ((@EWStmt.run F32 (F32.ops hw) _ (ropeEW base) (ws0 3 (kmem bufs)) cta 0 (fun _ _ => 0) (imOf (ropeRd (kmem bufs)))).mem b j).bits := by
   have hH : HALF = 32 := rfl
   have hD : HD = 64 := rfl
   have hR : ROPE_N = 131072 := rfl
@@ -379,8 +378,7 @@ theorem rope_launch (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
     machine's run for head `cta` leaves it. -/
 def ropeOut (hw : Hw) (base cta : Nat) (bufs bufs' : Nat → ByteArray) (b : Buf) (j : Nat) : Prop :=
   ({ kmem bufs with bufs := bufs' } : Mem).load (bufW 3 b j) 4 =
-    some ((@WStmt.run F32 (F32.ops hw) _ ((ropeEW base).elabAt cta 0 (fun _ _ => 0) (imOf (ropeRd (kmem bufs))))
-      (ws0 3 (kmem bufs))).mem b j).bits
+    some ((@EWStmt.run F32 (F32.ops hw) _ (ropeEW base) (ws0 3 (kmem bufs)) cta 0 (fun _ _ => 0) (imOf (ropeRd (kmem bufs)))).mem b j).bits
 
 /-- **Every shipped rotation's launch runs its statement**: `g` one-warp blocks
     leave each head's pair in the packed row as the warp machine's run of the
@@ -504,7 +502,7 @@ theorem sm_fits (g seq chunks tail rem cta : Nat) (m : Mem) (hc : cta < g)
   simp only [sinkSoftmaxEW, smMax, smSum, smSink, smNorm, smMaxReduce, chunkRemReduce, sweepBody, normStep,
     normStep0, normCompute, storeBody, warpReduceMaxE, warpMaxRoundE, smSumBfly, warpRoundE, fits, M_CHUNKS, M_REM,
     hk', hr', Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range]
-  simp (config := { contextual := true }) [hchunk, htail, hsink, hk31, hr31]
+  simp (config := { contextual := true }) [hchunk, htail, hsink, hk31, hr31, Body.setsI]
 
 /-- The softmax's launch, every element a head's lane touches. -/
 theorem sm_launch (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (g : Nat)
@@ -517,8 +515,7 @@ theorem sm_launch (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (g 
     (hrun : LaunchRuns sinkKernel g 32 (bufArgs 4) bufs bufs' hw) :
     ∀ cta l b j, cta < g → smAcc g seq chunks tail rem cta l b j →
       ({ kmem bufs with bufs := bufs' } : Mem).load (bufW 4 b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ (sinkSoftmaxEW.elabAt cta 0 (fun _ _ => 0) (imOf (smRd (kmem bufs))))
-          (ws0 4 (kmem bufs))).mem b j).bits := by
+        some ((@EWStmt.run F32 (F32.ops hw) _ sinkSoftmaxEW (ws0 4 (kmem bufs)) cta 0 (fun _ _ => 0) (imOf (smRd (kmem bufs)))).mem b j).bits := by
   have hs' : smRd (kmem bufs) 1 M_SEQ = some seq := by simp [smRd, hs]
   have hk' : smRd (kmem bufs) 1 M_CHUNKS = some chunks := by simp [smRd, hk]
   have ht' : smRd (kmem bufs) 1 M_TAIL = some tail := by simp [smRd, ht]
@@ -585,8 +582,7 @@ theorem sm_launch (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (g 
     machine's run for head `cta` leaves it. -/
 def smOut (hw : Hw) (cta : Nat) (bufs bufs' : Nat → ByteArray) (b : Buf) (j : Nat) : Prop :=
   ({ kmem bufs with bufs := bufs' } : Mem).load (bufW 4 b j) 4 =
-    some ((@WStmt.run F32 (F32.ops hw) _ (sinkSoftmaxEW.elabAt cta 0 (fun _ _ => 0) (imOf (smRd (kmem bufs))))
-      (ws0 4 (kmem bufs))).mem b j).bits
+    some ((@EWStmt.run F32 (F32.ops hw) _ sinkSoftmaxEW (ws0 4 (kmem bufs)) cta 0 (fun _ _ => 0) (imOf (smRd (kmem bufs)))).mem b j).bits
 
 /-- **The softmax's launch runs its statement**: `g` one-warp blocks leave each
     head's row of probabilities, its whole chunks and its remainder, as the

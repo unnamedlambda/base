@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Ptx.BodyWarp
-meta import AlgorithmLib.ML.Ptx.BodyWarp
+public import AlgorithmLib.ML.Ptx.BodyPhase
+meta import AlgorithmLib.ML.Ptx.BodyPhase
 public import AlgorithmLib.ML.Math.KVCache
 meta import AlgorithmLib.ML.Math.KVCache
 public import AlgorithmLib.ML.Launch.Interchange
@@ -37,7 +37,7 @@ import all Init.Data.List.Sort.Basic
   Proven: a model written as an `Expr` compiles to an `EWStmt`, elaborates into
   the warp machine, and the statement's body kernel (`Body.kernel`), launched,
   leaves every word a lane touches as the warp machine's run does
-  (`BodyWarp.launch_lockstep`, decided per launch by `BodyCheck.launch_body`),
+  (`BodyPhase.launch_lockstep`, decided per launch by `BodyCheck.launch_body`),
   at the words the hardware computes on (`F32`), under the declared laws
   below.  This covers **each kernel this library emits**.
 
@@ -98,9 +98,9 @@ section LedgerAnchors
 example := @compileW_sound
 example := @compileWKernel_correct
 example := @compileW_frame
-example := @BodyWarp.wpE_body
+example := @BodyLane.wpE_bodyW
 example := @BodyWarp.thread_ends
-example := @BodyWarp.launch_lockstep
+example := @BodyPhase.launch_lockstep
 
 -- differentiation
 example := @grad_correct
@@ -130,7 +130,7 @@ example := @zipPass_spec
 example := @mapKernelAt
 example := @dotKernel
 example := @Sched.realize_spec
-example := @elabAt_addrFree
+example := @run_addrFree
 example := @compileWKernel_correctAt
 example := @mapLoopEW_stores
 
@@ -162,7 +162,7 @@ example := @compileWKernel_stores
 example := @storeLane_two_first
 example := @storeLane_two_second
 example := @storeLane_regs
-example := @wrun_setLaneF
+example := @erun_cvtIF
 example := @Law.holds
 example := @Law.all_covers
 example := @VendorKernel.all_covers

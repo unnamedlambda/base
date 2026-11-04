@@ -63,7 +63,7 @@ def decodeOpenObligations : List String :=
      stated. Getting it wrong writes one head's keys over another's rather \
      than out of bounds, so it would read as a quality problem."
   , "FusedAttentionValue — scores, softmax and the value mix are one kernel \
-     (GptOssKernels.fusedAttnTile) plus a merge, and the scores never reach \
+     (GptOssKernels.Body.attnTile) plus a merge, and the scores never reach \
      memory. What it replaced was four launches of which the softmax was a \
      *proven* EW kernel with a soundness theorem from raw launch; that theorem \
      still holds and nothing launches the kernel it is about. So this is a \

@@ -80,8 +80,8 @@ open AlgorithmLib.Prog AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HP
 
     Read the chain right to left: `warpSumSqV4E` is an ordinary spec-language
     term; `warpSumSqV4Store_implements` says the warp kernel's *store* lands
-    exactly its denotation, at any carrier; `eKernel_elab` says the emittable
-    kernel expands to that warp kernel; and `launch_body` says launching its
+    exactly its denotation, at any carrier; `eKernel_eq` says the shipped
+    kernel is that warp kernel; and `launch_body` says launching its
     body kernel leaves each block's output word as the warp machine's run
     does, at the words the hardware computes on (`F32`).
 
@@ -100,9 +100,11 @@ theorem sumsq_body (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (b
     List.mem_append_right _ (by simp [touchL, outBuf, IdxE.eval])
   rw [launch_body hw hw32 "main" 2 0 eKernel 1 GRID (fun b => [N * 4, GRID * 4].getD b 0) (by native_decide)
     bufs bufs' hsz hr cta lane0 outBuf cta (by omega) hm]
-  have e : eKernel.elabAt cta 0 = warpSumSqV4Store (cta * CHUNK) inBuf outBuf cta K := eKernel_elab cta
-  rw [e, @warpSumSqV4Store_implements F32 (F32.ops hw) _ Γ (litNatF32 hw) (cta * CHUNK) inBuf outBuf cta K
-    (ws0 2 (kmem bufs)) env be hb]
+  have h := @warpSumSqV4Store_implements F32 (F32.ops hw) _ Γ (litNatF32 hw) (cta * CHUNK) inBuf outBuf
+    (strideIxV4Cta CHUNK) .ctaId K cta (fun _ _ => 0) (fun _ _ => 0) (eKernel_base cta)
+    (ws0 2 (kmem bufs)) env be hb
+  simp only [IdxE.eval] at h
+  rw [eKernel_eq, h]
 
 end WarpSumSq
 
@@ -129,8 +131,7 @@ theorem gemv_runs (sh : Shape) (hsh : sh ∈ shapes) (sq : Bool) (s : Sched) (hw
     (hr : LaunchRuns (Body.kernel "main" 3 0 (if sq then sumsqOf sh s else kernelOf sh s)) sh.m 32 (bufArgs 3) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < sh.m → (b, j) ∈ touchL cta l 0 (if sq then sumsqOf sh s else kernelOf sh s) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW 3 b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((if sq then sumsqOf sh s else kernelOf sh s).elabAt cta 0)
-          (ws0 3 (kmem bufs))).mem b j).bits := by
+        some ((@EWStmt.run F32 (F32.ops hw) _ (if sq then sumsqOf sh s else kernelOf sh s) (ws0 3 (kmem bufs)) cta 0).mem b j).bits := by
   have hok := List.all_eq_true.mp (List.all_eq_true.mp (List.all_eq_true.mp gemv_launchOk sh hsh) sq
     (by cases sq <;> simp)) s (by cases s <;> simp [Sched.all])
   have h := launch_body hw hw32 "main" 3 0 _ 1 sh.m (szOf sh) hok bufs bufs' hsz hr
@@ -155,11 +156,11 @@ theorem gemv_body (sh : Shape) (hsh : sh ∈ shapes) (hw : Hw) (hw32 : ∀ c x, 
   have hm : (yB, cta) ∈ touchL cta lane0 0 (kernel sh) :=
     List.mem_append_right _ (by simp [touchL, yB, IdxE.eval])
   rw [gemv_runs sh hsh false .vec4 hw hw32 bufs bufs' hsz hr cta lane0 yB cta hc hm]
-  have e : (kernel sh).elabAt cta 0 = (warpDotV4 aB xB (aIx sh) xIx yB .ctaId (sh.n / 128)).elabIn cta := rfl
+  have e : kernel sh = warpDotV4 aB xB (aIx sh) xIx yB .ctaId (sh.n / 128) := rfl
   have h := @warpDotV4_implements F32 (F32.ops hw) _ Γ (litNatF32 hw) aB xB (aIx sh) xIx yB .ctaId (sh.n / 128)
     cta (ws0 3 (kmem bufs)) env ae be ha hb
   simp only [IdxE.eval] at h
-  show some ((@WStmt.run F32 (F32.ops hw) _ ((kernel sh).elabAt cta 0) (ws0 3 (kmem bufs))).mem yB cta).bits = _
+  show some ((@EWStmt.run F32 (F32.ops hw) _ (kernel sh) (ws0 3 (kmem bufs)) cta 0).mem yB cta).bits = _
   rw [e, h]
 
 end GemvWarp
@@ -215,8 +216,7 @@ theorem grad_runs (narrow : Bool) (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toN
     (hr : LaunchRuns (Body.kernel "main" 2 0 (if narrow then kernelD else kernel)) GRID 32 (bufArgs 2) bufs bufs' hw) :
     ∀ cta (l : Lane) b j, cta < GRID → (b, j) ∈ touchL cta l 0 (if narrow then kernelD else kernel) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW 2 b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((if narrow then kernelD else kernel).elabAt cta 0)
-          (ws0 2 (kmem bufs))).mem b j).bits := by
+        some ((@EWStmt.run F32 (F32.ops hw) _ (if narrow then kernelD else kernel) (ws0 2 (kmem bufs)) cta 0).mem b j).bits := by
   have hok : launchOk 2 GRID 1 (fun b => [NIN * 4, NOUT * 4].getD b 0) (if narrow then kernelD else kernel) = true := by
     cases narrow <;> native_decide
   have h := launch_body hw hw32 "main" 2 0 _ 1 GRID _ hok bufs bufs' hsz hr

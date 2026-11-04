@@ -1,10 +1,12 @@
 module
-public import AlgorithmLib.Surface.CudaPipeline
-meta import AlgorithmLib.Surface.CudaPipeline
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 public import GptOss.Attention
 meta import GptOss.Attention
-public import AlgorithmLib.Kernel.Ptx
-meta import AlgorithmLib.Kernel.Ptx
+public import AlgorithmLib.Kernel.Block
+meta import AlgorithmLib.Kernel.Block
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -24,8 +26,9 @@ import all Init.Data.List.Sort.Basic
   The machine `ML/` proves kernels in addresses buffers by element and holds
   `Float32`: no byte load, no shift, no mask (`ML/QuantMX.lean` says so in its
   own header, having otherwise specified this exact format completely). A
-  kernel that unpacks nibbles is therefore outside it, and these are written in
-  the string builder, which has no semantics attached.
+  kernel that unpacks nibbles is therefore outside it. These are written as
+  kernel bodies (`Body`), which the proven PTX compiler compiles, but nothing
+  states what they compute.
 
   That is a real gap and it is on the ledger (`GptOssScan.openObligations`,
   the first three entries). What closes it is extending the machine with a byte
@@ -67,7 +70,6 @@ set_option maxRecDepth 8000
 
 namespace GptOssKernels
 
-open AlgorithmLib.PTX
 
 /-! ## Geometry -/
 
@@ -254,247 +256,17 @@ def attPartialFloats : Nat := 2 + HD_K
 /-- `1/sqrt(64)`, the attention scale, as a `Float32` bit pattern. -/
 def attScaleBits : UInt32 := 0x3E000000
 
-/-- Decode the two bf16 in one loaded word into `Float32`.
-
-    bf16 is the top sixteen bits of the `Float32` it rounds to, so the low half
-    shifts up and the high half is masked in place. -/
-def unpackBf16 (lo hi : Reg .f32) (packed : Reg .u32) : PTX Unit := do
-  let a ← freshR; shlR a packed 16; bitsToF lo a
-  let b ← freshR; andR b packed 0xFFFF0000; bitsToF hi b
-
-/-- **One tile of the sequence, one key head, scores never stored.**
-
-    Grid is one CTA per tile, block is `NKV_K` warps, and warp `w` takes key
-    head `w`. A lane owns two elements of the head -- `2L` and `2L+1` -- which
-    is what makes the key row one coalesced word per lane: thirty-two lanes
-    cover the whole 128-byte row in a single transaction.
-
-    Per key: form the eight scores this head serves (each a dot over the head,
-    so a butterfly across the warp), fold them into the running `(m, l)`, and
-    accumulate the value row. Nothing but the accumulator survives the key.
-
-    Writes `(m, l, acc[HD_K])` per `(tile, head, query)` for the combine pass.
-    The sink is not applied here: it belongs to the head, and applying it once
-    per tile would count it once per tile. -/
-def fusedAttnTile : KernelSpec where
-  name := "gptoss_attn_tile"
-  params := ["p_k", "p_v", "p_q", "p_part", "p_meta"]
-  body := do
-    let kp ← freshRd; ldParam64 kp "p_k"
-    let vp ← freshRd; ldParam64 vp "p_v"
-    let qp ← freshRd; ldParam64 qp "p_q"
-    let pp ← freshRd; ldParam64 pp "p_part"
-    let mp ← freshRd; ldParam64 mp "p_meta"
-    let (_tid, wid, lane) ← getWarpIds
-    -- keys this step attends to, and one key head's stride through the cache,
-    -- both in the units the cache is actually held in
-    let seqLen ← freshR; ldGlobalUO seqLen mp (4 * GptOssAttention.M_SEQ)
-    let tileSz ← freshR; ldGlobalUO tileSz mp (4 * GptOssAttention.M_TILESZ)
-    let kvStride ← freshR; ldGlobalUO kvStride mp (4 * GptOssAttention.M_KVSTRIDE)
-    let cta ← freshR; movR cta ctaX
-    -- this warp's slice: tile `cta`, key head `wid`
-    let s0 ← freshR; mulLoRR s0 cta tileSz
-    let sCap ← freshR; addR sCap s0 tileSz
-    let fits ← freshP; setpLtR fits sCap seqLen
-    let sEnd ← freshR; selpR sEnd sCap seqLen fits
-    -- the eight queries this key head serves, two elements to a lane
-    let qHead ← freshR; mulLoRI qHead wid (GQA_K * HD_K / 2)
-    let qWord ← freshR; addR qWord qHead lane
-    let qOff ← freshRd; mulWideRI qOff qWord 4
-    let qBase ← freshRd; addRd qBase qp qOff
-    let qLo ← (List.range GQA_K).mapM fun g => do
-      let w ← freshR; ldGlobalUO w qBase (g * (HD_K / 2) * 4)
-      let a ← freshF; let b ← freshF; unpackBf16 a b w; pure (a, b)
-    -- running maximum, running sum, and the accumulator: two elements a lane
-    let st ← (List.range GQA_K).mapM fun _ => do
-      let m ← freshF; movFI m (.bits 0xFF800000)          -- -inf
-      let l ← freshF; movFI l (.bits 0)
-      let a0 ← freshF; movFI a0 (.bits 0)
-      let a1 ← freshF; movFI a1 (.bits 0)
-      pure (m, l, a0, a1)
-    -- walk the tile.  `kAddr`/`vAddr` advance by one key row a step, so the
-    -- address arithmetic leaves the loop.
-    let hOff ← freshR; mulLoRR hOff wid kvStride
-    let kWord ← freshR; addR kWord hOff lane
-    let sWord ← freshR; mulLoRI sWord s0 (HD_K / 2)
-    addR kWord kWord sWord
-    let kOff ← freshRd; mulWideRI kOff kWord 4
-    let kAddr ← freshRd; addRd kAddr kp kOff
-    let vAddr ← freshRd; addRd vAddr vp kOff
-    let sIx ← freshR; movR sIx s0
-    -- **The next key is loaded before this one is used.**
-    --
-    -- A tile is a serial walk, and at short context there are few enough warps
-    -- that nothing else covers a load's latency: measured, the loop stalled for
-    -- most of its life and the fused path came out slower than the four kernels
-    -- it replaces below about eight thousand keys. Carrying one iteration's
-    -- loads ahead of its arithmetic puts two rows in flight instead of one.
-    --
-    -- The read one past the last key is deliberate and harmless: the caches
-    -- carry a row of slack for exactly this, so the prefetch needs no guard on
-    -- the path where every iteration would pay for it.
-    let kw ← freshR; ldGlobalU kw kAddr
-    let vw ← freshR; ldGlobalU vw vAddr
-    let loop := "ATT_S"; let done := "ATT_SDONE"
-    label loop
-    do
-      let past ← freshP; setpGeR past sIx sEnd; braIf past done
-      let k0 ← freshF; let k1 ← freshF; unpackBf16 k0 k1 kw
-      let v0 ← freshF; let v1 ← freshF; unpackBf16 v0 v1 vw
-      addRdI kAddr kAddr (HD_K / 2 * 4)
-      addRdI vAddr vAddr (HD_K / 2 * 4)
-      ldGlobalU kw kAddr
-      ldGlobalU vw vAddr
-      -- one partial dot a query, then one butterfly for all of them
-      let dots ← (qLo.zipIdx).mapM fun ((q0, q1), _) => do
-        let d ← freshF; mulF d q0 k0; fmaRn d q1 k1 d; pure d
-      for mask in [16, 8, 4, 2, 1] do
-        for d in dots do
-          let t ← freshF; shflBfly t d mask; addF d d t
-      -- fold each score into its running (m, l) and rescale the accumulator
-      for ((sc, (m, l, a0, a1)), _) in (dots.zip st).zipIdx do
-        mulFI sc sc (.bits attScaleBits)
-        let mNew ← freshF; maxF mNew m sc
-        -- exp(x) as exp2(x * log2 e); both arguments are at most zero here,
-        -- which is the whole point of carrying the maximum
-        let dm ← freshF; subF dm m mNew; mulFI dm dm (.bits f32_log2e)
-        let corr ← freshF; ex2 corr dm
-        let dx ← freshF; subF dx sc mNew; mulFI dx dx (.bits f32_log2e)
-        let pr ← freshF; ex2 pr dx
-        mulF l l corr; addF l l pr
-        mulF a0 a0 corr; fmaRn a0 pr v0 a0
-        mulF a1 a1 corr; fmaRn a1 pr v1 a1
-        movFF m mNew
-      addRI sIx sIx 1
-      bra loop
-    label done
-    -- this warp's partials: one block of `attPartialFloats` a query
-    let tHead ← freshR; mulLoRI tHead cta NKV_K; addR tHead tHead wid
-    let pBlk ← freshR; mulLoRI pBlk tHead GQA_K
-    for ((m, l, a0, a1), g) in st.zipIdx do
-      let ix ← freshR; addRI ix pBlk g
-      let byt ← freshRd; mulWideRI byt ix (attPartialFloats * 4)
-      let addr ← freshRd; addRd addr pp byt
-      let isLane0 ← freshP; setpEqI isLane0 lane 0
-      let skip := s!"ATT_ML{g}"
-      braIfNot isLane0 skip
-      stGlobalFO addr 0 m
-      stGlobalFO addr 4 l
-      label skip
-      let dOff ← freshRd; mulWideRI dOff lane 8
-      let aAddr ← freshRd; addRd aAddr addr dOff
-      stGlobalFO aAddr 8 a0
-      stGlobalFO aAddr 12 a1
-    ptxRet
-
-/-- **The tiles, merged, and the sink applied once.**
-
-    One CTA of one warp per query head. Two partial results `(m, l, acc)` merge
-    the same way the tile loop folds a single key: rescale both by
-    `exp(m - max)` and add. The learned sink joins the denominator here and
-    nowhere else -- it absorbs probability mass and contributes no value, and
-    it belongs to the head, so a tile that applied it would apply it again.
-
-    The tile count comes from the meta buffer, which the layer uploads anyway:
-    it follows the position and so is not something the generator can know, and
-    a buffer of its own would cost an upload a layer. -/
-def fusedAttnCombine : KernelSpec where
-  name := "gptoss_attn_combine"
-  params := ["p_part", "p_sinks", "p_out", "p_meta"]
-  body := do
-    let pp ← freshRd; ldParam64 pp "p_part"
-    let sp ← freshRd; ldParam64 sp "p_sinks"
-    let op ← freshRd; ldParam64 op "p_out"
-    let np ← freshRd; ldParam64 np "p_meta"
-    let (_tid, _wid, lane) ← getWarpIds
-    let nTiles ← freshR; ldGlobalUO nTiles np (4 * GptOssAttention.M_NTILES)
-    let head ← freshR; movR head ctaX             -- query head, `b * GQA + g`
-    -- where this head's partials sit within a tile's block: the tile stride is
-    -- every head's partials, so the head index carries straight over
-    let hb ← freshRd; mulWideRI hb head (attPartialFloats * 4)
-    let hBase ← freshRd; addRd hBase pp hb
-    let tStride := NKV_K * GQA_K * attPartialFloats * 4
-    -- pass one: the largest maximum any tile saw
-    let mAll ← freshF; movFI mAll (.bits 0xFF800000)
-    let addr ← freshRd; addRdI addr hBase 0
-    let i ← freshR; movRC i 0
-    let l1 := "CMB_MAX"; let d1 := "CMB_MAXDONE"
-    label l1
-    do
-      let past ← freshP; setpGeR past i nTiles; braIf past d1
-      let m ← freshF; ldGlobalFO m addr 0
-      maxF mAll mAll m
-      addRI i i 1
-      addRdI addr addr tStride
-      bra l1
-    label d1
-    -- the sink shares the denominator, so it belongs in the maximum too
-    let sOff ← freshRd; mulWideRI sOff head 4
-    let sAddr ← freshRd; addRd sAddr sp sOff
-    let sink ← freshF; ldGlobalF sink sAddr
-    maxF mAll mAll sink
-    -- pass two: rescale every tile onto that maximum and add
-    let lAll ← freshF; movFI lAll (.bits 0)
-    let a0 ← freshF; movFI a0 (.bits 0)
-    let a1 ← freshF; movFI a1 (.bits 0)
-    let dOff ← freshRd; mulWideRI dOff lane 8
-    let addr2 ← freshRd; addRd addr2 hBase dOff
-    let addrM ← freshRd; addRdI addrM hBase 0
-    let j ← freshR; movRC j 0
-    let l2 := "CMB_SUM"; let d2 := "CMB_SUMDONE"
-    label l2
-    do
-      let past ← freshP; setpGeR past j nTiles; braIf past d2
-      let m ← freshF; ldGlobalFO m addrM 0
-      let l ← freshF; ldGlobalFO l addrM 4
-      let dm ← freshF; subF dm m mAll; mulFI dm dm (.bits f32_log2e)
-      let w ← freshF; ex2 w dm
-      fmaRn lAll l w lAll
-      let t0 ← freshF; ldGlobalFO t0 addr2 8
-      let t1 ← freshF; ldGlobalFO t1 addr2 12
-      fmaRn a0 t0 w a0
-      fmaRn a1 t1 w a1
-      addRI j j 1
-      addRdI addrM addrM tStride
-      addRdI addr2 addr2 tStride
-      bra l2
-    label d2
-    -- the sink's own term, and then the division softmax would have done
-    let ds ← freshF; subF ds sink mAll; mulFI ds ds (.bits f32_log2e)
-    let sw ← freshF; ex2 sw ds
-    addF lAll lAll sw
-    let inv ← freshF; rcp inv lAll
-    mulF a0 a0 inv
-    mulF a1 a1 inv
-    let oIx ← freshR; mulLoRI oIx head HD_K
-    let oOff ← freshRd; mulWideRI oOff oIx 4
-    let oAddr ← freshRd; addRd oAddr op oOff
-    let lOff ← freshRd; mulWideRI lOff lane 8
-    let oAddr2 ← freshRd; addRd oAddr2 oAddr lOff
-    stGlobalFO oAddr2 0 a0
-    stGlobalFO oAddr2 4 a1
-    ptxRet
-
 -- ---------------------------------------------------------------------------
 -- Kernels as bodies
 -- ---------------------------------------------------------------------------
 
 namespace Body
-open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog AlgorithmLib.Kernel
+open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog AlgorithmLib.Kernel AlgorithmLib.Kernel.Block
 
 section
 variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 
-def shflBfly : LocalRef [.i32, .i32] (some .i32) := { callee := .intr .shflBfly }
-def barrier : LocalRef [] none := { callee := .intr .barrier }
-def ex2Approx : LocalRef [.f32] (some .f32) := { callee := .intr .ex2Approx }
-def rcpApprox : LocalRef [.f32] (some .f32) := { callee := .intr .rcpApprox }
-
-def c32 (k : Nat) : Prog V L (V .i32) := iconst32 (Int.ofNat k)
-def c64n (k : Nat) : Prog V L (V .i64) := iconst64 (Int.ofNat k)
 def u8 (a : V .i64) : Prog V L (V .i32) := load { kind := .uload8, ty := .i32 } a
-def at_ (a : V .i64) (off : Nat) : Prog V L (V .i64) := iaddImm a (Int.ofNat off)
-def ext (x : V .i32) : Prog V L (V .i64) := uextend64 x
 
 /-- Stage the per-lane FP4 table at `sm` and the `k` floats at `hv` after it,
     padded (element `e` at `e + e/32`); every thread of the block takes part,
@@ -666,7 +438,7 @@ def gateUpSwiglu : Prog V L Unit := do
       let g ← fmin (← biased gs gRow) (← f swigluLimitBits)
       let u ← fmax (← fmin (← biased us uRow)
         (← f swigluLimitBits)) (← f negLimitBits)
-      let t ← fmul (← fmul g (← f swigluAlphaBits)) (← f f32_log2e)
+      let t ← fmul (← fmul g (← f swigluAlphaBits)) (← f log2eBits)
       let e ← callLocal ex2Approx %[← fsub (← f 0) t]
       let sig ← callLocal rcpApprox %[← fadd e (← f oneBits)]
       let y ← fmul (← fmul g sig) (← fadd u (← f oneBits))
@@ -759,7 +531,7 @@ def routerTop : Prog V L Unit := do
       store ninf (← at4 sm bi)
       tops := tops ++ [best]
     let mx := tops.headD ninf
-    let log2e ← fconst .f32 f32_log2e.toUInt64
+    let log2e ← f32c log2eBits
     let mut es : List (V .f32) := []
     let mut sum ← fconst .f32 0
     for t in tops do
@@ -770,11 +542,6 @@ def routerTop : Prog V L Unit := do
     for (e, k) in es.zipIdx do
       store (← fmul e inv) (← at_ gates (4 * k))
 
-def lg2Approx : LocalRef [.f32] (some .f32) := { callee := .intr .lg2Approx }
-
-/-- `-∞`'s bits. -/
-def negInf : UInt64 := 0xFF800000
-
 /-- The larger of `(best, bi)` and `(v, i)`: `best`'s index when equal. -/
 def better (i : V .i32) (v best : V .f32) (bi : V .i32) : Prog V L (Vals V [.f32, .i32]) := do
   let gt ← fcmp .gt v best
@@ -784,7 +551,7 @@ def better (i : V .i32) (v best : V .f32) (bi : V .i32) : Prog V L (Vals V [.f32
     and its index from `(-∞, 0)` through `step`. -/
 def laneMax (tid n : V .i32) (step : V .i32 → V .f32 → V .i32 → Prog V L (Vals V [.f32, .i32])) :
     Prog V L (Vals V [.f32, .i32]) := do
-  let b0 ← fconst .f32 negInf
+  let b0 ← f32c negInfBits
   let i0 ← c32 0
   wloop %[tid, b0, i0] (fun cs => pure (contIfULt cs.head n, %[cs.snd, cs.thd], ()))
     (fun cs _ => do
@@ -842,7 +609,7 @@ def sampleBody : Prog V L Unit := do
   let tempered (i : V .i32) : Prog V L (V .f32) := do
     fmul (← loadF32 (← iadd logits (← ext (← ishlImm i 2)))) invT
   -- the largest tempered logit
-  let ninf ← fconst .f32 negInf
+  let ninf ← f32c negInfBits
   let mx ← wloop %[tid, ninf] (fun cs => pure (contIfULt cs.head n, %[cs.snd], ()))
     (fun cs _ => do pure %[← iadd cs.head (← c32 32), ← fmax cs.snd (← tempered cs.head)])
   store mx.head (← iadd sm (← ext (← ishlImm tid 2)))
@@ -913,6 +680,158 @@ def dequantBody : Prog V L Unit := do
       let w ← fmul (← fp4 nib) sc
       store w (← iadd oBase (← ishlImm (← ext (← iadd (← imul blk (← c32 32)) lane)) 2))
       pure %[← iadd blk (← c32 1)])
+
+/-- The two bf16 in a loaded word, as `Float32`: bf16 is the top sixteen bits
+    of the `Float32` it rounds to, so the low half shifts up and the high half
+    is masked in place. -/
+def unpack (w : V .i32) : Prog V L (V .f32 × V .f32) := do
+  pure (← bitcast .f32 (← ishlImm w 16), ← bitcast .f32 (← band w (← c32 0xFFFF0000)))
+
+/-- A float through the warp's butterfly at `mask`, added to itself. -/
+def bflyAdd (a : V .f32) (mask : Nat) : Prog V L (V .f32) := do
+  let o ← callLocal shflBfly %[← bitcast .i32 a, ← c32 mask]
+  fadd a (← bitcast .f32 o)
+
+/-- **One tile of the sequence, one key head, scores never stored.**
+
+    Grid is one CTA per tile, block is `NKV_K` warps, and warp `w` takes key
+    head `w`. A lane owns two elements of the head -- `2L` and `2L+1` -- so the
+    key row is one coalesced word per lane.
+
+    Per key: form the eight scores this head serves (each a dot over the head,
+    so a butterfly across the warp), fold them into the running `(m, l)`, and
+    accumulate the value row. The next key's words are loaded before this
+    one's are used, which keeps two rows in flight on a serial walk; the read
+    one past the last key lands in the row of slack the caches carry.
+
+    Writes `(m, l, acc[HD_K])` per `(tile, head, query)` for the combine pass;
+    the sink belongs to the head and is applied there, once. -/
+def attnTileBody : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64])
+  let cta := ps.head; let tid := ps.snd
+  let kp := (ps.drop 4).head; let vp := (ps.drop 5).head; let qp := (ps.drop 6).head
+  let pp := (ps.drop 7).head; let mp := (ps.drop 8).head
+  let wid ← ushrImm tid 5
+  let lane ← band tid (← c32 31)
+  let seqLen ← load32 (← at_ mp (4 * GptOssAttention.M_SEQ))
+  let tileSz ← load32 (← at_ mp (4 * GptOssAttention.M_TILESZ))
+  let kvStride ← load32 (← at_ mp (4 * GptOssAttention.M_KVSTRIDE))
+  -- this warp's slice: tile `cta`, key head `wid`
+  let s0 ← imul cta tileSz
+  let sEnd ← umin (← iadd s0 tileSz) seqLen
+  -- the eight queries this key head serves, two elements to a lane
+  let qWord ← iadd (← imul wid (← c32 (GQA_K * HD_K / 2))) lane
+  let qBase ← iadd qp (← imul (← ext qWord) (← c64n 4))
+  let qs ← (List.range GQA_K).mapM fun g => do
+    unpack (← load32 (← at_ qBase (g * (HD_K / 2) * 4)))
+  -- the walk's addresses advance by one key row a step
+  let kWord ← iadd (← iadd (← imul wid kvStride) lane) (← imul s0 (← c32 (HD_K / 2)))
+  let kOff ← imul (← ext kWord) (← c64n 4)
+  let kAddr0 ← iadd kp kOff
+  let vAddr0 ← iadd vp kOff
+  let kw0 ← load32 kAddr0
+  let vw0 ← load32 vAddr0
+  let ninf ← fconst .f32 0xFF800000
+  let zero ← fconst .f32 0
+  -- running (m, l, a0, a1) a query, four floats to a query
+  let st0 : List (V .f32) := (List.range GQA_K).flatMap fun _ => [ninf, zero, zero, zero]
+  let carry0 := Vals.append %[s0, kAddr0, vAddr0, kw0, vw0]
+    (Vals.ofFn (n := 4 * GQA_K) fun i => st0.getD i.val zero)
+  let fin ← wloop carry0 (fun cs => pure (contIfULt cs.head sEnd, cs, ()))
+    (fun cs _ => do
+      let sIx := cs.head; let kAddr := cs.snd; let vAddr := cs.thd
+      let kw := cs.fth; let vw := cs.fif
+      let st := Vals.uniformToList (cs.drop 5 : Vals V (List.replicate (4 * GQA_K) .f32))
+      let (k0, k1) ← unpack kw
+      let (v0, v1) ← unpack vw
+      let kAddr' ← at_ kAddr (HD_K / 2 * 4)
+      let vAddr' ← at_ vAddr (HD_K / 2 * 4)
+      let kw' ← load32 kAddr'
+      let vw' ← load32 vAddr'
+      -- one partial dot a query, then one butterfly for all of them
+      let mut dots : List (V .f32) := []
+      for (q0, q1) in qs do
+        dots := dots ++ [← fma q1 k1 (← fmul q0 k0)]
+      for mask in [16, 8, 4, 2, 1] do
+        let mut next : List (V .f32) := []
+        for d in dots do
+          next := next ++ [← bflyAdd d mask]
+        dots := next
+      -- fold each score into its running (m, l) and rescale the accumulator
+      let scale ← fconst .f32 attScaleBits.toUInt64
+      let mut st' : List (V .f32) := []
+      for (sc0, g) in dots.zipIdx do
+        let m := st.getD (4 * g) zero; let l := st.getD (4 * g + 1) zero
+        let a0 := st.getD (4 * g + 2) zero; let a1 := st.getD (4 * g + 3) zero
+        let sc ← fmul sc0 scale
+        let mNew ← fmax m sc
+        let corr ← expA (← fsub m mNew)
+        let pr ← expA (← fsub sc mNew)
+        let l' ← fma l corr pr
+        let a0' ← fma pr v0 (← fmul a0 corr)
+        let a1' ← fma pr v1 (← fmul a1 corr)
+        st' := st' ++ [mNew, l', a0', a1']
+      pure (Vals.append %[← iadd sIx (← c32 1), kAddr', vAddr', kw', vw']
+        (Vals.ofFn (n := 4 * GQA_K) fun i => st'.getD i.val zero)))
+  let st := Vals.uniformToList (fin.drop 5 : Vals V (List.replicate (4 * GQA_K) .f32))
+  -- this warp's partials: one block of `attPartialFloats` a query
+  let pBlk ← imul (← iadd (← imul cta (← c32 NKV_K)) wid) (← c32 GQA_K)
+  for g in List.range GQA_K do
+    let ix ← iadd pBlk (← c32 g)
+    let addr ← iadd pp (← imul (← ext ix) (← c64n (attPartialFloats * 4)))
+    when .eq lane (← c32 0) do
+      store (st.getD (4 * g) zero) addr
+      store (st.getD (4 * g + 1) zero) (← at_ addr 4)
+    let aAddr ← iadd addr (← ishlImm (← ext lane) 3)
+    store (st.getD (4 * g + 2) zero) (← at_ aAddr 8)
+    store (st.getD (4 * g + 3) zero) (← at_ aAddr 12)
+
+/-- **The tiles, merged, and the sink applied once.**
+
+    One CTA of one warp per query head. Two partial results `(m, l, acc)` merge
+    the way the tile loop folds a single key: rescale both by `exp(m - max)`
+    and add. The learned sink joins the denominator here and nowhere else.
+    The tile count comes from the meta buffer, which the layer uploads anyway. -/
+def attnCombineBody : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64])
+  let head := ps.head; let tid := ps.snd
+  let pp := (ps.drop 4).head; let sp := (ps.drop 5).head
+  let op := (ps.drop 6).head; let np := (ps.drop 7).head
+  let lane ← band tid (← c32 31)
+  let nTiles ← load32 (← at_ np (4 * GptOssAttention.M_NTILES))
+  -- this head's partials within a tile's block; the tile stride is every head's
+  let hBase ← iadd pp (← imul (← ext head) (← c64n (attPartialFloats * 4)))
+  let tStride := NKV_K * GQA_K * attPartialFloats * 4
+  -- pass one: the largest maximum any tile saw
+  let ninf ← fconst .f32 0xFF800000
+  let r1 ← wloop %[← c32 0, hBase, ninf] (fun cs => pure (contIfULt cs.head nTiles, %[cs.thd], ()))
+    (fun cs _ => do
+      let m ← loadF32 cs.snd
+      pure %[← iadd cs.head (← c32 1), ← at_ cs.snd tStride, ← fmax cs.thd m])
+  -- the sink shares the denominator, so it belongs in the maximum too
+  let sink ← loadF32 (← iadd sp (← ishlImm (← ext head) 2))
+  let mAll ← fmax r1.head sink
+  -- pass two: rescale every tile onto that maximum and add
+  let zero ← fconst .f32 0
+  let addr2 ← iadd hBase (← ishlImm (← ext lane) 3)
+  let r2 ← wloop %[← c32 0, hBase, addr2, zero, zero, zero]
+    (fun cs => pure (contIfULt cs.head nTiles, %[(cs.drop 3).head, (cs.drop 4).head, (cs.drop 5).head], ()))
+    (fun cs _ => do
+      let m ← loadF32 cs.snd
+      let l ← loadF32 (← at_ cs.snd 4)
+      let w ← expA (← fsub m mAll)
+      let lAll ← fma l w (cs.drop 3).head
+      let t0 ← loadF32 (← at_ cs.thd 8)
+      let t1 ← loadF32 (← at_ cs.thd 12)
+      pure %[← iadd cs.head (← c32 1), ← at_ cs.snd tStride, ← at_ cs.thd tStride, lAll,
+        ← fma t0 w (cs.drop 4).head, ← fma t1 w (cs.drop 5).head])
+  -- the sink's own term, and then the division softmax would have done
+  let lAll ← fadd r2.head (← expA (← fsub sink mAll))
+  let inv ← callLocal rcpApprox %[lAll]
+  let oAddr ← iadd op (← ishlImm (← ext (← iadd (← imul head (← c32 HD_K)) (← ishlImm lane 1))) 2)
+  store (← fmul r2.snd inv) oAddr
+  store (← fmul r2.thd inv) (← at_ oAddr 4)
+
 end
 
 /-- **The down projection, plus its bias**, as a kernel. -/
@@ -953,42 +872,41 @@ def dequant : Kernel :=
   { name := "mxfp4_dequant_f32", params := [.i64, .i64, .i64, .i64],
     code := emit dequantBody (idParams ++ [.i64, .i64, .i64, .i64]) }
 
+/-- One tile of the sequence for each key head, as a kernel: blocks of
+    `NKV_K` warps. Its partials' addresses are `mul.wide` products: with
+    64-bit ones `ptxas` takes the tile loop's control off the uniform datapath
+    and the loop runs 8% slower. -/
+def attnTile : Kernel :=
+  { name := "gptoss_attn_tile", params := [.i64, .i64, .i64, .i64, .i64],
+    code := emit attnTileBody (idParams ++ [.i64, .i64, .i64, .i64, .i64]), mulWide := true }
+
+/-- The tiles merged, one warp a query head, as a kernel. -/
+def attnCombine : Kernel :=
+  { name := "gptoss_attn_combine", params := [.i64, .i64, .i64, .i64],
+    code := emit attnCombineBody (idParams ++ [.i64, .i64, .i64, .i64]), warp := true }
+
 /-- A body kernel as its own module, entry named `main`. -/
 def moduleOf (k : Kernel) : String :=
   match Kernel.ptx { k with name := "main" } with
   | .ok s => s
   | .error _ => ""
 
-/-- The body kernels as one module, for the standalone harness. -/
+/-- The body kernels as one module, for the standalone harnesses. -/
 def moduleText : String :=
-  match Kernel.module [gateUp, downGemv, moeCombine4, narrow, widen, routerTop4, argmax, sample, dequant] with
+  match Kernel.module [gateUp, downGemv, moeCombine4, narrow, widen, routerTop4, argmax, sample, dequant,
+      attnTile, attnCombine] with
   | .ok s => s
   | .error _ => ""
 
 end Body
-
-/-- One kernel as its own module, entry named `main`.
-
-    The launch primitive loads a module and runs the entry called `main`, so a
-    module carries one kernel and a slot carries one module. -/
-def moduleFor (k : KernelSpec) : String :=
-  buildModuleWith { smemSize := smemBytes } [{ k with name := "main" }]
 
 /-- The kernels a decode step launches, in slot order. -/
 def gptossPtx : List String :=
   [Body.moduleOf Body.gateUp, Body.moduleOf Body.downGemv, Body.moduleOf Body.moeCombine4,
    Body.moduleOf Body.routerTop4]
 
-/-- The string-built kernels as one module, for the standalone harnesses: the
-    fused attention pair. Written as bodies they give the same bits but the
-    tile runs 8–12% slower under the driver's compiler (CUDA 13), whose
-    schedule for the loop differs though the loop's text is the same. -/
-def moduleText : String :=
-  buildModule smemBytes [fusedAttnTile, fusedAttnCombine]
-
 end GptOssKernels
 
-/-! The module text is emitted by a driver rather than by a `main` here: a
-    `lean_exe` in this package is a *generator*, and every generator is expected
-    to produce an artifact.  These three kernels become one in M3; until then
-    the harness asks for the text directly. -/
+/-! `Body.moduleText` is emitted by `tools/dump_gptoss_kernels.lean` rather
+    than by a `main` here: a `lean_exe` in this package is a *generator*, and
+    every generator is expected to produce an artifact. -/

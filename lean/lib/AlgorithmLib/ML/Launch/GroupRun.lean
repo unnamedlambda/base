@@ -32,13 +32,14 @@ variable {R : Type} [NumOps R] [NumLit R]
 /-- A word no lane of block `cta` stores, the run leaves. -/
 theorem run_keepS (cta i : Nat) (s : EWStmt) (w : WSt R) (b : Buf) (j : Nat)
     (h : ∀ l : Lane, (b, j) ∉ storeL cta l i s) :
-    ((s.elabAt cta i).run w).mem b j = w.mem b j :=
+    (s.run w cta i).mem b j = w.mem b j :=
   run_frame_st cta (fun _ _ => 0) s i w b j (fun l hs => h l (storesL_mem cta l s i b j (by rw [imOf_none]; exact hs)))
 
-/-- A stage that elaborates its statement against no integer state. -/
+/-- A stage that runs its statement against no integer state. -/
 def Plain (S : StageSpec R) : Prop := S.iregs = (fun _ _ => 0) ∧ S.imem = (fun _ _ => 0)
 
-theorem Plain.blk {S : StageSpec R} (h : Plain S) (cta : Nat) : S.blk cta = S.ew.elabAt cta 0 := by
+theorem Plain.blk {S : StageSpec R} (h : Plain S) (cta : Nat) (st : WSt R) :
+    S.blk cta st = S.ew.run st cta 0 := by
   simp only [StageSpec.blk, h.1, h.2]
 
 /-- A state with memory `m` and the registers and shared memory of `w`. -/
@@ -52,13 +53,14 @@ theorem val_reads (S : StageSpec R) (hp : Plain S) (w : WSt R) (m m' : Buf → N
     S.val m cta a = S.val m' cta a := by
   have v1 := S.value cta (withMem w m) a hd
   have v2 := S.value cta (withMem w m') a hd
-  have e : S.ew.elabAt cta 0 S.iregs S.imem = S.ew.elabAt cta 0 := by simp only [hp.1, hp.2]
+  have e : ∀ st : WSt R, S.ew.run st cta 0 S.iregs S.imem = S.ew.run st cta 0 := by
+    intro st; simp only [hp.1, hp.2]
   rw [e] at v1 v2
   show S.val (withMem w m).mem cta a = S.val (withMem w m').mem cta a
   rw [← v1, ← v2]
   by_cases ht : ∃ l : Lane, (S.out, a) ∈ touchL cta l 0 S.ew
   · exact (run_agree cta S.ew 0 (withMem w m) (withMem w m')
-      ⟨rfl, rfl, fun b j h => hag b j (Or.inl h)⟩).2.2 _ _ ht
+      ⟨rfl, rfl, fun b j h => hag b j (Or.inl h), rfl⟩).2.2.1 _ _ ht
   · have hn : ∀ l : Lane, (S.out, a) ∉ touchL cta l 0 S.ew := fun l h => ht ⟨l, h⟩
     rw [run_keep cta 0 S.ew _ _ _ hn, run_keep cta 0 S.ew _ _ _ hn]
     exact hag _ _ (Or.inr ⟨rfl, rfl⟩)
@@ -76,7 +78,7 @@ theorem group_run (G : Nat) (T : Nat → Buf → Nat → Prop) :
       (∀ S ∈ ss, ∀ c c', c < G → c' < G → c ≠ c' → ∀ (l : Lane) b j, (b, j) ∈ storeL c' l 0 S.ew → ¬ T c b j) →
       ∀ (w : Nat → WSt R) (M : Buf → Nat → R), (∀ c, c < G → ∀ b j, T c b j → (w c).mem b j = M b j) →
       ∀ c, c < G → ∀ b j, T c b j →
-        (ss.foldl (fun st S => (S.blk c).run st) (w c)).mem b j = (Pipeline.mk ss).denote M b j := by
+        (ss.foldl (fun st S => S.blk c st) (w c)).mem b j = (Pipeline.mk ss).denote M b j := by
   intro ss
   induction ss with
   | nil => intro _ _ _ w M hw c hc b j hT; exact hw c hc b j hT
@@ -84,15 +86,16 @@ theorem group_run (G : Nat) (T : Nat → Buf → Nat → Prop) :
     intro hS hTS hAp w M hw
     have hS0 := hS S List.mem_cons_self
     obtain ⟨hp, hex, hg⟩ := hS0
-    let w' : Nat → WSt R := fun c => (S.blk c).run (w c)
+    let w' : Nat → WSt R := fun c => S.blk c (w c)
     have hw' : ∀ c, c < G → ∀ b j, T c b j → (w' c).mem b j = S.step M b j := by
       intro c hc b j hT
-      show ((S.blk c).run (w c)).mem b j = _
+      show (S.blk c (w c)).mem b j = _
       rw [hp.blk c]
       by_cases hown : b = S.out ∧ S.dom c j
       · obtain ⟨rfl, hd⟩ := hown
         have hv := S.value c (w c) j hd
-        have e : S.ew.elabAt c 0 S.iregs S.imem = S.ew.elabAt c 0 := by simp only [hp.1, hp.2]
+        have e : ∀ st : WSt R, S.ew.run st c 0 S.iregs S.imem = S.ew.run st c 0 := by
+          intro st; simp only [hp.1, hp.2]
         rw [e] at hv
         rw [hv, StageSpec.step_val S hex M c j (by omega) hd]
         refine val_reads S hp (w c) _ _ c j hd (fun b' j' h => ?_)
@@ -103,7 +106,8 @@ theorem group_run (G : Nat) (T : Nat → Buf → Nat → Prop) :
           by_cases hb : b = S.out
           · exact Or.inr (fun hd => hown ⟨hb, hd⟩)
           · exact Or.inl hb)
-        have e : S.ew.elabAt c 0 S.iregs S.imem = S.ew.elabAt c 0 := by simp only [hp.1, hp.2]
+        have e : ∀ st : WSt R, S.ew.run st c 0 S.iregs S.imem = S.ew.run st c 0 := by
+          intro st; simp only [hp.1, hp.2]
         rw [e] at hfr
         rw [hfr, hw c hc b j hT]
         by_cases hother : b = S.out ∧ ∃ c', c' < S.grid ∧ S.dom c' j
@@ -113,12 +117,13 @@ theorem group_run (G : Nat) (T : Nat → Buf → Nat → Prop) :
           have hns : ∀ l : Lane, (S.out, j) ∉ storeL c' l 0 S.ew :=
             fun l hs => hAp S List.mem_cons_self c c' hc (by omega) (Ne.symm hne) l _ _ hs hT
           have hv := S.value c' (withMem (w c) M) j hd'
-          have e' : S.ew.elabAt c' 0 S.iregs S.imem = S.ew.elabAt c' 0 := by simp only [hp.1, hp.2]
+          have e' : ∀ st : WSt R, S.ew.run st c' 0 S.iregs S.imem = S.ew.run st c' 0 := by
+            intro st; simp only [hp.1, hp.2]
           rw [e', run_keepS c' 0 S.ew _ _ _ hns] at hv
           exact hv
         · rw [StageSpec.step, dif_neg hother]
     intro c hc b j hT
-    show (rest.foldl (fun st S => (S.blk c).run st) ((S.blk c).run (w c))).mem b j
+    show (rest.foldl (fun st S => S.blk c st) (S.blk c (w c))).mem b j
       = (Pipeline.mk rest).denote (S.step M) b j
     exact ih (fun S' h => hS S' (List.mem_cons_of_mem _ h))
       (fun S' h => hTS S' (List.mem_cons_of_mem _ h))
@@ -141,9 +146,10 @@ theorem denote_keep : ∀ (ss : List (StageSpec R)), (∀ S ∈ ss, Plain S) →
         have hex : S.val m (Exists.choose (⟨c, hc, hd⟩ : ∃ cta, cta < S.grid ∧ S.dom cta j)) j = m S.out j := by
           have hsp := (⟨c, hc, hd⟩ : ∃ cta, cta < S.grid ∧ S.dom cta j).choose_spec
           let c0 := (⟨c, hc, hd⟩ : ∃ cta, cta < S.grid ∧ S.dom cta j).choose
-          let w : WSt R := ⟨fun _ _ => m S.out j, m, fun _ => m S.out j⟩
+          let w : WSt R := ⟨fun _ _ => m S.out j, m, fun _ => m S.out j, {}⟩
           have hv := S.value c0 w j hsp.2
-          have e1 : S.ew.elabAt c0 0 S.iregs S.imem = S.ew.elabAt c0 0 := by
+          have e1 : ∀ st : WSt R, S.ew.run st c0 0 S.iregs S.imem = S.ew.run st c0 0 := by
+            intro st
             simp only [(hp S List.mem_cons_self).1, (hp S List.mem_cons_self).2]
           rw [e1, run_keepS c0 0 S.ew w S.out j (hn S List.mem_cons_self c0 hsp.1)] at hv
           exact hv.symm

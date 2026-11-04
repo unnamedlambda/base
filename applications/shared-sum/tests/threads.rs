@@ -15,9 +15,16 @@ fn load() -> Driver {
     Driver::load(lean_artifacts::SHARED_SUM).unwrap()
 }
 
+/// The word at `at`, in one atomic load as the program's atomics write it: a
+/// byte at a time could see half of a concurrent add.
 fn read_u64(driver: &Driver, at: usize) -> u64 {
-    let word: Vec<u8> = driver.arena()[at..at + 8].iter().map(|b| b.load(Relaxed)).collect();
-    u64::from_le_bytes(word.try_into().unwrap())
+    let arena = driver.arena();
+    assert!(at + 8 <= arena.len());
+    let ptr = arena[at].as_ptr().cast::<u64>();
+    assert!(ptr.is_aligned());
+    // SAFETY: in bounds and aligned, and the arena lives as long as `driver`;
+    // every access to it from Rust is atomic.
+    unsafe { std::sync::atomic::AtomicU64::from_ptr(ptr) }.load(Relaxed)
 }
 
 /// The bytes thread `t` sends on call `i`: varied in length, zero included.

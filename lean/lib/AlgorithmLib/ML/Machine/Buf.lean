@@ -30,8 +30,8 @@ abbrev Buf := Nat
 def strideIdx (tid stride n : Nat) : List Nat :=
   (List.range n).filter (fun i => i % stride = tid % stride)
 
-/-- **Every element is touched exactly once.**  The `strideLoop` emitted by
-    `AlgorithmLib.PTX.strideLoop` partitions `[0, n)` across the block: index
+/-- **Every element is touched exactly once.**  A strided loop
+    (`Kernel.Block.strided`) partitions `[0, n)` across the block: index
     `i` belongs to thread `i % stride` and to no other.  This is the whole
     correctness content of the thread decomposition, and it is why the schema
     theorems below may reason with a single counted loop over `[0, n)`. -/

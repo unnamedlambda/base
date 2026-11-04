@@ -19,6 +19,8 @@ two agree (`launch_runs`).
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.Prog
   AlgorithmLib.LZ4WarpDSL AlgorithmLib.LibSpec AlgorithmLib.Kernel
 
+open AlgorithmLib.ML.LaneWarp (NotArena Writable)
+
 namespace Lz4Code
 
 /-- The world a launch starts its blocks from: device memory `bufs`, nothing
@@ -35,10 +37,10 @@ set_option maxHeartbeats 2000000 in
     same `bufs'`. -/
 theorem launch_runs (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxIr.Entry}
     {numBlocks inStride outStride lenOff hashLog f : Nat} {inP outA : UInt64}
-    (he : (codeKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e)
+    (he : (compressorKernel name numBlocks inStride outStride lenOff hashLog).entry = .ok e)
     (I O : Nat → UInt64 → Prop) (G : Nat → Array UInt8) (bufs : Nat → ByteArray)
-    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36)
-    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (compressor numBlocks inStride outStride lenOff hashLog))
+    (hnb : numBlocks * 32 + 32 < 2 ^ 32) (h5 : 5 ≤ hashLog) (hh : 2 * 2 ^ hashLog + 64 < 2 ^ 36) (hf : f ≤ 2 ^ 64)
+    (hfine : Fine (emitGo (fnBody (idParams ++ [.i64, .i64]) (ML.Body.body 2 (compressorS numBlocks inStride outStride lenOff hashLog)))
       ⟨(idParams ++ [ClifTy.i64, .i64]).length, 0, [], [], [], none⟩).2)
     (hflags : ∀ r, r ∈ ["inBase","outBase","tbl","op","searchPos","litAnchor"] →
       (flagRegs (compressorBodyWStmt inStride lenOff hashLog)).contains r = false)
@@ -47,18 +49,20 @@ theorem launch_runs (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxI
       (startWS numBlocks inStride outStride hashLog c inP (G c)))
     (hI : ∀ c, c < numBlocks → ∀ a, I c a →
       (launchWorld bufs hw.nan).mem.load a 1 = some ((G c).getD a.toNat 0).toUInt64)
-    (hO : ∀ c, c < numBlocks → ∀ a, O c a → Writable (launchWorld bufs hw.nan).mem a)
+    (hO : ∀ c, c < numBlocks → ∀ a, O c a → Writable (launchWorld bufs hw.nan).mem a 1)
     (hdis : ∀ c c', c' < c → c < numBlocks → ∀ a, O c' a → ¬ I c a) :
-    ∃ u : World, LaunchRuns (codeKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
+    ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (codeKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
         [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
       ∀ a, NotArena a → u.mem.load a 1 = replay ((List.range numBlocks).flatMap fun c =>
         blockStores f (compressorBodyWStmt inStride lenOff hashLog)
           (startWS numBlocks inStride outStride hashLog c inP (G c))) a ((launchWorld bufs hw.nan).mem.load a 1) := by
-  obtain ⟨u, hu, hum, -⟩ := grid_runs (outA := outA) hw name I O G (launchWorld bufs hw.nan) hnb hh hfine hflags
-    hIna hOna hok hI hO hdis numBlocks (Nat.le_refl _)
-  have hL : LaunchRuns (codeKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
+  obtain ⟨u, hu, hum, -⟩ := grid_runs (outA := outA) hw (fun k v => by
+      have h := hhw.approx k v
+      rw [← h, UInt64.toNat_and]; exact Nat.lt_of_le_of_lt Nat.and_le_right (by simp [widthMask])) name I O G
+    (launchWorld bufs hw.nan) hnb h5 hh hf hfine hflags hIna hOna hok hI hO hdis rfl numBlocks (Nat.le_refl _)
+  have hL : LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
       [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw := ⟨u, hu, rfl⟩
   have hmask : ∀ x : UInt64, x &&& 18446744073709551615 = x := fun x => by
     apply UInt64.toNat_inj.mp
@@ -68,8 +72,8 @@ theorem launch_runs (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxI
   exact PtxSound.launch_sound_bits _ e he hw hhw numBlocks 32 [inP, outA] rfl
     (fun i h1 h2 => by
       rcases i with _ | _ | i
-      · simp [codeKernel, widthMask, hmask]
-      · simp [codeKernel, widthMask, hmask]
+      · simp [compressorKernel, widthMask, hmask]
+      · simp [compressorKernel, widthMask, hmask]
       · exact absurd h2 (by simp))
     (fun _ => Nat.le_refl _) bufs u.mem.bufs hL
 

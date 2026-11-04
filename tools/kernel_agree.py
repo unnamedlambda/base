@@ -15,7 +15,8 @@ and the semantics leaves it open. A case that states `exact` (an instruction
 checked against `PtxRun`, `Host/PtxBridge.lean`) matches only bit for bit. A case that states `ulps` (one whose
 kernel uses the hardware's approximations, which the model runs exactly
 rounded) also matches where two finite f32 words of one sign are within that
-many units in the last place.
+many units in the last place, and one that states `abs` (an approximation whose
+error is stated absolutely) where two finite f32 words are within that distance.
 
 Exits 1 on any difference.
 """
@@ -44,7 +45,13 @@ def ulp_close(a, b, ulps):
     return ulps > 0 and finite(a) and finite(b) and (a >> 31) == (b >> 31) and abs(a - b) <= ulps
 
 
-def differences(got, want, ulps=0, exact=False):
+def abs_close(a, b, tol):
+    fa, fb = struct.unpack("<f", struct.pack("<I", a))[0], struct.unpack("<f", struct.pack("<I", b))[0]
+    finite = lambda w: (w & 0x7F800000) != 0x7F800000
+    return tol > 0 and finite(a) and finite(b) and abs(fa - fb) <= tol
+
+
+def differences(got, want, ulps=0, exact=False, tol=0.0):
     if len(got) != len(want):
         return [f"size {len(got)} vs {len(want)}"]
     out = []
@@ -52,7 +59,8 @@ def differences(got, want, ulps=0, exact=False):
         g, w = got[i:i + 4], want[i:i + 4]
         if g != w:
             (gw,), (ww,) = struct.unpack("<I", g), struct.unpack("<I", w)
-            if exact and not ulps or not (is_nan(gw) and is_nan(ww)) and not ulp_close(gw, ww, ulps):
+            if exact and not ulps and not tol or not (is_nan(gw) and is_nan(ww)) and not ulp_close(gw, ww, ulps) \
+                    and not abs_close(gw, ww, tol):
                 out.append(f"word {i // 4}: gpu {gw:#010x} model {ww:#010x}")
     tail = len(got) - len(got) % 4
     if got[tail:] != want[tail:]:
@@ -91,7 +99,7 @@ def main():
         for i, (p, n) in enumerate(bufs):
             got = C.create_string_buffer(n)
             ck(cu.cuMemcpyDtoH_v2(got, p, n), "download")
-            diffs += [f"buffer {i} {x}" for x in differences(got.raw[:n], (d / f"out{i}.bin").read_bytes(), case.get("ulps", 0), case.get("exact", False))]
+            diffs += [f"buffer {i} {x}" for x in differences(got.raw[:n], (d / f"out{i}.bin").read_bytes(), case.get("ulps", 0), case.get("exact", False), case.get("abs", 0.0))]
             ck(cu.cuMemFree_v2(p), "free")
         ck(cu.cuModuleUnload(mod), "unload")
         if diffs:

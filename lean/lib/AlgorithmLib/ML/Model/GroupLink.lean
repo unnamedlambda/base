@@ -50,6 +50,22 @@ theorem IdxE.renameBuf_congr (f g : Buf → Buf) : ∀ ix : IdxE, (∀ b ∈ ix.
       ihb (fun c hc => h c (by simp [IdxE.bufsOf, hc]))]
   | _ => intro _; rfl
 
+theorem IExp.renameBuf_congr (f g : Buf → Buf) : ∀ e : IExp, (∀ b ∈ e.bufsOf, f b = g b) →
+    e.renameBuf f = e.renameBuf g := by
+  intro e
+  induction e with
+  | ptr b => intro h; simp only [IExp.renameBuf, h b (by simp [IExp.bufsOf])]
+  | bin o a b iha ihb =>
+    intro h
+    simp only [IExp.renameBuf, iha (fun c hc => h c (by simp [IExp.bufsOf, hc])),
+      ihb (fun c hc => h c (by simp [IExp.bufsOf, hc]))]
+  | cmp o a b iha ihb =>
+    intro h
+    simp only [IExp.renameBuf, iha (fun c hc => h c (by simp [IExp.bufsOf, hc])),
+      ihb (fun c hc => h c (by simp [IExp.bufsOf, hc]))]
+  | ctz a ih => intro h; simp only [IExp.renameBuf, ih (fun c hc => h c (by simp [IExp.bufsOf, hc]))]
+  | _ => intro _; rfl
+
 theorem EWStmt.renameBuf_congr (f g : Buf → Buf) : ∀ s : EWStmt, (∀ b ∈ s.bufsOf, f b = g b) →
     s.renameBuf f = s.renameBuf g := by
   intro s
@@ -90,6 +106,28 @@ theorem EWStmt.renameBuf_congr (f g : Buf → Buf) : ∀ s : EWStmt, (∀ b ∈ 
     intro h
     simp only [EWStmt.renameBuf, h bu (by simp [EWStmt.bufsOf]),
       ih (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))]
+  | setI _ e | ldB _ e | ldH _ e | ballot _ e =>
+    intro h; simp only [EWStmt.renameBuf, IExp.renameBuf_congr f g e (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))]
+  | stB a v g' | stH a v g' =>
+    intro h
+    simp only [EWStmt.renameBuf, IExp.renameBuf_congr f g a (fun c hc => h c (by simp [EWStmt.bufsOf, hc])),
+      IExp.renameBuf_congr f g v (fun c hc => h c (by simp [EWStmt.bufsOf, hc])),
+      IExp.renameBuf_congr f g g' (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))]
+  | shflIdx _ v s' =>
+    intro h
+    simp only [EWStmt.renameBuf, IExp.renameBuf_congr f g v (fun c hc => h c (by simp [EWStmt.bufsOf, hc])),
+      IExp.renameBuf_congr f g s' (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))]
+  | iif c x y ihx ihy =>
+    intro h
+    simp only [EWStmt.renameBuf, IExp.renameBuf_congr f g c (fun c hc => h c (by simp [EWStmt.bufsOf, hc])),
+      ihx (fun c hc => h c (by simp [EWStmt.bufsOf, hc])), ihy (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))]
+  | iwhile n c cs body ih =>
+    intro h
+    simp only [EWStmt.renameBuf, IExp.renameBuf_congr f g c (fun c hc => h c (by simp [EWStmt.bufsOf, hc])),
+      ih (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))]
+  | locals rs body ih =>
+    intro h
+    simp only [EWStmt.renameBuf, ih (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))]
   | _ => intro _; rfl
 
 /-- A table's buffer sits at its index. -/
@@ -175,8 +213,8 @@ theorem foldl_congr_mem {α β : Type} (f g : α → β → α) : ∀ (l : List 
 
 /-- A sequence of statements, run, is its parts run one after another. -/
 theorem run_foldl_seq (cta : Nat) : ∀ (E : List EWStmt) (acc : EWStmt) (w : WSt R),
-    ((E.foldl (fun a e => EWStmt.seq a e) acc).elabAt cta 0).run w
-      = E.foldl (fun st e => (e.elabAt cta 0).run st) ((acc.elabAt cta 0).run w) := by
+    ((E.foldl (fun a e => EWStmt.seq a e) acc).run w cta 0)
+      = E.foldl (fun st e => (e.run st cta 0)) ((acc.run w cta 0)) := by
   intro E
   induction E with
   | nil => intro _ _; rfl
@@ -259,8 +297,8 @@ theorem group_pipe [LitNat R] (n G : Nat) (ops : List TOp) (bs : List Buf) (xs :
     rw [List.foldl_map, lowerTOps_den n ops xs hlow]
 
 theorem run_stages (rss : List (StageSpec R)) (hp : ∀ S ∈ rss, Plain S) (w : WSt R) (c : Nat) :
-    ((((rss.map fun S => S.ew).foldl (fun a e => EWStmt.seq a e) .skip)).elabAt c 0).run w
-      = rss.foldl (fun st S => (S.blk c).run st) w := by
+    ((((rss.map fun S => S.ew).foldl (fun a e => EWStmt.seq a e) .skip)).run w c 0)
+      = rss.foldl (fun st S => S.blk c st) w := by
   rw [run_foldl_seq, List.foldl_map]
   refine foldl_congr_mem _ _ rss _ (fun S hS st => ?_)
   rw [(hp S hS).blk c]
@@ -280,7 +318,7 @@ theorem group_den [LitNat R] (n G : Nat) (ops : List TOp) (bs : List Buf) (xs : 
       (b, j) ∈ touchL c l 0 (TOp.groupStmt n bs ops) → (b, j) ∈ storeL c' l' 0 (TOp.groupStmt n bs ops) → False)
     (w : WSt R) (c : Nat) (hc : c < G) (l : Lane) (g : Buf) (j : Nat)
     (ht : (tabInj bs g, j) ∈ touchL c l 0 (TOp.groupStmt n bs ops)) :
-    (((TOp.groupStmt n bs ops).elabAt c 0).run w).mem (tabInj bs g) j
+    (((TOp.groupStmt n bs ops).run w c 0)).mem (tabInj bs g) j
       = ops.foldl (fun m op => op.den m) (fun g' a => w.mem (tabInj bs g') a) g j := by
   obtain ⟨rss, hS, hgs, hden⟩ := group_pipe n G ops bs xs hlow hgrid hcov
   let T : Nat → Buf → Nat → Prop := fun c b j => ∃ l : Lane, (b, j) ∈ touchL c l 0 (TOp.groupStmt n bs ops)
@@ -330,11 +368,11 @@ theorem group_local [LitNat R] (n G : Nat) (ops : List TOp) (bs : List Buf) (xs 
       = ops.foldl (fun m op => op.den m) (fun g' a => M' (tabInj bs g') a) g j := by
   by_cases ht : ∃ c, c < G ∧ ∃ l : Lane, (tabInj bs g, j) ∈ touchL c l 0 (TOp.groupStmt n bs ops)
   · obtain ⟨c, hc, l, ht⟩ := ht
-    let w : WSt R := ⟨fun _ _ => NumOps.zero, M, fun _ => NumOps.zero⟩
-    let w' : WSt R := ⟨fun _ _ => NumOps.zero, M', fun _ => NumOps.zero⟩
+    let w : WSt R := ⟨fun _ _ => NumOps.zero, M, fun _ => NumOps.zero, {}⟩
+    let w' : WSt R := ⟨fun _ _ => NumOps.zero, M', fun _ => NumOps.zero, {}⟩
     rw [← group_den n G ops bs xs hlow hgrid hcov hap w c hc l g j ht,
       ← group_den n G ops bs xs hlow hgrid hcov hap w' c hc l g j ht]
-    exact (run_agree c _ 0 w w' ⟨rfl, rfl, fun b a ⟨l', h⟩ => hag c hc l' b a h⟩).2.2 _ _ ⟨l, ht⟩
+    exact (run_agree c _ 0 w w' ⟨rfl, rfl, fun b a ⟨l', h⟩ => hag c hc l' b a h, rfl⟩).2.2.1 _ _ ⟨l, ht⟩
   · have hn : ∀ c, c < G → ∀ l : Lane, (tabInj bs g, j) ∉ storeL c l 0 (TOp.groupStmt n bs ops) :=
       fun c hc l hs => ht ⟨c, hc, l, storeL_sub c l _ 0 hs⟩
     rw [group_keep n G ops bs xs hlow hgrid hcov M g j hn, group_keep n G ops bs xs hlow hgrid hcov M' g j hn]

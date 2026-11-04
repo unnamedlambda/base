@@ -103,34 +103,36 @@ impl Vals {
     }
 }
 
-/// An artifact decoded as Cranelift declares it: the primitives are `FuncId`s
-/// `0..P`, the functions follow them, and the arena is `DataId` 0.
-pub(crate) struct Decoded {
+/// An artifact's signatures as Cranelift declares them: the primitives are
+/// `FuncId`s `0..P`, the functions follow them, and the arena is `DataId` 0.
+/// Each function decodes against them alone, so functions decode independently.
+pub(crate) struct Module<'a> {
+    primitives: &'a [clif::Primitive],
+    host: CallConv,
     pub primitive_sigs: Vec<Signature>,
     pub function_sigs: Vec<Signature>,
-    pub functions: Vec<ir::Function>,
 }
 
-pub(crate) fn decode(primitives: &[clif::Primitive], functions: &[clif::Function], host: CallConv) -> Result<Decoded, String> {
+pub(crate) fn decode<'a>(
+    primitives: &'a [clif::Primitive],
+    functions: &[clif::Function],
+    host: CallConv,
+) -> Result<Module<'a>, String> {
     let primitive_sigs = primitives
         .iter()
         .map(|p| signature(&p.signature, host).map_err(|e| format!("the primitive {}!{}: {e}", p.lib, p.symbol)))
         .collect::<Result<Vec<_>, _>>()?;
     let function_sigs =
         functions.iter().enumerate().map(|(i, f)| signature_of(f, i, host)).collect::<Result<Vec<_>, _>>()?;
-    let m = Module { primitives, primitive_sigs: &primitive_sigs, function_sigs: &function_sigs };
-    let functions =
-        functions.iter().enumerate().map(|(i, f)| decode_function(f, i, host, &m)).collect::<Result<Vec<_>, _>>()?;
-    Ok(Decoded { primitive_sigs, function_sigs, functions })
-}
-
-struct Module<'a> {
-    primitives: &'a [clif::Primitive],
-    primitive_sigs: &'a [Signature],
-    function_sigs: &'a [Signature],
+    Ok(Module { primitives, host, primitive_sigs, function_sigs })
 }
 
 impl Module<'_> {
+    /// Function `index` of the artifact, `f`, as Cranelift IR.
+    pub(crate) fn function(&self, f: &clif::Function, index: usize) -> Result<ir::Function, String> {
+        decode_function(f, index, self.host, self)
+    }
+
     /// `c`'s `FuncId`, whether it is in this module, its signature and its name.
     fn callee(&self, c: clif::Callee) -> Result<(u32, bool, Signature, String), String> {
         match c {

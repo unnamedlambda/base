@@ -50,10 +50,12 @@ inductive Reg where
   deriving Repr, DecidableEq, Hashable, Inhabited
 
 /-- A label: a block's (`B3`), the other side of a branch at a position
-    (`E7`), or one named freely. -/
+    (`E7`), the line of a move `Kernel.Coalesce` removed (`C12`), or one
+    named freely. -/
 inductive Lbl where
   | blk (id : Nat)
   | els (tag : Nat)
+  | gone (pc : Nat)
   | name (s : String)
   deriving Repr, DecidableEq, Hashable, Inhabited
 
@@ -102,12 +104,14 @@ def BinOp.name : BinOp → String
 /-- A one-operand operation; the approximations are the hardware's. -/
 inductive UnOp where
   | neg | abs | not | brev | clz | popc | sqrt | rsqrtApprox | sqrtApprox | ex2Approx | lg2Approx | rcpApprox
+  | sinApprox | cosApprox
   deriving Repr, DecidableEq, Inhabited
 
 def UnOp.name : UnOp → String
   | .neg => "neg" | .abs => "abs" | .not => "not" | .brev => "brev" | .clz => "clz" | .popc => "popc"
   | .sqrt => "sqrt" | .rsqrtApprox => "rsqrt.approx" | .sqrtApprox => "sqrt.approx"
   | .ex2Approx => "ex2.approx" | .lg2Approx => "lg2.approx" | .rcpApprox => "rcp.approx"
+  | .sinApprox => "sin.approx" | .cosApprox => "cos.approx"
 
 /-- A comparison; the `u` forms hold when unordered. -/
 inductive Cmp where
@@ -210,6 +214,7 @@ def Reg.text : Reg → String
 def Lbl.text : Lbl → String
   | .blk i => s!"B{i}"
   | .els t => s!"E{t}"
+  | .gone pc => s!"C{pc}"
   | .name s => s
 
 def Opnd.text : Opnd → String

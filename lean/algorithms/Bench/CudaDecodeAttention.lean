@@ -1,8 +1,8 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
+public import Bench.CudaSoftmaxPersist
+meta import Bench.CudaSoftmaxPersist
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
 public import AlgorithmLib.Surface.Drv
@@ -14,7 +14,7 @@ import all Init.Data.List.Sort.Basic
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
-open AlgorithmLib.PTX
+open AlgorithmLib.Kernel
 
 namespace CudaDecodeAttention
 
@@ -77,52 +77,12 @@ def ORG : Nat := 0x100
 def PTX_OFF : Nat := 0x400
 def PTX_LEN : Nat := 0x4C00
 
-def ptxSource : String := buildModule 64 [{ name := "main", params := ["scores_buf", "meta_buf", "probs_buf"], body := do
-  let scoresBuf ← ldParam "scores_buf"
-  let metaPtr   ← ldParam "meta_buf"
-  let probsBuf  ← ldParam "probs_buf"
-  let seqLen ← freshR; ldGlobalU seqLen metaPtr
-  let (tid, wid, lid) ← getWarpIds
-  let headIdx  ← freshR; movR headIdx ctaX
-  let headId64 ← freshRd; cvtU64 headId64 headIdx
-  let seqLen64 ← freshRd; cvtU64 seqLen64 seqLen
-  let headOff  ← freshRd; mulLoRd headOff headId64 seqLen64
-  let byteOff  ← freshRd; shlRd byteOff headOff 2
-  let scoresBase ← freshRd; addRd scoresBase scoresBuf byteOff
-  let probsBase  ← freshRd; addRd probsBase  probsBuf  byteOff
-  let log2e ← freshF; movFC log2e f32_log2e
-  -- Phase 1: max reduction over this head's scores
-  let lMax ← freshF; movFC lMax f32_0
-  let mTmp ← freshF
-  strideLoop tid seqLen 256 "sm_loop_max" "sm_done_max" fun i => do
-    let addr ← elemAddr scoresBase i; ldGlobalF mTmp addr; maxF lMax lMax mTmp
-  warpReduceMax lMax mTmp
-  lane0WriteSmem lid wid "sm_skip_max_store" fun wAddr => stSharedFD wAddr lMax
-  thread0Op tid "sm_skip_max_reduce" do
-    let sBase ← smemBase; let gMax ← freshF
-    crossWarp8 gMax mTmp sBase 0 maxF; stSharedF sBase 32 gMax
-  let sBase1 ← smemBase
-  let gMax ← freshF; ldSharedF gMax sBase1 32
-  -- Phase 2: sum of exp(score - max)
-  let lSum ← freshF; movFC lSum f32_0
-  let sTmp ← freshF
-  strideLoop tid seqLen 256 "sm_loop_sum" "sm_done_sum" fun i => do
-    let addr ← elemAddr scoresBase i; let xi ← freshF; ldGlobalF xi addr
-    subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; addF lSum lSum xi
-  warpReduceSum lSum sTmp
-  lane0WriteSmem lid wid "sm_skip_sum_store" fun wAddr => stSharedFD wAddr lSum
-  thread0Op tid "sm_skip_sum_reduce" do
-    let sBase ← smemBase
-    crossWarp8 lSum sTmp sBase 0 addF; rcp lSum lSum; stSharedF sBase 36 lSum
-  let sBase2 ← smemBase
-  let invSum ← freshF; ldSharedF invSum sBase2 36
-  -- Phase 3: write softmax probabilities
-  strideLoop tid seqLen 256 "sm_loop_out" "sm_done_out" fun i => do
-    let sAddr ← elemAddr scoresBase i; let pAddr ← elemAddr probsBase i
-    let xi ← freshF; ldGlobalF xi sAddr
-    subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
-    stGlobalF pAddr xi
-  ptxRet }]
+/-- The softmax kernel: `CudaSoftmaxPersist`'s, a block a head over its
+    `seq_len` scores. -/
+def ptxSource : String :=
+  match (CudaSoftmaxPersist.Body.rowKernel "main").ptx with
+  | .ok s => s
+  | .error _ => ""
 
 -- Load: init CUDA, alloc 7 bufs, upload K/V/meta, store buf IDs and seq_len
 open AlgorithmLib.Prog
@@ -218,6 +178,10 @@ def clifIR : Except String (List FuncData) :=
      Prog.compileProg 4 finalizeCode,
      Prog.entry "infer" (Prog.compileProg 5 (Prog.sequenceWrapper [3, 4])),
      Prog.entry "stack" (Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4])))]
+
+/-- The module prints, and fits where it is placed with its terminating zero. -/
+theorem ptx_fits : 0 < ptxSource.utf8ByteSize ∧ ptxSource.utf8ByteSize < PTX_LEN := by
+  native_decide
 
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,

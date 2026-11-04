@@ -1,9 +1,9 @@
 import Scan.Core
+import Scan.MlSurface
 import Demo.Sat
 import Demo.Sha256
 import Demo.LeanEval
-import Bench.CudaSaxpyPersist
-import Bench.CudaVecAddPersist
+import Ship.CudaPipeline
 /-!
   # The utility generators' scans
 
@@ -195,10 +195,10 @@ open TrustScan LeanEvalScan in
 /-!
   ## What the persistent-`a·x + y` artifact's claims rest on — computed, not documented
 
-  **This generator writes no theorem of its own, and it does not need most of
-  one.**  It is four lines of `CudaPipeline.Expr`, and the library it compiles
-  through carries the storage argument for every program built that way.  The
-  report is therefore about where the claims live, not that they are absent.
+  **This generator writes no theorem of its own.**  It is one `ML.Expr`, and
+  the library it compiles through carries the argument for every program built
+  that way: the kernel's (`ML.Pipeline.kernel_body`) and the entry points'.
+  The report is therefore about where the claims live.
 -/
 
 namespace CudaSaxpyPersistScan
@@ -206,15 +206,15 @@ namespace CudaSaxpyPersistScan
 /-- **The public claims.** `result` is what the generator builds. The
     surface it is written in checks well-formedness in its own types and at
     generation time, so the scan finds no claim here resting on the compiler.
-    That its entry points neither misuse a call nor fault is `Ship.CudaPipeline`'s. -/
+    What its kernel stores, and that its entry points neither misuse a call nor
+    fault, are `Ship.CudaPipeline`'s. -/
 def roots : List Name :=
   [ `CudaSaxpyPersist.result
-  , `CudaSaxpyPersist.artifacts ]
+  , `CudaSaxpyPersist.artifacts
+  , `CudaPipelineSafe.saxpy_body ]
 
 def notYetStated : List String :=
-  [ "that the PTX the pipeline emits computes `a·x + y` — the expression DSL is      lowered by `emitExprPTX`, and nothing states that the lowering is faithful",
-    "that the three stages run in the order the runtime calls them",
-    "and therefore: the numerical result rests on differential testing, while      storage and well-formedness rest on the checker's proofs of its entry points" ]
+  [ "that the three stages run in the order the runtime calls them, so that the      result `infer` downloads is the kernel's on the inputs `prep` uploaded" ]
 
 end CudaSaxpyPersistScan
 
@@ -222,8 +222,10 @@ end CudaSaxpyPersistScan
     `compileProg` checks the body it emitted. -/
 def CudaSaxpyPersistScan.nativeRoster : List Name := []
 
+-- An ML pipeline: its claims rest on the model stack's surface, the binary32
+-- operations its expression denotes in among it.
 open TrustScan CudaSaxpyPersistScan in
-#eval runGenScan "saxpy" roots nativeRoster
+#eval runScanWith mlSurface "saxpy" roots nativeRoster
 
 #eval do
   IO.println s!"[saxpy] roots scanned: {CudaSaxpyPersistScan.roots.length}"
@@ -233,10 +235,10 @@ open TrustScan CudaSaxpyPersistScan in
 /-!
   ## What the persistent-`x + y` artifact's claims rest on — computed, not documented
 
-  **This generator writes no theorem of its own, and it does not need most of
-  one.**  It is four lines of `CudaPipeline.Expr`, and the library it compiles
-  through carries the storage argument for every program built that way.  The
-  report is therefore about where the claims live, not that they are absent.
+  **This generator writes no theorem of its own.**  It is one `ML.Expr`, and
+  the library it compiles through carries the argument for every program built
+  that way: the kernel's (`ML.Pipeline.kernel_body`) and the entry points'.
+  The report is therefore about where the claims live.
 -/
 
 namespace CudaVecAddPersistScan
@@ -244,15 +246,15 @@ namespace CudaVecAddPersistScan
 /-- **The public claims.** `result` is what the generator builds. The
     surface it is written in checks well-formedness in its own types and at
     generation time, so the scan finds no claim here resting on the compiler.
-    That its entry points neither misuse a call nor fault is `Ship.CudaPipeline`'s. -/
+    What its kernel stores, and that its entry points neither misuse a call nor
+    fault, are `Ship.CudaPipeline`'s. -/
 def roots : List Name :=
   [ `CudaVecAddPersist.result
-  , `CudaVecAddPersist.artifacts ]
+  , `CudaVecAddPersist.artifacts
+  , `CudaPipelineSafe.vecadd_body ]
 
 def notYetStated : List String :=
-  [ "that the PTX the pipeline emits computes `x + y` — the expression DSL is      lowered by `emitExprPTX`, and nothing states that the lowering is faithful",
-    "that the three stages run in the order the runtime calls them",
-    "and therefore: the numerical result rests on differential testing, while      storage and well-formedness rest on the checker's proofs of its entry points" ]
+  [ "that the three stages run in the order the runtime calls them, so that the      result `infer` downloads is the kernel's on the inputs `prep` uploaded" ]
 
 end CudaVecAddPersistScan
 
@@ -260,8 +262,10 @@ end CudaVecAddPersistScan
     `compileProg` checks the body it emitted. -/
 def CudaVecAddPersistScan.nativeRoster : List Name := []
 
+-- An ML pipeline: its claims rest on the model stack's surface, the binary32
+-- operations its expression denotes in among it.
 open TrustScan CudaVecAddPersistScan in
-#eval runGenScan "vecadd" roots nativeRoster
+#eval runScanWith mlSurface "vecadd" roots nativeRoster
 
 #eval do
   IO.println s!"[vecadd] roots scanned: {CudaVecAddPersistScan.roots.length}"

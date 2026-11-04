@@ -7,8 +7,8 @@ public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
 public import AlgorithmLib.Surface.Drv
 meta import AlgorithmLib.Surface.Drv
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Kernel.Block
+meta import AlgorithmLib.Kernel.Block
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -16,15 +16,14 @@ import all Init.Data.List.Sort.Basic
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
-open AlgorithmLib.PTX
 
 namespace Cli
 
 structure Fields where
   reserved : Fld (.bytes 64)
-  ptx : Fld (.bytes 512)
-  arrayScalePtx : Fld (.bytes 1536)
-  arrayAddPtx : Fld (.bytes 1536)
+  ptx : Fld (.bytes 2048)
+  arrayScalePtx : Fld (.bytes 2048)
+  arrayAddPtx : Fld (.bytes 2048)
   drv : Fld (.bytes 1024)
   varPresent : Fld (.bytes 26)
   input : Fld (.bytes 256)
@@ -45,9 +44,9 @@ structure Fields where
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
   let reserved ← field (.bytes 64)
-  let ptx ← field (.bytes 512)
-  let arrayScalePtx ← field (.bytes 1536)
-  let arrayAddPtx ← field (.bytes 1536)
+  let ptx ← field (.bytes 2048)
+  let arrayScalePtx ← field (.bytes 2048)
+  let arrayAddPtx ← field (.bytes 2048)
   let drv ← field (.bytes 1024)
   let varPresent ← field (.bytes 26)
   let input ← field (.bytes 256)
@@ -87,48 +86,64 @@ def asciiA : Int := 97
 def asciiZ : Int := 122
 def asciiGreater : Int := 62
 
-def scalarAddPtx : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
-  name := "main", params := ["lhs_ptr", "rhs_ptr", "out_ptr"], body := do
-  let lhs ← ldParam "lhs_ptr"
-  let rhs ← ldParam "rhs_ptr"
-  let out ← ldParam "out_ptr"
-  let a ← freshRd; ldGlobalU64 a lhs
-  let b ← freshRd; ldGlobalU64 b rhs
-  let sum ← freshRd; addS64 sum a b
-  stGlobalU64 out sum
-  ptxRet }]
+namespace Body
+open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog AlgorithmLib.Kernel AlgorithmLib.Kernel.Block
 
-def arrayScalePtxSource : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
-  name := "main", params := ["in_ptr", "param_ptr", "out_ptr"], body := do
-  let inPtr    ← ldParam "in_ptr"
-  let paramPtr ← ldParam "param_ptr"
-  let outPtr   ← ldParam "out_ptr"
-  let idx  ← freshR;  movR idx ctaX
-  let byte ← freshRd; cvtU64 byte idx; shlRd byte byte 3
-  let addr ← freshRd; addRd addr inPtr byte
-  let x    ← freshRd; ldGlobalS64 x addr
-  let s    ← freshRd; ldGlobalS64 s paramPtr
-  let y    ← freshRd; mulLoS64 y x s
-  let outAddr ← freshRd; addRd outAddr outPtr byte
-  stGlobalS64 outAddr y
-  ptxRet }]
+section
+variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 
-def arrayAddPtxSource : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
-  name := "main", params := ["lhs_ptr", "rhs_ptr", "param_ptr", "out_ptr"], body := do
-  let lhs   ← ldParam "lhs_ptr"
-  let rhs   ← ldParam "rhs_ptr"
-  let _     ← ldParam "param_ptr"  -- loaded but unused
-  let out   ← ldParam "out_ptr"
-  let idx   ← freshR;  movR idx ctaX
-  let byte  ← freshRd; cvtU64 byte idx; shlRd byte byte 3
-  let addrA ← freshRd; addRd addrA lhs byte
-  let a     ← freshRd; ldGlobalS64 a addrA
-  let addrB ← freshRd; addRd addrB rhs byte
-  let b     ← freshRd; ldGlobalS64 b addrB
-  let y     ← freshRd; addS64 y a b
-  let addrO ← freshRd; addRd addrO out byte
-  stGlobalS64 addrO y
-  ptxRet }]
+/-- Element `i` of the 8-byte array at `base`. -/
+def at8 (base : V .i64) (i : V .i32) : Prog V L (V .i64) := do
+  iadd base (← ishlImm (← ext i) 3)
+
+/-- `out := lhs + rhs`, one 64-bit integer each, wrapping. -/
+def scalarAdd : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let lhs := (ps.drop 4).head; let rhs := (ps.drop 5).head; let out := (ps.drop 6).head
+  store (← iadd (← load64 lhs) (← load64 rhs)) out
+
+/-- `out[b] := in[b] · param`, block `b` an element, 64-bit and wrapping. -/
+def arrayScale : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let i := ps.head
+  let inp := (ps.drop 4).head; let prm := (ps.drop 5).head; let out := (ps.drop 6).head
+  store (← imul (← load64 (← at8 inp i)) (← load64 prm)) (← at8 out i)
+
+/-- `out[b] := lhs[b] + rhs[b]`, block `b` an element, 64-bit and wrapping;
+    the third pointer is the parameter block, which the sum does not read. -/
+def arrayAdd : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64])
+  let i := ps.head
+  let lhs := (ps.drop 4).head; let rhs := (ps.drop 5).head; let out := (ps.drop 7).head
+  store (← iadd (← load64 (← at8 lhs i)) (← load64 (← at8 rhs i))) (← at8 out i)
+
+end
+
+/-- A body as the module's one kernel, `main`, over `n` pointers. -/
+def ptxOf (n : Nat) (code : Code) : String :=
+  match ({ name := "main", params := List.replicate n .i64, code } : Kernel).ptx with
+  | .ok s => s
+  | .error _ => ""
+
+end Body
+
+section
+open AlgorithmLib.Kernel AlgorithmLib.Prog
+
+def scalarAddPtx : String := Body.ptxOf 3 (emit Body.scalarAdd (idParams ++ [.i64, .i64, .i64]))
+def arrayScalePtxSource : String := Body.ptxOf 3 (emit Body.arrayScale (idParams ++ [.i64, .i64, .i64]))
+def arrayAddPtxSource : String :=
+  Body.ptxOf 4 (emit Body.arrayAdd (idParams ++ [.i64, .i64, .i64, .i64]))
+
+end
+
+/-- Bytes kept for each kernel's PTX. -/
+def PTX_FIELD : Nat := 2048
+
+/-- Each module prints, and fits its field with its terminating zero. -/
+theorem ptx_fits : [scalarAddPtx, arrayScalePtxSource, arrayAddPtxSource].all
+    (fun t => decide (0 < t.utf8ByteSize ∧ t.utf8ByteSize < PTX_FIELD)) = true := by
+  native_decide
 
 open AlgorithmLib.Prog
 
@@ -259,9 +274,9 @@ def storeVarPresent (ptr idx value : V .i64) : Prog V L Unit :=
     own module. -/
 def app : Drv.App :=
   { bufs := [8, 8, 8, 8, 2048, 2048, 2048, 16, 26 * 2048],
-    kernels := [⟨f.ptx.offset, 512, [0, 1, 2], (1, 1, 1), (1, 1, 1), []⟩,
-                ⟨f.arrayScalePtx.offset, 1536, [4, 7, 6], (1, 1, 1), (1, 1, 1), []⟩,
-                ⟨f.arrayAddPtx.offset, 1536, [4, 5, 7, 6], (1, 1, 1), (1, 1, 1), []⟩],
+    kernels := [⟨f.ptx.offset, 2048, [0, 1, 2], (1, 1, 1), (1, 1, 1), []⟩,
+                ⟨f.arrayScalePtx.offset, 2048, [4, 7, 6], (1, 1, 1), (1, 1, 1), []⟩,
+                ⟨f.arrayAddPtx.offset, 2048, [4, 5, 7, 6], (1, 1, 1), (1, 1, 1), []⟩],
     memSize := layoutMeta.totalSize, org := f.drv.offset }
 
 def ZERO_BUF : Nat := 0

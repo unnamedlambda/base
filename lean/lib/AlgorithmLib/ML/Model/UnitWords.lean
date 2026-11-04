@@ -167,8 +167,7 @@ theorem unit_body {ops : List TOp} (hU : L.UnitOk ops) (hw : Hw) (hw32 : ∀ c x
     (hr : L.LaunchRuns ops hw bufs bufs') :
     ∀ cta (l : Lane) b j, cta < unitGrid ops → (b, j) ∈ touchL cta l 0 (unitStmt L.batch ops) →
       ({ kmem bufs with bufs := bufs' } : Sem.Mem).load (bufW (unitBufs L.batch ops).length b j) 4 =
-        some ((@WStmt.run F32 (F32.ops hw) _ ((unitStmt L.batch ops).elabAt cta 0)
-          (ws0 (unitBufs L.batch ops).length (kmem bufs))).mem b j).bits := by
+        some ((@EWStmt.run F32 (F32.ops hw) _ (unitStmt L.batch ops) (ws0 (unitBufs L.batch ops).length (kmem bufs)) cta 0).mem b j).bits := by
   have hW := hU.warps
   have h := launch_static hw hw32 "main" (unitBufs L.batch ops).length 0 (unitStmt L.batch ops)
     (spine (unitStmt L.batch ops)) (split_spine _) (L.W ops) hW.1 (by omega) (unitGrid ops / L.W ops)

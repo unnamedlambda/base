@@ -4,6 +4,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Kernel.Block
+meta import AlgorithmLib.Kernel.Block
 public import Bench.ImageAsm
 meta import Bench.ImageAsm
 import all Init.Data.Repr
@@ -115,12 +117,17 @@ def THREADS : Nat := frameBytes (SRC_W / 2) (SRC_H / 2) / 4
 def BLOCK : Nat := 256
 def GRID : Nat := (THREADS + BLOCK - 1) / BLOCK
 
+section
+open AlgorithmLib.Kernel AlgorithmLib.Kernel.Block
+variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
+
 /-- `box2(src, dst)`: the whole frame halved by averaging each 2x2 block,
     rounded half up, as NPP's supersampling does at exactly half size. A thread
     makes four outputs of one plane from two aligned eight-byte loads: the even
     and odd bytes of both rows summed in 16-bit lanes, then each lane's low
-    byte packed. -/
-def boxPtx : String :=
+    byte packed (the shift by 2 carries a lane's low bits into the one below,
+    which the mask clears). -/
+def boxBody : Prog V L Unit := do
   let (w, h) := (SRC_W, SRC_H)
   let yT := w / 2 * (h / 2) / 4
   let uT := yT + w / 4 * (h / 4) / 4
@@ -128,73 +135,44 @@ def boxPtx : String :=
   let vSrc := uSrc + w / 2 * (h / 2)
   let uDst := w / 2 * (h / 2)
   let vDst := uDst + w / 4 * (h / 4)
-  s!".version 7.0
-.target sm_70
-.address_size 64
+  let ps ← entryParams (idParams ++ [.i64, .i64])
+  let src := (ps.drop 4).head; let dst := (ps.drop 5).head
+  let g ← iadd (← imul ps.head ps.thd) ps.snd
+  when .ult g (← c32 THREADS) do
+    let inU ← icmp .uge g (← c32 yT)
+    let inV ← icmp .uge g (← c32 uT)
+    let rw ← select inU (← c32 (w / 4)) (← c32 (w / 2))
+    let base ← select inV (← c32 uT) (← select inU (← c32 yT) (← c32 0))
+    let so ← select inV (← c32 vSrc) (← select inU (← c32 uSrc) (← c32 0))
+    let dOff ← select inV (← c32 vDst) (← select inU (← c32 uDst) (← c32 0))
+    let o ← ishlImm (← isub g base) 2
+    let row ← udiv o rw
+    let col ← isub o (← imul row rw)
+    let sw ← ishlImm rw 1
+    let off ← iadd (← iadd (← ishlImm (← imul row sw) 1) (← ishlImm col 1)) so
+    let pa ← iadd src (← ext off)
+    let a ← load64 pa
+    let b ← load64 (← iadd pa (← ext sw))
+    let m ← c64n 0x00FF00FF00FF00FF
+    let s ← iadd (← band a m) (← band b m)
+    let s ← iadd s (← band (← ushrImm a 8) m)
+    let s ← iadd s (← band (← ushrImm b 8) m)
+    let x ← band (← ushrImm (← iadd s (← c64n 0x0002000200020002)) 2) m
+    let y ← band (← bor x (← ushrImm x 8)) (← c64n 0x0000FFFF0000FFFF)
+    let z ← bor y (← ushrImm y 16)
+    storeI32 (← ireduce32 z) (← iadd dst (← ext (← iadd o dOff)))
 
-.visible .entry box2(.param .u64 box2_src, .param .u64 box2_dst)
-\{
-  .reg .pred %p<4>;
-  .reg .b32 %r<24>;
-  .reg .b64 %rd<16>;
-  ld.param.u64 %rd1, [box2_src];
-  ld.param.u64 %rd2, [box2_dst];
-  cvta.to.global.u64 %rd1, %rd1;
-  cvta.to.global.u64 %rd2, %rd2;
-  mov.u32 %r1, %ctaid.x;
-  mov.u32 %r2, %ntid.x;
-  mov.u32 %r3, %tid.x;
-  mad.lo.u32 %r4, %r1, %r2, %r3;
-  setp.ge.u32 %p1, %r4, {THREADS};
-  @%p1 bra DONE;
-  setp.ge.u32 %p2, %r4, {yT};
-  setp.ge.u32 %p3, %r4, {uT};
-  selp.u32 %r5, {w / 4}, {w / 2}, %p2;
-  selp.u32 %r6, {yT}, 0, %p2;
-  selp.u32 %r6, {uT}, %r6, %p3;
-  selp.u32 %r7, {uSrc}, 0, %p2;
-  selp.u32 %r7, {vSrc}, %r7, %p3;
-  selp.u32 %r8, {uDst}, 0, %p2;
-  selp.u32 %r8, {vDst}, %r8, %p3;
-  sub.u32 %r9, %r4, %r6;
-  shl.b32 %r10, %r9, 2;
-  div.u32 %r11, %r10, %r5;
-  mul.lo.u32 %r12, %r11, %r5;
-  sub.u32 %r13, %r10, %r12;
-  shl.b32 %r14, %r5, 1;
-  mul.lo.u32 %r15, %r11, %r14;
-  shl.b32 %r15, %r15, 1;
-  shl.b32 %r16, %r13, 1;
-  add.u32 %r15, %r15, %r16;
-  add.u32 %r15, %r15, %r7;
-  cvt.u64.u32 %rd3, %r15;
-  add.u64 %rd3, %rd1, %rd3;
-  cvt.u64.u32 %rd4, %r14;
-  add.u64 %rd5, %rd3, %rd4;
-  ld.global.nc.u64 %rd6, [%rd3];
-  ld.global.nc.u64 %rd7, [%rd5];
-  mov.u64 %rd8, 0x00FF00FF00FF00FF;
-  and.b64 %rd9, %rd6, %rd8;
-  and.b64 %rd10, %rd7, %rd8;
-  shr.u64 %rd11, %rd6, 8;
-  and.b64 %rd11, %rd11, %rd8;
-  shr.u64 %rd12, %rd7, 8;
-  and.b64 %rd12, %rd12, %rd8;
-  add.u64 %rd13, %rd9, %rd10;
-  add.u64 %rd13, %rd13, %rd11;
-  add.u64 %rd13, %rd13, %rd12;
-  add.u64 %rd13, %rd13, 0x0002000200020002;
-  shr.u64 %rd13, %rd13, 2;
-  mov.b64 \{%r17, %r18}, %rd13;
-  prmt.b32 %r19, %r17, %r18, 0x6420;
-  add.u32 %r20, %r10, %r8;
-  cvt.u64.u32 %rd14, %r20;
-  add.u64 %rd14, %rd2, %rd14;
-  st.global.u32 [%rd14], %r19;
-DONE:
-  ret;
-}
-"
+/-- `box2`'s module, printed by the PTX compiler. -/
+def boxPtx : String :=
+  match ({ name := "box2", params := [.i64, .i64],
+           code := emit boxBody (idParams ++ [.i64, .i64]) } : Kernel).ptx with
+  | .ok s => s
+  | .error _ => ""
+
+/-- `box2`'s module prints. -/
+theorem box_ptx_prints : 0 < boxPtx.utf8ByteSize := by native_decide
+
+end
 
 -- ---------------------------------------------------------------------------
 -- Lanczos3's weights

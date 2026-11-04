@@ -64,7 +64,7 @@ theorem dotBatched_bufsOf (bA bB out : Buf) (ixA : IdxE) (ixB oi : Nat → IdxE)
   · refine List.append_subset.mpr ⟨by simp [hA], ?_⟩
     exact seqN_bufsOf _ _ (fun s => by simp [batchStepE, EWStmt.bufsOf, hB s]) B
   · exact seqN_bufsOf _ _
-      (fun s => by simp [EWStmt.bufsOf, warpReduceE_bufsOf, ho s]) B
+      (fun s => by simp [epCopyE, EWStmt.bufsOf, warpReduceE_bufsOf, ho s]) B
 
 /-- **The batched outer product names the same three.** -/
 theorem outerBatched_bufsOf (bA bB out : Buf) (ixA ixB : Nat → IdxE) (base : IdxE)
@@ -74,7 +74,7 @@ theorem outerBatched_bufsOf (bA bB out : Buf) (ixA ixB : Nat → IdxE) (base : I
   simp only [outerBatched, storeBody, outerBodyE, EWStmt.bufsOf]
   refine List.append_subset.mpr ⟨List.append_subset.mpr ⟨by simp [EWStmt.bufsOf], ?_⟩, ?_⟩
   · exact seqN_bufsOf _ _
-      (fun s => by simp [outerStepE, EWStmt.bufsOf, hA s, hB s]) B
+      (fun s => by simp [outerStepE, stepWS, EWStmt.bufsOf, hA s, hB s]) B
   · simp [stride32, IdxE.bufsOf, hbase]
 
 /-- **The strided maximum names its operand and its output.** -/
@@ -271,6 +271,15 @@ theorem IdxE.bufsOf_renameBuf (f : Buf → Buf) : ∀ ix : IdxE,
   | mul a b iha ihb => simp [IdxE.renameBuf, IdxE.bufsOf, iha, ihb]
   | _ => rfl
 
+theorem IExp.bufsOf_renameBuf (f : Buf → Buf) : ∀ e : IExp,
+    (e.renameBuf f).bufsOf = e.bufsOf.map f := by
+  intro e
+  induction e with
+  | bin o a b iha ihb => simp [IExp.renameBuf, IExp.bufsOf, iha, ihb]
+  | cmp c a b iha ihb => simp [IExp.renameBuf, IExp.bufsOf, iha, ihb]
+  | ctz a ih => simp [IExp.renameBuf, IExp.bufsOf, ih]
+  | _ => rfl
+
 theorem EWStmt.bufsOf_renameBuf (f : Buf → Buf) : ∀ s : EWStmt,
     (s.renameBuf f).bufsOf = s.bufsOf.map f := by
   intro s
@@ -285,6 +294,13 @@ theorem EWStmt.bufsOf_renameBuf (f : Buf → Buf) : ∀ s : EWStmt,
   | forN k body ih => simp [EWStmt.renameBuf, EWStmt.bufsOf, ih]
   | forM bu a body ih => simp [EWStmt.renameBuf, EWStmt.bufsOf, ih]
   | cvtIF d ix => simp [EWStmt.renameBuf, EWStmt.bufsOf, IdxE.bufsOf_renameBuf]
+  | setI _ e | ldB _ e | ldH _ e | ballot _ e =>
+    simp [EWStmt.renameBuf, EWStmt.bufsOf, IExp.bufsOf_renameBuf]
+  | stB a v g | stH a v g => simp [EWStmt.renameBuf, EWStmt.bufsOf, IExp.bufsOf_renameBuf]
+  | shflIdx _ v s' => simp [EWStmt.renameBuf, EWStmt.bufsOf, IExp.bufsOf_renameBuf]
+  | iif c x y ihx ihy => simp [EWStmt.renameBuf, EWStmt.bufsOf, IExp.bufsOf_renameBuf, ihx, ihy]
+  | iwhile n c cs body ih => simp [EWStmt.renameBuf, EWStmt.bufsOf, IExp.bufsOf_renameBuf, ih]
+  | locals rs body ih => simp [EWStmt.renameBuf, EWStmt.bufsOf, ih]
   | _ => rfl
 
 /-- A buffer in the table compacts to a slot in the table. -/

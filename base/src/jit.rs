@@ -62,6 +62,72 @@ pub(crate) fn exports_of(functions: &[base_types::clif::Function]) -> Result<Vec
     Ok(exports)
 }
 
+/// A function's machine code and the references in it still to be linked.
+struct Code {
+    alignment: u64,
+    bytes: Vec<u8>,
+    relocs: Vec<cranelift_module::ModuleReloc>,
+}
+
+/// Function `i`, decoded and compiled on its own.
+fn compile_one(
+    isa: &dyn cranelift_codegen::isa::TargetIsa,
+    decoded: &crate::clif_decode::Module,
+    f: &base_types::clif::Function,
+    i: usize,
+    id: cranelift_module::FuncId,
+) -> Result<Code, String> {
+    let mut ctx = cranelift_codegen::Context::for_function(decoded.function(f, i)?);
+    // Debug, not Display: only it names the instructions a verifier refuses.
+    let compiled = ctx
+        .compile(isa, &mut cranelift_codegen::control::ControlPlane::default())
+        .map_err(|e| format!("{:?}", cranelift_module::ModuleError::from(e)))?;
+    let alignment = compiled.buffer.alignment as u64;
+    let compiled = ctx.compiled_code().expect("compiled just above");
+    let relocs = compiled
+        .buffer
+        .relocs()
+        .iter()
+        .map(|r| cranelift_module::ModuleReloc::from_mach_reloc(r, &ctx.func, id))
+        .collect();
+    Ok(Code { alignment, bytes: compiled.code_buffer().to_vec(), relocs })
+}
+
+/// Every function's code, in order. Functions compile independently, so they
+/// compile on as many threads as the process may run, largest first, the
+/// calling thread among them; the threads end before this returns. Where no
+/// thread can start, the calling thread compiles them all.
+fn compile_all(
+    decoded: &crate::clif_decode::Module,
+    functions: &[base_types::clif::Function],
+    ids: &[cranelift_module::FuncId],
+) -> Vec<Result<Code, String>> {
+    let isa = crate::clif_decode::isa();
+    let mut order: Vec<usize> = (0..functions.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(functions[i].blocks.iter().map(|b| b.insts.len()).sum::<usize>()));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(functions.len()).max(1);
+    let work = || {
+        let mut done = Vec::new();
+        loop {
+            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(&i) = order.get(k) else { return done };
+            done.push((i, compile_one(&*isa, decoded, &functions[i], i, ids[i])));
+        }
+    };
+    let mut slots: Vec<Option<Result<Code, String>>> = (0..functions.len()).map(|_| None).collect();
+    std::thread::scope(|s| {
+        // A thread the system will not start leaves its share to the others.
+        let helpers: Vec<_> =
+            (1..threads).filter_map(|_| std::thread::Builder::new().spawn_scoped(s, work).ok()).collect();
+        let mine = work();
+        for (i, code) in helpers.into_iter().flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).chain(mine) {
+            slots[i] = Some(code);
+        }
+    });
+    slots.into_iter().map(|c| c.expect("every function was taken")).collect()
+}
+
 /// Compiles the functions an artifact carries, its primitives declared first
 /// so each `FuncId` is the one `clif_decode::decode` named it by.
 pub(crate) fn compile(
@@ -98,14 +164,17 @@ pub(crate) fn compile(
         declared(&format!("u0:{i}"), id.as_u32(), primitives.len() + i)?;
         ids.push(id);
     }
-    for (i, func) in decoded.functions.into_iter().enumerate() {
-        let mut ctx = cranelift_codegen::Context::for_function(func);
-        let named = match &functions[i].name {
-            Some(name) => format!(" (named {name:?}, so a host calls it: it takes the input and output buffers and answers a status)"),
-            None => String::new(),
-        };
-        // Debug, not Display: only it names the instructions a verifier refuses.
-        module.define_function(ids[i], &mut ctx).map_err(|e| format!("compiling u0:{i}{named}: {e:?}"))?;
+    for (i, code) in compile_all(&decoded, functions, &ids).into_iter().enumerate() {
+        let code = code.map_err(|e| {
+            let named = match &functions[i].name {
+                Some(name) => format!(" (named {name:?}, so a host calls it: it takes the input and output buffers and answers a status)"),
+                None => String::new(),
+            };
+            format!("compiling u0:{i}{named}: {e}")
+        })?;
+        module
+            .define_function_bytes(ids[i], code.alignment, &code.bytes, &code.relocs)
+            .map_err(|e| format!("placing u0:{i}: {e:?}"))?;
     }
 
     module.finalize_definitions().map_err(|e| format!("{e}"))?;

@@ -39,7 +39,7 @@ def Decodes (b : Nat) (i o : ByteArray) : Prop :=
       = some ((List.range (Lz4Ship.WP.mk b).inStride).map fun j => i.get! (c * (Lz4Ship.WP.mk b).inStride + j))
 
 /-- The application the compression is laid out as. -/
-abbrev app (b : Nat) : Drv.App := Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 27264
+abbrev app (b : Nat) : Drv.App := Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 17680
 
 /-- **The device is honest about the compressor's launch**: launching
     function 0 of the layout, from whatever module text and entry it was
@@ -104,7 +104,7 @@ def dtohRec (b : Nat) : CallRec :=
 
 /-- **The calls one compression makes, as the layout's records**: an upload
     or none, `rLaunches` launches of kernel 0, a download or none. -/
-theorem warpCalls_eq (b : Nat) (hb : b = 15 ∨ b = 16) : warpCalls (Lz4Ship.WP.mk b) 27264 =
+theorem warpCalls_eq (b : Nat) (hb : b = 15 ∨ b = 16) : warpCalls (Lz4Ship.WP.mk b) 17680 =
     .seq (.alt (.lit [htodRec b]) (.lit []))
       (.seq (.rep Lz4Ship.rLaunches (.lit [(app b).launchRec 0])) (.alt (.lit [dtohRec b]) (.lit []))) := by
   rcases hb with rfl | rfl <;> rfl
@@ -120,7 +120,7 @@ theorem run_geometry (b : Nat) (hb : b = 15 ∨ b = 16) :
 
 /-- A run's calls `warpCalls` admits, cut where the launches begin and end. -/
 theorem warp_has {b : Nat} (hb : b = 15 ∨ b = 16) {cs : List (Callee × List V)}
-    (h : (warpCalls (Lz4Ship.WP.mk b) 27264).Has cs) :
+    (h : (warpCalls (Lz4Ship.WP.mk b) 17680).Has cs) :
     ∃ su sl sd, cs = su ++ (sl ++ sd) ∧ (su = [] ∨ ∃ x, su = [x] ∧ (htodRec b).Matches x) ∧
       recsMatch (List.replicate Lz4Ship.rLaunches ((app b).launchRec 0)) sl ∧
       (sd = [] ∨ ∃ x, sd = [x] ∧ (dtohRec b).Matches x) := by
@@ -131,7 +131,7 @@ theorem warp_has {b : Nat} (hb : b = 15 ∨ b = 16) {cs : List (Callee × List V
       | seq hl hd => exact ⟨_, _, _, rfl, hu.lit_or_nil, hl.rep_lit, hd.lit_or_nil⟩
 
 theorem warp_has_ext {b : Nat} (hb : b = 15 ∨ b = 16) (cs : List (Callee × List V))
-    (h : (warpCalls (Lz4Ship.WP.mk b) 27264).Has cs) : ∀ x ∈ cs, ∃ e, x.1 = .ext e := by
+    (h : (warpCalls (Lz4Ship.WP.mk b) 17680).Has cs) : ∀ x ∈ cs, ∃ e, x.1 = .ext e := by
   obtain ⟨su, sl, sd, rfl, hu, hl, hd⟩ := warp_has hb h
   intro x hx
   rcases List.mem_append.mp hx with hx | hx
@@ -167,7 +167,7 @@ theorem warp_run (b : Nat) (hb : b = 15 ∨ b = 16) (cfg : Cfg) (dl ol : UInt64)
       ∀ x ∈ cs, x.1 = .ext (.cuda .memcpyDtoH) → ∀ j < (Lz4Ship.WP.mk b).totOut,
         w'.mem.load (regionBase .out + UInt64.ofNat j) 1 =
           some ((devMem w'.dev 0).get! ((Lz4Ship.WP.mk b).outOff + j)).toUInt64 := by
-  have hcalls : (warpCalls (Lz4Ship.WP.mk b) 27264).Covers w obs ∧ DevPath w w' ∧
+  have hcalls : (warpCalls (Lz4Ship.WP.mk b) 17680).Covers w obs ∧ DevPath w w' ∧
       StoresOut (keptRanges (Lz4Ship.WP.mk b)) w w' := by
     rcases hb with rfl | rfl
     · exact warp15_calls cfg dl ol w h hr

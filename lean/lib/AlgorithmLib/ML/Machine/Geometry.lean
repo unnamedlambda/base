@@ -82,6 +82,12 @@ def EWStmt.BufBelow (n : Nat) : EWStmt → Prop
   | .forN _ body          => body.BufBelow n
   | .forM bu _ body       => bu < n ∧ body.BufBelow n
   | .cvtIF _ ix           => ix.BufBelow n
+  | .setI _ e | .ldB _ e | .ldH _ e | .ballot _ e => ∀ b ∈ e.bufsOf, b < n
+  | .stB a v g | .stH a v g => ∀ b ∈ a.bufsOf ++ v.bufsOf ++ g.bufsOf, b < n
+  | .shflIdx _ v s        => ∀ b ∈ v.bufsOf ++ s.bufsOf, b < n
+  | .iif c t e            => (∀ b ∈ c.bufsOf, b < n) ∧ t.BufBelow n ∧ e.BufBelow n
+  | .iwhile _ c _ body    => (∀ b ∈ c.bufsOf, b < n) ∧ body.BufBelow n
+  | .locals _ body        => body.BufBelow n
 
 /-- Every buffer a kernel names. -/
 def EWStmt.bufsOf : EWStmt → List Buf
@@ -99,6 +105,12 @@ def EWStmt.bufsOf : EWStmt → List Buf
   | .forN _ body          => body.bufsOf
   | .forM bu _ body       => bu :: body.bufsOf
   | .cvtIF _ ix           => ix.bufsOf
+  | .setI _ e | .ldB _ e | .ldH _ e | .ballot _ e => e.bufsOf
+  | .stB a v g | .stH a v g => a.bufsOf ++ v.bufsOf ++ g.bufsOf
+  | .shflIdx _ v s        => v.bufsOf ++ s.bufsOf
+  | .iif c t e            => c.bufsOf ++ t.bufsOf ++ e.bufsOf
+  | .iwhile _ c _ body    => c.bufsOf ++ body.bufsOf
+  | .locals _ body        => body.bufsOf
 
 /-- **A bound on the names is a bound on the statement.**  Proven once, for
     every statement: what a kernel needs checked is which buffers it mentions,
@@ -151,6 +163,17 @@ theorem EWStmt.bufBelow_of_bufsOf (n : Nat) : ∀ s : EWStmt,
       intro h
       exact ⟨h bu (by simp [EWStmt.bufsOf]), ih (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))⟩
   | cvtIF d ix => intro h; exact IdxE.bufBelow_of_bufsOf n ix h
+  | setI _ e | ldB _ e | ldH _ e | ballot _ e => intro h; exact h
+  | stB a v g | stH a v g => intro h; exact h
+  | shflIdx _ v s => intro h; exact h
+  | iif c t e iht ihe =>
+      intro h
+      exact ⟨fun b hb => h b (by simp [EWStmt.bufsOf, hb]),
+        iht (fun b hb => h b (by simp [EWStmt.bufsOf, hb])), ihe (fun b hb => h b (by simp [EWStmt.bufsOf, hb]))⟩
+  | iwhile _ c _ body ih =>
+      intro h
+      exact ⟨fun b hb => h b (by simp [EWStmt.bufsOf, hb]), ih (fun b hb => h b (by simp [EWStmt.bufsOf, hb]))⟩
+  | locals _ body ih => intro h; exact ih h
   | _ => intro _; trivial
 
 instance EWStmt.decBufBelow (n : Nat) : ∀ s : EWStmt, Decidable (s.BufBelow n)
@@ -168,6 +191,13 @@ instance EWStmt.decBufBelow (n : Nat) : ∀ s : EWStmt, Decidable (s.BufBelow n)
   | .forN _ body => decBufBelow n body
   | .forM bu _ body => @instDecidableAnd _ _ (Nat.decLt bu n) (decBufBelow n body)
   | .cvtIF _ ix => IdxE.decBufBelow n ix
+  | .setI _ e | .ldB _ e | .ldH _ e | .ballot _ e => List.decidableBAll _ _
+  | .stB a v g | .stH a v g => List.decidableBAll _ _
+  | .shflIdx _ v s => List.decidableBAll _ _
+  | .iif c t e => @instDecidableAnd _ _ (List.decidableBAll _ _)
+      (@instDecidableAnd _ _ (decBufBelow n t) (decBufBelow n e))
+  | .iwhile _ c _ body => @instDecidableAnd _ _ (List.decidableBAll _ _) (decBufBelow n body)
+  | .locals _ body => decBufBelow n body
 
 -- ---------------------------------------------------------------------------
 -- Launch geometry
@@ -246,6 +276,12 @@ def EWStmt.ReadsBufB (b : Buf) : EWStmt → Bool
   | .forN _ body          => body.ReadsBufB b
   | .forM bu _ body       => decide (bu = b) || body.ReadsBufB b
   | .cvtIF _ ix           => ix.ReadsBufB b
+  | .setI _ e | .ldB _ e | .ldH _ e | .ballot _ e => e.bufsOf.contains b
+  | .stB a v g | .stH a v g => (a.bufsOf ++ v.bufsOf ++ g.bufsOf).contains b
+  | .shflIdx _ v s'       => (v.bufsOf ++ s'.bufsOf).contains b
+  | .iif c x y            => c.bufsOf.contains b || x.ReadsBufB b || y.ReadsBufB b
+  | .iwhile _ c _ body    => c.bufsOf.contains b || body.ReadsBufB b
+  | .locals _ body        => body.ReadsBufB b
 
 /-- Does this kernel *store* to buffer `b`? -/
 def EWStmt.WritesBufB (b : Buf) : EWStmt → Bool
@@ -263,6 +299,10 @@ def EWStmt.WritesBufB (b : Buf) : EWStmt → Bool
   | .forN _ body          => body.WritesBufB b
   | .forM _ _ body        => body.WritesBufB b
   | .cvtIF _ _            => false
+  | .iif _ x y            => x.WritesBufB b || y.WritesBufB b
+  | .iwhile _ _ _ body    => body.WritesBufB b
+  | .locals _ body        => body.WritesBufB b
+  | .setI .. | .ldB .. | .stB .. | .ldH .. | .stH .. | .ballot .. | .shflIdx .. => false
 
 /-- **The condition a stage must satisfy**: it writes `out`, and does not read
     it.

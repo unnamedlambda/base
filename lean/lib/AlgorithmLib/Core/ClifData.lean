@@ -692,6 +692,14 @@ inductive Intr where
   | rcpApprox
   /-- `lg2.approx.f32`: the hardware's `log₂ x`. -/
   | lg2Approx
+  /-- `sin.approx.f32`: the hardware's `sin x`. -/
+  | sinApprox
+  /-- `cos.approx.f32`: the hardware's `cos x`. -/
+  | cosApprox
+  /-- `sqrt.approx.f32`: the hardware's `√x`. -/
+  | sqrtApprox
+  /-- `rsqrt.approx.f32`: the hardware's `1/√x`. -/
+  | rsqrtApprox
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 namespace Intr
@@ -700,16 +708,19 @@ def sig : Intr → List ClifTy × Option ClifTy
   | .shflBfly | .shflIdx => ([.i32, .i32], some .i32)
   | .ballot => ([.i8], some .i32)
   | .barrier => ([], none)
-  | .ex2Approx | .rcpApprox | .lg2Approx => ([.f32], some .f32)
+  | .ex2Approx | .rcpApprox | .lg2Approx | .sinApprox | .cosApprox | .sqrtApprox | .rsqrtApprox =>
+      ([.f32], some .f32)
 
 def name : Intr → String
   | .shflBfly => "shfl.bfly" | .shflIdx => "shfl.idx" | .ballot => "ballot" | .barrier => "barrier"
   | .ex2Approx => "ex2.approx" | .rcpApprox => "rcp.approx" | .lg2Approx => "lg2.approx"
+  | .sinApprox => "sin.approx" | .cosApprox => "cos.approx" | .sqrtApprox => "sqrt.approx"
+  | .rsqrtApprox => "rsqrt.approx"
 
 /-- Whether other threads answer it: a collective, rather than the hardware's
     arithmetic. -/
 def isColl : Intr → Bool
-  | .ex2Approx | .rcpApprox | .lg2Approx => false
+  | .ex2Approx | .rcpApprox | .lg2Approx | .sinApprox | .cosApprox | .sqrtApprox | .rsqrtApprox => false
   | _ => true
 
 /-- Where an intrinsic's meaning sits among the functions a run is given,
@@ -717,8 +728,11 @@ def isColl : Intr → Bool
 def slot : Intr → Nat
   | .shflBfly => 2 ^ 33 | .shflIdx => 2 ^ 33 + 1 | .ballot => 2 ^ 33 + 2 | .barrier => 2 ^ 33 + 3
   | .ex2Approx => 2 ^ 33 + 4 | .rcpApprox => 2 ^ 33 + 5 | .lg2Approx => 2 ^ 33 + 6
+  | .sinApprox => 2 ^ 33 + 7 | .cosApprox => 2 ^ 33 + 8 | .sqrtApprox => 2 ^ 33 + 9
+  | .rsqrtApprox => 2 ^ 33 + 10
 
-def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx]
+def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx,
+  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox]
 
 end Intr
 

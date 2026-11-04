@@ -72,7 +72,7 @@ structure MapKernel (Γ : Nat) where
   /-- The output buffer, at lane `l`'s address, holds the spec's denotation
       under "variable `i` is what lane `l` sees in buffer `inB i`". -/
   stores : ∀ {R : Type} [NumOps R] [NumLit R] [LitNat R] (st : WSt R) (l : Lane),
-    ((ew.elabIn 0).run st).mem out (elemIx.eval 0 0 l)
+    (ew.run st 0 0).mem out (elemIx.eval 0 0 l)
       = denote (fun i => st.mem (inB i) ((inIx i).eval 0 0 l)) spec
 
 /-- **The front door for elementwise kernels, with per-input addressing.**
@@ -201,7 +201,7 @@ def maxReduceEW (b : Buf) (ixC ixR : IdxE) (bu adC adR : Nat) (init : Float32) :
 theorem maxReduce_spec (b : Buf) (ixC ixR : IdxE) (bu adC adR cta i : Nat)
     (init : Float32) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
     (l : Lane) :
-    (((maxReduceEW b ixC ixR bu adC adR init).elabAt cta i ir im).run st).regs 0 l
+    ((maxReduceEW b ixC ixR bu adC adR init).run st cta i ir im).regs 0 l
       = chunkRemFold (st.mem b) (fun _ a x => NumOps.max a x) (fun _ => NumLit.lit init)
           (fun j l' => ixC.eval cta j l' ir im) (fun j l' => ixR.eval cta j l' ir im)
           (im bu adC) (im bu adR) (bflyFoldOp (fun a c => NumOps.max a c)) l :=
@@ -223,7 +223,7 @@ def sumReduceEW (b : Buf) (ixC ixR : IdxE) (bu adC adR : Nat) : EWStmt :=
 
 theorem sumReduce_spec (b : Buf) (ixC ixR : IdxE) (bu adC adR cta i : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) (l : Lane) :
-    (((sumReduceEW b ixC ixR bu adC adR).elabAt cta i ir im).run st).regs 0 l
+    ((sumReduceEW b ixC ixR bu adC adR).run st cta i ir im).regs 0 l
       = chunkRemFold (st.mem b) (fun _ a x => NumOps.add a x)
           (fun _ => NumLit.lit (NumOps.ofNat 0 : Float32))
           (fun j l' => ixC.eval cta j l' ir im) (fun j l' => ixR.eval cta j l' ir im)
@@ -262,7 +262,7 @@ theorem storePass_spec (inB out : Buf) (d r : Nat) (f : WFExp)
     (g : R → R)
     (hf : ∀ (st' : WSt R) (l : Lane), f.eval st' l = g (st'.regs d l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
-    (((storePassEW inB out d r f base K).elabAt cta 0 ir im).run st).mem out
+    ((storePassEW inB out d r f base K).run st cta 0 ir im).mem out
         ((stride32 base).eval cta j0 l0 ir im)
       = g (st.mem inB ((stride32 base).eval cta j0 l0 ir im)) := by
   refine storeLoop_at out r (stride32 base)
@@ -272,10 +272,9 @@ theorem storePass_spec (inB out : Buf) (d r : Nat) (f : WFExp)
     (g (st.mem inB ((stride32 base).eval cta j0 l0 ir im))) []
     (fun _ _ => rfl) (fun _ _ r' h => absurd h (by simp))
     (fun j s hinv _ l => by
-      show ((WStmt.setR r f).run
-              ((WStmt.loadIdx d inB (fun l' => (stride32 base).eval cta j l' ir im)).run s)).regs r l
-            = _
-      rw [wrun_setR, WSt.regs_setReg_same, hf, wrun_loadIdx,
+      show ((EWStmt.setR r f).run ((EWStmt.loadIdx d inB (stride32 base)).run s cta j ir im)
+              cta j ir im).regs r l = _
+      rw [erun_setR, WSt.regs_setReg_same, hf, erun_loadIdx,
           WSt.regs_setReg_same, hinv inB hio])
     (List.range K) st (fun _ _ => rfl) (fun _ h => absurd h (by simp)) ?_ ?_
   · intro j hj l hl
@@ -322,7 +321,7 @@ theorem mapLoopEW_stores {Γ : Nat} {R : Type} [NumOps R] [NumLit R] [LitNat R] 
     (base : IdxE) (hbase : base.laneLoopFreeB = true) (E cta : Nat)
     (hio : ∀ i, inB i ≠ out) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (st : WSt R) (j0 : Nat) (l0 : Lane) (hj0 : j0 < E) :
-    (((mapLoopEW spec inB out base E).elabAt cta 0 ir im).run st).mem out
+    ((mapLoopEW spec inB out base E).run st cta 0 ir im).mem out
         ((stride32 base).eval cta j0 l0 ir im)
       = denote (fun i => st.mem (inB i) ((stride32 base).eval cta j0 l0 ir im)) spec := by
   refine storeLoop_at out (Γ + slots spec + 1) (stride32 base)
@@ -335,21 +334,20 @@ theorem mapLoopEW_stores {Γ : Nat} {R : Type} [NumOps R] [NumLit R] [LitNat R] 
     ((stride32 base).eval cta j0 l0 ir im)
     (denote (fun i => st.mem (inB i) ((stride32 base).eval cta j0 l0 ir im)) spec) []
     (fun j s => by
-      show ((WStmt.setR (Γ + slots spec + 1) (compileW (fun i => .reg i.val) Γ spec).2).run
-              (((compileW (fun i => .reg i.val) Γ spec).1.elabAt cta j ir im).run
-                (((loadSeq inB (fun _ => stride32 base)).elabAt cta j ir im).run s))).mem = _
-      rw [wrun_setR, WSt.mem_setReg, compileW_elabAt]
-      show (runW (compileW (fun i => .reg i.val) Γ spec).1
-              (((loadSeq inB (fun _ => stride32 base)).elabAt cta j ir im).run s)).mem = _
+      show ((EWStmt.setR (Γ + slots spec + 1) (compileW (fun i => .reg i.val) Γ spec).2).run
+              ((compileW (fun i => .reg i.val) Γ spec).1.run
+                ((loadSeq inB (fun _ => stride32 base)).run s cta j ir im) cta j ir im)
+              cta j ir im).mem = _
+      rw [erun_setR, WSt.mem_setReg, compileW_run]
       rw [compileW_mem]
       exact loadSeqN_memAt inB (fun _ => stride32 base) cta j ir im Γ s)
     (fun _ _ r' h => absurd h (by simp))
     (fun j s hinv _ l => by
-      show ((WStmt.setR (Γ + slots spec + 1) (compileW (fun i => .reg i.val) Γ spec).2).run
-              (((compileW (fun i => .reg i.val) Γ spec).1.elabAt cta j ir im).run
-                (((loadSeq inB (fun _ => stride32 base)).elabAt cta j ir im).run s))).regs
-                (Γ + slots spec + 1) l = _
-      rw [wrun_setR, WSt.regs_setReg_same,
+      show ((EWStmt.setR (Γ + slots spec + 1) (compileW (fun i => .reg i.val) Γ spec).2).run
+              ((compileW (fun i => .reg i.val) Γ spec).1.run
+                ((loadSeq inB (fun _ => stride32 base)).run s cta j ir im) cta j ir im)
+              cta j ir im).regs (Γ + slots spec + 1) l = _
+      rw [erun_setR, WSt.regs_setReg_same,
           compileWKernel_correctAt inB (fun _ => stride32 base) spec s l cta j ir im]
       congr 1
       funext i
@@ -391,7 +389,7 @@ structure ReduceKernel where
   ew  : EWStmt
   /-- Lane 0 of block `cta` stores the two-level fold of `bA·bB`. -/
   reduces : ∀ {R : Type} [NumOps R] [NumLit R] [LitNat R] (cta : Nat) (st : WSt R),
-    ((ew.elabIn cta).run st).mem out (oi.eval cta 0 ⟨0, by decide⟩)
+    (ew.run st cta 0).mem out (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotStridedLane (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K)
           ⟨0, by decide⟩
@@ -455,7 +453,7 @@ theorem zipPass_spec (bA bB out : Buf) (dA dB r : Nat) (hAB : dA ≠ dB) (f : WF
     (g : R → R → R)
     (hf : ∀ (st' : WSt R) (l : Lane), f.eval st' l = g (st'.regs dA l) (st'.regs dB l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
-    (((zipPassEW bA bB out dA dB r f ixA ixB (stride32 base) K).elabAt cta 0 ir im).run st).mem
+    ((zipPassEW bA bB out dA dB r f ixA ixB (stride32 base) K).run st cta 0 ir im).mem
         out ((stride32 base).eval cta j0 l0 ir im)
       = g (st.mem bA (ixA.eval cta j0 l0 ir im))
           (st.mem bB (ixB.eval cta j0 l0 ir im)) := by
@@ -469,12 +467,10 @@ theorem zipPass_spec (bA bB out : Buf) (dA dB r : Nat) (hAB : dA ≠ dB) (f : WF
        (st.mem bB (ixB.eval cta j0 l0 ir im))) []
     (fun _ _ => rfl) (fun _ _ r' h => absurd h (by simp))
     (fun j s hinv _ l => by
-      show ((WStmt.setR r f).run
-              ((WStmt.loadIdx dB bB (fun l' => ixB.eval cta j l' ir im)).run
-                ((WStmt.loadIdx dA bA (fun l' => ixA.eval cta j l' ir im)).run s))).regs r l
-            = _
-      rw [wrun_setR, WSt.regs_setReg_same, hf, wrun_loadIdx, WSt.regs_setReg_same,
-          WSt.regs_setReg_other _ dB dA _ hAB, wrun_loadIdx,
+      show ((EWStmt.setR r f).run ((EWStmt.loadIdx dB bB ixB).run
+              ((EWStmt.loadIdx dA bA ixA).run s cta j ir im) cta j ir im) cta j ir im).regs r l = _
+      rw [erun_setR, WSt.regs_setReg_same, hf, erun_loadIdx, WSt.regs_setReg_same,
+          WSt.regs_setReg_other _ dB dA _ hAB, erun_loadIdx,
           WSt.regs_setReg_same, WSt.mem_setReg, hinv bA hAo, hinv bB hBo])
     (List.range K) st (fun _ _ => rfl) (fun _ h => absurd h (by simp)) ?_ ?_
   · intro j hj l hl
@@ -505,8 +501,8 @@ theorem zip3Pass_spec (bA bB bC out : Buf) (dA dB dC r : Nat)
     (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs dA l) (st'.regs dB l) (st'.regs dC l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
-    (((zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC (stride32 base) K).elabAt
-        cta 0 ir im).run st).mem out ((stride32 base).eval cta j0 l0 ir im)
+    ((zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC (stride32 base) K).run
+        st cta 0 ir im).mem out ((stride32 base).eval cta j0 l0 ir im)
       = g (st.mem bA (ixA.eval cta j0 l0 ir im))
           (st.mem bB (ixB.eval cta j0 l0 ir im))
           (st.mem bC (ixC.eval cta j0 l0 ir im)) := by
@@ -523,16 +519,14 @@ theorem zip3Pass_spec (bA bB bC out : Buf) (dA dB dC r : Nat)
        (st.mem bC (ixC.eval cta j0 l0 ir im))) []
     (fun _ _ => rfl) (fun _ _ r' h => absurd h (by simp))
     (fun j s hinv _ l => by
-      show WSt.regs ((WStmt.setR r f).run
-              ((WStmt.loadIdx dC bC (fun l' => ixC.eval cta j l' ir im)).run
-                ((WStmt.loadIdx dB bB (fun l' => ixB.eval cta j l' ir im)).run
-                  ((WStmt.loadIdx dA bA (fun l' => ixA.eval cta j l' ir im)).run s))))
-            r l = _
-      rw [wrun_setR, WSt.regs_setReg_same, hf, wrun_loadIdx, WSt.regs_setReg_same,
+      show WSt.regs ((EWStmt.setR r f).run ((EWStmt.loadIdx dC bC ixC).run
+              ((EWStmt.loadIdx dB bB ixB).run ((EWStmt.loadIdx dA bA ixA).run s cta j ir im)
+                cta j ir im) cta j ir im) cta j ir im) r l = _
+      rw [erun_setR, WSt.regs_setReg_same, hf, erun_loadIdx, WSt.regs_setReg_same,
           WSt.regs_setReg_other _ dC dB _ hBC,
-          WSt.regs_setReg_other _ dC dA _ hAC, wrun_loadIdx,
+          WSt.regs_setReg_other _ dC dA _ hAC, erun_loadIdx,
           WSt.regs_setReg_same, WSt.regs_setReg_other _ dB dA _ hAB,
-          wrun_loadIdx, WSt.regs_setReg_same]
+          erun_loadIdx, WSt.regs_setReg_same]
       simp only [WSt.mem_setReg, hinv bA hAo, hinv bB hBo, hinv bC hCo])
     (List.range K) st (fun _ _ => rfl) (fun _ h => absurd h (by simp)) ?_ ?_
   · intro j hj l hl
@@ -564,8 +558,8 @@ theorem zip4Pass_spec (bA bB bC bD out : Buf) (dA dB dC dD r : Nat)
     (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs dA l) (st'.regs dB l) (st'.regs dC l) (st'.regs dD l))
     (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
-    (((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD (stride32 base) K).elabAt
-        cta 0 ir im).run st).mem out ((stride32 base).eval cta j0 l0 ir im)
+    ((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD (stride32 base) K).run
+        st cta 0 ir im).mem out ((stride32 base).eval cta j0 l0 ir im)
       = g (st.mem bA (ixA.eval cta j0 l0 ir im))
           (st.mem bB (ixB.eval cta j0 l0 ir im))
           (st.mem bC (ixC.eval cta j0 l0 ir im))
@@ -586,20 +580,18 @@ theorem zip4Pass_spec (bA bB bC bD out : Buf) (dA dB dC dD r : Nat)
        (st.mem bD (ixD.eval cta j0 l0 ir im))) []
     (fun _ _ => rfl) (fun _ _ r' h => absurd h (by simp))
     (fun j s hinv _ l => by
-      show WSt.regs ((WStmt.setR r f).run
-              ((WStmt.loadIdx dD bD (fun l' => ixD.eval cta j l' ir im)).run
-                ((WStmt.loadIdx dC bC (fun l' => ixC.eval cta j l' ir im)).run
-                  ((WStmt.loadIdx dB bB (fun l' => ixB.eval cta j l' ir im)).run
-                    ((WStmt.loadIdx dA bA (fun l' => ixA.eval cta j l' ir im)).run s)))))
-            r l = _
-      rw [wrun_setR, WSt.regs_setReg_same, hf, wrun_loadIdx, WSt.regs_setReg_same,
+      show WSt.regs ((EWStmt.setR r f).run ((EWStmt.loadIdx dD bD ixD).run
+              ((EWStmt.loadIdx dC bC ixC).run ((EWStmt.loadIdx dB bB ixB).run
+                ((EWStmt.loadIdx dA bA ixA).run s cta j ir im) cta j ir im) cta j ir im)
+              cta j ir im) cta j ir im) r l = _
+      rw [erun_setR, WSt.regs_setReg_same, hf, erun_loadIdx, WSt.regs_setReg_same,
           WSt.regs_setReg_other _ dD dC _ hCD,
           WSt.regs_setReg_other _ dD dB _ hBD,
-          WSt.regs_setReg_other _ dD dA _ hAD, wrun_loadIdx,
+          WSt.regs_setReg_other _ dD dA _ hAD, erun_loadIdx,
           WSt.regs_setReg_same, WSt.regs_setReg_other _ dC dB _ hBC,
-          WSt.regs_setReg_other _ dC dA _ hAC, wrun_loadIdx,
+          WSt.regs_setReg_other _ dC dA _ hAC, erun_loadIdx,
           WSt.regs_setReg_same, WSt.regs_setReg_other _ dB dA _ hAB,
-          wrun_loadIdx, WSt.regs_setReg_same]
+          erun_loadIdx, WSt.regs_setReg_same]
       simp only [WSt.mem_setReg, hinv bA hAo, hinv bB hBo, hinv bC hCo, hinv bD hDo])
     (List.range K) st (fun _ _ => rfl) (fun _ h => absurd h (by simp)) ?_ ?_
   · intro j hj l hl

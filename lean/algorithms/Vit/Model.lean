@@ -225,6 +225,9 @@ open AlgorithmLib.IR
 instance : Hashable Float32 := ⟨fun f => hash (toString f)⟩
 deriving instance BEq, Hashable for AlgorithmLib.ML.IdxE
 deriving instance BEq, Hashable for AlgorithmLib.ML.WFExp
+deriving instance Hashable for AlgorithmLib.ML.IOp
+deriving instance Hashable for AlgorithmLib.ML.ICmp
+deriving instance Hashable for AlgorithmLib.ML.IExp
 deriving instance BEq, Hashable for AlgorithmLib.ML.EWStmt
 
 /-- Blocks in this artifact.  One, so the whole pipeline can be checked against

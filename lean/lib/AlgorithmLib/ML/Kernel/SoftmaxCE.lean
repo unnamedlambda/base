@@ -63,8 +63,8 @@ def seqAll : List EWStmt → EWStmt
   | x :: xs => .seq x (seqAll xs)
 
 /-! The body is split at the two butterflies rather than written as one
-    ten-statement block.  That is not cosmetic: a bulk `simp only [wrun_seq,
-    wrun_setR]` unfolds a reduction network into individual register writes
+    ten-statement block.  That is not cosmetic: a bulk `simp only [erun_seq,
+    erun_setR]` unfolds a reduction network into individual register writes
     before `warpReduceSum_spec` can fire, and afterwards there is no pattern
     left to rewrite.  Keeping each butterfly as its own statement is what lets
     its spec and its frame lemma apply. -/
@@ -115,23 +115,22 @@ def smSpec (memL memB memO : Nat → R) (il ib : Lane → Nat) : Lane → R :=
   fun l => NumOps.add (NumOps.mul (p l) (NumOps.inv (s l)))
                       (NumOps.neg (memO (il l)))
 
-/-- The sum butterfly, elaborated, is the network `warpReduceSum_spec` is about. -/
-theorem warpReduceSumE_elab (cta i : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) :
-    warpReduceSumE.elabAt cta i ir im = warpReduceSum 0 1 := rfl
+/-- The sum butterfly is the network `warpReduceSum_spec` is about. -/
+theorem warpReduceSumE_eq : warpReduceSumE = warpReduceSum 0 1 := rfl
 
 /-- The sum network's frame, at the shape `warpReduceSum` is written in.
     `warpReduceOp_frame` proves it; it is restated because `rw` matches on
     syntax and `warpRound` and `bflyRoundOp` are equal only definitionally. -/
 theorem warpReduceSum_frame (acc tmp r : Nat) (hr : r ≠ acc) (hr' : r ≠ tmp)
-    (st : WSt R) : ((warpReduceSum acc tmp).run st).regs r = st.regs r :=
-  warpReduceOp_frame acc tmp (.add (.reg acc) (.reg tmp)) r hr hr' st
+    (st : WSt R) (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
+    ((warpReduceSum acc tmp).run st cta i ir im).regs r = st.regs r :=
+  warpReduceOp_frame acc tmp (.add (.reg acc) (.reg tmp)) r hr hr' st cta i ir im
 
 /-- …and the maximum network's, likewise. -/
 theorem warpReduceMaxE_frame (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (r : Nat) (hr : r ≠ 0) (hr' : r ≠ 1) (st : WSt R) :
-    ((warpReduceMaxE.elabAt cta i ir im).run st).regs r = st.regs r :=
-  warpReduceOp_frame 0 1 (.maxW (.reg 0) (.reg 1)) r hr hr' st
+    (warpReduceMaxE.run st cta i ir im).regs r = st.regs r :=
+  warpReduceOp_frame 0 1 (.maxW (.reg 0) (.reg 1)) r hr hr' st cta i ir im
 
 -- ---------------------------------------------------------------------------
 -- What each piece leaves behind
@@ -139,57 +138,57 @@ theorem warpReduceMaxE_frame (cta i : Nat) (ir : Nat → Lane → Nat)
 
 theorem smPre_mem (logits bias : Buf) (biasIx : IdxE) (cta i : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
-    (((smPre logits bias biasIx).elabAt cta i ir im).run st).mem = st.mem := rfl
+    ((smPre logits bias biasIx).run st cta i ir im).mem = st.mem := rfl
 
 theorem smPre_lm (logits bias : Buf) (biasIx : IdxE) (cta i : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
-    (((smPre logits bias biasIx).elabAt cta i ir im).run st).regs SM_LM
+    ((smPre logits bias biasIx).run st cta i ir im).regs SM_LM
       = smLm (st.mem logits) (st.mem bias)
           (fun l => elemIx.eval cta i l ir im) (fun l => biasIx.eval cta i l ir im) := by
   funext l
-  simp only [smPre, seqAll, EWStmt.elabAt, wrun_seq, wrun_skip, wrun_loadIdx, wrun_setR,
+  simp only [smPre, seqAll, erun_seq, erun_skip, erun_loadIdx, erun_setR,
     WSt.regs_setReg_same, WSt.mem_setReg, WFExp.eval, smLm,
     WSt.regs_setReg_other _ 2 SM_LM _ (by decide : SM_LM ≠ 2),
     WSt.regs_setReg_other _ 0 SM_LM _ (by decide : SM_LM ≠ 0)]
 
 theorem smPre_acc (logits bias : Buf) (biasIx : IdxE) (cta i : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
-    (((smPre logits bias biasIx).elabAt cta i ir im).run st).regs 0
+    ((smPre logits bias biasIx).run st cta i ir im).regs 0
       = smLm (st.mem logits) (st.mem bias)
           (fun l => elemIx.eval cta i l ir im) (fun l => biasIx.eval cta i l ir im) := by
   funext l
-  simp only [smPre, seqAll, EWStmt.elabAt, wrun_seq, wrun_skip, wrun_loadIdx, wrun_setR,
+  simp only [smPre, seqAll, erun_seq, erun_skip, erun_loadIdx, erun_setR,
     WSt.regs_setReg_same, WSt.mem_setReg, WFExp.eval, smLm,
     WSt.regs_setReg_other _ 2 SM_LM _ (by decide : SM_LM ≠ 2),
     WSt.regs_setReg_other _ 0 SM_LM _ (by decide : SM_LM ≠ 0)]
 
 theorem smMid_mem (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (st : WSt R) : ((smMid.elabAt cta i ir im).run st).mem = st.mem := rfl
+    (st : WSt R) : (smMid.run st cta i ir im).mem = st.mem := rfl
 
 theorem smMid_p (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (st : WSt R) :
-    ((smMid.elabAt cta i ir im).run st).regs SM_P
+    (smMid.run st cta i ir im).regs SM_P
       = fun l => NumOps.exp (NumOps.add (st.regs SM_LM l) (NumOps.neg (st.regs 0 l))) := by
   funext l
-  simp only [smMid, seqAll, EWStmt.elabAt, wrun_seq, wrun_skip, wrun_setR, WFExp.eval,
+  simp only [smMid, seqAll, erun_seq, erun_skip, erun_setR, WFExp.eval,
     WSt.regs_setReg_same, WSt.regs_setReg_other _ 0 SM_P _ (by decide : SM_P ≠ 0)]
 
 theorem smMid_acc (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (st : WSt R) :
-    ((smMid.elabAt cta i ir im).run st).regs 0
+    (smMid.run st cta i ir im).regs 0
       = fun l => NumOps.exp (NumOps.add (st.regs SM_LM l) (NumOps.neg (st.regs 0 l))) := by
   funext l
-  simp only [smMid, seqAll, EWStmt.elabAt, wrun_seq, wrun_skip, wrun_setR, WFExp.eval,
+  simp only [smMid, seqAll, erun_seq, erun_skip, erun_setR, WFExp.eval,
     WSt.regs_setReg_same, WSt.regs_setReg_other _ SM_P SM_LM _ (by decide : SM_LM ≠ SM_P),
     WSt.regs_setReg_other _ SM_P 0 _ (by decide : (0:Nat) ≠ SM_P)]
 
 theorem smPost_out (oneHot : Buf) (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) :
-    (((smPost oneHot).elabAt cta i ir im).run st).regs SM_OUT
+    ((smPost oneHot).run st cta i ir im).regs SM_OUT
       = fun l => NumOps.add (NumOps.mul (st.regs SM_P l) (NumOps.inv (st.regs 0 l)))
                    (NumOps.neg (st.mem oneHot (elemIx.eval cta i l ir im))) := by
   funext l
-  simp only [smPost, seqAll, EWStmt.elabAt, wrun_seq, wrun_skip, wrun_loadIdx, wrun_setR,
+  simp only [smPost, seqAll, erun_seq, erun_skip, erun_loadIdx, erun_setR,
     WFExp.eval, WSt.regs_setReg_same, WSt.mem_setReg,
     WSt.regs_setReg_other _ 2 SM_P _ (by decide : SM_P ≠ 2),
     WSt.regs_setReg_other _ 2 0 _ (by decide : (0:Nat) ≠ 2)]
@@ -202,17 +201,17 @@ theorem smPost_out (oneHot : Buf) (cta i : Nat) (ir : Nat → Lane → Nat)
     whole reason this needs no shared memory and no barrier. -/
 theorem smBody_regs (logits bias oneHot : Buf) (biasIx : IdxE) (cta : Nat)
     (st : WSt R) :
-    (((smBody logits bias oneHot biasIx).elabIn cta).run st).regs SM_OUT
+    ((smBody logits bias oneHot biasIx).run st cta 0).regs SM_OUT
       = smSpec (st.mem logits) (st.mem bias) (st.mem oneHot)
           (fun l => elemIx.eval cta 0 l) (fun l => biasIx.eval cta 0 l) := by
-  show (((smPost oneHot).elabAt cta 0 _ _).run
-        ((warpReduceSumE.elabAt cta 0 _ _).run
-          ((smMid.elabAt cta 0 _ _).run
-            ((warpReduceMaxE.elabAt cta 0 _ _).run
-              (((smPre logits bias biasIx).elabAt cta 0 _ _).run st))))).regs SM_OUT = _
+  show ((smPost oneHot).run
+        ((warpReduceSum 0 1).run
+          (smMid.run
+            (warpReduceMaxE.run
+              ((smPre logits bias biasIx).run st cta 0) cta 0) cta 0) cta 0) cta 0).regs SM_OUT = _
   rw [smPost_out]
   -- the sum butterfly: spec on the accumulator, frame on the exponential
-  rw [warpReduceSumE_elab, warpReduceSum_spec 0 1 (by decide),
+  rw [warpReduceSum_spec _ cta 0 _ _ 0 1 (by decide),
       warpReduceSum_frame 0 1 SM_P (by decide) (by decide), warpReduceSum_mem]
   rw [smMid_p, smMid_acc, smMid_mem]
   -- the maximum butterfly: same shape
@@ -226,7 +225,7 @@ theorem smBody_regs (logits bias oneHot : Buf) (biasIx : IdxE) (cta : Nat)
     half of the stage contract. -/
 theorem smBody_mem (logits bias oneHot : Buf) (biasIx : IdxE) (cta i : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R) :
-    (((smBody logits bias oneHot biasIx).elabAt cta i ir im).run st).mem = st.mem := rfl
+    ((smBody logits bias oneHot biasIx).run st cta i ir im).mem = st.mem := rfl
 
 /-- **…and the store puts it at the lane's own address.**
 
@@ -234,7 +233,7 @@ theorem smBody_mem (logits bias oneHot : Buf) (biasIx : IdxE) (cta i : Nat)
     Nothing reaches the caller. -/
 theorem softmaxCE_stores (logits bias oneHot out : Buf) (biasIx : IdxE)
     (cta : Nat) (st : WSt R) (l0 : Lane) :
-    (((softmaxCE logits bias oneHot out biasIx).elabIn cta).run st).mem out
+    ((softmaxCE logits bias oneHot out biasIx).run st cta 0).mem out
         (elemIx.eval cta 0 l0)
       = smSpec (st.mem logits) (st.mem bias) (st.mem oneHot)
           (fun l => elemIx.eval cta 0 l) (fun l => biasIx.eval cta 0 l) l0 := by
@@ -242,8 +241,8 @@ theorem softmaxCE_stores (logits bias oneHot out : Buf) (biasIx : IdxE)
     intro l l' h
     have hv : cta * 32 + l.val = cta * 32 + l'.val := h
     exact Fin.ext (by omega)
-  show ((WStmt.storeLane out (fun l => elemIx.eval cta 0 l) SM_OUT).run
-      (((smBody logits bias oneHot biasIx).elabIn cta).run st)).mem out _ = _
+  show (((smBody logits bias oneHot biasIx).run st cta 0).storeLanes out
+      (fun l => elemIx.eval cta 0 l) SM_OUT).mem out _ = _
   rw [storeLane_at _ _ _ _ l0 (fun l h => by rw [hinj l l0 h]),
       smBody_regs logits bias oneHot biasIx cta st]
 

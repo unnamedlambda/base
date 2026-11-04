@@ -118,9 +118,13 @@ def lz4Surface : Surface :=
       -- the compressor's proof modules whose every declaration a claim above
       -- uses: one that none does was either written and never wired in, or is
       -- dead.
-      [ `Lz4.CodeBallot, `Lz4.CodeBlock, `Lz4.CodeBody, `Lz4.CodeContent, `Lz4.CodeGrid,
-        `Lz4.CodeKernel, `Lz4.CodeLaunch, `Lz4.CodeLayout, `Lz4.CodeLoop, `Lz4.CodeShip,
-        `Lz4.Assumptions, `Lz4.Host, `Lz4.HostLaunch ] }
+      [ `Lz4.CodeFacts, `Lz4.CompressorFrame, `Lz4.CompressorWarp, `Lz4.CompressorCoop, `Lz4.CompressorBlock,
+        `Lz4.CodeBody, `Lz4.CodeContent, `Lz4.CodeGrid, `Lz4.Compressor, `Lz4.CodeLaunch, `Lz4.CodeLayout,
+        `Lz4.CodeLoop, `Lz4.CodeShip, `Lz4.Assumptions, `Lz4.Host, `Lz4.HostLaunch ]
+    reachedExempt :=
+      -- equations `simp` rewrites by definitional unfolding, which leaves no
+      -- trace in the proof terms the closure walks
+      [ `Lz4Code.withInt_int, `Lz4Code.withInt_withInt, `Lz4Code.litI_evalW ] }
 
 /-- **The public claims.** Adding a claim here subjects it to the scan. -/
 def roots : List Name :=

@@ -1,8 +1,8 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Kernel.Block
+meta import AlgorithmLib.Kernel.Block
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
 public import AlgorithmLib.Surface.Drv
@@ -14,7 +14,7 @@ import all Init.Data.List.Sort.Basic
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
-open AlgorithmLib.PTX
+open AlgorithmLib.Kernel
 
 namespace CudaRmsNormPersist
 
@@ -39,46 +39,53 @@ to allocation 1; both are sized at run time.
 def N_OFF : Nat := 0x38
 def ORG : Nat := 0x100
 def PTX_OFF : Nat := 0x400
-def PTX_LEN : Nat := 0x1000
+def PTX_LEN : Nat := 0x2000
 
-def ptxSource : String := buildModule 36 [{ name := "main", params := ["buf0", "buf1"], body := do
-  let buf0 ← ldParam "buf0"
-  let buf1 ← ldParam "buf1"
-  -- Read dynamic N from buf0[0]; x starts at buf0+8; w starts at buf0+8+N*4
-  let nReg ← freshR;  ldGlobalU nReg buf0
-  let xPtr ← freshRd; addRdI xPtr buf0 8
-  let nU64 ← freshRd; cvtU64 nU64 nReg
-  let nOff ← freshRd; shlRd nOff nU64 2
-  let wPtr ← freshRd; addRd wPtr xPtr nOff
-  let (tid, warpId, laneId) ← getWarpIds
-  -- loop1: sum of squares
-  let acc ← freshF; movFC acc f32_0
-  let tmp ← freshF
-  strideLoop tid nReg 256 "loop1" "done1" fun i => do
-    let addr ← elemAddr xPtr i; ldGlobalF tmp addr; fmaRn acc tmp tmp acc
-  warpReduceSum acc tmp
-  lane0WriteSmem laneId warpId "skip1" fun wAddr => stSharedFD wAddr acc
-  -- thread 0: sum warps, divide by N (dynamic float), add eps, rsqrt
-  thread0Op tid "skip2" do
-    let sBase ← smemBase
-    let total ← freshF
-    crossWarp8 total tmp sBase 0 addF
-    let nf ← freshF; cvtF32 nf nReg
-    divRn total total nf
-    let eps ← freshF; movFC eps f32_eps
-    addF total total eps; rsqrt total total
-    stSharedF sBase 32 total
-  -- loop2: normalize with dynamic w pointer
-  let sBase2 ← smemBase
-  let scale ← freshF; ldSharedF scale sBase2 32
-  strideLoop tid nReg 256 "loop2" "done2" fun j => do
-    let xAddr ← elemAddr xPtr j
-    let wAddr ← elemAddr wPtr j
-    let yAddr ← elemAddr buf1 j
-    let xi ← freshF; ldGlobalF xi xAddr
-    let wi ← freshF; ldGlobalF wi wAddr
-    mulF xi xi scale; mulF xi xi wi; stGlobalF yAddr xi
-  ptxRet }]
+namespace Body
+open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog AlgorithmLib.Kernel AlgorithmLib.Kernel.Block
+
+/-- `1e-5`, the epsilon added to the mean square, as `Float32` bits. -/
+def epsBits : UInt32 := 0x3727C5AC
+
+section
+variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
+
+/-- **RMSNorm in one block of 256 threads**: allocation 0 is `[N][x][w]`,
+    `N` read as its low word. Each thread strides `x` summing squares by fused
+    multiply-adds, the block reduces the sums, and every thread computes
+    `scale = 1 / sqrt(sum / N + 1e-5)`, each step exactly rounded; then
+    `y[i] = x[i] · scale · w[i]`. -/
+def rmsNorm : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64])
+  let tid := ps.snd; let sm := (ps.drop 3).head
+  let b0 := (ps.drop 4).head; let y := (ps.drop 5).head
+  let n ← load32 b0
+  let x ← at_ b0 8
+  let w ← iadd x (← ishlImm (← ext n) 2)
+  let acc ← strided tid n 256 (← f32c 0) fun i a => do
+    let v ← loadF32 (← at4 x i)
+    fma v v a
+  let tot ← blockAll tid sm 0 8 fadd acc
+  let ms ← fadd (← fdiv tot (← fcvtFromUint .f32 n)) (← f32c epsBits)
+  let scale ← fdiv (← f32c 0x3F800000) (← sqrt ms)
+  stridedDo tid n 256 fun i => do
+    let v ← fmul (← loadF32 (← at4 x i)) scale
+    store (← fmul v (← loadF32 (← at4 w i))) (← at4 y i)
+
+end
+
+def kernel : Kernel :=
+  { name := "main", params := [.i64, .i64],
+    code := emit rmsNorm (idParams ++ [.i64, .i64]), smem := 32 }
+
+end Body
+
+/-- The kernel's module, or empty where the printer refuses it (which
+    `ptx_fits` would then not prove). -/
+def ptxSource : String :=
+  match Body.kernel.ptx with
+  | .ok s => s
+  | .error _ => ""
 
 open AlgorithmLib.Prog
 
@@ -142,6 +149,10 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "main" (Prog.compileProg 1 loadCode),
      Prog.entry "prep" (Prog.compileProg 2 prepCode),
      Prog.entry "infer" (Prog.compileProg 3 inferCode)]
+
+/-- The module prints, and fits where it is placed with its terminating zero. -/
+theorem ptx_fits : 0 < ptxSource.utf8ByteSize ∧ ptxSource.utf8ByteSize < PTX_LEN := by
+  native_decide
 
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,

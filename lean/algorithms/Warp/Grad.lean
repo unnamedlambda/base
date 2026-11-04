@@ -272,7 +272,7 @@ theorem grad_split (i : Fin G) :
     theorem could never have detected. -/
 theorem grad_stores (k : Fin G) (st : WSt) (l0 : Lane) :
     ∃ s0 : WSt,
-      ((kernel.elabIn 0).run st).mem outBuf ((outIx k).eval 0 0 l0)
+      ((kernel.run st 0 0)).mem outBuf ((outIx k).eval 0 0 l0)
         = ((compileW (teleEnv (fun q => .reg q.val) G gp.binds) (G + teleSlots gp.binds)
             (gp.outs k)).2).eval
             (runW (compileW (teleEnv (fun q => .reg q.val) G gp.binds)
@@ -300,7 +300,7 @@ theorem grad_stores (k : Fin G) (st : WSt) (l0 : Lane) :
 
 theorem gradD_stores (k : Fin G) (st : WSt) (l0 : Lane) :
     ∃ s0 : WSt,
-      ((kernelD.elabIn 0).run st).mem outBuf ((outIx k).eval 0 0 l0)
+      ((kernelD.run st 0 0)).mem outBuf ((outIx k).eval 0 0 l0)
         = ((compileW (teleEnv (fun q => .reg q.val) G gpD.binds) (G + teleSlots gpD.binds)
             (gpD.outs k)).2).eval
             (runW (compileW (teleEnv (fun q => .reg q.val) G gpD.binds)

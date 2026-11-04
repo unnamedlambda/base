@@ -99,7 +99,7 @@ theorem silu_geometry : GRID * 32 = N ∧ LGRID * (32 * E) = N := by decide
     a `decide`, and the input differing from the output is immediate. -/
 theorem lkernel_stores (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (st : WSt) (j0 : Nat) (l0 : Lane) (hj0 : j0 < E) :
-    ((lkernel.elabAt cta 0 ir im).run st).mem 1
+    ((lkernel.run st cta 0 ir im)).mem 1
         ((stride32 lbase).eval cta j0 l0 ir im)
       = denote (fun _ => st.mem 0 ((stride32 lbase).eval cta j0 l0 ir im)) spec :=
   mapLoopEW_stores spec (fun _ => 0) 1 lbase (by decide) E cta
@@ -116,7 +116,7 @@ def MEM_SIZE : Nat := 0x3700
     none for the original, and **no PTX theorem for either** — so nothing said
     the emitted text performs what was proven.  Every other demo had that. -/
 theorem silu_stores (st : WSt) (l0 : Lane) :
-    ((kernel.elabIn 0).run st).mem 1 (ix.eval 0 0 l0)
+    ((kernel.run st 0 0)).mem 1 (ix.eval 0 0 l0)
       = denote (fun _ => st.mem 0 (ix.eval 0 0 l0)) spec :=
   compileWKernel_stores (fun _ => 0) 1 (fun _ => ix) spec ix 16 st l0
     (fun l h => by rw [elemIx_inj l l0 h])

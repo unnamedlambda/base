@@ -72,8 +72,8 @@ variable {R : Type} [NumOps R] [NumLit R]
     `runBlocks_perm_invariant` proves the resulting memory is the same for any
     block list with the same membership, so the ascending fold is a faithful
     stand-in. -/
-def runGrid (blk : Nat → WStmt) (grid : Nat) (st : WSt R) : WSt R :=
-  (List.range grid).foldl (fun s cta => (blk cta).run s) st
+def runGrid (blk : Nat → WSt R → WSt R) (grid : Nat) (st : WSt R) : WSt R :=
+  (List.range grid).foldl (fun s cta => blk cta s) st
 
 /-- **A stage**: a kernel, a grid, and the contract it honours.
 
@@ -104,10 +104,10 @@ structure StageSpec (R : Type := Float32) [NumOps R] [NumLit R] where
   val  : (Buf → Nat → R) → Nat → Nat → R
   /-- A block writes only its own output addresses. -/
   frame : ∀ (cta : Nat) (st : WSt R) (b : Buf) (a : Nat), (b ≠ out ∨ ¬ dom cta a) →
-    ((ew.elabAt cta 0 iregs imem).run st).mem b a = st.mem b a
+    (ew.run st cta 0 iregs imem).mem b a = st.mem b a
   /-- …and puts `val` there. -/
   value : ∀ (cta : Nat) (st : WSt R) (a : Nat), dom cta a →
-    ((ew.elabAt cta 0 iregs imem).run st).mem out a = val st.mem cta a
+    (ew.run st cta 0 iregs imem).mem out a = val st.mem cta a
   /-- **The result depends on the output buffer only where this block owns it.**
 
       The point is that earlier blocks of the *same* launch cannot perturb
@@ -122,21 +122,20 @@ structure StageSpec (R : Type := Float32) [NumOps R] [NumLit R] where
     (∀ a', dom cta a' → m out a' = m' out a') →
     val m cta a = val m' cta a
 
-/-- **The block this stage runs**, elaborated against the launch's integer
-    state.  Every theorem below is stated through this rather than `elabIn`, so
-    a data-dependent address is modelled at the value the launch actually
-    supplies. -/
-def StageSpec.blk (S : (StageSpec R)) (cta : Nat) : WStmt :=
-  S.ew.elabAt cta 0 S.iregs S.imem
+/-- **What block `cta` of this stage does**, run against the launch's integer
+    state.  Every theorem below is stated through this, so a data-dependent
+    address is modelled at the value the launch actually supplies. -/
+def StageSpec.blk (S : (StageSpec R)) (cta : Nat) (st : WSt R) : WSt R :=
+  S.ew.run st cta 0 S.iregs S.imem
 
 /-- `frame`, restated through `blk` so the rewriter can see it. -/
 theorem StageSpec.frameB (S : (StageSpec R)) (cta : Nat) (st : WSt R) (b : Buf) (a : Nat)
-    (h : b ≠ S.out ∨ ¬ S.dom cta a) : ((S.blk cta).run st).mem b a = st.mem b a :=
+    (h : b ≠ S.out ∨ ¬ S.dom cta a) : (S.blk cta st).mem b a = st.mem b a :=
   S.frame cta st b a h
 
 /-- …and `value`. -/
 theorem StageSpec.valueB (S : (StageSpec R)) (cta : Nat) (st : WSt R) (a : Nat)
-    (h : S.dom cta a) : ((S.blk cta).run st).mem S.out a = S.val st.mem cta a :=
+    (h : S.dom cta a) : (S.blk cta st).mem S.out a = S.val st.mem cta a :=
   S.value cta st a h
 
 /-- Distinct blocks own distinct addresses — no two blocks race. -/
@@ -193,7 +192,7 @@ theorem runGrid_otherBuf (S : (StageSpec R)) (b : Buf) (hb : b ≠ S.out) :
   | zero => intro _; rfl
   | succ n ih =>
       intro st
-      show ((List.range (n + 1)).foldl (fun s cta => (S.blk cta).run s) st).mem b = _
+      show ((List.range (n + 1)).foldl (fun s cta => S.blk cta s) st).mem b = _
       rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
       funext a
       rw [S.frameB n _ b a (Or.inl hb)]
@@ -210,7 +209,7 @@ theorem runGrid_otherAddr (S : (StageSpec R)) (a : Nat) :
   | zero => intro _ _; rfl
   | succ n ih =>
       intro st hno
-      show ((List.range (n + 1)).foldl (fun s c => (S.blk c).run s) st).mem S.out a = _
+      show ((List.range (n + 1)).foldl (fun s c => S.blk c s) st).mem S.out a = _
       rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
       rw [S.frameB n _ S.out a (Or.inr (hno n (by omega)))]
       exact ih st (fun c hc => hno c (by omega))
@@ -229,7 +228,7 @@ theorem runGrid_value (S : (StageSpec R)) (hex : S.Exclusive) (a : Nat) :
   | zero => intro _ _ h; exact absurd h (by omega)
   | succ n ih =>
       intro hng cta hlt hdom st
-      show ((List.range (n + 1)).foldl (fun s c => (S.blk c).run s) st).mem S.out a = _
+      show ((List.range (n + 1)).foldl (fun s c => S.blk c s) st).mem S.out a = _
       rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
       by_cases hc : cta = n
       · -- the last block writes it
@@ -263,8 +262,8 @@ theorem runGrid_value (S : (StageSpec R)) (hex : S.Exclusive) (a : Nat) :
   output buffer. -/
 
 /-- Running any list of blocks: the generalisation of `runGrid` off `List.range`. -/
-def runBlocks (blk : Nat → WStmt) (L : List Nat) (st : WSt R) : WSt R :=
-  L.foldl (fun s cta => (blk cta).run s) st
+def runBlocks (blk : Nat → WSt R → WSt R) (L : List Nat) (st : WSt R) : WSt R :=
+  L.foldl (fun s cta => blk cta s) st
 
 /-- Memory outside the output buffer survives any block list. -/
 theorem runBlocks_otherBuf (S : (StageSpec R)) (b : Buf) (hb : b ≠ S.out) :
@@ -274,7 +273,7 @@ theorem runBlocks_otherBuf (S : (StageSpec R)) (b : Buf) (hb : b ≠ S.out) :
   | nil => intro _; rfl
   | cons c L ih =>
       intro st
-      show (runBlocks S.blk L ((S.blk c).run st)).mem b = _
+      show (runBlocks S.blk L (S.blk c st)).mem b = _
       rw [ih _]
       funext a
       exact S.frameB c st b a (Or.inl hb)
@@ -288,7 +287,7 @@ theorem runBlocks_unowned (S : (StageSpec R)) (a : Nat) :
   | nil => intro _ _; rfl
   | cons c L ih =>
       intro st hno
-      show (runBlocks S.blk L ((S.blk c).run st)).mem S.out a = _
+      show (runBlocks S.blk L (S.blk c st)).mem S.out a = _
       rw [ih _ (fun c' hc' => hno c' (List.mem_cons_of_mem c hc'))]
       exact S.frameB c st S.out a (Or.inr (hno c (List.mem_cons_self)))
 
@@ -310,7 +309,7 @@ theorem runBlocks_keeps (S : (StageSpec R)) (hex : S.Exclusive) (hidem : S.Idemp
   | cons c L ih =>
       intro hLg st s hag hv
       refine ih (fun x hx => hLg x (List.mem_cons_of_mem _ hx))
-        st ((S.blk c).run s) (fun b hb => ?_) ?_
+        st (S.blk c s) (fun b hb => ?_) ?_
       · funext a'
         rw [S.frameB c s b a' (Or.inl hb)]
         exact congrFun (hag b hb) a'
@@ -336,7 +335,7 @@ theorem runBlocks_value (S : (StageSpec R)) (hex : S.Exclusive) (hidem : S.Idemp
   | nil => intro _ _ h; exact absurd h (by simp)
   | cons c L ih =>
       intro hLg cta hmem hdom st
-      show (runBlocks S.blk L ((S.blk c).run st)).mem S.out a = _
+      show (runBlocks S.blk L (S.blk c st)).mem S.out a = _
       by_cases hc : S.dom c a
       · have hcc : c = cta :=
           hex c cta a (hLg c (List.mem_cons_self ..)) (hLg cta hmem) hc hdom
@@ -546,8 +545,8 @@ def gatherStage [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin Γ → Buf) (i
     have hlm : l = laneMod a := laneMod_of hl
     have hix : elemIx.eval cta 0 l ir im = a := hl
     rw [← hix]
-    show (((compileWKernel inB out inIx spec elemIx (Γ + slots spec + 1)).elabAt cta 0 ir im).run
-            st).mem out (elemIx.eval cta 0 l ir im) = _
+    show ((compileWKernel inB out inIx spec elemIx (Γ + slots spec + 1)).run st cta 0 ir im).mem
+            out (elemIx.eval cta 0 l ir im) = _
     rw [compileWKernel_storesAt inB out inIx spec elemIx (Γ + slots spec + 1) cta 0 ir im st l
       (fun l' h => by
         have hv : cta * 32 + l'.val = cta * 32 + l.val := h
@@ -599,35 +598,33 @@ theorem mapStageIP_exclusive [LitNat R] {Γ : Nat} (spec : Expr Γ) (inB : Fin �
 theorem dotStrided_frame (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (st : WSt R) (c : Buf) (j : Nat)
     (h : ¬ (c = out ∧ j = oi.eval cta 0 ⟨0, by decide⟩)) :
-    (((dotStrided bA bB ixA ixB out oi K).elabIn cta).run st).mem c j = st.mem c j := by
-  show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
-          ((warpReduceSum 0 1).run
-            (((dotStridedBody bA bB ixA ixB K).elabAt cta 0).run st))).mem c j = _
-  rw [wrun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceSum_mem,
+    ((dotStrided bA bB ixA ixB out oi K).run st cta 0).mem c j = st.mem c j := by
+  show ((EWStmt.storeLane0 out oi 0).run
+          ((warpReduceSum 0 1).run ((dotStridedBody bA bB ixA ixB K).run st cta 0) cta 0)
+          cta 0).mem c j = _
+  rw [erun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceSum_mem,
       dotStridedBody_mem]
 
 /-- **The fused reduction's only memory effect is its one lane-0 store.** -/
 theorem dotStrided4_frame (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
     (out : Buf) (oi : IdxE) (K cta : Nat) (st : WSt R) (c : Buf) (j : Nat)
     (h : ¬ (c = out ∧ j = oi.eval cta 0 ⟨0, by decide⟩)) :
-    (((dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).elabIn cta).run st).mem c j
+    ((dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).run st cta 0).mem c j
       = st.mem c j := by
-  show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
-          ((warpReduceSum 0 1).run
-            (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run
-              st))).mem c j = _
-  rw [wrun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceSum_mem,
+  show ((EWStmt.storeLane0 out oi 0).run
+          ((warpReduceSum 0 1).run ((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).run st cta 0)
+            cta 0) cta 0).mem c j = _
+  rw [erun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceSum_mem,
       dotStrided4Body_mem]
 
 /-- **The strided maximum's only memory effect is its one lane-0 store.** -/
 theorem maxStrided_frame (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (init : Float32) (st : WSt R) (c : Buf) (j : Nat)
     (h : ¬ (c = out ∧ j = oi.eval cta 0 ⟨0, by decide⟩)) :
-    (((maxStrided b ix out oi K init).elabIn cta).run st).mem c j = st.mem c j := by
-  show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
-          ((warpReduceMaxE.elabAt cta 0 (fun _ _ => 0) (fun _ _ => 0)).run
-            (((maxStridedBody b ix K init).elabAt cta 0).run st))).mem c j = _
-  rw [wrun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceMaxE_mem,
+    ((maxStrided b ix out oi K init).run st cta 0).mem c j = st.mem c j := by
+  show ((EWStmt.storeLane0 out oi 0).run
+          (warpReduceMaxE.run ((maxStridedBody b ix K init).run st cta 0) cta 0) cta 0).mem c j = _
+  rw [erun_storeLane0, mem_store1_ne _ _ _ _ _ _ h, warpReduceMaxE_mem,
       maxStridedBody_mem]
 
 /-- **A row maximum, as a pipeline stage.**
@@ -766,11 +763,10 @@ theorem zipPass_frame (bA bB out : Buf) (dA dB r : Nat) (f : WFExp)
     (ixA ixB oix : IdxE) (K cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (st : WSt R) (c : Buf) (a : Nat)
     (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
-    (((zipPassEW bA bB out dA dB r f ixA ixB oix K).elabAt cta 0 ir im).run st).mem c a
+    ((zipPassEW bA bB out dA dB r f ixA ixB oix K).run st cta 0 ir im).mem c a
       = st.mem c a := by
   have hmem : ∀ (j : Nat) (s : WSt R),
-      (((EWStmt.seq (.loadIdx dA bA ixA)
-          (.seq (.loadIdx dB bB ixB) (.setR r f))).elabAt cta j ir im).run s).mem
+      ((EWStmt.seq (.loadIdx dA bA ixA) (.seq (.loadIdx dB bB ixB) (.setR r f))).run s cta j ir im).mem
         = s.mem := fun _ _ => rfl
   rcases h with hc | hno
   · exact congrFun (storeLoop_otherBuf out r oix _ cta ir im hmem c hc (List.range K) st) a
@@ -812,15 +808,14 @@ def outerStage (bAdj bX out : Buf) (n K grid : Nat) (_hn : K * 32 = n)
       (stride32 (.lit 0)) K cta hAo hXo (fun _ _ => 0) (fun _ _ => 0) st
       (fun x y => NumOps.mul x y) (fun _ _ => rfl) j l hj
     have hsub : cta * n + (j * 32 + l.val) - cta * n = j * 32 + l.val := by omega
-    have h' : (((zipPassEW bAdj bX out 1 2 0 (.mul (.reg 1) (.reg 2)) .ctaId
-        (stride32 (.lit 0)) (stride32 (.mul .ctaId (.lit n))) K).elabAt cta 0
-        (fun _ _ => 0) (fun _ _ => 0)).run st).mem out (cta * n + (j * 32 + l.val))
+    have h' : ((zipPassEW bAdj bX out 1 2 0 (.mul (.reg 1) (.reg 2)) .ctaId
+        (stride32 (.lit 0)) (stride32 (.mul .ctaId (.lit n))) K).run st cta 0).mem out
+          (cta * n + (j * 32 + l.val))
           = NumOps.mul (st.mem bAdj cta) (st.mem bX (0 + (j * 32 + l.val))) := h
     rw [Nat.zero_add] at h'
     rw [hsub]
-    show ((( zipPassEW bAdj bX out 1 2 0 (.mul (.reg 1) (.reg 2)) .ctaId
-        (stride32 (.lit 0)) (stride32 (.mul .ctaId (.lit n))) K).elabAt cta 0
-        (fun _ _ => 0) (fun _ _ => 0)).run st).mem out _ = _
+    show ((zipPassEW bAdj bX out 1 2 0 (.mul (.reg 1) (.reg 2)) .ctaId
+        (stride32 (.lit 0)) (stride32 (.mul .ctaId (.lit n))) K).run st cta 0).mem out _ = _
     exact h'
   valOnly := by
     intro m m' _ a _ h _
@@ -956,12 +951,12 @@ theorem zip3Pass_frame (bA bB bC out : Buf) (dA dB dC r : Nat) (f : WFExp)
     (ixA ixB ixC oix : IdxE) (K cta : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) (c : Buf) (a : Nat)
     (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
-    (((zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC oix K).elabAt
-        cta 0 ir im).run st).mem c a = st.mem c a := by
+    ((zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC oix K).run st cta 0 ir im).mem c a
+      = st.mem c a := by
   have hmem : ∀ (j : Nat) (s : WSt R),
-      (((EWStmt.seq (.loadIdx dA bA ixA)
+      ((EWStmt.seq (.loadIdx dA bA ixA)
           (.seq (.loadIdx dB bB ixB)
-            (.seq (.loadIdx dC bC ixC) (.setR r f)))).elabAt cta j ir im).run s).mem
+            (.seq (.loadIdx dC bC ixC) (.setR r f)))).run s cta j ir im).mem
         = s.mem := fun _ _ => rfl
   rcases h with hc | hno
   · exact congrFun (storeLoop_otherBuf out r oix _ cta ir im hmem c hc (List.range K) st) a
@@ -975,13 +970,13 @@ theorem zip4Pass_frame (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
     (ixA ixB ixC ixD oix : IdxE) (K cta : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) (c : Buf) (a : Nat)
     (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
-    (((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).elabAt
-        cta 0 ir im).run st).mem c a = st.mem c a := by
+    ((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).run st cta 0 ir im).mem c a
+      = st.mem c a := by
   have hmem : ∀ (j : Nat) (s : WSt R),
-      (((EWStmt.seq (.loadIdx dA bA ixA)
+      ((EWStmt.seq (.loadIdx dA bA ixA)
           (.seq (.loadIdx dB bB ixB)
             (.seq (.loadIdx dC bC ixC)
-              (.seq (.loadIdx dD bD ixD) (.setR r f))))).elabAt cta j ir im).run s).mem
+              (.seq (.loadIdx dD bD ixD) (.setR r f))))).run s cta j ir im).mem
         = s.mem := fun _ _ => rfl
   rcases h with hc | hno
   · exact congrFun (storeLoop_otherBuf out r oix _ cta ir im hmem c hc (List.range K) st) a
@@ -1290,8 +1285,8 @@ def softmaxCEStage (logits bias oneHot out : Buf) (biasIx : IdxE) (grid : Nat)
             (fun l => elemIx.eval cta 0 l) (fun l => biasIx.eval cta 0 l) (laneMod a)
   frame := by
     intro cta st b a hb'
-    show ((WStmt.storeLane out (fun l => elemIx.eval cta 0 l) SM_OUT).run
-        (((smBody logits bias oneHot biasIx).elabAt cta 0 _ _).run st)).mem b a = _
+    show (((smBody logits bias oneHot biasIx).run st cta 0).storeLanes out
+        (fun l => elemIx.eval cta 0 l) SM_OUT).mem b a = _
     rcases hb' with hb' | hb'
     · rw [congrFun (storeLane_otherBuf out _ SM_OUT _ b hb') a,
           smBody_mem logits bias oneHot biasIx cta 0 _ _ st]

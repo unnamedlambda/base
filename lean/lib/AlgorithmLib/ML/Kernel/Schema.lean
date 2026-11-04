@@ -55,13 +55,16 @@ def dotLane (memA memB : Nat → R) (fA fB : Nat → Lane → Nat) (K : Nat)
 -- The sweep
 -- ---------------------------------------------------------------------------
 
-def stepW (bA bB : Buf) (fA fB : Nat → Lane → Nat) (i : Nat) : WStmt :=
-  .seq (.seq (.loadV4 1 2 3 4 bA (fA i)) (.loadV4 5 6 7 8 bB (fB i)))
+/-- One step of the sweep: two quads loaded, accumulated. -/
+def stepW (bA bB : Buf) (ixA ixB : IdxE) : EWStmt :=
+  .seq (.seq (.loadV4 1 2 3 4 bA ixA) (.loadV4 5 6 7 8 bB ixB))
        (.setR 0 dotStepE)
 
-theorem warpDot_fold (bA bB : Buf) (fA fB : Nat → Lane → Nat) :
+theorem warpDot_fold (bA bB : Buf) (ixA ixB : IdxE) (cta : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) (fA fB : Nat → Lane → Nat)
+    (hA : ∀ i l, ixA.eval cta i l ir im = fA i l) (hB : ∀ i l, ixB.eval cta i l ir im = fB i l) :
     ∀ (L : List Nat) (st : WSt R) (l : Lane),
-      ((L.foldl (fun s' i => (stepW bA bB fA fB i).run s') st).regs 0 l)
+      ((L.foldl (fun s' i => (stepW bA bB ixA ixB).run s' cta i ir im) st).regs 0 l)
         = L.foldl (fun acc i => NumOps.add (NumOps.add (NumOps.add
             (NumOps.add acc (NumOps.mul (st.mem bA (fA i l)) (st.mem bB (fB i l))))
             (NumOps.mul (st.mem bA (fA i l + 1)) (st.mem bB (fB i l + 1))))
@@ -73,19 +76,16 @@ theorem warpDot_fold (bA bB : Buf) (fA fB : Nat → Lane → Nat) :
   | nil => intro st l; rfl
   | cons i L ih =>
       intro st l
-      have hmem : ((stepW bA bB fA fB i).run st).mem = st.mem := rfl
-      have hacc : ((stepW bA bB fA fB i).run st).regs 0
+      have hmem : ((stepW bA bB ixA ixB).run st cta i ir im).mem = st.mem := rfl
+      have hacc : ((stepW bA bB ixA ixB).run st cta i ir im).regs 0
           = fun l => NumOps.add (NumOps.add (NumOps.add
               (NumOps.add (st.regs 0 l) (NumOps.mul (st.mem bA (fA i l)) (st.mem bB (fB i l))))
               (NumOps.mul (st.mem bA (fA i l + 1)) (st.mem bB (fB i l + 1))))
               (NumOps.mul (st.mem bA (fA i l + 2)) (st.mem bB (fB i l + 2))))
               (NumOps.mul (st.mem bA (fA i l + 3)) (st.mem bB (fB i l + 3))) := by
-        show ((WStmt.setR 0 dotStepE).run
-                ((WStmt.seq (.loadV4 1 2 3 4 bA (fA i)) (.loadV4 5 6 7 8 bB (fB i))).run st)).regs 0
-              = _
-        simp only [wrun_setR, WSt.regs_setReg_same]
+        simp only [stepW, erun_seq, erun_setR, WSt.regs_setReg_same]
         funext l
-        simp only [dotStepE, WFExp.eval, wrun_seq, wrun_loadV4, WSt.mem_setReg,
+        simp only [dotStepE, WFExp.eval, erun_loadV4, WSt.mem_setReg, hA, hB,
           WSt.regs_setReg_other _ 8 0 _ (by decide), WSt.regs_setReg_other _ 7 0 _ (by decide),
           WSt.regs_setReg_other _ 6 0 _ (by decide), WSt.regs_setReg_other _ 5 0 _ (by decide),
           WSt.regs_setReg_other _ 4 0 _ (by decide), WSt.regs_setReg_other _ 3 0 _ (by decide),
@@ -107,38 +107,33 @@ theorem warpDot_fold (bA bB : Buf) (fA fB : Nat → Lane → Nat) :
           WSt.regs_setReg_other _ 8 6 _ (by decide), WSt.regs_setReg_other _ 7 6 _ (by decide),
           WSt.regs_setReg_other _ 8 7 _ (by decide),
           WSt.regs_setReg_same]
-      show ((L.foldl _ ((stepW bA bB fA fB i).run st)).regs 0 l) = _
+      show ((L.foldl _ ((stepW bA bB ixA ixB).run st cta i ir im)).regs 0 l) = _
       rw [ih _ l, hmem, hacc]
       rfl
 
 theorem warpDotBody_spec [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (K cta : Nat) (st : WSt R) :
-    (((warpDotBody bA bB ixA ixB K).elabAt cta 0).run st).regs 0
+    ((warpDotBody bA bB ixA ixB K).run st cta 0).regs 0
       = dotLane (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K := by
   funext l
-  show ((List.range K).foldl _ ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).regs 0 l = _
-  have hstep : (fun j => EWStmt.elabAt cta j (fun _ _ => 0) (fun _ _ => 0)
-        (((EWStmt.loadV4 1 2 3 4 bA ixA).seq (EWStmt.loadV4 5 6 7 8 bB ixB)).seq
-          (EWStmt.setR 0 dotStepE)))
-      = stepW bA bB (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) := rfl
-  rw [hstep, warpDot_fold bA bB (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
-        (List.range K) _ l]
-  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, dotLane, LitNat.ofNat]
+  show ((List.range K).foldl (fun s' j => (stepW bA bB ixA ixB).run s' cta j)
+    ((EWStmt.setR 0 (.lit (NumOps.ofNat 0))).run st cta 0)).regs 0 l = _
+  rw [warpDot_fold bA bB ixA ixB cta _ _ _ _ (fun _ _ => rfl) (fun _ _ => rfl) (List.range K) _ l]
+  simp only [erun_setR, WSt.regs_setReg_same, WFExp.eval, dotLane, LitNat.ofNat]
   rfl
 
 /-- **The schema is correct.**  Proven once, for every buffer pair, every
     addressing scheme, every trip count and every block. -/
 theorem warpDotV4_spec [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (st : WSt R) :
-    (((warpDotV4 bA bB ixA ixB out oi K).elabIn cta).run st).mem out
+    ((warpDotV4 bA bB ixA ixB out oi K).run st cta 0).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotLane (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K) ⟨0, by decide⟩ := by
-  show (((warpReduceSum 0 1).run
-          (((warpDotBody bA bB ixA ixB K).elabAt cta 0).run st)).store1 out _
-        (((warpReduceSum 0 1).run
-          (((warpDotBody bA bB ixA ixB K).elabAt cta 0).run st)).regs 0 ⟨0, by decide⟩)).mem out _ = _
-  rw [WSt.mem_store1_same, warpReduceSum_spec 0 1 (by decide), warpDotBody_spec]
+  show (((warpReduceSum 0 1).run ((warpDotBody bA bB ixA ixB K).run st cta 0) cta 0).store1 out _
+        (((warpReduceSum 0 1).run ((warpDotBody bA bB ixA ixB K).run st cta 0) cta 0).regs 0
+          ⟨0, by decide⟩)).mem out _ = _
+  rw [WSt.mem_store1_same, warpReduceSum_spec _ cta 0 _ _ 0 1 (by decide), warpDotBody_spec]
 
 -- ---------------------------------------------------------------------------
 -- The spec-language bridge
@@ -198,7 +193,7 @@ theorem warpDotV4_implements [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Bu
     (K cta : Nat) (st : WSt R) (env : Fin Γ → R) (ae be : Nat → Expr Γ)
     (ha : ∀ i, denote env (ae i) = st.mem bA i)
     (hb : ∀ i, denote env (be i) = st.mem bB i) :
-    (((warpDotV4 bA bB ixA ixB out oi K).elabIn cta).run st).mem out
+    ((warpDotV4 bA bB ixA ixB out oi K).run st cta 0).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = denote env (warpDotV4E ae be
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K) := by
@@ -215,7 +210,7 @@ theorem warpDotV4_implements [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Bu
     the achieved bandwidth.  The schema still covers it, which is the point.) -/
 theorem warpDotV4_sumsq [LitNat R] (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (st : WSt R) :
-    (((warpDotV4 b b ix ix out oi K).elabIn cta).run st).mem out
+    ((warpDotV4 b b ix ix out oi K).run st cta 0).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotLane (st.mem b) (st.mem b)
           (fun i l => ix.eval cta i l) (fun i l => ix.eval cta i l) K) ⟨0, by decide⟩ :=
@@ -248,8 +243,9 @@ theorem warpDotV4_sumsq [LitNat R] (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
 /-- One accumulation step of the strided dot: `acc += a·b`. -/
 def dotStepSE : WFExp := .add (.reg 0) (.mul (.reg 1) (.reg 2))
 
-def stepWS (bA bB : Buf) (fA fB : Nat → Lane → Nat) (i : Nat) : WStmt :=
-  .seq (.seq (.loadIdx 1 bA (fA i)) (.loadIdx 2 bB (fB i))) (.setR 0 dotStepSE)
+/-- One step of the strided sweep: two scalars loaded, accumulated. -/
+def stepWS (bA bB : Buf) (ixA ixB : IdxE) : EWStmt :=
+  .seq (.seq (.loadIdx 1 bA ixA) (.loadIdx 2 bB ixB)) (.setR 0 dotStepSE)
 
 /-- The strided sweep: zero the accumulator, then `K` scalar-load steps. -/
 def dotStridedBody (bA bB : Buf) (ixA ixB : IdxE) (K : Nat) : EWStmt :=
@@ -273,9 +269,11 @@ def dotStridedLane (memA memB : Nat → R) (fA fB : Nat → Lane → Nat) (K : N
     (fun acc i => NumOps.add acc (NumOps.mul (memA (fA i l)) (memB (fB i l))))
     (NumOps.ofNat 0)
 
-theorem dotStrided_fold (bA bB : Buf) (fA fB : Nat → Lane → Nat) :
+theorem dotStrided_fold (bA bB : Buf) (ixA ixB : IdxE) (cta : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) (fA fB : Nat → Lane → Nat)
+    (hA : ∀ i l, ixA.eval cta i l ir im = fA i l) (hB : ∀ i l, ixB.eval cta i l ir im = fB i l) :
     ∀ (L : List Nat) (st : WSt R) (l : Lane),
-      ((L.foldl (fun s' i => (stepWS bA bB fA fB i).run s') st).regs 0 l)
+      ((L.foldl (fun s' i => (stepWS bA bB ixA ixB).run s' cta i ir im) st).regs 0 l)
         = L.foldl (fun acc i =>
             NumOps.add acc (NumOps.mul (st.mem bA (fA i l)) (st.mem bB (fB i l))))
           (st.regs 0 l) := by
@@ -284,20 +282,18 @@ theorem dotStrided_fold (bA bB : Buf) (fA fB : Nat → Lane → Nat) :
   | nil => intro st l; rfl
   | cons i L ih =>
       intro st l
-      have hmem : ((stepWS bA bB fA fB i).run st).mem = st.mem := rfl
-      have hacc : ((stepWS bA bB fA fB i).run st).regs 0
+      have hmem : ((stepWS bA bB ixA ixB).run st cta i ir im).mem = st.mem := rfl
+      have hacc : ((stepWS bA bB ixA ixB).run st cta i ir im).regs 0
           = fun l => NumOps.add (st.regs 0 l)
               (NumOps.mul (st.mem bA (fA i l)) (st.mem bB (fB i l))) := by
-        show ((WStmt.setR 0 dotStepSE).run
-                ((WStmt.seq (.loadIdx 1 bA (fA i)) (.loadIdx 2 bB (fB i))).run st)).regs 0 = _
-        simp only [wrun_setR, WSt.regs_setReg_same]
+        simp only [stepWS, erun_seq, erun_setR, WSt.regs_setReg_same]
         funext l'
-        simp only [dotStepSE, WFExp.eval, wrun_seq, wrun_loadIdx, WSt.mem_setReg,
+        simp only [dotStepSE, WFExp.eval, erun_loadIdx, WSt.mem_setReg, hA, hB,
           WSt.regs_setReg_other _ 2 0 _ (by decide),
           WSt.regs_setReg_other _ 1 0 _ (by decide),
           WSt.regs_setReg_other _ 2 1 _ (by decide),
           WSt.regs_setReg_same]
-      show ((L.foldl _ ((stepWS bA bB fA fB i).run st)).regs 0 l) = _
+      show ((L.foldl _ ((stepWS bA bB ixA ixB).run st cta i ir im)).regs 0 l) = _
       rw [ih _ l, hmem, hacc]
       rfl
 
@@ -305,13 +301,11 @@ theorem dotStrided_fold (bA bB : Buf) (fA fB : Nat → Lane → Nat) :
     pipeline layer needs this to conclude that a reduction's sole memory effect
     is its final lane-0 store. -/
 theorem dotStridedBody_mem (bA bB : Buf) (ixA ixB : IdxE) (K cta : Nat) (st : WSt R) :
-    (((dotStridedBody bA bB ixA ixB K).elabAt cta 0).run st).mem = st.mem := by
-  show ((WStmt.forN K (fun j => (stepWS bA bB (fun i l => ixA.eval cta i l)
-          (fun i l => ixB.eval cta i l) j))).run
-        ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).mem = _
+    ((dotStridedBody bA bB ixA ixB K).run st cta 0).mem = st.mem := by
+  show ((List.range K).foldl (fun s' j => (stepWS bA bB ixA ixB).run s' cta j)
+        ((EWStmt.setR 0 (.lit (NumOps.ofNat 0))).run st cta 0)).mem = _
   have key : ∀ (L : List Nat) (s : WSt R),
-      (L.foldl (fun s' i => (stepWS bA bB (fun i l => ixA.eval cta i l)
-        (fun i l => ixB.eval cta i l) i).run s') s).mem = s.mem := by
+      (L.foldl (fun s' i => (stepWS bA bB ixA ixB).run s' cta i) s).mem = s.mem := by
     intro L
     induction L with
     | nil => intro _; rfl
@@ -322,18 +316,14 @@ theorem dotStridedBody_mem (bA bB : Buf) (ixA ixB : IdxE) (K cta : Nat) (st : WS
   exact key (List.range K) _
 
 theorem dotStridedBody_spec [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (K cta : Nat) (st : WSt R) :
-    (((dotStridedBody bA bB ixA ixB K).elabAt cta 0).run st).regs 0
+    ((dotStridedBody bA bB ixA ixB K).run st cta 0).regs 0
       = dotStridedLane (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K := by
   funext l
-  show ((List.range K).foldl _ ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).regs 0 l = _
-  have hstep : (fun j => EWStmt.elabAt cta j (fun _ _ => 0) (fun _ _ => 0)
-        (((EWStmt.loadIdx 1 bA ixA).seq (EWStmt.loadIdx 2 bB ixB)).seq
-          (EWStmt.setR 0 dotStepSE)))
-      = stepWS bA bB (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) := rfl
-  rw [hstep, dotStrided_fold bA bB (fun i l => ixA.eval cta i l)
-        (fun i l => ixB.eval cta i l) (List.range K) _ l]
-  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, dotStridedLane, LitNat.ofNat]
+  show ((List.range K).foldl (fun s' j => (stepWS bA bB ixA ixB).run s' cta j)
+    ((EWStmt.setR 0 (.lit (NumOps.ofNat 0))).run st cta 0)).regs 0 l = _
+  rw [dotStrided_fold bA bB ixA ixB cta _ _ _ _ (fun _ _ => rfl) (fun _ _ => rfl) (List.range K) _ l]
+  simp only [erun_setR, WSt.regs_setReg_same, WFExp.eval, dotStridedLane, LitNat.ofNat]
   rfl
 
 /-! ### The reduction with a row pass folded into it
@@ -347,10 +337,10 @@ theorem dotStridedBody_spec [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (K cta : N
 /-- One accumulation step of the fused reduction: `acc += f(a,b,c)·d`. -/
 def dotStep4SE (f : WFExp) : WFExp := .add (.reg 0) (.mul f (.reg 4))
 
-def stepWS4 (bA bB bC bD : Buf) (fA fB fC fD : Nat → Lane → Nat) (f : WFExp)
-    (i : Nat) : WStmt :=
-  .seq (.seq (.seq (.loadIdx 1 bA (fA i)) (.loadIdx 2 bB (fB i)))
-             (.seq (.loadIdx 3 bC (fC i)) (.loadIdx 4 bD (fD i))))
+/-- One step of the fused sweep: four scalars loaded, accumulated. -/
+def stepWS4 (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp) : EWStmt :=
+  .seq (.seq (.seq (.loadIdx 1 bA ixA) (.loadIdx 2 bB ixB))
+             (.seq (.loadIdx 3 bC ixC) (.loadIdx 4 bD ixD)))
        (.setR 0 (dotStep4SE f))
 
 /-- The fused strided sweep: zero the accumulator, then `K` four-load steps. -/
@@ -380,12 +370,15 @@ def dotStridedLane4 (memA memB memC memD : Nat → R)
         (memD (fD i l))))
     (NumOps.ofNat 0)
 
-theorem dotStrided4_fold (bA bB bC bD : Buf) (fA fB fC fD : Nat → Lane → Nat)
+theorem dotStrided4_fold (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (cta : Nat)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (fA fB fC fD : Nat → Lane → Nat)
+    (hA : ∀ i l, ixA.eval cta i l ir im = fA i l) (hB : ∀ i l, ixB.eval cta i l ir im = fB i l)
+    (hC : ∀ i l, ixC.eval cta i l ir im = fC i l) (hD : ∀ i l, ixD.eval cta i l ir im = fD i l)
     (f : WFExp) (g : R → R → R → R)
     (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l)) :
     ∀ (L : List Nat) (st : WSt R) (l : Lane),
-      ((L.foldl (fun s' i => (stepWS4 bA bB bC bD fA fB fC fD f i).run s') st).regs 0 l)
+      ((L.foldl (fun s' i => (stepWS4 bA bB bC bD ixA ixB ixC ixD f).run s' cta i ir im) st).regs 0 l)
         = L.foldl (fun acc i =>
             NumOps.add acc
               (NumOps.mul (g (st.mem bA (fA i l)) (st.mem bB (fB i l))
@@ -396,19 +389,16 @@ theorem dotStrided4_fold (bA bB bC bD : Buf) (fA fB fC fD : Nat → Lane → Nat
   | nil => intro st l; rfl
   | cons i L ih =>
       intro st l
-      have hmem : ((stepWS4 bA bB bC bD fA fB fC fD f i).run st).mem = st.mem := rfl
-      have hacc : ((stepWS4 bA bB bC bD fA fB fC fD f i).run st).regs 0
+      have hmem : ((stepWS4 bA bB bC bD ixA ixB ixC ixD f).run st cta i ir im).mem = st.mem := rfl
+      have hacc : ((stepWS4 bA bB bC bD ixA ixB ixC ixD f).run st cta i ir im).regs 0
           = fun l => NumOps.add (st.regs 0 l)
               (NumOps.mul (g (st.mem bA (fA i l)) (st.mem bB (fB i l))
                 (st.mem bC (fC i l))) (st.mem bD (fD i l))) := by
-        show ((WStmt.setR 0 (dotStep4SE f)).run
-                ((WStmt.seq (.seq (.loadIdx 1 bA (fA i)) (.loadIdx 2 bB (fB i)))
-                  (.seq (.loadIdx 3 bC (fC i)) (.loadIdx 4 bD (fD i)))).run st)).regs 0 = _
-        simp only [wrun_setR, WSt.regs_setReg_same]
+        simp only [stepWS4, erun_seq, erun_setR, WSt.regs_setReg_same]
         funext l'
         show NumOps.add _ (NumOps.mul (f.eval _ l') _) = _
         rw [hf]
-        simp only [WFExp.eval, wrun_seq, wrun_loadIdx, WSt.mem_setReg,
+        simp only [WFExp.eval, erun_loadIdx, WSt.mem_setReg, hA, hB, hC, hD,
           WSt.regs_setReg_other _ 4 0 _ (by decide),
           WSt.regs_setReg_other _ 3 0 _ (by decide),
           WSt.regs_setReg_other _ 2 0 _ (by decide),
@@ -420,22 +410,18 @@ theorem dotStrided4_fold (bA bB bC bD : Buf) (fA fB fC fD : Nat → Lane → Nat
           WSt.regs_setReg_other _ 3 2 _ (by decide),
           WSt.regs_setReg_other _ 4 3 _ (by decide),
           WSt.regs_setReg_same]
-      show ((L.foldl _ ((stepWS4 bA bB bC bD fA fB fC fD f i).run st)).regs 0 l) = _
+      show ((L.foldl _ ((stepWS4 bA bB bC bD ixA ixB ixC ixD f).run st cta i ir im)).regs 0 l) = _
       rw [ih _ l, hmem, hacc]
       rfl
 
 theorem dotStrided4Body_mem (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
     (K cta : Nat) (st : WSt R) :
-    (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run st).mem
-      = st.mem := by
-  show ((WStmt.forN K (fun j => (stepWS4 bA bB bC bD (fun i l => ixA.eval cta i l)
-          (fun i l => ixB.eval cta i l) (fun i l => ixC.eval cta i l)
-          (fun i l => ixD.eval cta i l) f j))).run
-        ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).mem = _
+    ((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).run st cta 0).mem = st.mem := by
+  show ((List.range K).foldl (fun s' j => (stepWS4 bA bB bC bD ixA ixB ixC ixD f).run s' cta j)
+        ((EWStmt.setR 0 (.lit (NumOps.ofNat 0))).run st cta 0)).mem = _
   have key : ∀ (L : List Nat) (s : WSt R),
-      (L.foldl (fun s' i => (stepWS4 bA bB bC bD (fun i l => ixA.eval cta i l)
-        (fun i l => ixB.eval cta i l) (fun i l => ixC.eval cta i l)
-        (fun i l => ixD.eval cta i l) f i).run s') s).mem = s.mem := by
+      (L.foldl (fun s' i => (stepWS4 bA bB bC bD ixA ixB ixC ixD f).run s' cta i) s).mem
+        = s.mem := by
     intro L
     induction L with
     | nil => intro _; rfl
@@ -450,22 +436,16 @@ theorem dotStrided4Body_spec [LitNat R] (bA bB bC bD : Buf) (ixA ixB ixC ixD : I
     (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
     (K cta : Nat) (st : WSt R) :
-    (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run st).regs 0
+    ((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).run st cta 0).regs 0
       = dotStridedLane4 (st.mem bA) (st.mem bB) (st.mem bC) (st.mem bD)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
           (fun i l => ixC.eval cta i l) (fun i l => ixD.eval cta i l) g K := by
   funext l
-  show ((List.range K).foldl _ ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).regs 0 l = _
-  have hstep : (fun j => EWStmt.elabAt cta j (fun _ _ => 0) (fun _ _ => 0)
-        ((((EWStmt.loadIdx 1 bA ixA).seq (EWStmt.loadIdx 2 bB ixB)).seq
-          ((EWStmt.loadIdx 3 bC ixC).seq (EWStmt.loadIdx 4 bD ixD))).seq
-          (EWStmt.setR 0 (dotStep4SE f))))
-      = stepWS4 bA bB bC bD (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
-          (fun i l => ixC.eval cta i l) (fun i l => ixD.eval cta i l) f := rfl
-  rw [hstep, dotStrided4_fold bA bB bC bD (fun i l => ixA.eval cta i l)
-        (fun i l => ixB.eval cta i l) (fun i l => ixC.eval cta i l)
-        (fun i l => ixD.eval cta i l) f g hf (List.range K) _ l]
-  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, dotStridedLane4, LitNat.ofNat]
+  show ((List.range K).foldl (fun s' j => (stepWS4 bA bB bC bD ixA ixB ixC ixD f).run s' cta j)
+    ((EWStmt.setR 0 (.lit (NumOps.ofNat 0))).run st cta 0)).regs 0 l = _
+  rw [dotStrided4_fold bA bB bC bD ixA ixB ixC ixD cta _ _ _ _ _ _ (fun _ _ => rfl) (fun _ _ => rfl)
+        (fun _ _ => rfl) (fun _ _ => rfl) f g hf (List.range K) _ l]
+  simp only [erun_setR, WSt.regs_setReg_same, WFExp.eval, dotStridedLane4, LitNat.ofNat]
   rfl
 
 /-- **The fused strided schema is correct** — the same statement as
@@ -476,19 +456,18 @@ theorem dotStrided4_spec [LitNat R] (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE)
     (hf : ∀ (st' : WSt R) (l : Lane),
       f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
     (out : Buf) (oi : IdxE) (K cta : Nat) (st : WSt R) :
-    (((dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).elabIn cta).run st).mem out
+    ((dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).run st cta 0).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotStridedLane4 (st.mem bA) (st.mem bB) (st.mem bC) (st.mem bD)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
           (fun i l => ixC.eval cta i l) (fun i l => ixD.eval cta i l) g K)
           ⟨0, by decide⟩ := by
   show (((warpReduceSum 0 1).run
-          (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run st)).store1
-        out _
+          ((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).run st cta 0) cta 0).store1 out _
         (((warpReduceSum 0 1).run
-          (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run
-            st)).regs 0 ⟨0, by decide⟩)).mem out _ = _
-  rw [WSt.mem_store1_same, warpReduceSum_spec 0 1 (by decide),
+          ((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).run st cta 0) cta 0).regs 0
+            ⟨0, by decide⟩)).mem out _ = _
+  rw [WSt.mem_store1_same, warpReduceSum_spec _ cta 0 _ _ 0 1 (by decide),
       dotStrided4Body_spec bA bB bC bD ixA ixB ixC ixD f g hf]
 
 /-- The fold depends on memory only at the addresses it reads.  What a pipeline
@@ -545,22 +524,22 @@ theorem dotStridedLane_of_fused (memT memG memA memB memC : Nat → R)
     expressions, every trip count, every block. -/
 theorem dotStrided_spec [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (st : WSt R) :
-    (((dotStrided bA bB ixA ixB out oi K).elabIn cta).run st).mem out
+    ((dotStrided bA bB ixA ixB out oi K).run st cta 0).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFold (dotStridedLane (st.mem bA) (st.mem bB)
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K)
           ⟨0, by decide⟩ := by
-  show (((warpReduceSum 0 1).run
-          (((dotStridedBody bA bB ixA ixB K).elabAt cta 0).run st)).store1 out _
-        (((warpReduceSum 0 1).run
-          (((dotStridedBody bA bB ixA ixB K).elabAt cta 0).run st)).regs 0 ⟨0, by decide⟩)).mem out _ = _
-  rw [WSt.mem_store1_same, warpReduceSum_spec 0 1 (by decide), dotStridedBody_spec]
+  show (((warpReduceSum 0 1).run ((dotStridedBody bA bB ixA ixB K).run st cta 0) cta 0).store1 out _
+        (((warpReduceSum 0 1).run ((dotStridedBody bA bB ixA ixB K).run st cta 0) cta 0).regs 0
+          ⟨0, by decide⟩)).mem out _ = _
+  rw [WSt.mem_store1_same, warpReduceSum_spec _ cta 0 _ _ 0 1 (by decide), dotStridedBody_spec]
 
 /-- The maximum's step: one load, one `max.f32` into the accumulator. -/
 def maxStepSE : WFExp := .maxW (.reg 0) (.reg 1)
 
-def stepMaxWS (b : Buf) (f : Nat → Lane → Nat) (i : Nat) : WStmt :=
-  .seq (.loadIdx 1 b (f i)) (.setR 0 maxStepSE)
+/-- One step of the maximum's sweep: a scalar loaded, folded in by `max`. -/
+def stepMaxWS (b : Buf) (ix : IdxE) : EWStmt :=
+  .seq (.loadIdx 1 b ix) (.setR 0 maxStepSE)
 
 /-- The strided maximum sweep: seed the accumulator, then `K` load-and-max
     steps.  The seed is a parameter because a row maximum over a bounded
@@ -575,38 +554,36 @@ def maxStridedLane (mem : Nat → R) (f : Nat → Lane → Nat) (K : Nat)
     (init : R) (l : Lane) : R :=
   (List.range K).foldl (fun acc i => NumOps.max acc (mem (f i l))) init
 
-theorem maxStrided_fold (b : Buf) (f : Nat → Lane → Nat) :
+theorem maxStrided_fold (b : Buf) (ix : IdxE) (cta : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) (f : Nat → Lane → Nat) (hix : ∀ i l, ix.eval cta i l ir im = f i l) :
     ∀ (L : List Nat) (st : WSt R) (l : Lane),
-      ((L.foldl (fun s' i => (stepMaxWS b f i).run s') st).regs 0 l)
+      ((L.foldl (fun s' i => (stepMaxWS b ix).run s' cta i ir im) st).regs 0 l)
         = L.foldl (fun acc i => NumOps.max acc (st.mem b (f i l))) (st.regs 0 l) := by
   intro L
   induction L with
   | nil => intro st l; rfl
   | cons i L ih =>
       intro st l
-      have hmem : ((stepMaxWS b f i).run st).mem = st.mem := rfl
-      have hacc : ((stepMaxWS b f i).run st).regs 0
+      have hmem : ((stepMaxWS b ix).run st cta i ir im).mem = st.mem := rfl
+      have hacc : ((stepMaxWS b ix).run st cta i ir im).regs 0
           = fun l => NumOps.max (st.regs 0 l) (st.mem b (f i l)) := by
-        show ((WStmt.setR 0 maxStepSE).run ((WStmt.loadIdx 1 b (f i)).run st)).regs 0 = _
-        simp only [wrun_setR, WSt.regs_setReg_same]
+        simp only [stepMaxWS, erun_seq, erun_setR, WSt.regs_setReg_same]
         funext l'
-        simp only [maxStepSE, WFExp.eval, wrun_loadIdx, WSt.mem_setReg,
+        simp only [maxStepSE, WFExp.eval, erun_loadIdx, WSt.mem_setReg, hix,
           WSt.regs_setReg_other _ 1 0 _ (by decide), WSt.regs_setReg_same]
-      show ((L.foldl _ ((stepMaxWS b f i).run st)).regs 0 l) = _
+      show ((L.foldl _ ((stepMaxWS b ix).run st cta i ir im)).regs 0 l) = _
       rw [ih _ l, hmem, hacc]
       rfl
 
 theorem maxStridedBody_spec (b : Buf) (ix : IdxE) (K cta : Nat) (init : Float32)
     (st : WSt R) :
-    (((maxStridedBody b ix K init).elabAt cta 0).run st).regs 0
+    ((maxStridedBody b ix K init).run st cta 0).regs 0
       = maxStridedLane (st.mem b) (fun i l => ix.eval cta i l) K (NumLit.lit init) := by
   funext l
-  show ((List.range K).foldl _ ((WStmt.setR 0 (.lit init)).run st)).regs 0 l = _
-  have hstep : (fun j => EWStmt.elabAt cta j (fun _ _ => 0) (fun _ _ => 0)
-        ((EWStmt.loadIdx 1 b ix).seq (EWStmt.setR 0 maxStepSE)))
-      = stepMaxWS b (fun i l => ix.eval cta i l) := rfl
-  rw [hstep, maxStrided_fold b (fun i l => ix.eval cta i l) (List.range K) _ l]
-  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, maxStridedLane, LitNat.ofNat]
+  show ((List.range K).foldl (fun s' j => (stepMaxWS b ix).run s' cta j)
+    ((EWStmt.setR 0 (.lit init)).run st cta 0)).regs 0 l = _
+  rw [maxStrided_fold b ix cta _ _ _ (fun _ _ => rfl) (List.range K) _ l]
+  simp only [erun_setR, WSt.regs_setReg_same, WFExp.eval, maxStridedLane, LitNat.ofNat]
   rfl
 
 /-- The strided per-lane fold, as a spec-language term. -/
@@ -651,7 +628,7 @@ theorem dotStrided_implements [LitNat R] (bA bB : Buf) (ixA ixB : IdxE) (out : B
     (K cta : Nat) (st : WSt R) (env : Fin Γ → R) (ae be : Nat → Expr Γ)
     (ha : ∀ i, denote env (ae i) = st.mem bA i)
     (hb : ∀ i, denote env (be i) = st.mem bB i) :
-    (((dotStrided bA bB ixA ixB out oi K).elabIn cta).run st).mem out
+    ((dotStrided bA bB ixA ixB out oi K).run st cta 0).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = denote env (dotStridedE ae be
           (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l) K) := by
@@ -719,44 +696,42 @@ theorem sweepFrame_refl (keep : List Nat) (st : WSt R) : SweepFrameOn keep st st
     it is a one-liner.  The fold is *sequential in load order*, which is what
     makes every instance an exact `Float32` equality rather than a bound. -/
 theorem sweep_fold (b : Buf) (d acc : Nat) (hne : d ≠ acc) (f : WFExp)
-    (ix : Nat → Lane → Nat) (g : Lane → R → R → R)
+    (ix : IdxE) (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (g : Lane → R → R → R)
     (keep : List Nat) (hkeep : ∀ r ∈ keep, r ≠ acc ∧ r ≠ d) (st0 : WSt R)
     (hf : ∀ st, SweepFrameOn keep st0 st → ∀ l,
             f.eval st l = g l (st.regs acc l) (st.regs d l)) :
     ∀ (L : List Nat) (st : WSt R), SweepFrameOn keep st0 st → ∀ (l : Lane),
-      ((L.foldl (fun s i =>
-          (WStmt.seq (.loadIdx d b (ix i)) (.setR acc f)).run s) st).regs acc l)
-        = L.foldl (fun a i => g l a (st0.mem b (ix i l))) (st.regs acc l) := by
+      ((L.foldl (fun s i => (sweepBody b d acc f ix).run s cta i ir im) st).regs acc l)
+        = L.foldl (fun a i => g l a (st0.mem b (ix.eval cta i l ir im))) (st.regs acc l) := by
   intro L
   induction L with
   | nil => intro st _ l; rfl
   | cons i L ih =>
       intro st hfr l
       -- after the load, before the accumulate
-      have hmem1 : (st.setReg d (fun l => st.mem b (ix i l))).mem = st.mem := rfl
-      have hfr1 : SweepFrameOn keep st0 (st.setReg d (fun l => st.mem b (ix i l))) := by
+      have hmem1 : (st.setReg d (fun l => st.mem b (ix.eval cta i l ir im))).mem = st.mem := rfl
+      have hfr1 : SweepFrameOn keep st0 (st.setReg d (fun l => st.mem b (ix.eval cta i l ir im))) := by
         refine ⟨by rw [hmem1]; exact hfr.1, ?_⟩
         intro r hr
         rw [WSt.regs_setReg_other _ d r _ (hkeep r hr).2]
         exact hfr.2 r hr
       -- the whole body's effect on the accumulator
-      have hacc : ((WStmt.seq (.loadIdx d b (ix i)) (.setR acc f)).run st).regs acc
-          = fun l => g l (st.regs acc l) (st0.mem b (ix i l)) := by
-        simp only [wrun_seq, wrun_loadIdx, wrun_setR, WSt.regs_setReg_same]
+      have hacc : ((sweepBody b d acc f ix).run st cta i ir im).regs acc
+          = fun l => g l (st.regs acc l) (st0.mem b (ix.eval cta i l ir im)) := by
+        simp only [sweepBody, erun_seq, erun_loadIdx, erun_setR, WSt.regs_setReg_same]
         funext l'
         rw [hf _ hfr1 l', WSt.regs_setReg_other _ d acc _ (Ne.symm hne),
             WSt.regs_setReg_same, hfr.1]
-      have hbody : SweepFrameOn keep st0
-          ((WStmt.seq (.loadIdx d b (ix i)) (.setR acc f)).run st) := by
+      have hbody : SweepFrameOn keep st0 ((sweepBody b d acc f ix).run st cta i ir im) := by
         refine ⟨?_, ?_⟩
-        · show ((WStmt.setR acc f).run (st.setReg d _)).mem = _
-          rw [wrun_setR, WSt.mem_setReg, hmem1]; exact hfr.1
+        · show ((EWStmt.setR acc f).run (st.setReg d _) cta i ir im).mem = _
+          rw [erun_setR, WSt.mem_setReg, hmem1]; exact hfr.1
         · intro r hr
-          show ((WStmt.setR acc f).run (st.setReg d _)).regs r = _
-          rw [wrun_setR, WSt.regs_setReg_other _ acc r _ (hkeep r hr).1,
+          show ((EWStmt.setR acc f).run (st.setReg d _) cta i ir im).regs r = _
+          rw [erun_setR, WSt.regs_setReg_other _ acc r _ (hkeep r hr).1,
               WSt.regs_setReg_other _ d r _ (hkeep r hr).2]
           exact hfr.2 r hr
-      show ((L.foldl _ ((WStmt.seq _ _).run st)).regs acc l) = _
+      show ((L.foldl _ ((sweepBody b d acc f ix).run st cta i ir im)).regs acc l) = _
       rw [ih _ hbody l, hacc]
       rfl
 
@@ -767,50 +742,49 @@ theorem sweep_fold (b : Buf) (d acc : Nat) (hne : d ≠ acc) (f : WFExp)
     maximum in `%fw5`, and this is the theorem that says the max is still there.
     Without it each pass would have to re-establish the previous pass's result
     by hand, which is exactly the bookkeeping schemas exist to remove. -/
-theorem sweep_frame (b : Buf) (d acc : Nat) (f : WFExp) (fx : Nat → Lane → Nat)
+theorem sweep_frame (b : Buf) (d acc : Nat) (f : WFExp) (ix : IdxE) (cta : Nat)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (keep : List Nat) (hkeep : ∀ r ∈ keep, r ≠ acc ∧ r ≠ d) :
     ∀ (L : List Nat) (st : WSt R),
-      SweepFrameOn keep st (L.foldl (fun s i =>
-        (WStmt.seq (.loadIdx d b (fx i)) (.setR acc f)).run s) st) := by
+      SweepFrameOn keep st (L.foldl (fun s i => (sweepBody b d acc f ix).run s cta i ir im) st) := by
   intro L
   induction L with
   | nil => intro st; exact sweepFrame_refl keep st
   | cons i L ih =>
       intro st
-      have hstep : SweepFrameOn keep st
-          ((WStmt.seq (.loadIdx d b (fx i)) (.setR acc f)).run st) := by
+      have hstep : SweepFrameOn keep st ((sweepBody b d acc f ix).run st cta i ir im) := by
         refine ⟨rfl, ?_⟩
         intro r hr
-        show ((WStmt.setR acc f).run (st.setReg d _)).regs r = _
-        rw [wrun_setR, WSt.regs_setReg_other _ acc r _ (hkeep r hr).1,
+        show ((EWStmt.setR acc f).run (st.setReg d _) cta i ir im).regs r = _
+        rw [erun_setR, WSt.regs_setReg_other _ acc r _ (hkeep r hr).1,
             WSt.regs_setReg_other _ d r _ (hkeep r hr).2]
-      obtain ⟨hm, hr⟩ := ih ((WStmt.seq (.loadIdx d b (fx i)) (.setR acc f)).run st)
-      show SweepFrameOn keep st (L.foldl _ ((WStmt.seq _ _).run st))
+      obtain ⟨hm, hr⟩ := ih ((sweepBody b d acc f ix).run st cta i ir im)
+      show SweepFrameOn keep st (L.foldl _ ((sweepBody b d acc f ix).run st cta i ir im))
       exact ⟨by rw [hm]; exact hstep.1, fun r hr' => by
         rw [hr r hr']; exact hstep.2 r hr'⟩
 
-/-- The frame, for a sweep written as an elaborated loop. -/
+/-- The frame, for a sweep run as a loop of `K` trips. -/
 theorem sweepLoop_frame (b : Buf) (d acc : Nat) (f : WFExp) (ix : IdxE) (K cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (keep : List Nat) (hkeep : ∀ r ∈ keep, r ≠ acc ∧ r ≠ d) (st : WSt R) :
     SweepFrameOn keep st
-      ((WStmt.forN K (fun j => (sweepBody b d acc f ix).elabAt cta j ir im)).run st) :=
-  sweep_frame b d acc f (fun j l => ix.eval cta j l ir im) keep hkeep (List.range K) st
+      ((List.range K).foldl (fun s j => (sweepBody b d acc f ix).run s cta j ir im) st) :=
+  sweep_frame b d acc f ix cta ir im keep hkeep (List.range K) st
 
-/-- The sweep under an elaborated loop, for **any** trip count and elaboration
-    environment.  Both `EWStmt` loop forms are this lemma: `forN` supplies the
-    trip count as a literal and `forM` reads it from integer memory, but they
-    elaborate to the same `WStmt.forN`, so neither needs its own proof. -/
+/-- The sweep as a loop of `K` trips, for **any** trip count and environment.
+    Both `EWStmt` loop forms are this lemma: `forN` supplies the trip count as a
+    literal and `forM` reads it from integer memory, but both run their body
+    once per counter value, so neither needs its own proof. -/
 theorem sweepLoop_spec (b : Buf) (d acc : Nat) (hne : d ≠ acc) (f : WFExp) (ix : IdxE)
     (g : Lane → R → R → R) (K cta : Nat)
     (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
     (keep : List Nat) (hkeep : ∀ r ∈ keep, r ≠ acc ∧ r ≠ d) (st : WSt R)
     (hf : ∀ st', SweepFrameOn keep st st' → ∀ l,
             f.eval st' l = g l (st'.regs acc l) (st'.regs d l)) (l : Lane) :
-    ((WStmt.forN K (fun j => (sweepBody b d acc f ix).elabAt cta j ir im)).run st).regs acc l
+    ((List.range K).foldl (fun s j => (sweepBody b d acc f ix).run s cta j ir im) st).regs acc l
       = (List.range K).foldl
           (fun a j => g l a (st.mem b (ix.eval cta j l ir im))) (st.regs acc l) :=
-  sweep_fold b d acc hne f (fun j l => ix.eval cta j l ir im) g keep hkeep st hf
+  sweep_fold b d acc hne f ix cta ir im g keep hkeep st hf
     (List.range K) st (sweepFrame_refl keep st) l
 
 /-- The static-trip-count sweep, as kernels write it. -/
@@ -819,7 +793,7 @@ theorem sweepN_spec (b : Buf) (d acc : Nat) (hne : d ≠ acc) (f : WFExp) (ix : 
     (keep : List Nat) (hkeep : ∀ r ∈ keep, r ≠ acc ∧ r ≠ d) (st : WSt R)
     (hf : ∀ st', SweepFrameOn keep st st' → ∀ l,
             f.eval st' l = g l (st'.regs acc l) (st'.regs d l)) (l : Lane) :
-    (((EWStmt.forN K (sweepBody b d acc f ix)).elabAt cta 0).run st).regs acc l
+    ((EWStmt.forN K (sweepBody b d acc f ix)).run st cta 0).regs acc l
       = (List.range K).foldl
           (fun a i => g l a (st.mem b (ix.eval cta i l))) (st.regs acc l) :=
   sweepLoop_spec b d acc hne f ix g K cta _ _ keep hkeep st hf l
@@ -832,7 +806,7 @@ theorem sweepM_spec (b : Buf) (d acc : Nat) (hne : d ≠ acc) (f : WFExp) (ix : 
     (keep : List Nat) (hkeep : ∀ r ∈ keep, r ≠ acc ∧ r ≠ d) (st : WSt R)
     (hf : ∀ st', SweepFrameOn keep st st' → ∀ l,
             f.eval st' l = g l (st'.regs acc l) (st'.regs d l)) (l : Lane) :
-    (((EWStmt.forM bu ad (sweepBody b d acc f ix)).elabAt cta i ir im).run st).regs acc l
+    ((EWStmt.forM bu ad (sweepBody b d acc f ix)).run st cta i ir im).regs acc l
       = (List.range (im bu ad)).foldl
           (fun a j => g l a (st.mem b (ix.eval cta j l ir im))) (st.regs acc l) :=
   sweepLoop_spec b d acc hne f ix g (im bu ad) cta ir im keep hkeep st hf l
@@ -887,7 +861,7 @@ theorem denote_sweepFoldE (env : Fin Γ → R) (ae : Nat → Expr Γ)
 -/
 
 /-- One butterfly round under an arbitrary combining expression. -/
-def bflyRoundOp (acc tmp mask : Nat) (op : WFExp) : WStmt :=
+def bflyRoundOp (acc tmp mask : Nat) (op : WFExp) : EWStmt :=
   .seq (.shflXor tmp acc mask) (.setR acc op)
 
 /-- The semantic step: combine each lane's value with its partner's. -/
@@ -902,12 +876,19 @@ def bflyFoldOp (g : R → R → R) (v : Lane → R) : Lane → R :=
 theorem bflyRoundOp_spec (acc tmp mask : Nat) (h : tmp ≠ acc) (op : WFExp)
     (g : R → R → R)
     (hop : ∀ (st : WSt R) (l : Lane), op.eval st l = g (st.regs acc l) (st.regs tmp l))
-    (st : WSt R) :
-    ((bflyRoundOp acc tmp mask op).run st).regs acc = bflyStepOp g mask (st.regs acc) := by
-  simp only [bflyRoundOp, wrun_seq, wrun_setR, wrun_shflXor, WSt.regs_setReg_same]
+    (st : WSt R) (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
+    ((bflyRoundOp acc tmp mask op).run st cta i ir im).regs acc = bflyStepOp g mask (st.regs acc) := by
+  simp only [bflyRoundOp, erun_seq, erun_setR, erun_shflXor, WSt.regs_setReg_same]
   funext l
   rw [hop, WSt.regs_setReg_other _ tmp acc _ (Ne.symm h), WSt.regs_setReg_same]
   rfl
+
+/-- The five-round network under `op`, masks 16 down to 1. -/
+def warpReduceOp (acc tmp : Nat) (op : WFExp) : EWStmt :=
+  .seq (bflyRoundOp acc tmp 16 op)
+    (.seq (bflyRoundOp acc tmp 8 op)
+      (.seq (bflyRoundOp acc tmp 4 op)
+        (.seq (bflyRoundOp acc tmp 2 op) (bflyRoundOp acc tmp 1 op))))
 
 /-- **The generic warp reduction realises the butterfly tree, for any operation.**
 
@@ -916,16 +897,12 @@ theorem bflyRoundOp_spec (acc tmp mask : Nat) (h : tmp ≠ acc) (op : WFExp)
 theorem warpReduceOp_spec (acc tmp : Nat) (h : tmp ≠ acc) (op : WFExp)
     (g : R → R → R)
     (hop : ∀ (st : WSt R) (l : Lane), op.eval st l = g (st.regs acc l) (st.regs tmp l))
-    (st : WSt R) :
-    ((WStmt.seq (bflyRoundOp acc tmp 16 op)
-       (.seq (bflyRoundOp acc tmp 8 op)
-         (.seq (bflyRoundOp acc tmp 4 op)
-           (.seq (bflyRoundOp acc tmp 2 op) (bflyRoundOp acc tmp 1 op))))).run st).regs acc
-      = bflyFoldOp g (st.regs acc) := by
-  simp only [wrun_seq]
-  rw [bflyRoundOp_spec acc tmp 1 h op g hop, bflyRoundOp_spec acc tmp 2 h op g hop,
-      bflyRoundOp_spec acc tmp 4 h op g hop, bflyRoundOp_spec acc tmp 8 h op g hop,
-      bflyRoundOp_spec acc tmp 16 h op g hop]
+    (st : WSt R) (cta i : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) :
+    ((warpReduceOp acc tmp op).run st cta i ir im).regs acc = bflyFoldOp g (st.regs acc) := by
+  simp only [warpReduceOp, erun_seq]
+  rw [bflyRoundOp_spec acc tmp 1 h op g hop _ cta i ir im, bflyRoundOp_spec acc tmp 2 h op g hop _ cta i ir im,
+      bflyRoundOp_spec acc tmp 4 h op g hop _ cta i ir im, bflyRoundOp_spec acc tmp 8 h op g hop _ cta i ir im,
+      bflyRoundOp_spec acc tmp 16 h op g hop _ cta i ir im]
   rfl
 
 theorem sweepFrame_trans {keep : List Nat} {a b c : WSt R}
@@ -981,43 +958,42 @@ theorem chunkRemReduce_spec (b : Buf) (d acc : Nat) (hne : d ≠ acc) (f : WFExp
     (initV : Lane → R) (hinit : ∀ l, init.eval st l = initV l)
     (hf : ∀ st', SweepFrameOn keep st st' → ∀ l,
             f.eval st' l = g l (st'.regs acc l) (st'.regs d l))
-    (hbflyR : ∀ st' : WSt R, ((bfly.elabAt cta i ir im).run st').regs acc = bflyG (st'.regs acc))
-    (hbflyM : ∀ st' : WSt R, ((bfly.elabAt cta i ir im).run st').mem = st'.mem)
-    (hbflyK : ∀ st' : WSt R, ∀ r ∈ keep, ((bfly.elabAt cta i ir im).run st').regs r = st'.regs r)
+    (hbflyR : ∀ st' : WSt R, (bfly.run st' cta i ir im).regs acc = bflyG (st'.regs acc))
+    (hbflyM : ∀ st' : WSt R, (bfly.run st' cta i ir im).mem = st'.mem)
+    (hbflyK : ∀ st' : WSt R, ∀ r ∈ keep, (bfly.run st' cta i ir im).regs r = st'.regs r)
     (l : Lane) :
-    (((chunkRemReduce b d acc f ixC ixR init bu adC adR bfly).elabAt cta i ir im).run st).regs acc l
+    ((chunkRemReduce b d acc f ixC ixR init bu adC adR bfly).run st cta i ir im).regs acc l
       = chunkRemFold (st.mem b) g initV
           (fun j l' => ixC.eval cta j l' ir im) (fun j l' => ixR.eval cta j l' ir im)
           (im bu adC) (im bu adR) bflyG l := by
-  show ((WStmt.forN (im bu adR) (fun j => (sweepBody b d acc f ixR).elabAt cta j ir im)).run
-          ((bfly.elabAt cta i ir im).run
-            ((WStmt.forN (im bu adC)
-              (fun j => (sweepBody b d acc f ixC).elabAt cta j ir im)).run
-                ((WStmt.setR acc init).run st)))).regs acc l = _
+  show ((List.range (im bu adR)).foldl (fun s j => (sweepBody b d acc f ixR).run s cta j ir im)
+    (bfly.run ((List.range (im bu adC)).foldl
+        (fun s j => (sweepBody b d acc f ixC).run s cta j ir im)
+        ((EWStmt.setR acc init).run st cta i ir im)) cta i ir im)).regs acc l = _
   -- after the initialiser
-  have hI : SweepFrameOn keep st ((WStmt.setR acc init).run st) :=
+  have hI : SweepFrameOn keep st ((EWStmt.setR acc init).run st cta i ir im) :=
     ⟨rfl, fun r hr => WSt.regs_setReg_other _ acc r _ (hkeep r hr).1⟩
   -- after the chunk sweep
   have hC : SweepFrameOn keep st
-      ((WStmt.forN (im bu adC)
-        (fun j => (sweepBody b d acc f ixC).elabAt cta j ir im)).run
-          ((WStmt.setR acc init).run st)) :=
+      ((List.range (im bu adC)).foldl
+        (fun s j => (sweepBody b d acc f ixC).run s cta j ir im)
+        ((EWStmt.setR acc init).run st cta i ir im)) :=
     sweepFrame_trans hI (sweepLoop_frame b d acc f ixC (im bu adC) cta ir im keep hkeep _)
-  have hCval : ∀ l', ((WStmt.forN (im bu adC)
-        (fun j => (sweepBody b d acc f ixC).elabAt cta j ir im)).run
-          ((WStmt.setR acc init).run st)).regs acc l'
+  have hCval : ∀ l', ((List.range (im bu adC)).foldl
+        (fun s j => (sweepBody b d acc f ixC).run s cta j ir im)
+        ((EWStmt.setR acc init).run st cta i ir im)).regs acc l'
       = (List.range (im bu adC)).foldl
           (fun a j => g l' a (st.mem b (ixC.eval cta j l' ir im))) (initV l') := by
     intro l'
     rw [sweepLoop_spec b d acc hne f ixC g (im bu adC) cta ir im keep hkeep _
           (fun st' hfr => hf st' (sweepFrame_trans hI hfr)) l']
-    simp only [wrun_setR, WSt.mem_setReg, WSt.regs_setReg_same]
+    simp only [erun_setR, WSt.mem_setReg, WSt.regs_setReg_same]
     rw [hinit l']
   -- after the butterfly
-  have hB : SweepFrameOn keep st
-      ((bfly.elabAt cta i ir im).run ((WStmt.forN (im bu adC)
-        (fun j => (sweepBody b d acc f ixC).elabAt cta j ir im)).run
-          ((WStmt.setR acc init).run st))) :=
+  have hB : SweepFrameOn keep st (bfly.run
+      ((List.range (im bu adC)).foldl
+        (fun s j => (sweepBody b d acc f ixC).run s cta j ir im)
+        ((EWStmt.setR acc init).run st cta i ir im)) cta i ir im) :=
     sweepFrame_trans hC ⟨hbflyM _, fun r hr => hbflyK _ r hr⟩
   -- the remainder sweep
   rw [sweepLoop_spec b d acc hne f ixR g (im bu adR) cta ir im keep hkeep _
@@ -1030,25 +1006,23 @@ theorem chunkRemReduce_spec (b : Buf) (d acc : Nat) (hne : d ≠ acc) (f : WFExp
 
 /-- A butterfly round writes only the accumulator and its shuffle temporary. -/
 theorem bflyRoundOp_frame (acc tmp mask : Nat) (op : WFExp) (r : Nat)
-    (hr : r ≠ acc) (hr' : r ≠ tmp) (st : WSt R) :
-    ((bflyRoundOp acc tmp mask op).run st).regs r = st.regs r := by
-  simp only [bflyRoundOp, wrun_seq, wrun_setR, wrun_shflXor,
+    (hr : r ≠ acc) (hr' : r ≠ tmp) (st : WSt R) (cta i : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) :
+    ((bflyRoundOp acc tmp mask op).run st cta i ir im).regs r = st.regs r := by
+  simp only [bflyRoundOp, erun_seq, erun_setR, erun_shflXor,
              WSt.regs_setReg_other _ acc r _ hr, WSt.regs_setReg_other _ tmp r _ hr']
 
 /-- …and so does the whole five-round network.  This is what lets a value
     computed *before* a reduction survive it — softmax's row maximum sits in
     `%fw5` across the sum butterfly precisely because of this. -/
 theorem warpReduceOp_frame (acc tmp : Nat) (op : WFExp) (r : Nat)
-    (hr : r ≠ acc) (hr' : r ≠ tmp) (st : WSt R) :
-    ((WStmt.seq (bflyRoundOp acc tmp 16 op)
-       (.seq (bflyRoundOp acc tmp 8 op)
-         (.seq (bflyRoundOp acc tmp 4 op)
-           (.seq (bflyRoundOp acc tmp 2 op) (bflyRoundOp acc tmp 1 op))))).run st).regs r
-      = st.regs r := by
-  simp only [wrun_seq]
-  rw [bflyRoundOp_frame acc tmp 1 op r hr hr', bflyRoundOp_frame acc tmp 2 op r hr hr',
-      bflyRoundOp_frame acc tmp 4 op r hr hr', bflyRoundOp_frame acc tmp 8 op r hr hr',
-      bflyRoundOp_frame acc tmp 16 op r hr hr']
+    (hr : r ≠ acc) (hr' : r ≠ tmp) (st : WSt R) (cta i : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) :
+    ((warpReduceOp acc tmp op).run st cta i ir im).regs r = st.regs r := by
+  simp only [warpReduceOp, erun_seq]
+  rw [bflyRoundOp_frame acc tmp 1 op r hr hr' _ cta i ir im, bflyRoundOp_frame acc tmp 2 op r hr hr' _ cta i ir im,
+      bflyRoundOp_frame acc tmp 4 op r hr hr' _ cta i ir im, bflyRoundOp_frame acc tmp 8 op r hr hr' _ cta i ir im,
+      bflyRoundOp_frame acc tmp 16 op r hr hr' _ cta i ir im]
 
 /-- The map-and-store pass body: compute into `%fw{r}`, then every lane stores. -/
 def storeBody (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt) : EWStmt :=
@@ -1060,10 +1034,10 @@ def storeBody (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt) : EWStmt :=
     where a stage must promise not to disturb anything it does not own. -/
 theorem storeLoop_otherBuf (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt)
     (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (hcompMem : ∀ (j : Nat) (s : WSt R), ((compute.elabAt cta j ir im).run s).mem = s.mem)
+    (hcompMem : ∀ (j : Nat) (s : WSt R), (compute.run s cta j ir im).mem = s.mem)
     (c : Buf) (hc : c ≠ out) :
     ∀ (L : List Nat) (s : WSt R),
-      (L.foldl (fun s' j => ((storeBody out r oix compute).elabAt cta j ir im).run s') s).mem c
+      (L.foldl (fun s' j => (storeBody out r oix compute).run s' cta j ir im) s).mem c
         = s.mem c := by
   intro L
   induction L with
@@ -1071,17 +1045,16 @@ theorem storeLoop_otherBuf (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt)
   | cons j L ih =>
       intro s
       rw [List.foldl_cons, ih]
-      show ((WStmt.storeLane out (fun l => oix.eval cta j l ir im) r).run
-              ((compute.elabAt cta j ir im).run s)).mem c = _
+      show ((compute.run s cta j ir im).storeLanes out (fun l => oix.eval cta j l ir im) r).mem c = _
       rw [storeLane_otherBuf out _ r _ c hc, hcompMem j s]
 
 /-- **…and only at addresses some `(iteration, lane)` owns.** -/
 theorem storeLoop_otherAddr (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt)
     (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat)
-    (hcompMem : ∀ (j : Nat) (s : WSt R), ((compute.elabAt cta j ir im).run s).mem = s.mem)
+    (hcompMem : ∀ (j : Nat) (s : WSt R), (compute.run s cta j ir im).mem = s.mem)
     (a : Nat) :
     ∀ (L : List Nat) (s : WSt R), (∀ j ∈ L, ∀ l : Lane, oix.eval cta j l ir im ≠ a) →
-      (L.foldl (fun s' j => ((storeBody out r oix compute).elabAt cta j ir im).run s') s).mem
+      (L.foldl (fun s' j => (storeBody out r oix compute).run s' cta j ir im) s).mem
         out a = s.mem out a := by
   intro L
   induction L with
@@ -1089,8 +1062,7 @@ theorem storeLoop_otherAddr (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt
   | cons j L ih =>
       intro s hno
       rw [List.foldl_cons, ih _ (fun j' hj' => hno j' (List.mem_cons_of_mem j hj'))]
-      show ((WStmt.storeLane out (fun l => oix.eval cta j l ir im) r).run
-              ((compute.elabAt cta j ir im).run s)).mem out a = _
+      show ((compute.run s cta j ir im).storeLanes out (fun l => oix.eval cta j l ir im) r).mem out a = _
       rw [storeLane_otherAddr out _ r _ a (hno j (List.mem_cons_self)),
           congrFun (hcompMem j s) out]
 
@@ -1109,17 +1081,17 @@ theorem storeLoop_otherAddr (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt
 theorem storeLoop_at {R : Type} [NumOps R] [NumLit R] (out : Buf) (r : Nat) (oix : IdxE) (compute : EWStmt)
     (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt R)
     (V : Nat → Lane → R) (A : Nat) (w : R) (keep : List Nat)
-    (hcompMem : ∀ (j : Nat) (s : WSt R), ((compute.elabAt cta j ir im).run s).mem = s.mem)
+    (hcompMem : ∀ (j : Nat) (s : WSt R), (compute.run s cta j ir im).mem = s.mem)
     (hcompKeep : ∀ (j : Nat) (s : WSt R), ∀ r' ∈ keep,
-                  ((compute.elabAt cta j ir im).run s).regs r' = s.regs r')
+                  (compute.run s cta j ir im).regs r' = s.regs r')
     (hcompVal : ∀ (j : Nat) (s : WSt R), (∀ c, c ≠ out → s.mem c = st.mem c) →
                   (∀ r' ∈ keep, s.regs r' = st.regs r') →
-                  ∀ l, ((compute.elabAt cta j ir im).run s).regs r l = V j l) :
+                  ∀ l, (compute.run s cta j ir im).regs r l = V j l) :
     ∀ (L : List Nat) (s : WSt R), (∀ c, c ≠ out → s.mem c = st.mem c) →
       (∀ r' ∈ keep, s.regs r' = st.regs r') →
       (∀ j ∈ L, ∀ l : Lane, oix.eval cta j l ir im = A → V j l = w) →
       ((∃ j ∈ L, ∃ l : Lane, oix.eval cta j l ir im = A) ∨ s.mem out A = w) →
-      (L.foldl (fun s' j => ((storeBody out r oix compute).elabAt cta j ir im).run s') s).mem
+      (L.foldl (fun s' j => (storeBody out r oix compute).run s' cta j ir im) s).mem
           out A = w := by
   intro L
   induction L with
@@ -1133,23 +1105,20 @@ theorem storeLoop_at {R : Type} [NumOps R] [NumLit R] (out : Buf) (r : Nat) (oix
       -- the state after this iteration
       have hc := hcompVal j s hinv hkeep
       have hcm := hcompMem j s
-      have hstep : ((storeBody out r oix compute).elabAt cta j ir im).run s
-          = (WStmt.storeLane out (fun l => oix.eval cta j l ir im) r).run
-              ((compute.elabAt cta j ir im).run s) := rfl
+      have hstep : (storeBody out r oix compute).run s cta j ir im
+          = (compute.run s cta j ir im).storeLanes out (fun l => oix.eval cta j l ir im) r := rfl
       -- other buffers are still the initial ones
       have hinv' : ∀ c, c ≠ out →
-          (((storeBody out r oix compute).elabAt cta j ir im).run s).mem c = st.mem c := by
+          ((storeBody out r oix compute).run s cta j ir im).mem c = st.mem c := by
         intro c hcne
         rw [hstep, storeLane_otherBuf out _ r _ c hcne, hcm]
         exact hinv c hcne
       have hkeep' : ∀ r' ∈ keep,
-          (((storeBody out r oix compute).elabAt cta j ir im).run s).regs r' = st.regs r' := by
+          ((storeBody out r oix compute).run s cta j ir im).regs r' = st.regs r' := by
         intro r' hr'
-        rw [hstep]
-        show ((WStmt.storeLane out _ r).run _).regs r' = _
-        rw [storeLane_regs, hcompKeep j s r' hr']
+        rw [hstep, storeLane_regs, hcompKeep j s r' hr']
         exact hkeep r' hr'
-      show (L.foldl _ (((storeBody out r oix compute).elabAt cta j ir im).run s)).mem out A = _
+      show (L.foldl _ ((storeBody out r oix compute).run s cta j ir im)).mem out A = _
       refine ih _ hinv' hkeep' (fun j' hj' l hl => hall j' (by simp [hj']) l hl) ?_
       by_cases hlater : ∃ j' ∈ L, ∃ l : Lane, oix.eval cta j' l ir im = A
       · exact Or.inl hlater
@@ -1158,10 +1127,9 @@ theorem storeLoop_at {R : Type} [NumOps R] [NumLit R] (out : Buf) (r : Nat) (oix
       by_cases hnow : ∃ l : Lane, oix.eval cta j l ir im = A
       · obtain ⟨l0, hl0⟩ := hnow
         rw [hstep]
-        have : ((WStmt.storeLane out (fun l => oix.eval cta j l ir im) r).run
-                  ((compute.elabAt cta j ir im).run s)).mem out
+        have : ((compute.run s cta j ir im).storeLanes out (fun l => oix.eval cta j l ir im) r).mem out
                     (oix.eval cta j l0 ir im)
-              = ((compute.elabAt cta j ir im).run s).regs r l0 :=
+              = (compute.run s cta j ir im).regs r l0 :=
           storeLane_at out (fun l => oix.eval cta j l ir im) r _ l0
             (fun l h => by
             have hb : oix.eval cta j l ir im = oix.eval cta j l0 ir im := h
@@ -1200,31 +1168,30 @@ theorem warpReduceMaxE_idxFree : warpReduceMaxE.IdxFree := by decide
     barriers the hand-written kernel needed. -/
 theorem warpReduceMaxE_spec (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) :
-    (((warpReduceMaxE.elabAt cta i ir im)).run st).regs 0
+    (warpReduceMaxE.run st cta i ir im).regs 0
       = bflyFoldOp (fun a b => NumOps.max a b) (st.regs 0) :=
   warpReduceOp_spec 0 1 (by decide) (.maxW (.reg 0) (.reg 1))
-    (fun a b => NumOps.max a b) (fun _ _ => rfl) st
+    (fun a b => NumOps.max a b) (fun _ _ => rfl) st cta i ir im
 
 /-- A butterfly touches registers only — memory is untouched, which is what
     lets a reduction sit between two sweeps without disturbing what they read. -/
 theorem warpReduceMaxE_mem (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) :
-    ((warpReduceMaxE.elabAt cta i ir im).run st).mem = st.mem := rfl
+    (warpReduceMaxE.run st cta i ir im).mem = st.mem := rfl
 
 theorem maxStridedBody_mem (b : Buf) (ix : IdxE) (K cta : Nat) (init : Float32)
     (st : WSt R) :
-    (((maxStridedBody b ix K init).elabAt cta 0).run st).mem = st.mem := by
-  show ((WStmt.forN K (fun j => (stepMaxWS b (fun i l => ix.eval cta i l) j))).run
-        ((WStmt.setR 0 (.lit init)).run st)).mem = _
+    ((maxStridedBody b ix K init).run st cta 0).mem = st.mem := by
+  show ((List.range K).foldl (fun s' j => (stepMaxWS b ix).run s' cta j)
+        ((EWStmt.setR 0 (.lit init)).run st cta 0)).mem = _
   have key : ∀ (L : List Nat) (s : WSt R),
-      (L.foldl (fun s' i => (stepMaxWS b (fun i l => ix.eval cta i l) i).run s') s).mem
-        = s.mem := by
+      (L.foldl (fun s' i => (stepMaxWS b ix).run s' cta i) s).mem = s.mem := by
     intro L
     induction L with
     | nil => intro _; rfl
     | cons i L ih =>
         intro s
-        show (L.foldl _ ((stepMaxWS b _ i).run s)).mem = _
+        show (L.foldl _ ((stepMaxWS b ix).run s cta i)).mem = _
         rw [ih _]
         rfl
   exact key (List.range K) _
@@ -1237,15 +1204,13 @@ def maxStrided (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE) (K : Nat)
 
 theorem maxStrided_spec (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (init : Float32) (st : WSt R) :
-    (((maxStrided b ix out oi K init).elabIn cta).run st).mem out
+    ((maxStrided b ix out oi K init).run st cta 0).mem out
         (oi.eval cta 0 ⟨0, by decide⟩)
       = bflyFoldOp (fun a c => NumOps.max a c)
           (maxStridedLane (st.mem b) (fun i l => ix.eval cta i l) K (NumLit.lit init))
           ⟨0, by decide⟩ := by
-  show (((warpReduceMaxE.elabAt cta 0 (fun _ _ => 0) (fun _ _ => 0)).run
-          (((maxStridedBody b ix K init).elabAt cta 0).run st)).store1 out _
-        (((warpReduceMaxE.elabAt cta 0 (fun _ _ => 0) (fun _ _ => 0)).run
-          (((maxStridedBody b ix K init).elabAt cta 0).run st)).regs 0
+  show ((warpReduceMaxE.run ((maxStridedBody b ix K init).run st cta 0) cta 0).store1 out _
+        ((warpReduceMaxE.run ((maxStridedBody b ix K init).run st cta 0) cta 0).regs 0
             ⟨0, by decide⟩)).mem out _ = _
   rw [WSt.mem_store1_same, warpReduceMaxE_spec, maxStridedBody_spec]
 
@@ -1253,23 +1218,23 @@ theorem maxStrided_spec (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
     visibly stand on one theorem. -/
 theorem warpReduceSumE_spec (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) :
-    ((((EWStmt.seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)
-        (.seq (warpRoundE 2) (warpRoundE 1))))).elabAt cta i ir im)).run st).regs 0
+    ((EWStmt.seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)
+        (.seq (warpRoundE 2) (warpRoundE 1))))).run st cta i ir im).regs 0
       = bflyFoldOp (fun a b => NumOps.add a b) (st.regs 0) :=
   warpReduceOp_spec 0 1 (by decide) (.add (.reg 0) (.reg 1))
-    (fun a b => NumOps.add a b) (fun _ _ => rfl) st
+    (fun a b => NumOps.add a b) (fun _ _ => rfl) st cta i ir im
 
 theorem warpReduceSumE_frame (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (r : Nat) (hr : r ≠ 0) (hr' : r ≠ 1) (st : WSt R) :
-    ((((EWStmt.seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)
-        (.seq (warpRoundE 2) (warpRoundE 1))))).elabAt cta i ir im)).run st).regs r
+    ((EWStmt.seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)
+        (.seq (warpRoundE 2) (warpRoundE 1))))).run st cta i ir im).regs r
       = st.regs r :=
-  warpReduceOp_frame 0 1 (.add (.reg 0) (.reg 1)) r hr hr' st
+  warpReduceOp_frame 0 1 (.add (.reg 0) (.reg 1)) r hr hr' st cta i ir im
 
 theorem warpReduceSumE_mem (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt R) :
-    ((((EWStmt.seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)
-        (.seq (warpRoundE 2) (warpRoundE 1))))).elabAt cta i ir im)).run st).mem
+    ((EWStmt.seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)
+        (.seq (warpRoundE 2) (warpRoundE 1))))).run st cta i ir im).mem
       = st.mem := rfl
 
 end Carrier
