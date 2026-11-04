@@ -1081,7 +1081,7 @@ def startWorld : Except String Sem.Mem :=
 /-- The program's functions a corpus run calls: the libraries', each at the
     place its entry point names, as a linked artifact has them. -/
 def libLocals : Sem.Locals :=
-  termLocals (LibSpec.libFnsOf (Link.implOf false)) env 100000000 2
+  termLocals (LibSpec.libFnsOf (Link.implOf)) env 100000000 2
 
 /-- The corpus run through the *compiled* form, so the trace and the bytes can
     be compared against the term's.

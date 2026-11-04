@@ -45,14 +45,13 @@ namespace TokenizerCommon
 
 /-- **Where a host program keeps the tokenizer's working state.**
 
-    Byte offsets into the program's own memory. `htCtx` and `cudaCtx` are the
-    two slots the surrounding program already owns; the rest are this
-    tokenizer's, and a program that wants one has to find room for them. -/
+    Byte offsets into the program's own memory. `htCtx` is the slot the
+    surrounding program already owns; the rest are this tokenizer's, and a
+    program that wants one has to find room for them. The file is read into
+    page-locked memory, so the CUDA driver must be up. -/
 structure TokMem where
   /-- i64: the hash-table context, written by `htInit`. -/
   htCtx : Nat
-  /-- i64: the CUDA context, needed only for the pinned allocation. -/
-  cudaCtx : Nat
   /-- i64: pointer to the field holding the tokenizer file's path. -/
   pathPtr : Nat
   /-- i64: that field's size in bytes (`Sem.readField`). -/
@@ -109,15 +108,13 @@ def MERGE_OFF : Nat := 1040
     "should this pair merge, and how strongly" in one probe. -/
 def loadTokenizerM (c : TokMem) : Prog V L Unit := do
   let ptr ← basePtr
-  let ctxPtr ← load64 (← absAddr ptr c.cudaCtx)
   let pathP ← load64 (← absAddr ptr c.pathPtr)
   let pathC ← load64 (← absAddr ptr c.pathCap)
   let bytes64 ← iconst64 c.fileMaxBytes
-  let pinId ← ffi .cudaPinnedAlloc %[ctxPtr, bytes64]
-  let bufP ← ffi .cudaPinnedPtr %[ctxPtr, pinId]
+  let _ ← ext (.cuda .memAllocHost) %[← absAddr ptr c.bufPtr, bytes64]
+  let bufP ← load64 (← absAddr ptr c.bufPtr)
   let zero64 ← iconst64 0
   let _ ← ext (.base .fileReadToPtr) %[pathP, pathC, bufP, zero64, bytes64]
-  storeI64 bufP (← absAddr ptr c.bufPtr)
   ffiVoid .htInit %[ptr]
   let htCtx ← load64At ptr c.htCtx
   let _ ← ffi .htCreate %[htCtx]

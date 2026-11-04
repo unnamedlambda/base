@@ -230,8 +230,8 @@ def VendorKernel.assumes : VendorKernel → List Law
   -- records that it is the strong kind of nothing.
   | .cublasGemmExBf16                  => []
   | .cublasGemmStridedBatchedExBf16    => []
-  -- What the copy lands is `uploadedValue`, an opaque on the declared trust
-  -- surface, rather than an equation this development states.
+  -- What the copy lands is what the driver model's `cuMemcpyHtoD` moves,
+  -- rather than an equation this development states.
   | .uploadPtr                         => []
   -- A replay performs the *recorded* sequence.  Which stages those are is
   -- proven (`qwen_capture_records_the_run`); that replay performs them is the
@@ -255,7 +255,7 @@ theorem VendorKernel.all_covers : ∀ k : VendorKernel, k ∈ VendorKernel.all :
 /-- **Whether the call is assumed with no stated equation behind it.**
 
     The companion to `assumes`: a kernel with an empty law list is either
-    covered elsewhere (the upload, by `uploadedValue` on the trust surface) or
+    covered elsewhere (the upload, by the driver model's copy) or
     covered nowhere at all.  This distinguishes the two, so a report cannot
     read silence as exactness. -/
 def VendorKernel.lawless : VendorKernel → Bool

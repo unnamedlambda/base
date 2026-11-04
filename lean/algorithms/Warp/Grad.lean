@@ -1,4 +1,6 @@
 module
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
 public import Lean
 public import AlgorithmLib.Surface.Link
 meta import AlgorithmLib.Surface.Link
@@ -15,8 +17,10 @@ public import AlgorithmLib.ML.Math.TapeGrad
 meta import AlgorithmLib.ML.Math.TapeGrad
 public import AlgorithmLib.ML.Ptx.Compile
 meta import AlgorithmLib.ML.Ptx.Compile
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Host.Driver
+meta import AlgorithmLib.Host.Driver
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -95,70 +99,43 @@ theorem grad_geometry : GRID * 32 = LANES ∧ NIN = LANES * G := by decide
 
 -- ── memory layout ───────────────────────────────────────────────────────────
 
-def PTX_OFF   : Nat := 0x0100
+def PTX_OFF   : Nat := 0x0400
 /-- The narrowed kernel's PTX, in its own slot so both can be launched. -/
 def PTX_D_OFF : Nat := 0x18000
-def BIND_OFF  : Nat := 0x30000
-def IN_ID     : Nat := 0x0040
-def OUT_ID    : Nat := 0x0044
 def MEM_SIZE  : Nat := 0x30100
 
 open AlgorithmLib.Prog
 
 
-/-- **The two kernels, as records the launch sites read.**
-
-    Both consume the same pair of buffers over the same geometry and differ
-    only in which PTX they run — which is the point of the pair.  The bind
-    table is written in `load`; each launch takes the arity it declares from
-    `params` here rather than from a number written beside it. -/
-def gradK : AlgorithmLib.Kernel := {
-  name   := "main"
-  params := [{ shape := [.sta NIN],  ro := true,  name := "inBuf" },
-             { shape := [.sta NOUT], ro := false, name := "outBuf" }]
-  geom   := AlgorithmLib.Kernel.Geom.static GRID 1 1 32 1 1
-  ptxOff := PTX_OFF
-  ptxText := some ptx
-}
-
-/-- The same launch, from the narrowed kernel's PTX. -/
-def gradDK : AlgorithmLib.Kernel :=
-  { gradK with ptxOff := PTX_D_OFF, ptxText := some ptxD }
+/-- **The program, in the driver's standard layout**: the inputs' and the
+    outputs' allocations, and the two kernels, both handed them in that order
+    over the same geometry; they differ only in which PTX they run, which is
+    the point of the pair. -/
+def app : Drv.App :=
+  { bufs := [NIN * 4, NOUT * 4],
+    kernels := [⟨PTX_OFF, PTX_D_OFF - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩,
+                ⟨PTX_D_OFF, MEM_SIZE - PTX_D_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩],
+    memSize := MEM_SIZE }
 
 def loadFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  let inBytes ← iconst64 (NIN * 4)
-  let inId ← cudaCreateBuffer ptr inBytes
-  store inId (← absAddr ptr IN_ID)
-  let outBytes ← iconst64 (NOUT * 4)
-  let outId ← cudaCreateBuffer ptr outBytes
-  store outId (← absAddr ptr OUT_ID)
-  let _ ← ffi .cudaUpload %[ctxPtr, inId, dataPtr, inBytes]
-  kernelBindAt gradK ptr BIND_OFF [inId, outId]
+  let base ← basePtr
+  app.setup base
+  app.upload base 0 (← dataPtr) (NIN * 4)
 
 def runFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch gradK ptr BIND_OFF
-  let _ ← cudaSync ptr
+  let base ← basePtr
+  app.run base 0
+  Drv.sync
 
-/-- The same launch, from the narrowed kernel's PTX.  Everything else — the
-    buffers, the binding table, the geometry — is identical, which is the point:
-    only the *program* differs. -/
+/-- The same launch, from the narrowed kernel's PTX. -/
 def runDFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch gradDK ptr BIND_OFF
-  let _ ← cudaSync ptr
+  let base ← basePtr
+  app.run base 1
+  Drv.sync
 
 def fetchFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let outId ← load32 (← absAddr ptr OUT_ID)
-  let outBytes ← iconst64 (NOUT * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, outBytes]
+  let base ← basePtr
+  app.download base (← outPtr) 1 (NOUT * 4)
 
 
 def clifIR : Except String (List FuncData) :=
@@ -169,24 +146,13 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "fetch" (Prog.compileProg 3 fetchFnCode),
      Prog.entry "runD" (Prog.compileProg 4 runDFnCode)]
 
-def initialMemory : List UInt8 :=
-  let ptxBytes := AlgorithmLib.Kernel.ptxBytes gradK
-  let ptxDBytes := AlgorithmLib.Kernel.ptxBytes gradDK
-  zeros PTX_OFF ++ ptxBytes ++ zeros (PTX_D_OFF - PTX_OFF - ptxBytes.length)
-    ++ ptxDBytes ++ zeros (MEM_SIZE - PTX_D_OFF - ptxDBytes.length)
+def initialMemory : List UInt8 := app.initialMemory [ptx, ptxD]
 
-/-- **The whole map, not the interesting part of it.**
-
-    The context slots and the buffer-id words are live offsets this file
-    writes; a map that omits them cannot see a collision involving them, and
-    the check reads as if it had. -/
+/-- **The whole map, not the interesting part of it.** -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"in_id",      IN_ID, 4⟩,
-   ⟨"out_id",     OUT_ID, 4⟩,
-   ⟨"ptx",        PTX_OFF, PTX_D_OFF - PTX_OFF⟩,
-   ⟨"ptxD",       PTX_D_OFF, BIND_OFF - PTX_D_OFF⟩,
-   ⟨"bind",       BIND_OFF, 8⟩]
+  [⟨"driver", 0, app.stateEnd⟩,
+   ⟨"ptx",    PTX_OFF, PTX_D_OFF - PTX_OFF⟩,
+   ⟨"ptxD",   PTX_D_OFF, MEM_SIZE - PTX_D_OFF⟩]
 
 
 #eval LayoutScan.check "Warp.Grad" [``memMap]
@@ -195,7 +161,12 @@ theorem gradMap_ok :
 
 theorem gradPtx_fits :
     (ptx.toUTF8.toList.length + 1 ≤ PTX_D_OFF - PTX_OFF)
-      ∧ (ptxD.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_D_OFF) := by native_decide
+      ∧ (ptxD.toUTF8.toList.length + 1 ≤ MEM_SIZE - PTX_D_OFF) := by native_decide
+
+/-- The signature the entry points' typestates state of both kernels. -/
+theorem grad_sigs :
+    HProg.Sem.ptxParamSizes ptx "main" = some [8, 8] ∧ HProg.Sem.ptxParamSizes ptxD "main" = some [8, 8] := by
+  native_decide
 
 def setup (clif : List FuncData) : Artifact := {
   functions := clif

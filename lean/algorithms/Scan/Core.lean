@@ -49,9 +49,9 @@ def nativeDecideOpaque : List Name := [`Lean.reduceBool]
 
 /-- **Hypotheses a claim still carries.**
 
-    A scan of axioms and opaques says nothing about these, and that is the hole
-    that let `SmMeta` sit undischarged: `theorem foo (h : P) : Q` is trivially
-    true when `P` is unsatisfiable, and no closure walk can see it.  This
+    A scan of axioms and opaques says nothing about these: `theorem foo (h : P)
+    : Q` is trivially true when `P` is unsatisfiable, and no closure walk can
+    see it.  This
     reports the Prop-valued binders of each claim's *type*, so an assumption
     cannot be added silently. -/
 private partial def hypsGo (e : Expr) (acc : Array Expr) : MetaM (Array Expr) := do

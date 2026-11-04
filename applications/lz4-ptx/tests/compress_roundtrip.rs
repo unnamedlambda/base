@@ -58,6 +58,8 @@ fn check_artifact(artifact: &[u8], block: usize, num_blk: usize) {
 
     let art = Artifact::from_bytes(artifact).expect("the build checked this artifact");
     let base = Driver::load(art).expect("compile");
+    // The driver, the allocation and the kernel, made once.
+    unsafe { base.execute("load", &[], &mut []) }.expect("load");
 
     let len_off = block + block / 16 + 256;
     let out_stride = len_off + 8;

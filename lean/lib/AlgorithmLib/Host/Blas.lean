@@ -126,8 +126,8 @@ def sgemvUnstated (m n lda incx incy : UInt64) : Bool :=
 def sgemvLens (trans m n : UInt64) : Nat × Nat :=
   if asI32 trans != 0 then ((asI32 m).toNat, (asI32 n).toNat) else ((asI32 n).toNat, (asI32 m).toNat)
 
-/-- `y = α op(A) x + β y`, the oracle's `sgemv`, which reads each operand from
-    the start of its allocation. -/
+/-- `y = α op(A) x + β y`, the oracle's `sgemv`, which reads each operand
+    packed from where it lies in its allocation. -/
 def sgemvCall (w : World) (h trans m n pa A lda x incx pb y incy : UInt64) :
     Option (Option V × World) := do
   let d := w.dev
@@ -138,11 +138,13 @@ def sgemvCall (w : World) (h trans m n pa A lda x incx pb y incy : UInt64) :
     let (ia, oa) ← d.operand? A 4 ((asI32 m).toNat * (asI32 n).toNat)
     let (ix, ox) ← d.operand? x 4 (sgemvLens trans m n).1
     let (iy, oy) ← d.operand? y 4 (sgemvLens trans m n).2
-    if oa != 0 || ox != 0 || oy != 0 || iy == ia || iy == ix then none
+    -- an output sharing an allocation with an input is not modelled
+    if iy == ia || iy == ix then none
     else do
       let alpha ← w.mem.load pa 4
       let beta ← w.mem.load pb 4
-      let c : VendorCall := ⟨"sgemv", [trans, m, n, alpha, beta]⟩
+      let c : VendorCall := ⟨"sgemv", [trans, m, n, alpha, beta, UInt64.ofNat oa, UInt64.ofNat ox,
+        UInt64.ofNat oy]⟩
       devOnly w (do cuRes (← d.devOp w p (.vendor c [ia, ix, iy] iy) [ia, ix, iy] [iy]) blasOk)
 
 /-- `CUDA_R_16BF`, `CUDA_R_32F`, `CUBLAS_COMPUTE_32F`, and the two default

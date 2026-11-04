@@ -33,8 +33,8 @@ import all Init.Data.List.Sort.Basic
   and `valOnly` (genuinely semantic, and the only place a real judgement is
   needed).
 
-  Nothing here is specific to a model or a kernel.  The leverage is that the
-  eleven Qwen2 kernels stop needing eleven frame proofs.
+  Nothing here is specific to a model or a kernel.  The leverage is that a
+  model's kernels stop needing one frame proof each.
 -/
 
 namespace AlgorithmLib.ML

@@ -19,8 +19,8 @@ open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
   The other half of a layer. Where the experts needed a new instruction set —
   nibbles, shifts, an assembled `Float32` — attention needs none: it is
   reductions, a rotation and a gather, which is exactly what `ML/` proves
-  kernels in. So these are written as `EWStmt` and carry the same soundness
-  theorems the Qwen2 decode kernels do, one line each.
+  kernels in. So these are written as `EWStmt` and carry the soundness
+  theorems every `EWStmt` kernel does, one line each.
 
   Three things here are not in that stack, and each is small:
 
@@ -46,7 +46,7 @@ open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 
   ## RoPE and the tables
 
-  The rotation is Qwen2's kernel at this geometry. YaRN changes which angles
+  The rotation is the standard RoPE kernel at this geometry. YaRN changes which angles
   the table holds and nothing about how they are applied, so the scaling is the
   converter's business — it is arithmetic on the host, done once — and the
   kernel reads a table either way.
@@ -341,7 +341,7 @@ theorem kvStore_writes (base hd : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
 
 /-! ## Softmax with a sink
 
-    Qwen2's dynamic-length softmax, which reads its trip counts from integer
+    A dynamic-length softmax, which reads its trip counts from integer
     memory so that one emitted kernel serves every sequence length, plus the
     sink. Buffer `3` holds one learned logit per query head and the block *is*
     the query head, so the sink's address is the block index and nothing else.

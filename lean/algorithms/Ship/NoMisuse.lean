@@ -1,6 +1,6 @@
 import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
-import Host.StaticChecks
+import AlgorithmLib.Check.Entry
 import Demo.ByteCount
 import Demo.ByteScrub
 import Bench.ClampSum

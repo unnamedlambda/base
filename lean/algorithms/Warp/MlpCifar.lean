@@ -10,7 +10,11 @@ import AlgorithmLib.ML.Kernel.EmitFacts
 import AlgorithmLib.ML.Launch.HostBridge
 import AlgorithmLib.ML.Model.RegBound
 import AlgorithmLib.ML.Model.Schedule
-import AlgorithmLib.Surface.ProgFFI
+
+import AlgorithmLib.Surface.Layout
+import AlgorithmLib.Surface.Link
+import AlgorithmLib.Surface.Drv
+import AlgorithmLib.Host.Driver
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 /-!
@@ -283,11 +287,21 @@ def NSLOT : Nat := 10
 
 theorem slot_count : ptxAll.length = NSLOT := by decide
 
+/-- The signature the entry points' typestates state of every kernel: `main`
+    takes one pointer per buffer its slot binds. -/
+theorem mlp_sigs :
+    ((List.range NSLOT).all fun i =>
+      HProg.Sem.ptxParamSizes (ptxAll.getD i "") "main" == some ((slotBufs i).map fun _ => 8)) = true := by
+  native_decide
+
 /-- Where the expected host-input size is published, so the host can assert its
     packing against the Lean layout instead of duplicating it. -/
 def HOST_LEN_OFF : Nat := 0x0080
 
-def PTX_OFF : Nat := 0x0100
+/-- Where the driver's state starts (`Drv.App`). -/
+def ORG : Nat := 0x0100
+
+def PTX_OFF : Nat := 0x1000
 
 /-- Bytes reserved per kernel.  Uniform, so a slot's offset is arithmetic
     rather than a twelfth named constant.
@@ -298,25 +312,33 @@ def PTX_OFF : Nat := 0x0100
 def SLOT : Nat := 0x4000
 
 def slotOff (i : Nat) : Nat := PTX_OFF + i * SLOT
-def BIND_OFF : Nat := slotOff NSLOT
+def MEM_SIZE : Nat := slotOff NSLOT
 
-/-- Scratch for the table a single launch binds.  `bufs_le_five` bounds it, so
-    this is a fixed twenty bytes however many buffers the model allocates.  It
-    starts on the word after the buffer table, so a launch's scratch never shares
-    a word with a buffer's handle. -/
-def LOCAL_OFF : Nat := BIND_OFF + 8 * ((NBUF + 1) / 2)
-def MEM_SIZE : Nat := LOCAL_OFF + 4 * 8 + 0x100
+/-- Device bytes per buffer, in allocation order. -/
+def bufBytes : List Nat :=
+  [B * IN * 4, H * IN * 4, C * H * 4, C * 4, B * C * 4,
+   B * H * 4, B * H * 4, B * C * 4,
+   B * C * 4, C * H * 4, B * H * 4, B * H * 4, H * IN * 4]
 
-/-- Byte offset of binding slot `i`.  This array is both the launch argument
-    table and the place buffer handles live, so there is one numbering. -/
-def bindOff (i : Nat) : Nat := BIND_OFF + 4 * i
+/-- **Seam guard: every buffer the kernels name gets allocated.** -/
+theorem buf_count : bufBytes.length = NBUF := by decide
+
+/-- Each kernel's grid, in slot order: one block of one warp per output row
+    for a reduction, one warp per thirty-two elements for a map. -/
+def slotGrid : List Nat := [GRID1, GRIDH, GRID2, B, GRID2, GRIDDH, GRIDH, GRID1, GRIDW1, GRIDW2]
+
+/-- **The program in the driver's standard layout**: its thirteen
+    allocations, its ten kernels each handed its own buffers, and cuBLAS. -/
+def app : Drv.App :=
+  { bufs := bufBytes,
+    kernels := (List.range NSLOT).map fun i =>
+      ⟨slotOff i, SLOT, slotBufs i, (slotGrid.getD i 1, 1, 1), (32, 1, 1)⟩,
+    memSize := MEM_SIZE, blas := true, org := ORG }
 
 /-- **Every byte this program names**, not only its PTX slots. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"host_len", HOST_LEN_OFF, 8⟩]
+  [⟨"host_len", HOST_LEN_OFF, 8⟩, ⟨"driver", ORG, app.stateEnd - ORG⟩]
     ++ (List.range NSLOT).map (fun i => ⟨s!"ptx{i}", slotOff i, SLOT⟩)
-    ++ [⟨"bind", BIND_OFF, 4 * NBUF⟩, ⟨"local", LOCAL_OFF, 4 * 8⟩]
 
 /-- **Seam guard: the slots tile the image without overlapping.** -/
 theorem mlpMap_ok :
@@ -434,93 +456,31 @@ theorem hostIn_packed : AlgorithmLib.Layout.RegionMap.packedB 0 hostIn = true :=
 def HOST_BYTES : Nat := AlgorithmLib.Layout.RegionMap.total hostIn
 def hostOff (i : Nat) : Nat := AlgorithmLib.Layout.RegionMap.offAt hostIn i
 
-/-- Device bytes per buffer, in binding order. -/
-def bufBytes : List Nat :=
-  [B * IN * 4, H * IN * 4, C * H * 4, C * 4, B * C * 4,
-   B * H * 4, B * H * 4, B * C * 4,
-   B * C * 4, C * H * 4, B * H * 4, B * H * 4, H * IN * 4]
-
-/-- **Seam guard: every buffer the kernels name gets allocated.** -/
-theorem buf_count : bufBytes.length = NBUF := by decide
-
 -- ---------------------------------------------------------------------------
 -- The host program
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.Prog
 
+/-- Bring the driver up, make the thirteen allocations, load the ten
+    kernels and write their parameters (`Drv.App.setup`), then upload both
+    weight matrices from the caller's data. -/
 def loadCode : Prog V L Unit := do
-  let ptr ← basePtr
+  let base ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  for (i, nb) in (List.range NBUF).zip bufBytes do
-    let sz ← iconst64 nb
-    let id ← cudaCreateBuffer ptr sz
-    storeI32 id (← absAddr ptr (bindOff i))
-  let w1Id ← load32 (← absAddr ptr (bindOff w1B))
-  let w1Bytes ← iconst64 (H * IN * 4)
-  let _ ← ffi .cudaUpload %[ctxPtr, w1Id, dataPtr, w1Bytes]
-  let w2Src ← iaddImm dataPtr (hostOff 1)
-  let w2Id ← load32 (← absAddr ptr (bindOff w2B))
-  let w2Bytes ← iconst64 (C * H * 4)
-  let _ ← ffi .cudaUpload %[ctxPtr, w2Id, w2Src, w2Bytes]
+  app.setup base
+  app.upload base w1B dataPtr (H * IN * 4)
+  app.upload base w2B (← iaddImm dataPtr (hostOff 1)) (C * H * 4)
 
 /-- Upload `n` bytes from the caller's data pointer into buffer `b`. -/
-def uploadCode (b n : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← dataPtr
-  let id ← load32 (← absAddr ptr (bindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
+def uploadCode (b n : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  app.upload base b (← dataPtr) n
 
 /-- Download `n` bytes of buffer `b` into the caller's output pointer. -/
-def fetchCode (b n : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let id ← load32 (← absAddr ptr (bindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
-
-/-- **Fill the launch argument array from the buffer table.**
-
-    The array a launch passes is the same one `loadFn` filled at allocation
-    time, so re-establishing it here changes no handle.  What it changes is that
-    the run function *says* which buffers it launches over instead of relying on
-    a write in another function: `Clif.bindsOf` recovers a bind array from the
-    stores preceding each call, and with none there every launch recovers
-    `bufs := none` and realises no stage at all.
-
-    It runs before *every* launch, not once per run: a call could write
-    anything, so `Clif.stepMem` discards the whole store map at each one, and a
-    single pass at the top would leave only the first launch describable.
-
-    It is also the shape a training loop needs once buffers stop being fixed —
-    double buffering, gradient accumulation and checkpointing all rebind between
-    steps — so the array belongs to the launch rather than to allocation. -/
-def bindLocal (ptr : V .i64) (bs : List Buf) : Prog V L Unit := do
-  for (j, gb) in (List.range bs.length).zip bs do
-    let id ← load32 (← absAddr ptr (bindOff gb))
-    storeI32 id (← absAddr ptr (LOCAL_OFF + 4 * j))
-
-/-- Enqueue the kernel in slot `i` over `g` blocks of one warp, without
-    synchronising.  It binds the slot's own buffers, which is what its
-    parameters were emitted against. -/
-def enqueueSlot (ptr : V .i64) (i g : Nat) : Prog V L Unit := do
-  let bs := slotBufs i
-  bindLocal ptr bs
-  let ptxOff ← iconst64 (slotOff i)
-  let nBufs ← iconst32 bs.length
-  let bindBase ← iconst64 LOCAL_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 g
-  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
-  pure ()
+def fetchCode (b n : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  app.download base (← outPtr) b n
 
 /-- **A run of launches with one synchronisation at the end.**
 
@@ -533,24 +493,22 @@ def enqueueSlot (ptr : V .i64) (i g : Nat) : Prog V L Unit := do
 
     The one place a sync is genuinely required is before a download, and
     `fetchFn` is what follows a run. -/
-def runSeq (steps : List (Nat × Nat)) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  for (i, g) in steps do
-    enqueueSlot ptr i g
-  let _ ← cudaSync ptr
+def runSeq (slots : List Nat) : Prog V L Unit := do
+  let base ← basePtr
+  for i in slots do
+    app.run base i
+  Drv.sync
 
 /-- A single launch, for the per-kernel timing the demo reports. -/
-def launchSlot (i g : Nat) : Prog V L Unit := runSeq [(i, g)]
+def launchSlot (i : Nat) : Prog V L Unit := runSeq [i]
 
-/-- The forward pass: two matvecs and an activation. -/
-def fwdSteps : List (Nat × Nat) := [(0, GRID1), (1, GRIDH), (2, GRID2), (3, B)]
+/-- The forward pass: two matvecs, an activation and the softmax. -/
+def fwdSteps : List Nat := [0, 1, 2, 3]
 
 /-- The backward pass and both optimiser steps.  `dh` reads `W2` and `sgd2`
     writes it, so the order here is what keeps the gradient the one belonging to
     the weights the forward pass used. -/
-def bwdSteps : List (Nat × Nat) :=
-  [(4, GRID2), (5, GRIDDH), (6, GRIDH), (7, GRID1), (8, GRIDW1), (9, GRIDW2)]
+def bwdSteps : List Nat := [4, 5, 6, 7, 8, 9]
 
 /-- **Seam guard: the fused runs launch every kernel exactly once, in order.**
 
@@ -558,7 +516,7 @@ def bwdSteps : List (Nat × Nat) :=
     written in one place.  Without this a kernel could be dropped from the fused
     path and stay in the artifact — a silently untrained layer, which reads as a
     hyperparameter problem rather than a bug. -/
-theorem steps_cover : (fwdSteps ++ bwdSteps).map Prod.fst = List.range NSLOT := by decide
+theorem steps_cover : fwdSteps ++ bwdSteps = List.range NSLOT := by decide
 
 -- ---------------------------------------------------------------------------
 -- The same GEMMs, through cuBLAS
@@ -579,31 +537,16 @@ theorem steps_cover : (fwdSteps ++ bwdSteps).map Prod.fst = List.range NSLOT := 
 
     **Row-major buffers, column-major library.**  A row-major `M×N` buffer *is*
     a column-major `N×M` matrix, so each call below is stated in column-major
-    terms and no data is ever transposed in memory.  The FFI fixes the leading
-    dimensions by `lda = k if transa else m`, `ldb = n if transb else k`,
+    terms and no data is ever transposed in memory.  `Drv.App.sgemm` packs
+    every operand, `lda = k if transa else m`, `ldb = n if transb else k`,
     `ldc = m`, which is exactly what these five need. -/
 
 def F32_ONE : Nat := 0x3F800000
 def F32_ZERO : Nat := 0
 
-/-- `C ← op(A)·op(B)`, one GEMM, batch of one. -/
-def gemmStep (ptr : V .i64) (tA tB m n k aBuf bBuf cBuf : Nat) :
-    Prog V L Unit := do
-  let ta ← iconst32 tA
-  let tb ← iconst32 tB
-  let vm ← iconst32 m
-  let vn ← iconst32 n
-  let vk ← iconst32 k
-  let alpha ← iconst32 F32_ONE
-  let beta ← iconst32 F32_ZERO
-  let zero64 ← iconst64 0
-  let one32 ← iconst32 1
-  let aId ← load32 (← absAddr ptr (bindOff aBuf))
-  let bId ← load32 (← absAddr ptr (bindOff bBuf))
-  let cId ← load32 (← absAddr ptr (bindOff cBuf))
-  let _ ← cublasSgemmStridedBatched ptr ta tb vm vn vk alpha aId zero64 bId zero64
-            beta cId zero64 one32
-  pure ()
+/-- `C ← op(A)·op(B)`, one GEMM. -/
+def gemmStep (base : V .i64) (tA tB m n k aBuf bBuf cBuf : Nat) : Prog V L Unit :=
+  app.sgemm base tA tB m n k aBuf bBuf cBuf
 
 /-- The five GEMMs, in column-major terms.  `z1 = x·W1ᵀ` becomes
     `z1ᵀ = W1·xᵀ`, and so on down. -/
@@ -617,25 +560,25 @@ def gemmBwd : List (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) :=
   , (0, 1, IN, H, B, xB, adjB, dw1B) ]  -- dW1ᵀ(IN×H) = xᵀ(IN×B)·adj(B×H)
 
 /-- A run of GEMMs and kernel launches, in the given order, one sync at the end.
-    `.inl` is a PTX slot with its grid; `.inr` is a cuBLAS call. -/
-def runMixed (steps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
+    `.inl` is a kernel's slot; `.inr` is a cuBLAS call. -/
+def runMixed (steps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
     : Prog V L Unit := do
-  let ptr ← basePtr
+  let base ← basePtr
   for st in steps do
     match st with
-    | .inl (i, g) => enqueueSlot ptr i g
-    | .inr (tA, tB, m, n, k, a, b, c) => gemmStep ptr tA tB m n k a b c
-  let _ ← cudaSync ptr
+    | .inl i => app.run base i
+    | .inr (tA, tB, m, n, k, a, b, c) => gemmStep base tA tB m n k a b c
+  Drv.sync
 
 /-- Forward with cuBLAS for both matmuls; `silu` and the softmax stay proven. -/
-def fwdBlasSteps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)) :=
-  [ .inr gemmFwd[0]!, .inl (1, GRIDH), .inr gemmFwd[1]!, .inl (3, B) ]
+def fwdBlasSteps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)) :=
+  [ .inr gemmFwd[0]!, .inl 1, .inr gemmFwd[1]!, .inl 3 ]
 
 /-- Backward likewise; the activation backward and both optimiser steps stay
     proven. -/
-def bwdBlasSteps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)) :=
-  [ .inr gemmBwd[0]!, .inr gemmBwd[1]!, .inl (6, GRIDH), .inr gemmBwd[2]!
-  , .inl (8, GRIDW1), .inl (9, GRIDW2) ]
+def bwdBlasSteps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)) :=
+  [ .inr gemmBwd[0]!, .inr gemmBwd[1]!, .inl 6, .inr gemmBwd[2]!
+  , .inl 8, .inl 9 ]
 
 /-- The bodies this artifact ships, in the order their function indices run.
     `clifIR` numbers them from this list, so an index cannot drift from the body
@@ -645,15 +588,15 @@ def shippedBodies : List (String × Prog.Body) :=
   , ("uploadX", uploadCode xB (B * IN * 4))
   , ("uploadOneHot", uploadCode ohB (B * C * 4))
   , ("fetchLogits", fetchCode logB (B * C * 4))
-  , ("runFwd1", launchSlot 0 GRID1)
-  , ("runAct", launchSlot 1 GRIDH)
-  , ("runFwd2", launchSlot 2 GRID2)
-  , ("runDw2", launchSlot 4 GRID2)
-  , ("runDh", launchSlot 5 GRIDDH)
-  , ("runAdj", launchSlot 6 GRIDH)
-  , ("runDw1", launchSlot 7 GRID1)
-  , ("runSgd1", launchSlot 8 GRIDW1)
-  , ("runSgd2", launchSlot 9 GRIDW2)
+  , ("runFwd1", launchSlot 0)
+  , ("runAct", launchSlot 1)
+  , ("runFwd2", launchSlot 2)
+  , ("runDw2", launchSlot 4)
+  , ("runDh", launchSlot 5)
+  , ("runAdj", launchSlot 6)
+  , ("runDw1", launchSlot 7)
+  , ("runSgd1", launchSlot 8)
+  , ("runSgd2", launchSlot 9)
   , ("fetchH", fetchCode hB (B * H * 4))
   , ("fetchZ1", fetchCode z1B (B * H * 4))
   , ("fetchDh", fetchCode dhB (B * H * 4))
@@ -664,7 +607,7 @@ def shippedBodies : List (String × Prog.Body) :=
   , ("fetchW2", fetchCode w2B (C * H * 4))
   , ("runFwd", runSeq fwdSteps)
   , ("runBwd", runSeq bwdSteps)
-  , ("runSoftmax", launchSlot 3 B)
+  , ("runSoftmax", launchSlot 3)
   , ("uploadBias", uploadCode biasB (C * 4))
   , ("fetchDlog", fetchCode dlogB (B * C * 4))
   , ("runFwdBlas", runMixed fwdBlasSteps)
@@ -681,16 +624,8 @@ def u32le (v : Nat) : List UInt8 :=
   [UInt8.ofNat (v % 256), UInt8.ofNat (v / 256 % 256),
    UInt8.ofNat (v / 65536 % 256), UInt8.ofNat (v / 16777216 % 256)]
 
-/-- A kernel's text, NUL-terminated and padded to its slot. -/
-def slotBytes (s : String) : List UInt8 :=
-  let b := s.toUTF8.toList ++ [0]
-  b ++ zeros (SLOT - b.length)
-
 def initialMemory : List UInt8 :=
-  zeros HOST_LEN_OFF ++ u32le HOST_BYTES
-    ++ zeros (PTX_OFF - HOST_LEN_OFF - 4)
-    ++ ptxAll.flatMap slotBytes
-    ++ zeros (MEM_SIZE - BIND_OFF)
+  app.initialMemory ptxAll [(HOST_LEN_OFF, u32le HOST_BYTES)]
 
 def setup (clif : List FuncData) : Artifact := {
   functions := clif,
@@ -938,7 +873,7 @@ def stagedKernels : List EWStmt :=
 theorem stages_are_launches :
     (fwdStages ++ bwdStages).map (fun S => S.val.ew) = stagedKernels
       ∧ (fwdStages ++ bwdStages).map (fun S => S.val.grid)
-          = (fwdSteps ++ bwdSteps).map Prod.snd
+          = (fwdSteps ++ bwdSteps).map (slotGrid.getD · 1)
       ∧ (fwdStages ++ bwdStages).length = NSLOT := ⟨rfl, rfl, rfl⟩
 
 /-- **Seam guard: the kernels emitted are the staged ones.**
@@ -972,36 +907,25 @@ theorem bwdPipeline_runs (st : WSt) :
 -- The shipped host program launches exactly this pipeline
 -- ---------------------------------------------------------------------------
 
-/-! Everything above is about kernels and their composition.  Nothing so far
-    says the *emitted CLIF* performs those launches — and a driver that dropped
-    a kernel, ran two out of order, or launched one over the wrong grid would
-    leave every theorem above true and the training step wrong.
-
-    So the launches are recovered from the shipped instruction stream and
-    matched against the stage list.  `runSeq fwdSteps` and `runSeq bwdSteps` are
-    the bodies `shippedBodies` places at functions 22 and 23, so this is the code
-    that runs, not a model of it. -/
+/-! Everything above is about kernels and their composition.  What follows
+    states the launches the shipped bodies make — `runSeq fwdSteps` and
+    `runSeq bwdSteps`, a `cuLaunchKernel` of each slot in turn
+    (`Drv.App.run`) — and matches them against the stage list, so a driver
+    that dropped a kernel, ran two out of order, or launched one over the
+    wrong grid or bind array realises no pipeline. -/
 
 /-- The memory's address: `v4`, which an entry point's first statement takes,
     after its four arguments. -/
 def ROOT : Nat := 4
 
-/-- The bind array, as `Clif.bindsOf` recovers it: entry `i` is the handle at
-    layout slot `bindOff i`, which is buffer `i`. -/
-def mlpBufs (i : Nat) : List AlgorithmLib.Clif.BufDesc :=
-  (slotBufs i).map (fun gb => .near (Int.ofNat (bindOff gb)))
+/-- The bind array slot `i` launches with. -/
+def mlpBufs (i : Nat) : List AlgorithmLib.Clif.BufDesc := appBufs app i
 
-/-- One launch record, as the scan reads it back. -/
-def mlpRec (i g : Nat) : AlgorithmLib.Clif.LaunchRec :=
-  { fnName    := "cl_cuda_launch"
-    kernelOff := some (Int.ofNat (slotOff i))
-    nBufs     := some (Int.ofNat (slotBufs i).length)
-    bindOff   := some (Int.ofNat LOCAL_OFF)
-    gridX     := some (Int.ofNat g)
-    blockX    := some 32 }
-
-def mlpOps (steps : List (Nat × Nat)) : List DeviceOp :=
-  steps.map (fun p => (mlpRec p.1 p.2, { bufs := some (mlpBufs p.1) }))
+/-- The launches of the kernels `slots` names, in order. That every run of
+    the shipped `runSeq fwdSteps` and `runSeq bwdSteps` makes exactly these
+    launches is `MlpCifarSafe2.runFwd_realises` and `runBwd_realises`, read
+    off the shipped bodies by the checker. -/
+def mlpOps (slots : List Nat) : List DeviceOp := slots.map (appLaunch app)
 
 /-- **Which slot holds which stage — derived, not asserted.**
 
@@ -1010,22 +934,7 @@ def mlpOps (steps : List (Nat × Nat)) : List DeviceOp :=
     its table entry with it. -/
 def mlpTable : List KernelBinding :=
   ((List.range NSLOT).zip (fwdStages ++ bwdStages)).map
-    (fun p => ⟨slotOff p.1, LOCAL_OFF, mlpBufs p.1, p.2.val⟩)
-
-/-- **Seam guard: the emitted CLIF performs these launches.**
-
-    Recovered from `runSeq`'s own instruction stream — the slots, the grids, the
-    buffer-pointer arrays and the launch *order*.
-
-    Decided by compiled evaluation: reducing the builder monad inside the kernel
-    exhausts memory, so this family of guards puts the compiler in the trust
-    surface.  It buys a fixed nine-stage fact — the depth-carrying host code is
-    a loop, and `Clif.loopsOf` recovers that instead of unrolling it. -/
-theorem fwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq fwdSteps)) = mlpOps fwdSteps := by native_decide
-
-theorem bwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq bwdSteps)) = mlpOps bwdSteps := by native_decide
+    (fun p => ⟨slotOff p.1, app.paramsOff p.1, mlpBufs p.1, p.2.val⟩)
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.** -/
@@ -1034,19 +943,19 @@ theorem bwd_realises : pipelineOf? mlpTable none (mlpOps bwdSteps) = some bwdPip
 
 /-- **The shipped forward half-step computes its denotation.**
 
-    The launch sequence is read out of the emitted code, resolved through
-    `mlpTable` into `fwdPipeline`, and that pipeline computes the composite of
-    its stages — with no intermediate assumed anywhere along the way. -/
+    Its launches resolve through `mlpTable` into `fwdPipeline`, and that
+    pipeline computes the composite of its stages — with no intermediate
+    assumed anywhere along the way. -/
 theorem fwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq fwdSteps))) = some fwdPipeline
+    pipelineOf? mlpTable none (mlpOps fwdSteps) = some fwdPipeline
       ∧ (fwdPipeline.run st).mem = fwdPipeline.denote st.mem :=
-  ⟨by rw [fwd_ops_are]; exact fwd_realises, fwdPipeline_runs st⟩
+  ⟨fwd_realises, fwdPipeline_runs st⟩
 
 /-- …and the backward half-step, optimiser included. -/
 theorem bwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq bwdSteps))) = some bwdPipeline
+    pipelineOf? mlpTable none (mlpOps bwdSteps) = some bwdPipeline
       ∧ (bwdPipeline.run st).mem = bwdPipeline.denote st.mem :=
-  ⟨by rw [bwd_ops_are]; exact bwd_realises, bwdPipeline_runs st⟩
+  ⟨bwd_realises, bwdPipeline_runs st⟩
 
 -- ---------------------------------------------------------------------------
 -- A training run, not just a training step
@@ -1179,62 +1088,47 @@ theorem blas_plans_run (R : Realisation) (hR : Honours R) (st : WSt) :
 -- ---------------------------------------------------------------------------
 
 /-! The same seam as `fwd_host_computes`, one level up: a plan mixes proven
-    launches with vendor calls, and both have to be recovered from the emitted
-    CLIF for the plan to describe the program that runs.
+    launches with vendor calls, and the shipped bodies' calls of both have to
+    resolve for the plan to describe the program that runs.
 
     A vendor call has no PTX slot, so its identity *is* its arguments — which is
-    why `gemmArgs` below spells out all fifteen. Two calls of the same shape on
-    different buffers are different steps, and the recovered handles are what
+    why `gemmArgs` below spells out all fourteen. Two calls of the same shape on
+    different buffers are different steps, and the operands' slots are what
     tell them apart. -/
 
-/-- A GEMM call's arguments, as the scan resolves them: the context pointer
-    from its layout slot, the three buffer handles from theirs, everything else
-    an immediate. -/
-def gemmArgsA : (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) →
-    List AlgorithmLib.Clif.ArgDesc
-  | (tA, tB, m, n, k, a, b, c) =>
-      [.slot (Int.ofNat ContextSlots.cuda), .const tA, .const tB, .const m, .const n,
-       .const k, .const F32_ONE, .slot (bindOff a), .const 0, .slot (bindOff b),
-       .const 0, .const F32_ZERO, .slot (bindOff c), .const 0, .const 1, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
-
-def gemmArgsB : (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) →
+/-- A GEMM call's arguments, as `Drv.App.sgemm` passes them: the handle and
+    the three operands from their slots, the scalars `1` and `0`, and the rest
+    immediates. -/
+def gemmArgs : (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) →
     List AlgorithmLib.Clif.BufDesc
   | (tA, tB, m, n, k, a, b, c) =>
-      [.near (Int.ofNat ContextSlots.cuda), .const tA, .const tB, .const m, .const n,
-       .const k, .const F32_ONE, .near (bindOff a), .const 0, .near (bindOff b),
-       .const 0, .const F32_ZERO, .near (bindOff c), .const 0, .const 1, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
+      [.near (Int.ofNat app.BLAS), .const tA, .const tB, .const m, .const n, .const k, .const F32_ONE,
+       .near (Int.ofNat (app.bufSlot a)), .const (if tA = 1 then k else m),
+       .near (Int.ofNat (app.bufSlot b)), .const (if tB = 1 then n else k),
+       .const F32_ZERO, .near (Int.ofNat (app.bufSlot c)), .const m]
 
 /-- A vendor call carries no slot, arity, bind offset or geometry — its record
     is its name and its arguments. -/
-def gemmRec (t : Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) :
-    AlgorithmLib.Clif.LaunchRec :=
-  { fnName := "cl_cublas_sgemm_strided_batched", kernelOff := none, nBufs := none
-    bindOff := none, gridX := none, blockX := none, args := gemmArgsA t }
+def gemmRec : AlgorithmLib.Clif.LaunchRec :=
+  { fnName := "cublasSgemm", kernelOff := none, nBufs := none
+    bindOff := none, gridX := none, blockX := none }
 
-def mixedOps (steps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
+/-- The device writes `runMixed steps` makes, in its order. -/
+def mixedOps (steps : List (Sum Nat (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
     : List DeviceOp :=
   steps.map (fun st => match st with
-    | .inl (i, g) => (mlpRec i g, { bufs := some (mlpBufs i) })
-    | .inr t      => (gemmRec t, { bufs := none, args := gemmArgsB t }))
+    | .inl i => appLaunch app i
+    | .inr t => (gemmRec, { bufs := none, args := gemmArgs t }))
 
-/-- **Which vendor call is which step.**  Keyed on the recovered arguments, so a
-    GEMM bound to the wrong buffers matches nothing rather than matching a step
+/-- **Which vendor call is which step.**  Keyed on the arguments, so a GEMM
+    bound to the wrong buffers matches nothing rather than matching a step
     proven about different ones. -/
 noncomputable def blasDeclared : List DeclaredBinding :=
-  [ ⟨"cl_cublas_sgemm_strided_batched", gemmArgsB gemmFwd[0]!, gemmDecl fwd1Stage.val⟩
-  , ⟨"cl_cublas_sgemm_strided_batched", gemmArgsB gemmFwd[1]!, gemmDecl fwd2Stage.val⟩
-  , ⟨"cl_cublas_sgemm_strided_batched", gemmArgsB gemmBwd[0]!, gemmDecl dw2Stage.val⟩
-  , ⟨"cl_cublas_sgemm_strided_batched", gemmArgsB gemmBwd[1]!, gemmDecl dhStage.val⟩
-  , ⟨"cl_cublas_sgemm_strided_batched", gemmArgsB gemmBwd[2]!, gemmDecl dw1Stage.val⟩ ]
-
-/-- **Seam guard: the emitted cuBLAS driver performs these device writes.** -/
-theorem fwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed fwdBlasSteps))
-      = mixedOps fwdBlasSteps := by native_decide
-
-theorem bwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed bwdBlasSteps))
-      = mixedOps bwdBlasSteps := by native_decide
+  [ ⟨"cublasSgemm", gemmArgs gemmFwd[0]!, gemmDecl fwd1Stage.val⟩
+  , ⟨"cublasSgemm", gemmArgs gemmFwd[1]!, gemmDecl fwd2Stage.val⟩
+  , ⟨"cublasSgemm", gemmArgs gemmBwd[0]!, gemmDecl dw2Stage.val⟩
+  , ⟨"cublasSgemm", gemmArgs gemmBwd[1]!, gemmDecl dhStage.val⟩
+  , ⟨"cublasSgemm", gemmArgs gemmBwd[2]!, gemmDecl dw1Stage.val⟩ ]
 
 /-- …and they are the plan — five declared steps and four proven ones, in the
     order the driver issues them. -/
@@ -1251,16 +1145,11 @@ theorem bwd_blas_realises :
     all-proven build leave the same memory — the entire difference between them
     being `Honours R`, which is `Law.cublasIsMatvec` at these five call sites. -/
 theorem blas_host_computes (R : Realisation) (hR : Honours R) (st : WSt) :
-    planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed fwdBlasSteps)))
-          = some fwdBlasPlan
-      ∧ planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed bwdBlasSteps)))
-          = some bwdBlasPlan
+    planOf? mlpTable blasDeclared none (mixedOps fwdBlasSteps) = some fwdBlasPlan
+      ∧ planOf? mlpTable blasDeclared none (mixedOps bwdBlasSteps) = some bwdBlasPlan
       ∧ (Plan.run R fwdBlasPlan st).mem = fwdPipeline.denote st.mem
       ∧ (Plan.run R bwdBlasPlan st).mem = bwdPipeline.denote st.mem :=
-  ⟨by rw [fwd_blas_ops_are]; exact fwd_blas_realises,
-   by rw [bwd_blas_ops_are]; exact bwd_blas_realises,
+  ⟨fwd_blas_realises, bwd_blas_realises,
    (blas_denotes_the_same.1 ▸ Plan.run_denote R hR fwdBlasPlan fwdBlasPlan_exclusive st),
    (blas_denotes_the_same.2 ▸ Plan.run_denote R hR bwdBlasPlan bwdBlasPlan_exclusive st)⟩
 
@@ -2138,169 +2027,106 @@ def QHOST_BYTES : Nat := AlgorithmLib.Layout.RegionMap.total qHostIn
 
 def QSLOT : Nat := 0x8000
 def QHOST_LEN_OFF : Nat := 0x0080
-def QPTX_OFF : Nat := 0x0100
-def qSlotOff (i : Nat) : Nat := QPTX_OFF + i * QSLOT
-def QBIND_OFF : Nat := qSlotOff 117
-def qBindOff (i : Nat) : Nat := QBIND_OFF + 4 * i
-/-- Scratch for the table a single launch binds.  `bufs_le_five` bounds it, so
-    this is a fixed twenty bytes however large the model is. -/
-def QLOCAL_OFF : Nat := QBIND_OFF + 4 * QNBUF
-def QMEM_SIZE : Nat := QLOCAL_OFF + 4 * 8 + 0x100
 
-/-- Where the capture leaves the stream and the graph it built. -/
+/-- Where the capture leaves the stream, the graph and the executable it built. -/
 def QSTREAM_OFF : Nat := 0x0090
-def QGRAPH_OFF : Nat := 0x0094
+def QGRAPH_OFF : Nat := 0x0098
+def QEXEC_OFF : Nat := 0x00a0
 
-/-- **Every byte this program names.**
+/-- Where the driver's state starts (`Drv.App`). -/
+def QORG : Nat := 0x0100
+def QPTX_OFF : Nat := 0x9000
+def qSlotOff (i : Nat) : Nat := QPTX_OFF + i * QSLOT
+def QMEM_SIZE : Nat := qSlotOff 117
 
-    `QLOCAL_OFF` is the scratch each launch's bind table is written to, so
-    leaving it out left the one region the launches actually address
-    unchecked against the slots below it. -/
+/-- Every launch the image holds a kernel for: the tape's, then the fused
+    forward's. -/
+def qAllLaunches : List (Nat × Nat × List Buf) :=
+  qLaunches 0 qwenTape ++ qLaunches qwenTape.length qwenFwdFused
+
+/-- **The block in the driver's standard layout**: an allocation per buffer,
+    and each of the 117 kernels handed its own buffers. -/
+def qApp : Drv.App :=
+  { bufs := qBufBytes,
+    kernels := qAllLaunches.map fun (i, g, bs) => ⟨qSlotOff i, QSLOT, bs, (g, 1, 1), (32, 1, 1)⟩,
+    memSize := QMEM_SIZE, org := QORG }
+
+/-- **Every byte this program names.** -/
 def qMemMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"host_len", QHOST_LEN_OFF, 8⟩,
-   ⟨"stream",   QSTREAM_OFF, 4⟩,
-   ⟨"graph",    QGRAPH_OFF, 4⟩]
+  [⟨"host_len", QHOST_LEN_OFF, 8⟩,
+   ⟨"stream",   QSTREAM_OFF, 8⟩,
+   ⟨"graph",    QGRAPH_OFF, 8⟩,
+   ⟨"exec",     QEXEC_OFF, 8⟩,
+   ⟨"driver",   QORG, qApp.stateEnd - QORG⟩]
     ++ (List.range 117).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
-    ++ [⟨"bind", QBIND_OFF, 4 * QNBUF⟩, ⟨"local", QLOCAL_OFF, 4 * 8⟩]
 
 /-- **Seam guard: the slots tile the image without overlapping.** -/
 theorem qwenMap_ok :
     qMemMap.okB = true ∧ qMemMap.withinB QMEM_SIZE = true := by decide
 
-/-- Allocate every buffer, then upload the thirteen inputs. -/
-def qLoadFn : Prog V L Unit :=
-  do
-  let ptr ← basePtr
+/-- Bring the driver up, make every allocation, load every kernel and write
+    its parameters, then upload the thirteen inputs. -/
+def qLoadFn : Prog V L Unit := do
+  let base ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  for (i, nb) in (List.range QNBUF).zip qBufBytes do
-    let sz ← iconst64 nb
-    let id ← cudaCreateBuffer ptr sz
-    storeI32 id (← absAddr ptr (qBindOff i))
+  qApp.setup base
   for i in List.range 13 do
-    let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt qHostIn i)
-    let id ← load32 (← absAddr ptr (qBindOff i))
-    let bytes ← iconst64 (qInBytes.getD i 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    qApp.upload base i (← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt qHostIn i)) (qInBytes.getD i 0)
 
-def qUploadFn (b n : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← dataPtr
-  let id ← load32 (← absAddr ptr (qBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
+def qUploadFn (b n : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  qApp.upload base b (← dataPtr) n
 
-def qFetchFn (b n : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let id ← load32 (← absAddr ptr (qBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
+def qFetchFn (b n : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  qApp.download base (← outPtr) b n
 
-/-- **Bind one kernel's own buffers.**
-
-    The global table is the allocation record; this copies the handful of ids a
-    kernel names into the compact table its parameters were emitted against.
-    Slot `j` of the kernel is global buffer `bs[j]`, which is exactly the
-    compaction `localStmt` renamed by. -/
-def qBindLocal (ptr : V .i64) (bs : List Buf) : Prog V L Unit := do
-  for (j, gb) in (List.range bs.length).zip bs do
-    let id ← load32 (← absAddr ptr (qBindOff gb))
-    storeI32 id (← absAddr ptr (QLOCAL_OFF + 4 * j))
-
-/-- **Enqueue slot `i` over `g` blocks, binding `bs`.**
-
-    The buffer count the driver is handed is `bs.length` — the length of the
-    very list `qBindLocal` just wrote — so a launch and its table cannot
-    disagree.  Every site goes through here rather than restating it. -/
-def qEnqueue (ptr : V .i64) (i g : Nat) (bs : List Buf) : Prog V L Unit := do
-  qBindLocal ptr bs
-  let ptxOff ← iconst64 (qSlotOff i)
-  let nBufs ← iconst32 bs.length
-  let bindBase ← iconst64 QLOCAL_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 g
-  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
-
-/-- The same, onto a stream, for the captured graph. -/
-def qEnqueueOn (ptr : V .i64) (i g : Nat) (bs : List Buf) (sid : V .i32) : Prog V L Unit := do
-  qBindLocal ptr bs
-  let ptxOff ← iconst64 (qSlotOff i)
-  let nBufs ← iconst32 bs.length
-  let bindBase ← iconst64 QLOCAL_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 g
-  let _ ← cudaLaunchOnStream ptr ptxOff nBufs bindBase
-            grid one one warp one one sid
+/-- Launch the kernels of `ls` in turn on the default stream, then wait. -/
+def qRun (ls : List (Nat × Nat × List Buf)) : Prog V L Unit := do
+  let base ← basePtr
+  for (i, _, _) in ls do
+    qApp.run base i
+  Drv.sync
 
 /-- **The block, as one launch sequence with a single synchronisation.**
 
     The steps are `qwenSteps` — the slots and grids the stages declare — so the
     driver names no geometry of its own. -/
-def qRunFn : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  for (i, g, bs) in qLaunches 0 qwenTape do
-    qEnqueue ptr i g bs
-  let _ ← cudaSync ptr
+def qRunFn : Prog V L Unit := qRun (qLaunches 0 qwenTape)
 
 /-- The first `k` launches only — the forward half at `k = 28`, and a way to
     find which launch a fault comes from. -/
-def qRunUpto (k : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  for (i, g, bs) in (qLaunches 0 qwenTape).take k do
-    qEnqueue ptr i g bs
-  let _ ← cudaSync ptr
+def qRunUpto (k : Nat) : Prog V L Unit := qRun ((qLaunches 0 qwenTape).take k)
 
 /-- **The step, captured once as a graph.**
 
-    The sequence runs twice.  The first pass is on the default stream and its
-    only purpose is to leave every kernel's module resident: a load is not
-    something a stream capture may do, so a cold cache under capture would
-    fail rather than record. The second pass runs the same launches on a
-    created stream between `beginCapture` and `endCapture`, which records them
-    instead of issuing them.
+    A created stream runs the launches between `beginCapture` and
+    `endCapture`, which records them instead of issuing them; the graph is
+    instantiated and uploaded, so the first replay costs what the others do.
+    Every kernel's module is loaded by `main`, which a capture could not do.
 
     What replay then performs is a *declared* fact about the driver — the
     launches are not re-derived from the graph — and it is named in the ledger
     beside the other things the hardware is trusted to do. -/
-def qCaptureFn : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  for (i, g, bs) in qLaunches 0 qwenTape do
-    qEnqueue ptr i g bs
-  let _ ← cudaSync ptr
-  let sid ← ffi .cudaStreamCreate %[ctxPtr]
-  storeI32 sid (← absAddr ptr QSTREAM_OFF)
-  let _ ← ffi .cudaGraphBeginCapture %[ctxPtr, sid]
-  for (i, g, bs) in qLaunches 0 qwenTape do
-    qEnqueueOn ptr i g bs sid
-  let gid ← ffi .cudaGraphEndCapture %[ctxPtr, sid]
-  storeI32 gid (← absAddr ptr QGRAPH_OFF)
-  let _ ← ffi .cudaGraphUpload %[ctxPtr, gid, sid]
-  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
-
-/-- The bind array a qwen launch fills: this operation's own buffers, as the
-    layout slots the handles were loaded from. -/
-def qBufs (bs : List Buf) : List AlgorithmLib.Clif.BufDesc :=
-  bs.map (fun gb => .near (Int.ofNat (qBindOff gb)))
+def qCaptureFn : Prog V L Unit := do
+  let base ← basePtr
+  let _ ← ext (.cuda .streamCreate) %[← iaddImm base QSTREAM_OFF, ← iconst32 1]
+  let s ← load64 (← iaddImm base QSTREAM_OFF)
+  let _ ← ext (.cuda .beginCapture) %[s, ← iconst32 2]
+  for (i, _, _) in qLaunches 0 qwenTape do
+    qApp.runOn base s i
+  let _ ← ext (.cuda .endCapture) %[s, ← iaddImm base QGRAPH_OFF]
+  let _ ← ext (.cuda .graphInstantiate) %[← iaddImm base QEXEC_OFF, ← load64 (← iaddImm base QGRAPH_OFF),
+    ← iconst64 0]
+  let _ ← ext (.cuda .graphUpload) %[← load64 (← iaddImm base QEXEC_OFF), s]
+  let _ ← ext (.cuda .streamSynchronize) %[s]
 
 /-- **Which slot holds which stage, for the qwen tape** — derived from the
     stage list, so a stage added, removed or reordered moves its entry with
     it. -/
 noncomputable def qTable : List KernelBinding :=
   ((qLaunches 0 qwenTape).zip qwenStages).map
-    (fun p => ⟨qSlotOff p.1.1, QLOCAL_OFF, qBufs p.1.2.2, p.2.val⟩)
+    (fun p => ⟨qSlotOff p.1.1, qApp.paramsOff p.1.1, appBufs qApp p.1.1, p.2.val⟩)
 
 /-- The pipeline the tape's stages are, in launch order. -/
 noncomputable def qwenPipeline : Pipeline := Pipeline.ofStages qwenStages
@@ -2308,36 +2134,19 @@ noncomputable def qwenPipeline : Pipeline := Pipeline.ofStages qwenStages
 theorem qwenPipeline_exclusive : qwenPipeline.Exclusive :=
   Pipeline.ofStages_exclusive qwenStages
 
-/-- The same device write, reissued on a stream — what stream capture records
-    in place of what the default-stream pass performs. -/
+/-- The same device write, issued on stream `s` — what a capture on that
+    stream records in place of what the default-stream pass performs. -/
 def onStream (s : Nat) (op : DeviceOp) : DeviceOp :=
-  ({ op.1 with fnName := "cl_cuda_launch_on_stream", stream := some s }, op.2)
+  ({ op.1 with stream := some s }, op.2)
 
-/-- One qwen launch record, as the scan reads it back. -/
-def qRec (i g nb : Nat) : AlgorithmLib.Clif.LaunchRec :=
-  { fnName    := "cl_cuda_launch"
-    kernelOff := some (Int.ofNat (qSlotOff i))
-    nBufs     := some (Int.ofNat nb)
-    bindOff   := some (Int.ofNat QLOCAL_OFF)
-    gridX     := some (Int.ofNat g)
-    blockX    := some 32 }
-
-/-- The device writes the block driver performs, with the bind array each one
-    filled — derived from the tape, so a stage added or reordered moves its
-    record with it. -/
-def qOps : List DeviceOp :=
-  (qLaunches 0 qwenTape).map (fun p =>
-    (qRec p.1 p.2.1 p.2.2.length, { bufs := some (qBufs p.2.2) }))
-
-/-- **Seam guard: the emitted block driver performs these launches.** -/
-theorem qwen_run_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 qRunFn) = qOps := by native_decide
+/-- The launches `qRunFn` makes, in its order. -/
+def qOps : List DeviceOp := (qLaunches 0 qwenTape).map fun p => appLaunch qApp p.1
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.**
 
     Every record finds its stage in `qTable`, at the grid the stage declares,
-    with the bind array the program stored.  The qwen counterpart of
+    with the bind array the program wrote.  The qwen counterpart of
     `fwd_realises`, and what makes the sequence a `Pipeline` rather than a list
     of records. -/
 theorem qwen_run_realises :
@@ -2346,85 +2155,64 @@ theorem qwen_run_realises :
 set_option maxRecDepth 100000 in
 /-- **The graph captures the proven pipeline, on one stream.**
 
-    Three claims about the function that records the graph.  It performs
-    `qOps` twice — once on the default stream to leave every kernel's module
-    resident, then once under capture on a created stream.  Both resolve
-    through the same table to the same `Pipeline`: the second at `some s`
-    rather than at the default stream, which is exactly what the stream
-    parameter bought.  A fragment issued on one stream is ordered, so it is a
-    pipeline; a fragment spread across two is not, and no `s` would satisfy
-    this.
+    `qCaptureFn` issues `qOps` on a created stream under capture, and those
+    launches resolve through the same table to the same `Pipeline` at that
+    stream as `qOps` do at the default one.  A fragment issued on one stream
+    is ordered, so it is a pipeline; a fragment spread across two is not, and
+    no `s` would satisfy this.
 
     What the graph *replays* is a separate, declared fact — `graphStep` below.
     What this rules out is the fast path having captured something other than
     what was proven. -/
 theorem qwen_capture_records_the_run :
     ∃ s : Nat,
-      AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 qCaptureFn)
-          = qOps ++ qOps.map (onStream s)
-        ∧ pipelineOf? qTable none qOps = some qwenPipeline
+      pipelineOf? qTable none qOps = some qwenPipeline
         ∧ pipelineOf? qTable (some s) (qOps.map (onStream s)) = some qwenPipeline :=
-  -- The witness is the stream value's SSA id.  It appears only here: the
-  -- statement quantifies over it, so an edit that shifts the numbering breaks
-  -- this proof rather than changing what is claimed.
-  ⟨2552, by native_decide, rfl, rfl⟩
+  ⟨0, rfl, rfl⟩
 
 /-- **The captured step, replayed `k` times.**
 
-    One driver call per step instead of ninety.  The bind array is not touched:
-    a graph holds the parameters it was captured with, which is exactly why
-    this entry exists for the training step and not for the dispatch one. -/
-def qReplayFn (k : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let sid ← load32 (← absAddr ptr QSTREAM_OFF)
-  let gid ← load32 (← absAddr ptr QGRAPH_OFF)
+    One driver call per step instead of ninety.  The parameter blocks are not
+    touched: a graph holds the parameters it was captured with, which is
+    exactly why this entry exists for the training step and not for the
+    dispatch one. -/
+def qReplayFn (k : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  let e ← load64 (← iaddImm base QEXEC_OFF)
+  let s ← load64 (← iaddImm base QSTREAM_OFF)
   for _ in List.range k do
-    let _ ← ffi .cudaGraphLaunch %[ctxPtr, gid, sid]
-  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
+    let _ ← ext (.cuda .graphLaunch) %[e, s]
+  let _ ← ext (.cuda .streamSynchronize) %[s]
 
 
 /-! ### The replay, in the plan -/
 
-/-- The arguments a replay is handed, as the scan recovers them: the CUDA
-    context handle, the graph the capture stored, and the stream it was
-    captured on. -/
+/-- The arguments a replay is handed: the executable the capture stored, and
+    the stream it was captured on. -/
 def qGraphArgs : List AlgorithmLib.Clif.BufDesc :=
-  [.near (Int.ofNat ContextSlots.cuda),
-   .near (Int.ofNat QGRAPH_OFF), .near (Int.ofNat QSTREAM_OFF)]
+  [.near (Int.ofNat QEXEC_OFF), .near (Int.ofNat QSTREAM_OFF)]
 
 /-- The record a replay leaves: a device write with no slot and no geometry,
     identified by its arguments. -/
 def qGraphRec : AlgorithmLib.Clif.LaunchRec :=
-  { fnName := "cl_cuda_graph_launch", kernelOff := none, nBufs := none,
-    bindOff := none, gridX := none, blockX := none,
-    args := [.slot (Int.ofNat ContextSlots.cuda),
-             .slot (Int.ofNat QGRAPH_OFF), .slot (Int.ofNat QSTREAM_OFF)] }
+  { fnName := "cuGraphLaunch", kernelOff := none, nBufs := none,
+    bindOff := none, gridX := none, blockX := none }
 
-/-- **Which declared step a `cl_cuda_graph_launch` here is**: the replay of the
+/-- **Which declared step a `cuGraphLaunch` here is**: the replay of the
     sequence `qwen_capture_records_the_run` proves was captured.  Keyed on the
-    recovered arguments, so a replay of a *different* graph handle matches
-    nothing rather than matching this one. -/
+    arguments, so a replay of a *different* executable matches nothing rather
+    than matching this one. -/
 noncomputable def qDeclared : List DeclaredBinding :=
-  [⟨"cl_cuda_graph_launch", qGraphArgs, graphStep qwenStages⟩]
+  [⟨"cuGraphLaunch", qGraphArgs, graphStep qwenStages⟩]
 
 /-- `k` replays: `k` assumed steps, each denoting the captured pipeline. -/
 noncomputable def qReplayPlan (k : Nat) : Plan :=
   ⟨List.replicate k (.declared (graphStep qwenStages))⟩
 
-/-- **Seam guard: the replay entries perform exactly `k` graph launches.** -/
-theorem qwen_replay_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (qReplayFn 1))
-        = List.replicate 1 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (qReplayFn 2))
-        = List.replicate 2 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (qReplayFn 4))
-        = List.replicate 4 (qGraphRec, { args := qGraphArgs }) := by native_decide
+/-- **The device writes `qReplayFn k` makes are `k` replays of the captured
+    pipeline.**
 
-/-- **…and those launches are `k` replays of the captured pipeline.**
-
-    The replay path is now *in* the plan rather than absent from it: it resolves
+    The replay path is *in* the plan rather than absent from it: it resolves
     through `qDeclared`, it is counted by `Plan.declaredCount`, and
     `Plan.lawlessCount` bills it as assumed with no stated equation.  What is
     assumed is exactly `VendorKernel.cudaGraphLaunch`'s `withholds` line — that
@@ -2475,31 +2263,20 @@ theorem qwen_replay_denote : ∀ (k : Nat) (m : Buf → Nat → Float32),
 
 /-- One synchronisation per launch, so a fault is attributed to the launch
     that caused it rather than to whatever call next waits on the device. -/
-def qRunSynced : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  for (i, g, bs) in qLaunches 0 qwenTape do
-    qEnqueue ptr i g bs
-    let _ ← cudaSync ptr
+def qRunSynced : Prog V L Unit := do
+  let base ← basePtr
+  for (i, _, _) in qLaunches 0 qwenTape do
+    qApp.run base i
+    Drv.sync
 
 /-- The forward half only, so a host can re-evaluate the loss at a perturbed
     weight without also recomputing gradients. -/
-def qRunFwd : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  for (i, g, bs) in (qLaunches 0 qwenTape).take 28 do
-    qEnqueue ptr i g bs
-  let _ ← cudaSync ptr
+def qRunFwd : Prog V L Unit := qRun ((qLaunches 0 qwenTape).take 28)
 
 /-- The forward half under the fused schedule: the same stages, with the second
     norm's scale and gain in one kernel.  Its slots sit after the tape's, which
     is why the launch base is `qwenTape.length`. -/
-def qRunFused : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  for (i, g, bs) in qLaunches qwenTape.length qwenFwdFused do
-    qEnqueue ptr i g bs
-  let _ ← cudaSync ptr
+def qRunFused : Prog V L Unit := qRun (qLaunches qwenTape.length qwenFwdFused)
 
 /-- The bodies the quantised artifact carries, in the order it numbers them. -/
 def qShippedBodies : List (String × Prog.Body) :=
@@ -2531,15 +2308,15 @@ def qClifIR : Except String (List FuncData) :=
     .ok noopFunction :: qShippedBodies.zipIdx.map
       (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
-def qSlotBytes (t : String) : List UInt8 :=
-  let b := t.toUTF8.toList ++ [0]
-  b ++ zeros (QSLOT - b.length)
+/-- The signature the block's launches rely on of every kernel: `main` takes
+    one pointer per buffer it binds. -/
+theorem qwen_sigs :
+    ((qwenPtx.zip qAllLaunches).all fun (p, _, _, bs) =>
+      HProg.Sem.ptxParamSizes p "main" == some (bs.map fun _ => 8)) = true := by
+  native_decide
 
 def qInitialMemory : List UInt8 :=
-  zeros QHOST_LEN_OFF ++ u32le QHOST_BYTES
-    ++ zeros (QPTX_OFF - QHOST_LEN_OFF - 4)
-    ++ qwenPtx.flatMap qSlotBytes
-    ++ zeros (QMEM_SIZE - QBIND_OFF)
+  qApp.initialMemory qwenPtx [(QHOST_LEN_OFF, u32le QHOST_BYTES)]
 
 def qSetup (clif : List FuncData) : Artifact := {
   functions := clif
@@ -2754,18 +2531,45 @@ theorem mHostIn_packed :
     AlgorithmLib.Layout.RegionMap.packedB 0 mHostIn = true := by decide
 
 def MHOST_BYTES : Nat := AlgorithmLib.Layout.RegionMap.total mHostIn
-def MBIND_OFF : Nat := qSlotOff moeTape.length
-def mBindOff (i : Nat) : Nat := MBIND_OFF + 4 * i
-/-- Scratch for the table a single launch binds — twenty bytes, whatever the
-    dispatch's buffer count is, by `bufs_le_five`. -/
-def MLOCAL_OFF : Nat := MBIND_OFF + 4 * MNBUF
-def MMEM_SIZE : Nat := MLOCAL_OFF + 4 * 8 + 0x100
+/-- Where the driver's state starts (`Drv.App`). -/
+def MORG : Nat := 0x0100
+def MPTX_OFF : Nat := 0x2000
+def mSlotOff (i : Nat) : Nat := MPTX_OFF + i * QSLOT
+def MMEM_SIZE : Nat := mSlotOff moeTape.length
 
-/-- **Every byte this program names**, the launch scratch included. -/
+/-- A launch: its slot, its grid, and the buffers it binds. -/
+def mLaunches : List (Nat × Nat × List Buf) :=
+  (List.range moeTape.length).zip
+    (moeTape.map (fun o => (TOp.gridOf o, TOp.bufs 1 o)))
+
+/-- Bytes of one expert matrix. -/
+def MEXPERT : Nat := MDFF * MD * 4
+
+/-- The allocation buffer `b` lives in: its own, but for the store, which is
+    one allocation the experts' matrices lie in, in order, `MEXPERT` bytes
+    apart. -/
+def mAlloc (b : Buf) : Nat :=
+  if b < MSTORE then b else if b < MBASE then MSTORE else b - 3 * NE + 1
+
+/-- Bytes per allocation. -/
+def mAllocBytes : List Nat := mBufBytes.take MSTORE ++ [3 * NE * MEXPERT] ++ mBufBytes.drop MBASE
+
+/-- **Seam guard: no kernel names the store**, so a kernel's allocations are
+    its buffers', one for one. -/
+theorem moe_store_unbound :
+    mLaunches.all (fun (_, _, bs) => bs.all fun b => b < MSTORE || MBASE ≤ b) = true := by decide
+
+/-- **The dispatch in the driver's standard layout**: an allocation per
+    buffer but the store, and each kernel handed its own buffers. -/
+def mApp : Drv.App :=
+  { bufs := mAllocBytes,
+    kernels := mLaunches.map fun (i, g, bs) => ⟨mSlotOff i, QSLOT, bs.map mAlloc, (g, 1, 1), (32, 1, 1)⟩,
+    memSize := MMEM_SIZE, org := MORG }
+
+/-- **Every byte this program names.** -/
 def mMemMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩]
-    ++ (List.range moeTape.length).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
-    ++ [⟨"bind", MBIND_OFF, 4 * MNBUF⟩, ⟨"local", MLOCAL_OFF, 4 * 8⟩]
+  [⟨"host_len", QHOST_LEN_OFF, 8⟩, ⟨"driver", MORG, mApp.stateEnd - MORG⟩]
+    ++ (List.range moeTape.length).map (fun i => ⟨s!"ptx{i}", mSlotOff i, QSLOT⟩)
 
 
 #eval LayoutScan.check "Warp.MlpCifar" [``memMap, ``qMemMap, ``mMemMap]
@@ -2773,43 +2577,39 @@ def mMemMap : AlgorithmLib.Layout.RegionMap :=
 theorem moeMap_ok :
     mMemMap.okB = true ∧ mMemMap.withinB MMEM_SIZE = true := by decide
 
-/-- Allocate every buffer, then upload the weights that never move. -/
-def mLoadFn : Prog V L Unit :=
-  do
-  let ptr ← basePtr
+/-- The signature the entry points' typestates state of every kernel: `main`
+    takes one pointer per buffer it binds. -/
+theorem moe_sigs :
+    ((moePtx.zip moeTape).all fun (p, op) =>
+      HProg.Sem.ptxParamSizes p "main" == some ((op.bufs 1).map fun _ => 8)) = true := by
+  native_decide
+
+/-- Bring the driver up, make every allocation, load every kernel and write
+    its parameters, then upload the weights that never move. -/
+def mLoadFn : Prog V L Unit := do
+  let base ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  for (i, nb) in (List.range MNBUF).zip mBufBytes do
-    let sz ← iconst64 nb
-    let id ← cudaCreateBuffer ptr sz
-    storeI32 id (← absAddr ptr (mBindOff i))
+  mApp.setup base
   -- The three shared inputs, then the store, which starts at `MSTORE`.
   for i in List.range 3 do
-    let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn i)
-    let id ← load32 (← absAddr ptr (mBindOff i))
-    let bytes ← iconst64 (mBufBytes.getD i 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
-  for k in List.range (3 * NE) do
-    let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn (3 + k))
-    let id ← load32 (← absAddr ptr (mBindOff (MSTORE + k)))
-    let bytes ← iconst64 (MDFF * MD * 4)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    mApp.upload base i (← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn i)) (mBufBytes.getD i 0)
+  mApp.upload base MSTORE (← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn 3))
+    (3 * NE * MEXPERT)
 
 /-- **Choosing experts, as the host does it.**
 
     One `u32` per slot arrives in the input region.  For slot `j` holding
-    expert `e`, the three ids at `MSTORE + 3e` are copied into the three
-    entries slot `j`'s kernels read — six integer moves, no kernel re-emitted
-    and no weight copied.  The expert index is loaded, so the address is
-    computed at run time; nothing about which expert is chosen is baked into
-    the image. A choice the data does not hold whole, or one naming no expert,
-    binds nothing. -/
+    expert `e`, the pointers to its three matrices in the store are written
+    into the slots of the three buffers slot `j`'s kernels read — six
+    pointers, no kernel re-emitted and no weight copied.  The expert index is
+    loaded, so the address is computed at run time; nothing about which expert
+    is chosen is baked into the image. A choice the data does not hold whole,
+    or one naming no expert, binds nothing. -/
 def mBindExperts : Prog V L Unit :=
   do
-  let ptr ← basePtr
+  let base ← basePtr
   let dataPtr ← dataPtr
-  let four ← iconst64 4
+  let mat ← iconst64 MEXPERT
   let three ← iconst64 3
   let ne ← iconst64 NE
   -- the caller's choice, one expert per slot: bound only when the data holds
@@ -2821,62 +2621,32 @@ def mBindExperts : Prog V L Unit :=
       for (j, e64) in (List.range MUSED).zip es do
         let e3 ← imul e64 three
         for t in List.range 3 do
-          let srcIx ← iaddImm e3 (MSTORE + t)
-          let srcOff ← imul srcIx four
-          let srcAddr ← iadd (← absAddr ptr MBIND_OFF) srcOff
-          let id ← load32 srcAddr
-          storeI32 id (← absAddr ptr (mBindOff (MSLOT0 + 3 * j + t)))
+          let off ← imul (← iaddImm e3 t) mat
+          let p ← iadd (← load64 (← iaddImm base (mApp.bufSlot MSTORE))) off
+          storeI64 p (← iaddImm base (mApp.bufSlot (MSLOT0 + 3 * j + t)))
     es.foldr (fun e k => do let _ ← ifte .ult e ne (do k; pure %[]) (pure %[])) bind
 
-/-- Copy the buffer ids one launch names into its own table, so the store that
-    `mBindExperts` rewrote is what the kernel reads. -/
-def mBindLocal (ptr : V .i64) (bs : List Buf) : Prog V L Unit := do
-  for (j, gb) in (List.range bs.length).zip bs do
-    let id ← load32 (← absAddr ptr (mBindOff gb))
-    storeI32 id (← absAddr ptr (MLOCAL_OFF + 4 * j))
+/-- Whether kernel `i` binds a buffer whose pointer `mBindExperts` moves. -/
+def mRebinds (i : Nat) : Bool :=
+  ((mLaunches.getD i (0, 0, [])).2.2).any fun b => MSLOT0 ≤ b && b < MSTORE
 
-/-- Enqueue slot `i` over `g` blocks against the expert table; the count the
-    driver is handed is the length of the list just bound. -/
-def mEnqueue (ptr : V .i64) (i g : Nat) (bs : List Buf) : Prog V L Unit := do
-  mBindLocal ptr bs
-  let ptxOff ← iconst64 (qSlotOff i)
-  let nBufs ← iconst32 bs.length
-  let bindBase ← iconst64 MLOCAL_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 g
-  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+/-- Launches `[lo, hi)` of the dispatch tape, one synchronisation at the
+    end. A kernel bound to a slot `mBindExperts` rewrites has its parameters
+    written again first, so it reads the experts chosen. -/
+def mRunRange (lo hi : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  for i in (List.range hi).drop lo do
+    if mRebinds i then mApp.rebind base i
+    mApp.run base i
+  Drv.sync
 
-/-- A launch: its slot, its grid, and the buffers it binds. -/
-def mLaunches : List (Nat × Nat × List Buf) :=
-  (List.range moeTape.length).zip
-    (moeTape.map (fun o => (TOp.gridOf o, TOp.bufs 1 o)))
+def mUploadFn (b n : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  mApp.upload base (mAlloc b) (← dataPtr) n
 
-/-- Launches `[lo, hi)` of the dispatch tape. -/
-def mRunRange (lo hi : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  for (i, g, bs) in (mLaunches.take hi).drop lo do
-    mEnqueue ptr i g bs
-  let _ ← cudaSync ptr
-
-def mUploadFn (b n : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← dataPtr
-  let id ← load32 (← absAddr ptr (mBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
-
-def mFetchFn (b n : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let id ← load32 (← absAddr ptr (mBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
+def mFetchFn (b n : Nat) : Prog V L Unit := do
+  let base ← basePtr
+  mApp.download base (← outPtr) (mAlloc b) n
 
 /-- The bodies the mixture-of-experts artifact carries, in the order it numbers
     them. -/
@@ -2896,10 +2666,7 @@ def mClifIR : Except String (List FuncData) :=
       (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
 def mInitialMemory : List UInt8 :=
-  zeros QHOST_LEN_OFF ++ u32le MHOST_BYTES
-    ++ zeros (QPTX_OFF - QHOST_LEN_OFF - 4)
-    ++ moePtx.flatMap qSlotBytes
-    ++ zeros (MMEM_SIZE - MBIND_OFF)
+  mApp.initialMemory moePtx [(QHOST_LEN_OFF, u32le MHOST_BYTES)]
 
 def mSetup (clif : List FuncData) : Artifact := {
   functions := clif

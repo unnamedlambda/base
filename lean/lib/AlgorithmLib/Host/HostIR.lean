@@ -54,18 +54,16 @@ open AlgorithmLib.IR AlgorithmLib.Clif
     A vendor call has no PTX slot, so its identity *is* its arguments: which
     matrix, which vector, which output.  Those reach the call as handles loaded
     from fixed slots, which is why `slot` is a case here and why `SymVal.slot`
-    exists at all — without it Qwen2's `Wq`, `Wk` and `Wv` calls, all 896×896,
-    are the same record. -/
+    exists at all — without it three projections of one shape are the same
+    record. -/
 inductive ExternArg where
   | const : Int → ExternArg
   | slot  : Nat → ExternArg
   /-- **A handle reached through a base this model does not resolve.**
 
-      Qwen2's per-layer weights live at `slotBaseA + k` where `slotBaseA`
-      depends on the runtime layer index, so they are not `ptr + k` for any
-      compile-time `k`.  Without this case a layer's launches cannot be
-      *declared* at all — every kernel bind array in the model has one — which
-      is why the driver could not be written as an `HStmt` before.
+      A layer's weights can live at `base + k` where `base` depends on the
+      runtime layer index, so they are not `ptr + k` for any compile-time `k`.
+      Without this case such a layer's launches cannot be *declared* at all.
 
       `b` is the SSA id of the base; it must be a value the surrounding code
       already holds and that this model reads as unresolved.  Both are side
@@ -551,16 +549,6 @@ theorem argOfHeld_toDesc (holds : Int → Option Nat) (d : BufDesc) :
 theorem argOfHeld_none (d : BufDesc) : argOfHeld (fun _ => none) d = argOf d := by
   cases d <;> rfl
 
-/-- A declared kernel launch, from the recovered bind array. -/
-def kStep (ptx nb bo grid : Nat) (bs : List BufDesc) : LaunchStep :=
-  { ptxOff := ptx, nBufs := nb, bindOff := bo, gridX := grid, blockX := 32,
-    binds := bs.map argOf }
-
-/-- A declared vendor call, from its recovered arguments.  `fnOf` supplies the
-    `Callee`; `deviceOps` does not look at it — only compiling would. -/
-def vStep (fnOf : String → Callee) (nm : String) (as : List BufDesc) : ExternStep :=
-  { name := nm, fn := fnOf nm, argv := as.map argOf }
-
 /-- Total launches, as a count. -/
 def HStmt.launchCount (s : HStmt) : Nat := s.launches.length
 
@@ -726,9 +714,10 @@ theorem launches_seq (a b : HStmt) :
 /-- Sequencing adds counts — the compositional form, so a driver's total is
     derived from its parts without ever materialising the list.
 
-    This matters more than it looks. `decide` on the whole Qwen2 driver hits
-    `maxRecDepth`, because it forces a 267-element list into existence. Rewriting
-    with these lemmas proves the same number in constant work, at any depth. The
+    This matters more than it looks. `decide` on a whole decoder's driver hits
+    `maxRecDepth`, because it forces the whole launch list into existence.
+    Rewriting with these lemmas proves the same number in constant work, at any
+    depth. The
     structured IR removes the *need* to evaluate; these lemmas are how you cash
     that in. -/
 theorem launchCount_seq (a b : HStmt) :
@@ -2130,11 +2119,11 @@ theorem flatHI_sound (fnLaunch : Callee) (ptr : Val)
   already the trace, and `Clif.launchesOf` on the emitted block is already the
   answer.
 
-  That is not a corner case here.  Four of Qwen2's five per-token functions are
-  single-block and branch-free, and they carry **531 of the 533** device writes
-  a token performs; only the twenty-four-layer loop in the entry function needs
-  the pc-machine.  Doing this case first is what lets those facts become kernel
-  `decide` on a small term rather than `native_decide` on a monadic builder run.
+  That is not a corner case.  A decoder's per-token functions are mostly
+  single-block and branch-free, and they carry nearly all the device writes a
+  token performs; only a layer loop needs the pc-machine.  Doing this case
+  first is what lets those facts become kernel `decide` on a small term rather
+  than `native_decide` on a monadic builder run.
 -/
 
 /-- No loop, hence no branches in the emitted code. -/
@@ -2322,7 +2311,7 @@ def stateOf (fnLaunch : Callee) (ptr : Val) (n : Nat)
 /-- **What `Clif.launchesOf` reads out of the emitted function is the declared
     sequence.**
 
-    The statement the Qwen2 seam facts want, and the reason they can stop being
+    The statement a driver's seam facts want, and the reason they need not be
     `native_decide`.  `launchesOf` applied to a *builder run* forces the kernel
     to reduce `StateT` and closures, which it cannot do; applied to `stateOf`
     it walks a first-order term, and `HStmt.launches` is a structural recursion
@@ -2487,172 +2476,5 @@ theorem deviceOpsOf_stateOf (fnLaunch : Callee) (ptr : Val)
   rw [launchesOf_stateOf fnLaunch ptr hfn s n hbf htame hfar hfd hptr,
       bindsOf_stateOf fnLaunch ptr hfn s n hbf htame hfar hfd hptr]
   rfl
-
--- ---------------------------------------------------------------------------
--- Instantiated at the inference driver's shape
--- ---------------------------------------------------------------------------
-
-/-!
-  A `∃ k, …` theorem with three hypotheses can be true because nothing satisfies
-  them.  What follows discharges all three at concrete values, on a program with
-  the shape the Qwen2 driver has — an embed launch, twenty-four layers behind a
-  loop *and* a call, then the sampling tail.
--/
-
-def demoLaunch : Callee := .ffi .cudaLaunch
-
-/-- The memory base — a block parameter, so unbound in the environment. -/
-def demoPtr : Val := ⟨0⟩
-
-/-- One transformer layer: eleven kernels. -/
-def demoLayer : HStmt :=
-  (List.range 11).foldl
-    (fun acc i => HStmt.seq acc (HStmt.launch ⟨100 + i * 8, 4, 300 + i * 8, 6, 256,
-                                    [.slot 40, .slot 48, .slot 56, .slot 64]⟩))
-    HStmt.skip
-
-/-- The driver.  The layers sit behind `forN` *and* `call` — the two constructs
-    that made `Clif.launchesOf` report 1 launch instead of 267. -/
-def demoDriver : HStmt :=
-  HStmt.seq
-    (HStmt.seq (HStmt.launch ⟨0, 3, 8, 1, 256, [.slot 8, .slot 16, .slot 24]⟩) (HStmt.forN 24 (HStmt.call demoLayer)))
-    (HStmt.seq (HStmt.launch ⟨90, 2, 290, 1, 256, [.slot 8, .slot 16]⟩) (HStmt.launch ⟨98, 2, 298, 1, 32, [.slot 8, .slot 32]⟩))
-
-def demoCode : List HI := code demoLaunch demoPtr 1 0 demoDriver
-
-theorem demoLayer_count : demoLayer.launchCount = 11 := by decide
-
-/-- **267 launches per token** — derived from the structure, not by evaluating a
-    267-element list (`decide` on this hits `maxRecDepth`). -/
-theorem demoDriver_count : demoDriver.launchCount = 267 := by
-  show (HStmt.seq (HStmt.seq _ (HStmt.forN 24 (HStmt.call demoLayer)))
-          (HStmt.seq _ _)).launchCount = 267
-  rw [launchCount_seq, launchCount_seq, launchCount_seq, launches_forN,
-      launchCount_call, demoLayer_count, launchCount_launch, launchCount_launch,
-      launchCount_launch]
-
-/-- **…and that many bindings too, through the loop.**
-
-    From `deviceOps_length` and the count — not by materialising 267 pairs.
-    That is what the composition lemmas buy: a looped driver's device-write
-    sequence, records and bindings together, is reachable by induction. -/
-theorem demoDriver_deviceOps_count : demoDriver.deviceOps.length = 267 := by
-  rw [HStmt.deviceOps_length]; exact demoDriver_count
-
-/-- **The driver's compiled code really does run its declared launch sequence.**
-
-    Every hypothesis is discharged at a concrete value, so this is not vacuous:
-    `demoCode` is a genuine list of host instructions, `demoFns` a genuine
-    declaration table, and the initial environment binds nothing.
-
-    The loop body is emitted **once**.  Unrolling twenty-four layers would take
-    3204 instructions; this is 172, and executes 267 launches. -/
-theorem demo_trace :
-    ∃ k c', hsteps demoPtr.id demoCode k
-              ⟨0, Env.empty, [], fun _ => 0, [], []⟩ = some c'
-      ∧ c'.trace = demoDriver.launches
-      ∧ c'.trace.length = 267
-      ∧ c'.btrace = demoDriver.binds
-      ∧ (c'.trace.zip c'.btrace) = demoDriver.deviceOps := by
-  obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
-    flatHI_sound demoLaunch demoPtr rfl demoCode demoDriver 1 0
-      Env.empty [] (fun _ => 0) [] [] (by decide) rfl (by decide)
-      (FarOk.of_noBases (as := HStmt.farArgs demoDriver) (by decide))
-      (fun x hx b hb =>
-        noBases_primDests (ds := HStmt.primDests demoDriver) (by decide) x hx b hb)
-      (fun j _ => by rw [Nat.zero_add]; rfl)
-  refine ⟨k, c', hr, ?_, ?_, ?_, ?_⟩
-  · rw [htr, List.nil_append]
-  · rw [htr, List.nil_append]; exact demoDriver_count
-  · rw [hbt, List.nil_append]
-  · rw [htr, hbt, List.nil_append, List.nil_append]; rfl
-
--- ---------------------------------------------------------------------------
--- The kernel-clean route, on a Qwen2-shaped function
--- ---------------------------------------------------------------------------
-
-/-!
-  `native_decide` is not a weakness of the *check*; it is a consequence of the
-  driver being defined by **running** a builder rather than by **being** a term.
-  A statement about `(inferFn.run {}).2` forces the kernel through `StateT`,
-  `bind` and closures; a statement about an `HStmt` walks a small tree.
-
-  Below is the feed-forward half of a Qwen2 layer — three launches, three vendor
-  matvecs, filler in between — with its device-write sequence proven in the
-  kernel.  Same class of fact as `Qwen2Algorithm.ffn_writes`, no compiler trust.
--/
-
-/-- `y := A·x`, with the three buffer handles loaded from their slots. -/
-def demoSgemv (a x y : Nat) : HStmt :=
-  .extern { name := "cl_cublas_sgemv", fn := .ffi .cublasSgemv
-            argv := [.const 1, .const 896, .const 4864, .slot a, .slot x, .slot y] }
-
-def demoFfn : HStmt :=
-  .seq (.prim [Inst.iconst ⟨1⟩ .i64 7])
-    (.seq (.launch ⟨0x2000, 3, 0x80, 1, 32, [.slot 0x18, .slot 0x20, .slot 0x28]⟩)
-      (.seq (demoSgemv 0x100 0x108 0x110)
-        (.seq (demoSgemv 0x100 0x108 0x118)
-          (.seq (.launch ⟨0x8000, 3, 0xA0, 152, 32, [.slot 0x28, .slot 0x30, .slot 0x38]⟩)
-            (.seq (demoSgemv 0x120 0x118 0x128)
-                  (.launch ⟨0x8C00, 2, 0xB0, 28, 32, [.slot 0x38, .slot 0x40]⟩))))))
-
-/-- **What the extractor reads out of the emitted block is the declared
-    sequence** — `[propext, Classical.choice, Quot.sound]`, no `trustCompiler`. -/
-theorem demoFfn_launchesOf :
-    launchesOf (stateOf (.ffi .cudaLaunch) ⟨0⟩ 1 demoFfn) = demoFfn.launches :=
-  launchesOf_stateOf (.ffi .cudaLaunch) ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
-    (FarOk.of_noBases (as := HStmt.farArgs demoFfn) (by decide))
-    (fun x hx b hb => noBases_primDests (ds := HStmt.primDests demoFfn) (by decide) x hx b hb)
-    (by decide)
-
-/-- …and the sequence itself, by `decide` on a small term — **no axioms at
-    all**, where the same fact about the builder needs `native_decide`. -/
-theorem demoFfn_count : demoFfn.launchCount = 6 := by decide
-
-theorem demoFfn_names :
-    demoFfn.launches.map LaunchRec.fnName
-      = ["cl_cuda_launch", "cl_cublas_sgemv", "cl_cublas_sgemv",
-         "cl_cuda_launch", "cl_cublas_sgemv", "cl_cuda_launch"] := by decide
-
-/-- **…and what each of them bound**, recovered from the same emitted block.
-
-    The instantiation that keeps `bindsOf_stateOf` from being a theorem about
-    nothing: the three launches' pointer arrays come back off the stores, and
-    the three `sgemv`s' arguments come back with their bases. -/
-theorem demoFfn_bindsOf :
-    bindsOf 0 (stateOf (.ffi .cudaLaunch) ⟨0⟩ 1 demoFfn) = demoFfn.binds :=
-  bindsOf_stateOf (.ffi .cudaLaunch) ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
-    (FarOk.of_noBases (as := HStmt.farArgs demoFfn) (by decide))
-    (fun x hx b hb => noBases_primDests (ds := HStmt.primDests demoFfn) (by decide) x hx b hb)
-    (by decide)
-
-/-- The arrays themselves — the slots the fragment stored, in order. -/
-theorem demoFfn_binds_are :
-    demoFfn.binds.map OpBinds.bufs
-      = [ some [.near 0x18, .near 0x20, .near 0x28]
-        , none, none
-        , some [.near 0x28, .near 0x30, .near 0x38]
-        , none
-        , some [.near 0x38, .near 0x40] ] := by decide
-
-/-- The vendor calls' buffers, base included — what `ArgDesc` alone could not
-    distinguish. -/
-theorem demoFfn_args_are :
-    demoFfn.binds.map OpBinds.args
-      = [ []
-        , [.const 1, .const 896, .const 4864, .near 0x100, .near 0x108, .near 0x110]
-        , [.const 1, .const 896, .const 4864, .near 0x100, .near 0x108, .near 0x118]
-        , []
-        , [.const 1, .const 896, .const 4864, .near 0x120, .near 0x118, .near 0x128]
-        , [] ] := by decide
-
-/-- **Records and bindings, both read out of the emitted CLIF, both equal to
-    what the host statement declared.**  The seam, closed at a value. -/
-theorem demoFfn_deviceOps :
-    deviceOpsOf 0 (stateOf (.ffi .cudaLaunch) ⟨0⟩ 1 demoFfn) = demoFfn.deviceOps :=
-  deviceOpsOf_stateOf (.ffi .cudaLaunch) ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
-    (FarOk.of_noBases (as := HStmt.farArgs demoFfn) (by decide))
-    (fun x hx b hb => noBases_primDests (ds := HStmt.primDests demoFfn) (by decide) x hx b hb)
-    (by decide)
 
 end AlgorithmLib.Host

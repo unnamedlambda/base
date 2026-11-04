@@ -93,20 +93,12 @@ def letIn (a : Expr Γ) (body : Expr (Γ + 1) → Expr (Γ + 1)) : Expr Γ :=
 /-- `eˣ`.  Lowered via `ex2.approx`, the stack's one declared approximation. -/
 def expE (a : Expr Γ) : Expr Γ := .exp a
 
-/-- `1/√x` — one instruction on the hardware, hence a constructor. -/
-def rsqrtE (a : Expr Γ) : Expr Γ := .rsqrt a
-
 /-- `σ(x) = 1/(1 + e⁻ˣ)` — `Transformer.sigmoid`. -/
 abbrev sigmoid (a : Expr Γ) : Expr Γ := Transformer.sigmoid a
 
-/-- `silu(x) = x·σ(x)` — `Transformer.silu`, the one the MLP demo, the Qwen2
-    gate kernel and the silu demo all already use. -/
+/-- `silu(x) = x·σ(x)` — `Transformer.silu`, the one the MLP demo and the silu
+    demo use. -/
 abbrev silu (a : Expr Γ) : Expr Γ := Transformer.silu a
-
-/-- A finite reduction, in the **committed** left-fold order.  Writing this is
-    choosing that order; see `Law.sumAssoc` for what claiming any other would
-    cost. -/
-def sumOver (n : Nat) (f : Fin n → Expr Γ) : Expr Γ := .sum n f
 
 -- ---------------------------------------------------------------------------
 -- Shapes
@@ -186,9 +178,6 @@ def Vec.scale {n : Nat} (s : Expr Γ) (v : Vec n Γ) : Vec n Γ := fun i => s * 
 
 /-- Inner product, in the committed order — `Transformer.dot`. -/
 def Vec.dot {n : Nat} (a b : Vec n Γ) : Expr Γ := Transformer.dot n a b
-
-/-- Sum of squares. -/
-def Vec.sumSq {n : Nat} (v : Vec n Γ) : Expr Γ := v.dot v
 
 /-- `W · v` — `Transformer.matvec`.  The `n`s must agree; that is the check. -/
 def matVec {m n : Nat} (w : Mat m n Γ) (v : Vec n Γ) : Vec m Γ :=
@@ -303,10 +292,6 @@ def runStack {d Γ₀ : Nat}
     (readout : {Δ : Nat} → (Expr Γ₀ → Expr Δ) → Vec d Δ → Expr Δ)
     (n : Nat) (x : Vec d Γ₀) : Expr Γ₀ :=
   stackParams layer readout n (fun e => e) x
-
-/-- A dense layer with a SiLU: `silu(W·x)`. -/
-def denseSilu {m n : Nat} (w : Mat m n Γ) (v : Vec n Γ) : Vec m Γ :=
-  (matVec w v).map silu
 
 /-! **The surface is the same model.**  Each of these is `rfl`, which is what
     makes the shape layer sugar rather than a fork. -/

@@ -406,6 +406,8 @@ end Slots
 inductive PExpr where
   | lit (c : UInt64)
   | param (i : Nat)
+  | add (a b : PExpr)
+  | sub (a b : PExpr)
   | mul (a b : PExpr)
   | shl (a : PExpr) (k : Nat)
   | trunc32 (a : PExpr)
@@ -414,6 +416,8 @@ inductive PExpr where
 def PExpr.eval (vals : List UInt64) : PExpr → UInt64
   | .lit c => c
   | .param i => vals.getD i 0
+  | .add a b => a.eval vals + b.eval vals
+  | .sub a b => a.eval vals - b.eval vals
   | .mul a b => a.eval vals * b.eval vals
   | .shl a k => a.eval vals <<< UInt64.ofNat k
   | .trunc32 a => a.eval vals &&& 0xFFFFFFFF
@@ -429,24 +433,291 @@ def PArg.bits (vals : List UInt64) : PArg → UInt64
   | .known x => x
   | .sym e => e.eval vals
 
+/-- Whether the argument is computed from the parameters. -/
+def PArg.isSym : PArg → Bool
+  | .sym _ => true
+  | .known _ => false
+
+/-- The argument as a number computed from the parameters. -/
+def PArg.expr : PArg → PExpr
+  | .known x => .lit x
+  | .sym e => e
+
+theorem PArg.expr_eval (p : PArg) (vals : List UInt64) : p.expr.eval vals = p.bits vals := by
+  cases p <;> rfl
+
 /-- The device buffers sized by the parameters, as facts. -/
 def bufFacts (bufs : List (UInt64 × PExpr)) (vals : List UInt64) : TState :=
   bufs.map fun b => .devBuf b.1 (b.2.eval vals)
 
+/-- `n` bytes from device pointer `p` lie in an allocation the typestate
+    holds live. -/
+def allocFor (S : TState) (p : UInt64) (n : Nat) : Bool :=
+  match devPtrOf p with
+  | some (id, off) => S.any fun | .alloc i sz => i == id && decide (off + n ≤ sz) | _ => false
+  | none => false
+
+/-- Argument `i`'s value, where it is known. -/
+def argAt (os : List (Option UInt64)) (i : Nat) : Option UInt64 := (os[i]?).join
+
+/-- A dimension of a launch's grid or block that is not empty. -/
+def dimOk : Option UInt64 → Bool
+  | some x => x &&& 0xffffffff != 0
+  | none => false
+
+/-- **What a driver call needs of its arguments' values**, read where they are
+    known (`none` where one is not): the device ranges a copy reaches lie in
+    live allocations of the typestate `T`, and a launch's grid and block
+    have no empty dimension. A row (`cudaRow`) decides the rest
+    of the call from what the checker knows; this part is decided by the
+    checker where the values are known, and is otherwise left to be shown at
+    the values the program's variables take. -/
+def cudaVal (T : TState) : CudaFn → List (Option UInt64) → Bool
+  | .memcpyHtoD, os => match argAt os 0, argAt os 2 with
+    | some d, some n => allocFor T d n.toNat
+    | _, _ => false
+  | .memcpyDtoH, os => match argAt os 1, argAt os 2 with
+    | some s, some n => allocFor T s n.toNat
+    | _, _ => false
+  | .memcpyDtoD, os => match argAt os 0, argAt os 1, argAt os 2 with
+    | some d, some s, some n => allocFor T d n.toNat && allocFor T s n.toNat
+    | _, _, _ => false
+  | .launchKernel, os => (List.range 6).all fun i => dimOk (argAt os (i + 1))
+  | _, _ => true
+
+/-- What the checker knows of an argument's value: the numbers it lies
+    between and a number that divides it, where it knows any. -/
+abbrev Rng := Option (Nat × Nat × Nat)
+
+def rngAt (rs : List Rng) (i : Nat) : Rng := (rs[i]?).join
+
+/-- `n` bytes from every device pointer between `lo` and `hi` lie in one
+    allocation the typestate holds live. -/
+def allocForR (T : TState) (lo hi n : Nat) : Bool :=
+  decide (lo ≤ hi) && decide (hi < 2 ^ 64) &&
+  match devPtrOf (UInt64.ofNat lo), devPtrOf (UInt64.ofNat hi) with
+  | some (i, _), some (j, _) => i == j && allocFor T (UInt64.ofNat hi) n
+  | _, _ => false
+
+/-- A grid or block dimension between `lo` and `hi`, none of them empty. -/
+def dimR : Rng → Bool
+  | some (lo, hi, _) => decide (0 < lo) && decide (hi < 2 ^ 32)
+  | none => false
+
+/-- **What a driver call needs of its arguments' values, read from ranges**:
+    `cudaVal` at every value the ranges allow. -/
+def cudaValR (T : TState) : CudaFn → List Rng → Bool
+  | .memcpyHtoD, rs => match rngAt rs 0, rngAt rs 2 with
+    | some (dl, dh, _), some (_, nh, _) => allocForR T dl dh nh
+    | _, _ => false
+  | .memcpyDtoH, rs => match rngAt rs 1, rngAt rs 2 with
+    | some (sl, sh, _), some (_, nh, _) => allocForR T sl sh nh
+    | _, _ => false
+  | .memcpyDtoD, rs => match rngAt rs 0, rngAt rs 1, rngAt rs 2 with
+    | some (dl, dh, _), some (sl, sh, _), some (_, nh, _) => allocForR T dl dh nh && allocForR T sl sh nh
+    | _, _, _ => false
+  | .launchKernel, rs => (List.range 6).all fun i => dimR (rngAt rs (i + 1))
+  | _, _ => true
+
+/-- The allocation an operand of `span` elements of `e` bytes at `p` lies in,
+    where the typestate holds it live and the operand starts on an element. -/
+def operandOf (S : TState) (p : UInt64) (e span : Nat) : Option Nat :=
+  match devPtrOf p with
+  | some (id, off) => if allocFor S p (e * span) && off % e == 0 then some id else none
+  | none => none
+
+/-- The values at positions `idxs`, where every one of them is known. -/
+def getAll (os : List (Option UInt64)) (idxs : List Nat) : Option (List UInt64) := idxs.mapM (argAt os)
+
+/-- What a matrix-vector product needs of its arguments' values: arguments
+    cuBLAS accepts and the model states, each operand packed at the start of a
+    live allocation of `T`, the output in its own. -/
+def sgemvVal (T : TState) (trans m n A lda x incx y incy : UInt64) : Bool :=
+  let ls := sgemvLens trans m n
+  match operandOf T A 4 ((asI32 m).toNat * (asI32 n).toNat), operandOf T x 4 ls.1, operandOf T y 4 ls.2 with
+  | some ia, some ix, some iy =>
+      !sgemvInvalid trans m n lda incx incy && !sgemvUnstated m n lda incx incy && iy != ia && iy != ix
+  | _, _, _ => false
+
+/-- What a product of `ea`-, `eb`- and `ec`-byte elements needs of its
+    arguments' values: arguments cuBLAS accepts and the model states, every
+    operand in a live allocation of `T`, the output in its own. -/
+def gemmVal (T : TState) (ea eb ec : Nat) (ta tb m n k A lda sa B ldb sb C ldc sc batch : UInt64) : Bool :=
+  let sp := gemmSpans ta tb m n k lda ldb ldc sa sb sc batch
+  match operandOf T A ea sp.1, operandOf T B eb sp.2.1, operandOf T C ec sp.2.2 with
+  | some ia, some ib, some ic =>
+      !gemmInvalid ta tb m n k lda ldb ldc batch && !gemmUnstated m n k batch sa sb sc ldc && ic != ia && ic != ib
+  | _, _, _ => false
+
+/-- **What a cuBLAS call needs of its arguments' values**, read where they
+    are known: a product's operands, sizes and element types. -/
+def blasVal (T : TState) : CublasFn → List (Option UInt64) → Bool
+  | .sgemv, os => match getAll os [1, 2, 3, 5, 6, 7, 8, 10, 11] with
+    | some [trans, m, n, A, lda, x, incx, y, incy] => sgemvVal T trans m n A lda x incx y incy
+    | _ => false
+  | .sgemm, os => match getAll os [1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13] with
+    | some [ta, tb, m, n, k, A, lda, B, ldb, C, ldc] => gemmVal T 4 4 4 ta tb m n k A lda 0 B ldb 0 C ldc 0 1
+    | _ => false
+  | .sgemmStridedBatched, os => match getAll os [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17] with
+    | some [ta, tb, m, n, k, A, lda, sa, B, ldb, sb, C, ldc, sc, batch] =>
+        gemmVal T 4 4 4 ta tb m n k A lda sa B ldb sb C ldc sc batch
+    | _ => false
+  | .gemmEx, os => match getAll os [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18] with
+    | some [ta, tb, m, n, k, A, at_, lda, B, bt, ldb, C, ct, ldc, compute, algo] =>
+        bf16In32Out at_ bt ct compute algo && gemmVal T 2 2 4 ta tb m n k A lda 0 B ldb 0 C ldc 0 1
+    | _ => false
+  | .gemmStridedBatchedEx, os =>
+    match getAll os [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22] with
+    | some [ta, tb, m, n, k, A, at_, lda, sa, B, bt, ldb, sb, C, ct, ldc, sc, batch, compute, algo] =>
+        bf16In32Out at_ bt ct compute algo && gemmVal T 2 2 4 ta tb m n k A lda sa B ldb sb C ldc sc batch
+    | _ => false
+  | _, _ => true
+
+/-- The allocations a matrix-vector product reads, its output last, where
+    its operands lie in live allocations of `T`. -/
+def sgemvIds (T : TState) (trans m n A x y : UInt64) : Option (List Nat) :=
+  let ls := sgemvLens trans m n
+  match operandOf T A 4 ((asI32 m).toNat * (asI32 n).toNat), operandOf T x 4 ls.1, operandOf T y 4 ls.2 with
+  | some ia, some ix, some iy => some [ia, ix, iy]
+  | _, _, _ => none
+
+/-- The allocations a product reads, its output last, where its operands lie
+    in live allocations of `T`. -/
+def gemmIds (T : TState) (ea eb ec : Nat) (ta tb m n k A lda sa B ldb sb C ldc sc batch : UInt64) :
+    Option (List Nat) :=
+  let sp := gemmSpans ta tb m n k lda ldb ldc sa sb sc batch
+  match operandOf T A ea sp.1, operandOf T B eb sp.2.1, operandOf T C ec sp.2.2 with
+  | some ia, some ib, some ic => some [ia, ib, ic]
+  | _, _, _ => none
+
+/-- The positions of a cuBLAS product's arguments that name its operands
+    and the sizes they span. -/
+def blasIdxs : CublasFn → List Nat
+  | .sgemv => [1, 2, 3, 5, 7, 10]
+  | .sgemm => [1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13]
+  | .sgemmStridedBatched => [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17]
+  | .gemmEx => [1, 2, 3, 4, 5, 7, 9, 10, 12, 14, 16]
+  | .gemmStridedBatchedEx => [1, 2, 3, 4, 5, 7, 9, 10, 11, 13, 14, 16, 18, 19, 20]
+  | _ => []
+
+/-- The allocations a product reads, its output last, from the values at
+    `blasIdxs`. -/
+def blasIdsOf (T : TState) : CublasFn → List UInt64 → Option (List Nat)
+  | .sgemv, [trans, m, n, A, x, y] => sgemvIds T trans m n A x y
+  | .sgemm, [ta, tb, m, n, k, A, lda, B, ldb, C, ldc] => gemmIds T 4 4 4 ta tb m n k A lda 0 B ldb 0 C ldc 0 1
+  | .sgemmStridedBatched, [ta, tb, m, n, k, A, lda, sa, B, ldb, sb, C, ldc, sc, batch] =>
+      gemmIds T 4 4 4 ta tb m n k A lda sa B ldb sb C ldc sc batch
+  | .gemmEx, [ta, tb, m, n, k, A, lda, B, ldb, C, ldc] => gemmIds T 2 2 4 ta tb m n k A lda 0 B ldb 0 C ldc 0 1
+  | .gemmStridedBatchedEx, [ta, tb, m, n, k, A, lda, sa, B, ldb, sb, C, ldc, sc, batch] =>
+      gemmIds T 2 2 4 ta tb m n k A lda sa B ldb sb C ldc sc batch
+  | _, _ => none
+
+/-- **The allocations a cuBLAS product reads, its output last**, read where
+    its operands are known: what a capture orders it by. -/
+def blasIds (T : TState) (f : CublasFn) (os : List (Option UInt64)) : Option (List Nat) :=
+  (getAll os (blasIdxs f)).bind (blasIdsOf T f)
+
+/-- What a vendor call needs of its arguments' values (`cudaVal`, `blasVal`). -/
+def vendorVal (T : TState) : Ext → List (Option UInt64) → Bool
+  | .cuda f, os => cudaVal T f os
+  | .cublas f, os => blasVal T f os
+  | _, _ => true
+
+/-- The value a range pins down, where it pins one. -/
+def exactR : Rng → Option UInt64
+  | some (lo, hi, _) => if lo = hi ∧ lo < 2 ^ 64 then some (UInt64.ofNat lo) else none
+  | none => none
+
+/-- The allocation an operand of `span` elements of `e` bytes lies in at
+    every pointer a range allows, each pointer starting on an element. -/
+def operandOfR (T : TState) (r : Rng) (e span : Nat) : Option Nat :=
+  match r with
+  | some (lo, hi, al) =>
+      if allocForR T lo hi (e * span) && decide (0 < e) && al % e == 0 && 2 ^ 36 % e == 0 then
+        (devPtrOf (UInt64.ofNat lo)).map (·.1)
+      else none
+  | none => none
+
+/-- **What a matrix-vector product needs of its arguments' values, read from
+    ranges**: `sgemvVal` at every value they allow, each argument but the
+    operands pinned down and each operand inside one allocation. -/
+def sgemvValR (T : TState) (rs : List Rng) : Bool :=
+  match exactR (rngAt rs 1), exactR (rngAt rs 2), exactR (rngAt rs 3), exactR (rngAt rs 6),
+      exactR (rngAt rs 8), exactR (rngAt rs 11) with
+  | some trans, some m, some n, some lda, some incx, some incy =>
+      let ls := sgemvLens trans m n
+      match operandOfR T (rngAt rs 5) 4 ((asI32 m).toNat * (asI32 n).toNat),
+          operandOfR T (rngAt rs 7) 4 ls.1, operandOfR T (rngAt rs 10) 4 ls.2 with
+      | some ia, some ix, some iy =>
+          !sgemvInvalid trans m n lda incx incy && !sgemvUnstated m n lda incx incy && iy != ia && iy != ix
+      | _, _, _ => false
+  | _, _, _, _, _, _ => false
+
+/-- What a cuBLAS call needs of its arguments' values, read from ranges. -/
+def blasValR (T : TState) : CublasFn → List Rng → Bool
+  | .sgemv, rs => sgemvValR T rs
+  | _, _ => false
+
+/-- What a vendor call needs of its arguments' values, read from ranges: the
+    driver's calls (`cudaValR`) and cuBLAS's (`blasValR`). -/
+def vendorValR (T : TState) : Ext → List Rng → Bool
+  | .cuda f, rs => cudaValR T f rs
+  | .cublas f, rs => blasValR T f rs
+  | _, _ => false
+
+/-- The allocations sized by the parameters, as facts. -/
+def allocFacts (allocs : List (Nat × PExpr)) (vals : List UInt64) : TState :=
+  allocs.map fun a => .alloc a.1 (a.2.eval vals).toNat
+
+/-- What a relation between two numbers says. -/
+def RelHolds : ICmpCond → Nat → Nat → Prop
+  | .ult, a, b => a < b
+  | .ule, a, b => a ≤ b
+  | .ugt, a, b => b < a
+  | .uge, a, b => b ≤ a
+  | .eq, a, b => a = b
+  | .ne, a, b => a ≠ b
+  | _, _, _ => True
+
+/-- A relation the parameters' values are known to stand in, learned where
+    the program compared two numbers computed from them. -/
+structure PCond where
+  rel : ICmpCond
+  a : PExpr
+  b : PExpr
+  deriving DecidableEq, Repr
+
+def PCond.Holds (c : PCond) (vals : List UInt64) : Prop :=
+  RelHolds c.rel (c.a.eval vals).toNat (c.b.eval vals).toNat
+
+/-- A call an obligation is about: an entry point, or a vendor function. -/
+inductive OCall where
+  | ffi (f : Ffi)
+  | ext (e : Ext)
+  deriving DecidableEq, Repr
+
 /-- A call whose precondition the parameters decide, written out for a proof
-    to show: entry point `f` handed `args`, in a typestate of `facts` and the
-    device buffers `bufs` sized by the parameters. -/
+    to show: `c` handed `args`, in a typestate of `facts`, the device buffers
+    `bufs` and the allocations `allocs` sized by the parameters, where the
+    parameters' values stand in the relations `conds`. -/
 structure Obl where
-  f : Ffi
+  c : OCall
   args : List PArg
   facts : TState
   bufs : List (UInt64 × PExpr)
+  allocs : List (Nat × PExpr) := []
+  conds : List PCond := []
   deriving DecidableEq, Repr
 
-/-- An obligation shown: for the parameters' values, every world its typestate
-    describes meets the call's precondition. -/
+/-- An obligation shown, for the parameters' values, where they stand in
+    its relations: an entry point's precondition holds in every world the
+    typestate describes; a vendor function's arguments' values are ones it
+    accepts (`vendorVal`), given the allocations the parameters size. -/
 def Obl.Holds (o : Obl) (vals : List UInt64) : Prop :=
-  ∀ w, TState.holds (o.facts ++ bufFacts o.bufs vals) w → Contracts.Pre o.f (o.args.map (PArg.bits vals)) w
+  (∀ c ∈ o.conds, c.Holds vals) →
+  match o.c with
+  | .ffi f => ∀ w, TState.holds (o.facts ++ bufFacts o.bufs vals) w → Contracts.Pre f (o.args.map (PArg.bits vals)) w
+  | .ext e => vendorVal (o.facts ++ allocFacts o.allocs vals) e (o.args.map fun a => some (a.bits vals)) = true
 
 /-- What the checker knows of the program's parameters, never their values:
     the slots holding a number computed from them, the cells holding one, the
@@ -456,6 +727,11 @@ structure Par where
   slots : List (R × ClifTy × PExpr) := []
   cells : List (UInt64 × Nat) := []
   bufs : List (UInt64 × PExpr) := []
+  /-- Allocations sized by the parameters: `(i, e)`, allocation `i` live with
+      `e`'s value's bytes. -/
+  allocs : List (Nat × PExpr) := []
+  /-- Relations the parameters' values stand in. -/
+  conds : List PCond := []
   obls : List Obl := []
   collect : Bool := false
   /-- Slots holding what an eight-byte cell of memory holds: `(r, a)`, slot
@@ -463,10 +739,10 @@ structure Par where
   ctxs : List (R × UInt64) := []
   deriving Inhabited, DecidableEq
 
-/-- The cells and buffers the record names, as facts at the parameters'
-    values. -/
+/-- The cells, buffers and allocations the record names, as facts at the
+    parameters' values. -/
 def Par.facts (P : Par) (vals : List UInt64) : TState :=
-  P.cells.map (fun c => .cell c.1 (vals.getD c.2 0)) ++ bufFacts P.bufs vals
+  P.cells.map (fun c => .cell c.1 (vals.getD c.2 0)) ++ bufFacts P.bufs vals ++ allocFacts P.allocs vals
 
 /-- What the record says of an environment and a world, at the parameters'
     values `vals`. -/
@@ -475,15 +751,16 @@ def Par.At (P : Par) (vals : List UInt64) (Γ : Env) (w : World) : Prop :=
   (∀ s ∈ P.slots, Γ[s.1]? = some (.sc s.2.1 (s.2.2.eval vals))) ∧
   (P.facts vals).holds w ∧
   (∀ o ∈ P.obls, (o.Holds vals)) ∧
-  (∀ c ∈ P.ctxs, ∃ s, Γ[c.1]? = some (.sc .i64 s) ∧ w.mem.load c.2 8 = some s)
+  (∀ c ∈ P.ctxs, ∃ s, Γ[c.1]? = some (.sc .i64 s) ∧ w.mem.load c.2 8 = some s) ∧
+  (∀ c ∈ P.conds, c.Holds vals)
 
 /-- The record with what it says of the world forgotten. -/
-def Par.clearWorld (P : Par) : Par := { P with cells := [], bufs := [], ctxs := [] }
+def Par.clearWorld (P : Par) : Par := { P with cells := [], bufs := [], allocs := [], ctxs := [] }
 
 theorem Par.At.clearWorld {P : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : P.At vals Γ w)
     (w' : World) : P.clearWorld.At vals Γ w' :=
-  ⟨h.1, h.2.1, fun _ hx => by simp [Par.clearWorld, Par.facts, bufFacts] at hx, h.2.2.2.1,
-    fun _ hx => by simp [Par.clearWorld] at hx⟩
+  ⟨h.1, h.2.1, fun _ hx => by simp [Par.clearWorld, Par.facts, bufFacts, allocFacts] at hx, h.2.2.2.1,
+    fun _ hx => by simp [Par.clearWorld] at hx, h.2.2.2.2.2⟩
 
 /-- The record keeping, of the cells and buffers it names, those `k` keeps:
     a cell or a buffer read by where it is, whatever its value, and a slot
@@ -491,40 +768,70 @@ theorem Par.At.clearWorld {P : Par} {vals : List UInt64} {Γ : Env} {w : World} 
 def Par.keepWorld (P : Par) (k : Fact → Bool) : Par :=
   { P with cells := P.cells.filter (fun c => k (.cell c.1 0)),
            bufs := P.bufs.filter (fun b => k (.devBuf b.1 0)),
+           allocs := P.allocs.filter (fun a => k (.alloc a.1 0)),
            ctxs := P.ctxs.filter (fun c => k (.cell c.2 0)) }
 
 /-- What the record keeps holds in a world where what `k` keeps does. -/
 theorem Par.At.keepWorld {P : Par} {vals : List UInt64} {Γ : Env} {w w' : World} (h : P.At vals Γ w)
     {k : Fact → Bool} (hc : ∀ a v, k (.cell a v) = k (.cell a 0)) (hb : ∀ b n, k (.devBuf b n) = k (.devBuf b 0))
-    (hk : ∀ x, k x = true → x.holds w → x.holds w') : (P.keepWorld k).At vals Γ w' := by
-  refine ⟨h.1, h.2.1, fun x hx => ?_, h.2.2.2.1, fun c hcm => ?_⟩
-  · simp only [Par.keepWorld, Par.facts, bufFacts, List.mem_append, List.mem_map, List.mem_filter] at hx
-    rcases hx with ⟨c, ⟨hcm, hkc⟩, rfl⟩ | ⟨d, ⟨hdm, hkd⟩, rfl⟩
-    · exact hk _ (by rw [hc]; exact hkc) (h.2.2.1 _ (List.mem_append_left _ (List.mem_map_of_mem hcm)))
-    · exact hk _ (by rw [hb]; exact hkd) (h.2.2.1 _ (List.mem_append_right _ (List.mem_map_of_mem hdm)))
+    (hk : ∀ x, k x = true → x.holds w → x.holds w')
+    (ha : ∀ i n, k (.alloc i n) = k (.alloc i 0) := by intros; rfl) : (P.keepWorld k).At vals Γ w' := by
+  refine ⟨h.1, h.2.1, fun x hx => ?_, h.2.2.2.1, fun c hcm => ?_, h.2.2.2.2.2⟩
+  · simp only [Par.keepWorld, Par.facts, bufFacts, allocFacts, List.mem_append, List.mem_map,
+      List.mem_filter] at hx
+    have hP : ∀ y, y ∈ Par.facts P vals → y.holds w := h.2.2.1
+    simp only [Par.facts, bufFacts, allocFacts, List.mem_append, List.mem_map] at hP
+    rcases hx with (⟨c, ⟨hcm, hkc⟩, rfl⟩ | ⟨d, ⟨hdm, hkd⟩, rfl⟩) | ⟨a, ⟨ham, hka⟩, rfl⟩
+    · exact hk _ (by rw [hc]; exact hkc) (hP _ (.inl (.inl ⟨c, hcm, rfl⟩)))
+    · exact hk _ (by rw [hb]; exact hkd) (hP _ (.inl (.inr ⟨d, hdm, rfl⟩)))
+    · exact hk _ (by rw [ha]; exact hka) (hP _ (.inr ⟨a, ham, rfl⟩))
   · obtain ⟨hm, hkc⟩ := List.mem_filter.mp hcm
-    obtain ⟨s, hΓ, hl⟩ := h.2.2.2.2 c hm
+    obtain ⟨s, hΓ, hl⟩ := h.2.2.2.2.1 c hm
     exact ⟨s, hΓ, hk (.cell c.2 s) (by rw [hc]; exact hkc) hl⟩
 
-/-- What two records both say: the slots both say hold what a cell holds,
-    and the calls gathered, where the run gathers them. -/
+/-- What two records both say: the cells, buffers and allocations both name,
+    the slots both say hold what a cell holds, the relations both know, and
+    the calls gathered, where the run gathers them. -/
 def Par.join (P Q : Par) : Par :=
   { collect := P.collect && Q.collect, obls := if P.collect && Q.collect then P.obls ++ Q.obls else [],
-    ctxs := P.ctxs.filter Q.ctxs.contains }
+    cells := P.cells.filter Q.cells.contains, bufs := P.bufs.filter Q.bufs.contains,
+    allocs := P.allocs.filter Q.allocs.contains,
+    ctxs := P.ctxs.filter Q.ctxs.contains, conds := P.conds.filter Q.conds.contains }
+
+/-- The facts of the join are the left record's. -/
+theorem Par.join_facts_left {P Q : Par} {vals : List UInt64} {x : Fact} (h : x ∈ (P.join Q).facts vals) :
+    x ∈ P.facts vals := by
+  simp only [Par.join, Par.facts, bufFacts, allocFacts, List.mem_append, List.mem_map, List.mem_filter] at h ⊢
+  rcases h with (⟨c, ⟨hc, -⟩, rfl⟩ | ⟨b, ⟨hb, -⟩, rfl⟩) | ⟨a, ⟨ha, -⟩, rfl⟩
+  · exact .inl (.inl ⟨c, hc, rfl⟩)
+  · exact .inl (.inr ⟨b, hb, rfl⟩)
+  · exact .inr ⟨a, ha, rfl⟩
+
+/-- The facts of the join are the right record's. -/
+theorem Par.join_facts_right {P Q : Par} {vals : List UInt64} {x : Fact} (h : x ∈ (P.join Q).facts vals) :
+    x ∈ Q.facts vals := by
+  simp only [Par.join, Par.facts, bufFacts, allocFacts, List.mem_append, List.mem_map, List.mem_filter,
+    List.contains_iff_mem] at h ⊢
+  rcases h with (⟨c, ⟨-, hc⟩, rfl⟩ | ⟨b, ⟨-, hb⟩, rfl⟩) | ⟨a, ⟨-, ha⟩, rfl⟩
+  · exact .inl (.inl ⟨c, hc, rfl⟩)
+  · exact .inl (.inr ⟨b, hb, rfl⟩)
+  · exact .inr ⟨a, ha, rfl⟩
 
 theorem Par.At.join_left {P : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : P.At vals Γ w) (Q : Par) :
     (P.join Q).At vals Γ w :=
   ⟨by simp [Par.join, h.1], fun _ e => by simp [Par.join] at e,
-    fun _ e => by simp [Par.join, Par.facts, bufFacts] at e,
+    fun _ e => h.2.2.1 _ (Par.join_facts_left e),
     fun _ e => by simp only [Par.join, h.1, Bool.false_and, Bool.false_eq_true, if_false, List.not_mem_nil] at e,
-    fun c hc => h.2.2.2.2 c (List.mem_filter.mp hc).1⟩
+    fun c hc => h.2.2.2.2.1 c (List.mem_filter.mp hc).1,
+    fun c hc => h.2.2.2.2.2 c (List.mem_filter.mp hc).1⟩
 
 theorem Par.At.join_right {Q : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : Q.At vals Γ w) (P : Par) :
     (P.join Q).At vals Γ w :=
   ⟨by simp [Par.join, h.1], fun _ e => by simp [Par.join] at e,
-    fun _ e => by simp [Par.join, Par.facts, bufFacts] at e,
+    fun _ e => h.2.2.1 _ (Par.join_facts_right e),
     fun _ e => by simp only [Par.join, h.1, Bool.and_false, Bool.false_eq_true, if_false, List.not_mem_nil] at e,
-    fun c hc => h.2.2.2.2 c (by simpa using (List.mem_filter.mp hc).2)⟩
+    fun c hc => h.2.2.2.2.1 c (by simpa using (List.mem_filter.mp hc).2),
+    fun c hc => h.2.2.2.2.2 c (by simpa using (List.mem_filter.mp hc).2)⟩
 
 /-- The record with the slots from `n` on forgotten. -/
 def Par.cut (P : Par) (n : Nat) : Par :=
@@ -532,25 +839,25 @@ def Par.cut (P : Par) (n : Nat) : Par :=
 
 theorem Par.At.cut {P : Par} {vals : List UInt64} {Γ Γ' : Env} {w : World} (h : P.At vals Γ w) {n : Nat}
     (hΓ : ∀ r, r < n → Γ'[r]? = Γ[r]?) : (P.cut n).At vals Γ' w := by
-  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2.1, fun c hc => ?_⟩
+  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2.1, fun c hc => ?_, h.2.2.2.2.2⟩
   · obtain ⟨hs, hn⟩ := List.mem_filter.mp hs
     rw [hΓ _ (by simpa using hn)]
     exact h.2.1 s hs
   · obtain ⟨hm, hn⟩ := List.mem_filter.mp hc
     rw [hΓ _ (by simpa using hn)]
-    exact h.2.2.2.2 c hm
+    exact h.2.2.2.2.1 c hm
 
 /-- What the record says of slots holds as more are appended. -/
 theorem Par.At.extend {P : Par} {vals : List UInt64} {Γ Γ' : Env} {w : World} (h : P.At vals Γ w)
     (hΓ : ∀ r, r < Γ.size → Γ'[r]? = Γ[r]?) : P.At vals Γ' w := by
-  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2.1, fun c hc => ?_⟩
+  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2.1, fun c hc => ?_, h.2.2.2.2.2⟩
   · have e := h.2.1 s hs
     have hlt : s.1 < Γ.size := by
       rcases Nat.lt_or_ge s.1 Γ.size with h' | h'
       · exact h'
       · rw [Array.getElem?_eq_none h'] at e; cases e
     rw [hΓ _ hlt, e]
-  · obtain ⟨s, e, hl⟩ := h.2.2.2.2 c hc
+  · obtain ⟨s, e, hl⟩ := h.2.2.2.2.1 c hc
     have hlt : c.1 < Γ.size := by
       rcases Nat.lt_or_ge c.1 Γ.size with h' | h'
       · exact h'
@@ -794,13 +1101,33 @@ theorem AS.Holds.parSlot {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w)
     · exact hx t e rfl
     · exact hP.2.1 s hs
 
+/-- The state knowing the parameters' values stand in relation `c`, where
+    there is one. -/
+def AS.addCond (A : AS) : Option PCond → AS
+  | some c => if A.par.conds.contains c then A else A.withPar { A.par with conds := c :: A.par.conds }
+  | none => A
+
+theorem AS.Holds.addCond {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {c : Option PCond}
+    (hc : ∀ c', c = some c' → c'.Holds vals) : (A.addCond c).Holds vals Γ w := by
+  cases c with
+  | none => exact h
+  | some c =>
+    by_cases hin : A.par.conds.contains c = true
+    · simp only [AS.addCond, hin, if_true]; exact h
+    simp only [AS.addCond, hin]
+    have hP := h.1.2.2
+    refine h.withPar ⟨hP.1, hP.2.1, hP.2.2.1, hP.2.2.2.1, hP.2.2.2.2.1, fun c' hm => ?_⟩
+    rcases List.mem_cons.mp hm with rfl | hm
+    · exact hc _ rfl
+    · exact hP.2.2.2.2.2 c' hm
+
 /-- The state saying of slots holding what cells hold exactly `xs`. -/
 def AS.withCtxs (A : AS) (xs : List (R × UInt64)) : AS := A.withPar { A.par with ctxs := xs }
 
 theorem AS.Holds.withCtxs {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {xs : List (R × UInt64)}
     (hx : ∀ c ∈ xs, ∃ s, Γ[c.1]? = some (.sc .i64 s) ∧ w.mem.load c.2 8 = some s) :
     (A.withCtxs xs).Holds vals Γ w :=
-  h.withPar ⟨h.1.2.2.1, h.1.2.2.2.1, h.1.2.2.2.2.1, h.1.2.2.2.2.2.1, hx⟩
+  h.withPar ⟨h.1.2.2.1, h.1.2.2.2.1, h.1.2.2.2.2.1, h.1.2.2.2.2.2.1, hx, h.1.2.2.2.2.2.2.2⟩
 
 /-- The state knowing slot `r` holds what the eight-byte cell at `a` holds,
     where `x` names one. -/
@@ -815,10 +1142,10 @@ theorem AS.Holds.parCtx {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) 
   | none => exact h
   | some a =>
     have hP := h.1.2.2
-    refine h.withPar ⟨hP.1, hP.2.1, hP.2.2.1, hP.2.2.2.1, fun c hc => ?_⟩
+    refine h.withPar ⟨hP.1, hP.2.1, hP.2.2.1, hP.2.2.2.1, fun c hc => ?_, hP.2.2.2.2.2⟩
     rcases List.mem_cons.mp hc with rfl | hc
     · exact hx a rfl
-    · exact hP.2.2.2.2 c hc
+    · exact hP.2.2.2.2.1 c hc
 
 theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {av : AV} {v : V} {σ : Sym}
     (hv : av.Desc (Γ.push v) w v) (hσ : σ.Fits (Γ.push v) w A.len (A.len + 1)) :
@@ -1051,6 +1378,58 @@ theorem AV.forgetK_hand {av : AV} {k0 k : Contracts.Held} {b : Bool} (h : av.for
     · cases h
     · exact h
   · split at h <;> cases h
+
+/-- The state with every handle of kinds `ks` forgotten. -/
+def AS.forgetKinds (A : AS) (ks : List Contracts.Held) : AS := ks.foldl (fun A k => A.forgetKind (some k)) A
+
+theorem AS.Holds.forgetKinds {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) (ks : List Contracts.Held) :
+    (A.forgetKinds ks).Holds vals Γ w := by
+  induction ks generalizing A with
+  | nil => exact h
+  | cons k ks ih => exact ih (h.forgetKind (some k))
+
+theorem AS.forgetKinds_facts (A : AS) (ks : List Contracts.Held) : (A.forgetKinds ks).facts = A.facts := by
+  induction ks generalizing A with
+  | nil => rfl
+  | cons k ks ih => exact ih _
+
+theorem AS.forgetKinds_par (A : AS) (ks : List Contracts.Held) : (A.forgetKinds ks).par = A.par := by
+  induction ks generalizing A with
+  | nil => rfl
+  | cons k ks ih => exact ih _
+
+/-- A handle the state still names after forgetting kinds `ks` is of none of
+    them, and was named before. -/
+theorem AS.forgetKinds_hand {A : AS} {ks : List Contracts.Held} {i : R} {k : Contracts.Held} {b : Bool}
+    (h : (A.forgetKinds ks).get i = .hand k b) : k ∉ ks ∧ A.get i = .hand k b := by
+  induction ks generalizing A with
+  | nil => exact ⟨by simp, h⟩
+  | cons k' ks ih =>
+      obtain ⟨hk, h'⟩ := ih h
+      have hne := AS.forgetKind_hand h'
+      rw [AS.forgetKind_get] at h'
+      cases e : A.get i <;> rw [e] at h' <;> simp only [AV.forgetK, reduceCtorEq] at h'
+      · rename_i k0 b0
+        split at h'
+        · cases h'
+        · cases h'
+          refine ⟨?_, rfl⟩
+          simp only [List.mem_cons, not_or]
+          exact ⟨fun e' => hne (by rw [e']), hk⟩
+      · split at h' <;> cases h'
+
+theorem AS.forgetKinds_blk {A : AS} {ks : List Contracts.Held} {i : R} {n : Nat} {b : Bool}
+    (h : (A.forgetKinds ks).get i = .blk n b) : A.get i = .blk n b := by
+  induction ks generalizing A with
+  | nil => exact h
+  | cons k' ks ih =>
+      have h' := ih h
+      rw [AS.forgetKind_get] at h'
+      cases e : A.get i <;> rw [e] at h' <;> simp only [AV.forgetK, reduceCtorEq] at h'
+      · split at h' <;> cases h'
+      · split at h'
+        · cases h'
+        · exact h'
 
 theorem AS.forgetExt_hand {A : AS} {e : Ext} {i : R} {k : Contracts.Held} {b : Bool}
     (h : (A.forgetExt e).get i = .hand k b) : e.closes ≠ some k := by
@@ -1532,6 +1911,9 @@ def AV.num : AV → Option Num
   | .sc t => if t.isInt then some ⟨t, 0, 2 ^ 64 - 1, 1, none⟩ else none
   | .cmp .. => some ⟨.i8, 0, 1, 1, none⟩
   | _ => none
+
+/-- What the checker knows of an argument's value, as a range. -/
+def AV.rng (a : AV) : Rng := a.num.map fun n => (n.lo, n.hi, n.al)
 
 theorem AV.num_desc {Γ : Env} {w : World} {av : AV} {v : V} {n : Num}
     (hd : av.Desc Γ w v) (h : av.num = some n) : ∃ x, v = .sc n.t x ∧ n.Holds w x.toNat := by
@@ -2521,6 +2903,30 @@ theorem uextA_sound {Γ : Env} {w : World} {ga av : AV} {a : R} {u : V}
   refine ⟨_, ?_, fun _ => ⟨x &&& widthMask na.t, by rw [hnt], by rw [mask_toNat hi]; exact hh⟩⟩
   simp only [evalOp, un, Sem.get, ha, Option.bind_eq_bind, Option.bind_some, hok, if_true]
 
+/-- An `i64` known to be below `2 ^ 32`, narrowed: the same number. -/
+def reduceA (ga : AV) : Option AV := do
+  let a ← ga.num
+  if a.t = .i64 ∧ a.hi < 2 ^ 32 then pure (.int ⟨.i32, a.lo, a.hi, a.al, none⟩) else none
+
+theorem reduceA_sound {Γ : Env} {w : World} {ga av : AV} {a : R} {u : V}
+    (ha : Γ[a]? = some u) (hda : ga.Desc Γ w u) (h : reduceA ga = some av) (m : Mem) :
+    ∃ v, evalOp m Γ (.ireduce32 a) = some v ∧ ∀ Γ' : Env, av.Desc Γ' w v := by
+  simp only [reduceA, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+  obtain ⟨na, hna, h⟩ := h
+  split at h
+  · rename_i hc
+    obtain ⟨ht, hhi⟩ := hc
+    simp only [Option.pure_def, Option.some.injEq] at h
+    subst h
+    obtain ⟨x, rfl, hlo, hx, hal, -⟩ := AV.num_desc hda hna
+    rw [ht] at ha
+    have hsm : x.toNat < 2 ^ ClifTy.i32.width := by show x.toNat < 2 ^ 32; omega
+    refine ⟨.sc .i32 x, ?_, fun _ => ⟨x, rfl, hlo, hx, hal, trivial⟩⟩
+    simp only [evalOp, un, Sem.get, ha, Option.bind_eq_bind, Option.bind_some]
+    rw [norm_small (t := .i32) rfl hsm]
+    rfl
+  · cases h
+
 theorem cmpA_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {c : ICmpCond} {a b : R} {av : AV}
     (hc : cmpA A c a b = some av) (m : Mem) :
     ∃ v, evalOp m Γ (.icmp c a b) = some v ∧ ∀ v0, av.Desc (Γ.push v0) w v := by
@@ -2560,6 +2966,7 @@ def special (A : AS) : Op → Option AV
   | .udiv a b => numBin Num.udiv (A.get a) (A.get b)
   | .ibin k a b => ibinA k (A.get a) (A.get b)
   | .uextend64 a => uextA (A.get a)
+  | .ireduce32 a => reduceA (A.get a)
   | .icmp c a b => cmpA A c a b
   | _ => none
 
@@ -2657,6 +3064,12 @@ theorem special_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o
     have hna : A.get a ≠ .any := by intro e; rw [e] at hs; cases hs
     obtain ⟨u, hu, hdu⟩ := h.get' hna
     obtain ⟨v, hv, hd⟩ := uextA_sound hu hdu hs m
+    exact ⟨v, hv, fun _ => hd _⟩
+  case ireduce32 a =>
+    simp only [special] at hs
+    have hna : A.get a ≠ .any := by intro e; rw [e] at hs; cases hs
+    obtain ⟨u, hu, hdu⟩ := h.get' hna
+    obtain ⟨v, hv, hd⟩ := reduceA_sound hu hdu hs m
     exact ⟨v, hv, fun _ => hd _⟩
   case icmp c a b =>
     simp only [special] at hs

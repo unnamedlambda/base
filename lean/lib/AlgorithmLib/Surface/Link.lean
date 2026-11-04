@@ -1,6 +1,4 @@
 module
-public import AlgorithmLib.Surface.LibCuda
-meta import AlgorithmLib.Surface.LibCuda
 public import AlgorithmLib.Surface.LibHt
 meta import AlgorithmLib.Surface.LibHt
 public import AlgorithmLib.Surface.LibMath
@@ -9,8 +7,6 @@ public import AlgorithmLib.Surface.LibLmdb
 meta import AlgorithmLib.Surface.LibLmdb
 public import AlgorithmLib.Surface.LibThread
 meta import AlgorithmLib.Surface.LibThread
-public import AlgorithmLib.Surface.LibWindow
-meta import AlgorithmLib.Surface.LibWindow
 public import AlgorithmLib.Core.Artifact
 meta import AlgorithmLib.Core.Artifact
 import all Init.Data.Repr
@@ -33,11 +29,11 @@ open AlgorithmLib.IR
 open AlgorithmLib.Prog
 open AlgorithmLib.Lib
 
-/-- The library function implementing `f`, for a program that does or does
-    not call cuBLAS; `none` for an entry point the engine still provides. -/
-def implOf (blas : Bool) (f : Ffi) : Option Impl :=
-  [LibCuda.implOf blas f, LibHt.implOf f, LibMath.implOf f, LibLmdb.implOf f,
-    LibThread.implOf f, LibWgpu.implOf f, LibWindow.implOf f].findSome? id
+/-- The library function implementing `f`; `none` for an entry point the
+    engine still provides. -/
+def implOf (f : Ffi) : Option Impl :=
+  [LibHt.implOf f, LibMath.implOf f, LibLmdb.implOf f,
+    LibThread.implOf f].findSome? id
 
 /-- Point every call to an entry point in `table` at its library function. A
     function answers an `i64`, so an `i32` answer is the low half of it and an
@@ -79,14 +75,13 @@ def ffisOf (f : FuncData) : List Ffi :=
     A program that calls none is returned as it is. -/
 def link (fs : List FuncData) : Except String (List FuncData) := do
   let called := fs.flatMap ffisOf
-  let used := Ffi.all.filter fun g => (implOf false g).isSome && called.contains g
+  let used := Ffi.all.filter fun g => (implOf g).isSome && called.contains g
   if used.isEmpty then return fs
-  let blas := used.any LibCuda.isBlas
   let n := fs.length
   let mut table := []
   let mut lib := []
   for g in used do
-    match implOf blas g with
+    match implOf g with
     | none => throw s!"{g.cname} has no library implementation"
     | some impl =>
         let k := n + table.length

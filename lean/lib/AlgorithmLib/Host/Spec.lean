@@ -115,38 +115,19 @@ theorem Frame.mayWrite_sound {fr : Frame} {args : List UInt64} {x : UInt64} (h :
 -- ---------------------------------------------------------------------------
 
 /-- The entry points with an executable contract that may write host memory:
-    files, standard streams, the libm shims, the contexts'
-    slots, downloads, pinned allocation, wgpu, the LMDB context and scan, and
-    the window context and poll. -/
+    the libm shims, the contexts' slots, and the LMDB context and scan. -/
 def hostTouching : List IR.Ffi :=
-  [.sinf, .cosf, .powf, .cudaInit,
-   .cudaCleanup, .cudaDownload, .cudaDownloadOffset, .gpuInit, .gpuCleanup, .gpuCreateBuffer,
-   .gpuCreatePipeline, .gpuUpload, .gpuUploadPtr, .gpuDispatch, .gpuDownload, .gpuDownloadPtr,
-   .cudaPinnedAlloc, .cudaPinnedFree, .lmdbInit, .lmdbCleanup, .lmdbCursorScan,
-   .windowInit, .windowCleanup, .windowPoll, .cudaUploadAsync, .cudaUploadOffsetAsync,
-   .cudaDownloadAsync, .threadInit, .threadCleanup, .threadJoin]
-
-/-- The entry points with an executable contract that change only the device:
-    written with `devOnly`, so one lemma gives all their frames. -/
-def deviceOnly : List IR.Ffi :=
-  [.cudaCreateBuffer, .cudaUpload, .cudaUploadOffset, .cudaFreeBuffer, .cudaSync, .cudaPinnedPtr,
-   .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cudaLaunch, .cudaLaunchNamed, .cudaLaunchOnStream,
-   .cudaStreamCreate, .cudaStreamSync, .cudaStreamDestroy, .cudaEventCreate, .cudaEventRecord, .cudaStreamWaitEvent,
-   .cudaEventDestroy, .cudaGraphBeginCapture, .cudaGraphEndCapture, .cudaGraphUpload, .cudaGraphLaunch, .cudaGraphDestroy,
-   .cublasSgemv, .cublasSgemm, .cublasSgemmOnStream, .cublasGemmExBf16, .cublasSgemvOnStream,
-   .cublasGemmStridedBatchedExBf16, .cublasPtrArray, .cublasSgemmBatchedOnStream,
-   .cudaLaunchNamedOnStream, .cudaEventElapsedMsBits]
+  [.sinf, .cosf, .powf, .lmdbInit, .lmdbCleanup, .lmdbCursorScan,
+   .threadInit, .threadCleanup, .threadJoin]
 
 /-- The entry points with an executable contract that change only state the
-    program cannot address: the LMDB context and what its directories hold,
-    the window, and loaded machine code. -/
+    program cannot address: the LMDB context and what its directories hold. -/
 def offHost : List IR.Ffi :=
-  [.lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .windowOpen,
-   .windowPresentGpuBuffer]
+  [.lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn]
 
 /-- The entry points with an executable contract: the families the corpora run
     through the real symbols. -/
-def contracted : List IR.Ffi := hostTouching ++ deviceOnly ++ offHost
+def contracted : List IR.Ffi := hostTouching ++ offHost
 
 /-- Everything known about one entry point. -/
 structure Spec where
@@ -168,7 +149,7 @@ def _root_.AlgorithmLib.IR.Ffi.spec (f : IR.Ffi) : Spec where
 theorem callBits_uncontracted (f : IR.Ffi) (hf : f ∉ contracted) (bits : List UInt64)
     (w : World) : callBits f bits w = none := by
   unfold callBits
-  cases f <;> simp_all [contracted, hostTouching, deviceOnly, offHost]
+  cases f <;> simp_all [contracted, hostTouching, offHost]
 
 theorem callFfi_uncontracted (f : IR.Ffi) (hf : f ∉ contracted) (args : List V) (w : World) :
     callFfi f args w = none := by
@@ -303,60 +284,8 @@ theorem ffiLmdbCommitWriteTxn_mem {bits : List UInt64} {w : World} {r w'}
         · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
   · cases h
 
-theorem World.pump_mem (w : World) : w.pump.mem = w.mem := by
-  unfold World.pump; split <;> rfl
-
 theorem le64_size (x : UInt64) : (le64 x).size = 8 := by
   simp [le64]
-
-theorem winEventBytes_size (es : List WinEvent) : (winEventBytes es).size = 32 * es.length := by
-  unfold winEventBytes
-  suffices ∀ (acc : ByteArray), (es.foldl (fun acc e => acc ++ le64 e.kind ++ le64 e.a ++ le64 e.b ++
-      le64 e.c) acc).size = acc.size + 32 * es.length by simpa using this ByteArray.empty
-  induction es with
-  | nil => intro acc; simp
-  | cons e es ih =>
-      intro acc
-      rw [List.foldl_cons, ih]
-      simp only [ByteArray.size_append, le64_size, List.length_cons]
-      omega
-
-theorem ffiWindowOpen_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiWindowOpen bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiWindowOpen at h
-  split at h
-  · split at h
-    · (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-    · split at h
-      · cases h
-      · (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-      · split at h
-        · (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-        · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-          · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl
-  · cases h
-
-theorem ffiWindowPresentGpuBuffer_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiWindowPresentGpuBuffer bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiWindowPresentGpuBuffer at h
-  split at h
-  · split at h
-    · (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-    · split at h
-      · cases h
-      · (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-      · dsimp only at h
-        obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-        split at h
-        · (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-        · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          split at h
-          · (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-          · split at h <;> (first | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; first | rfl | exact World.pump_mem _) | cases h)
-  · cases h
 
 theorem ffiNativeLoad_mem {bits : List UInt64} {w : World} {r w'}
     (h : ffiNativeLoad bits w = some (r, w')) : w'.mem = w.mem := by
@@ -485,65 +414,8 @@ theorem asyncCopy_region {w : World} {p : Nat} {ha : UInt64} {n : Nat} {wr : Boo
     · exact List.mem_cons_of_mem _ hb
     · exact hb
 
-theorem ffiCudaUploadAsyncAt_mem {w : World} {ctx buf off src size sid : UInt64} {r w'}
-    (h : ffiCudaUploadAsyncAt w ctx buf off src size sid = some (r, w')) :
-    ∀ reg, w'.mem.region reg = w.mem.region reg := by
-  unfold ffiCudaUploadAsyncAt at h
-  split at h
-  · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact fun _ => rfl
-  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact fun _ => rfl
-    · split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact fun _ => rfl
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact fun _ => rfl
-        · split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact fun _ => rfl
-          · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-            obtain ⟨_, _, m, hk, hreg, -, -, -⟩ := asyncCopy_region h
-            simp only [Option.some.injEq, Prod.mk.injEq] at hk
-            obtain ⟨-, rfl⟩ := hk
-            exact hreg
-
-theorem ffiCudaDownloadAsyncAt_frame {w : World} {ctx buf dst size sid : UInt64} {r w'}
-    (h : ffiCudaDownloadAsyncAt w ctx buf dst size sid = some (r, w')) (a : UInt64)
-    (hout : ¬ ∃ i < size.toNat, a = dst + UInt64.ofNat i) : Unchanged w.mem w'.mem a := by
-  unfold ffiCudaDownloadAsyncAt at h
-  split at h
-  · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · rename_i b _
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          · rename_i hfit
-            obtain ⟨_, _, m, hk, hreg, hlive, hfz, hsub⟩ := asyncCopy_region h
-            obtain ⟨m0, hm0, hk⟩ := Option.bind_eq_some_iff.mp hk
-            simp only [Option.some.injEq, Prod.mk.injEq] at hk
-            obtain ⟨-, rfl⟩ := hk
-            obtain ⟨hl0, hb0, hf0⟩ := copyIn_meta hm0
-            intro x y hx hy
-            -- the copy's own view reads `y` there too, and outside the copy it
-            -- reads what the host read before
-            have hy0 : m0.load a 1 = some y :=
-              Mem.load_congr hreg (Mem.readable_busy_sub (hlive.trans rfl) hfz
-                (fun b hb => hsub b (by
-                  rw [hb0] at hb
-                  exact (List.mem_filter.mp hb).1))) hy
-            rw [copyIn_other hm0 a (by
-              intro i hi e
-              rw [ByteArray.size_extract] at hi
-              exact hout ⟨i, by omega, e⟩)] at hy0
-            exact Mem.load_agree (m := w.mem) (m' := w.mem.forParty _) (fun reg => by cases reg <;> rfl)
-              hx hy0
-
 set_option maxHeartbeats 2000000 in
+set_option maxHeartbeats 8000000 in
 /-- **Every executable contract writes only inside its frame.**
 
     A successful call changes the value of no byte its frame does not name.
@@ -561,12 +433,6 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
     have e := callFfi_uncontracted f hc args w
     rw [h] at e; cases e
   unfold callFfi at h; rw [hb, Option.bind_some] at h
-  -- every device-only contract leaves host memory as it was
-  by_cases hdev : f ∈ deviceOnly
-  case pos =>
-    simp only [deviceOnly, List.mem_cons, List.not_mem_nil, or_false] at hdev
-    rcases hdev with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
-    all_goals exact Unchanged.of_region (devOnly_mem (w := w) (k := _) h) a
   -- and every LMDB contract that only changes the store
   by_cases hst : f ∈ offHost
   case pos =>
@@ -576,303 +442,73 @@ theorem callFfi_respects_frame (f : IR.Ffi) (args : List V) (w : World) (ret : O
     · exact Unchanged.of_eq (by rw [ffiLmdbBeginWriteTxn_mem (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiLmdbPut_mem (bits := bits) (w := w) h])
     · exact Unchanged.of_eq (by rw [ffiLmdbCommitWriteTxn_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiWindowOpen_mem (bits := bits) (w := w) h])
-    · exact Unchanged.of_eq (by rw [ffiWindowPresentGpuBuffer_mem (bits := bits) (w := w) h])
   have hc' : f ∈ hostTouching := by
     simp only [contracted, List.mem_append] at hc
-    exact (hc.resolve_right hst).resolve_right hdev
+    exact hc.resolve_right hst
   simp only [hostTouching, List.mem_cons, List.not_mem_nil, or_false] at hc'
-  rcases hc' with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
-  all_goals (delta callBits at h; dsimp only at h; simp only [gpuUploadAt, ffiFileReadToPtr, ffiFileWriteFromPtr, ffiStdinReadline, ffiStdoutWrite, ffiSinf, ffiCosf, ffiPowf, ffiCudaInit, ffiCudaCleanup, ffiCudaDownload, ffiCudaDownloadOffset, ffiGpuInit, ffiGpuCleanup, ffiGpuCreateBuffer, ffiGpuCreatePipeline, ffiGpuUpload, ffiGpuUploadPtr, ffiGpuDispatch, ffiGpuDownload, ffiGpuDownloadPtr, ffiCudaPinnedAlloc, ffiCudaPinnedFree, ffiLmdbInit, ffiLmdbCleanup, ffiLmdbCursorScan, ffiWindowInit, ffiWindowCleanup, ffiWindowPoll, ffiCudaUploadAsync, ffiCudaUploadOffsetAsync, ffiCudaDownloadAsync, ffiThreadInit, ffiThreadCleanup, ffiThreadJoin] at h)
+  rcases hc' with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl
+  all_goals (delta callBits at h; dsimp only at h; simp only [ffiSinf, ffiCosf, ffiPowf, ffiLmdbInit, ffiLmdbCleanup, ffiLmdbCursorScan, ffiThreadInit, ffiThreadCleanup, ffiThreadJoin] at h)
   all_goals (split at h <;> (try contradiction))
   all_goals (simp only [frame, Frame.allows, ctxSlot, List.getD, List.getElem?_cons_zero,
     List.getElem?_cons_succ, Option.getD_some] at hout)
   all_goals first
     | exact absurd trivial hout
     | skip
-  -- sinf, cosf, powf
-  iterate 3
-    next => simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-  -- cudaInit
-  next =>
-    split at h <;>
-    · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-      exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-  -- cudaCleanup
-  next =>
-    obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-    simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-    intro x y hx hy
-    exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩)) x y hx
-      (Mem.load_shrink (by simp) hy)
-  -- cudaDownload
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · rename_i b _
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          · rename_i hsz
-            obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-            obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-            simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            apply Unchanged.of_eq; apply copyIn_other hm
-            intro i hi e
-            simp only [bne_iff_ne, ne_eq, Decidable.not_not] at hsz
-            exact hout ⟨i, by omega, e⟩
-  -- cudaDownloadOffset
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · rename_i b _
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          · rename_i hfit
-            obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-            obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-            simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            apply Unchanged.of_eq; apply copyIn_other hm
-            intro i hi e
-            rw [ByteArray.size_extract] at hi
-            exact hout ⟨i, by omega, e⟩
-  -- gpuInit, gpuCleanup
-  iterate 2
-    next =>
-      try split at h
-      all_goals
-        obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-        exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-  -- gpuCreateBuffer
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h <;> (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
-  -- gpuCreatePipeline
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-        obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-        split at h <;> (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
-  -- gpuUpload, gpuUploadPtr
-  iterate 2
-    next =>
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-        split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          · split at h
-            · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-            · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-              simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-  -- gpuDispatch
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-  -- gpuDownload
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          · rename_i hsz
-            obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-            simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            apply Unchanged.of_eq; apply copyIn_other hm
-            intro i hi e
-            simp only [Bool.or_eq_true, bne_iff_ne, ne_eq, not_or, Decidable.not_not] at hsz
-            exact hout ⟨i, by omega, e⟩
-  -- gpuDownloadPtr
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          split at h
-          · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-          · rename_i hfit
-            obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-            simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-            apply Unchanged.of_eq; apply copyIn_other hm
-            intro i hi e
-            rw [ByteArray.size_extract] at hi
-            exact hout ⟨i, by omega, e⟩
-  -- cudaPinnedAlloc
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · cases h
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-          intro x y hx hy
-          rw [Mem.load_grow _ _ hx] at hy; injection hy
-  -- cudaPinnedFree
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-          intro x y hx hy
-          rw [Mem.load_shrink (fun r hr => List.mem_of_mem_erase hr) hy] at hx
-          exact (Option.some.inj hx).symm
-  -- lmdbInit
-  next =>
-    split at h
-    · cases h
-    · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-      exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-  -- lmdbCleanup
-  next =>
-    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · split at h
-      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-        exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-      · cases h
-  -- lmdbCursorScan: the count and the rows that fit, at the result
-  next =>
-    have hfit : ∀ (c : UInt64) rows, ¬ c.toNat < 4 →
-        (lmdbScanBytes (lmdbFit (c.toNat - 4) rows)).size ≤ c.toNat := fun c rows hc => by
-      have := lmdbScanBytes_fit (c.toNat - 4) rows; omega
-    split at h
-    · cases h
-    · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · split at h
-      · simp only [lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · split at h
-        · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-          simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-          apply Unchanged.of_eq; apply copyIn_other hm
-          intro i hi e; rw [leBytes_size] at hi; exact hout ⟨i, by omega, e⟩
-        · split at h
-          all_goals
-            obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-            split at h
-            · cases h
-            · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-              simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-              apply Unchanged.of_eq; apply copyIn_other hm
-              intro i hi e; exact hout ⟨i, Nat.lt_of_lt_of_le hi (hfit _ _ (by assumption)), e⟩
-  -- windowInit
-  next =>
-    split at h
-    · cases h
-    · split at h <;>
-      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-        exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-  -- windowCleanup
-  next =>
-    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · split at h
-      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-        exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-      · cases h
-  -- windowPoll
-  next =>
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · rename_i hbad
-      split at h
-      · cases h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-        rw [World.pump_mem] at hm
-        apply Unchanged.of_eq; apply copyIn_other hm
-        intro i hi e
-        rw [winEventBytes_size, List.length_take] at hi
-        exact hout ⟨i, by omega, e⟩
-  -- cudaUploadAsync, cudaUploadOffsetAsync
-  iterate 2
-    next => exact Unchanged.of_region (ffiCudaUploadAsyncAt_mem h) a
-  -- cudaDownloadAsync
-  next => exact ffiCudaDownloadAsyncAt_frame h a hout
-  -- threadInit
-  next =>
-    split at h
-    · cases h
-    · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-      exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩))
-  -- threadCleanup
-  next =>
-    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    have hthaw : ∀ reg, ({ w.mem with frozen := false } : Mem).region reg = w.mem.region reg := by
-      intro reg; cases reg <;> rfl
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-      exact Unchanged.of_region hthaw a
-    · split at h
-      · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-        intro x y hx hy
-        have e := Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩)
-        rw [e] at hy
-        exact Mem.load_agree hthaw hx hy
-      · cases h
-  -- threadJoin
-  next =>
-    split at h
-    · cases h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
-    · split at h
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-        exact Unchanged.of_region (fun reg => by cases reg <;> rfl) a
-      · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
+  all_goals first
+    -- a pure answer: sinf, cosf, powf, and the paths that refuse
+    | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
+    | (simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
+    -- a context slot written: the inits and cleanups
+    | (obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
+       simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
+       exact Unchanged.of_eq (Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩)))
+    -- threadCleanup
+    | (obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+       have hthaw : ∀ reg, ({ w.mem with frozen := false } : Mem).region reg = w.mem.region reg := by
+         intro reg; cases reg <;> rfl
+       split at h
+       · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
+         exact Unchanged.of_region hthaw a
+       · split at h
+         · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
+           simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
+           intro x y hx hy
+           have e := Mem.store_other hm a (fun i hi e => hout ⟨i, hi, e⟩)
+           rw [e] at hy
+           exact Mem.load_agree hthaw hx hy
+         · cases h)
+    -- threadJoin
+    | (split at h
+       · cases h
+       · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _
+       · split at h
+         · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
+           exact Unchanged.of_region (fun reg => by cases reg <;> rfl) a
+         · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact Unchanged.refl _ _)
+    -- every other: walk the model's branches and binds, then close by the
+    -- memory it leaves: the same, one store into a context slot, or a copy the
+    -- frame allows
+    | (repeat' (first
+         | contradiction
+         | (split at h)
+         | (rw [Option.bind_eq_some_iff] at h; obtain ⟨_, hbind, h⟩ := h)
+         | (simp only [Option.bind_eq_bind] at h; rw [Option.bind_eq_some_iff] at h; obtain ⟨_, hbind, h⟩ := h))
+       all_goals first
+         | (simp only [cudaFail, lmdbI32, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
+            exact Unchanged.refl _ _)
+         | (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
+            first
+              | exact Unchanged.refl _ _
+              | exact Unchanged.of_eq (Mem.store_other hbind a (fun i hi e => hout ⟨i, hi, e⟩))
+              | (apply Unchanged.of_eq; apply copyIn_other hbind; intro i hi e
+                 refine hout ⟨i, ?_, e⟩
+                 simp only [Bool.or_eq_true, bne_iff_ne, ne_eq, not_or, Decidable.not_not,
+                   ByteArray.size_extract, decide_eq_true_eq, gt_iff_lt, Nat.not_lt, leBytes_size] at *
+                 omega)
+              | (apply Unchanged.of_eq; apply copyIn_other hbind; intro i hi e
+                 refine hout ⟨i, Nat.lt_of_lt_of_le hi (Nat.le_trans (lmdbScanBytes_fit _ _) ?_), e⟩
+                 simp only [Nat.not_lt] at *
+                 omega)))
 
 /-- The table's two statements about one entry point agree: what `run?` does,
     `frame` permits. -/

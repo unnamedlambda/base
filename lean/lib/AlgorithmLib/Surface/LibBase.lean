@@ -45,11 +45,6 @@ def onOk (rc : V .i32) (k : Prog V L (V .i64)) : Prog V L (V .i64) := do
 /-- `0` for a result code of `0`, `-1` for any other. -/
 def status (rc : V .i32) : Prog V L (V .i64) := onOk rc (iconst64 0)
 
-/-- The next call's result code once `rc` is `0`; `rc` otherwise. -/
-def andThen (rc : V .i32) (k : Prog V L (V .i32)) : Prog V L (V .i32) := do
-  let r ← ifte (jTys := [.i32]) .eq rc (← iconst32 0) (do pure %[← k]) (pure %[rc])
-  pure r.head
-
 def or8 (a b : V .i8) : Prog V L (V .i8) := bor a b
 
 /-- Whether any of `xs` is at most zero, as signed `i32`s. -/

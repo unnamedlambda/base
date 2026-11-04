@@ -3,6 +3,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Wg
+meta import AlgorithmLib.Surface.Wg
 public import AlgorithmLib.Vocab.WGSL
 meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
@@ -20,7 +22,6 @@ namespace FallingSand
 
 def imageWidth  : Nat := 640
 def imageHeight : Nat := 360
-def pixelBytes  : Nat := imageWidth * imageHeight * 4
 def cellPx : Nat := 1
 def gw : Nat := imageWidth / cellPx
 def gh : Nat := imageHeight / cellPx
@@ -44,8 +45,6 @@ def pBR     : Nat := 6
 
 def gridWgX : Nat := (gw + 7) / 8
 def gridWgY : Nat := (gh + 7) / 8
-def renderWgX : Nat := (imageWidth + 7) / 8
-def renderWgY : Nat := (imageHeight + 7) / 8
 
 def eventSlots : Nat := 64
 def eventBytes : Nat := eventSlots * 32
@@ -223,40 +222,12 @@ def seedShader : String :=
       ifB ((x .>= gwE) .|| (y .>= ghE)) retV
       assign (arrIdx grid (y * gwE + x)) (litU EMPTY))
 
-def renderShader : String :=
-  let grid   : Expr (.arr .u32) := ⟨"grid"⟩
-  let pixels : Expr (.arr .u32) := ⟨"pixels"⟩
-  let imgW : Expr .u32 := ⟨"IMG_W"⟩
-  let imgH : Expr .u32 := ⟨"IMG_H"⟩
-  let cell : Expr .u32 := ⟨"CELL"⟩
-  let gwE  : Expr .u32 := ⟨"GW"⟩
-  buildShader
-    [ { binding := 0, name := "grid",   ty := .arr .u32, ro := true },
-      { binding := 1, name := "pixels", ty := .arr .u32, ro := false } ]
-    []
-    [.constU "IMG_W" imageWidth, .constU "IMG_H" imageHeight,
-     .constU "CELL" cellPx, .constU "GW" gw]
-    { name := "main", wgX := 8, wgY := 8 }
-    (do
-      let px ← letV gidX
-      let py ← letV gidY
-      ifB ((px .>= imgW) .|| (py .>= imgH)) retV
-      let v ← letV (arrIdx grid ((py / cell) * gwE + (px / cell)))
-      let isSand := v .== litU SAND
-      let isWall := v .== litU WALL
-      let r ← letV (wSelect (wSelect (litF "0.05") (litF "0.45") isWall) (litF "0.85") isSand)
-      let g ← letV (wSelect (wSelect (litF "0.06") (litF "0.45") isWall) (litF "0.72") isSand)
-      let b ← letV (wSelect (wSelect (litF "0.09") (litF "0.50") isWall) (litF "0.35") isSand)
-      let ri ← letV (u32OfF (r * litF "255.0"))
-      let gi ← letV (u32OfF (g * litF "255.0"))
-      let bi ← letV (u32OfF (b * litF "255.0"))
-      assign (arrIdx pixels (py * imgW + px))
-        (((ri .| (gi .<< litU 8)) .| (bi .<< litU 16)) .| (litU 0xFF .<< litU 24)))
-
+/-- The grid drawn to the window: a fullscreen triangle whose fragments read
+    grid A's cell under them, coloured empty, sand or wall in 8-bit steps. -/
 def blitShaderSource : String :=
   let w := toString imageWidth
   let h := toString imageHeight
-  "@group(0) @binding(0) var<storage, read> pixels: array<u32>;\n\n" ++
+  "@group(0) @binding(0) var<storage, read> grid: array<u32>;\n\n" ++
   "struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };\n\n" ++
   "@vertex\n" ++
   "fn vs_main(@builtin(vertex_index) idx: u32) -> VsOut {\n" ++
@@ -269,30 +240,22 @@ def blitShaderSource : String :=
   "  let w: u32 = " ++ w ++ "u; let h: u32 = " ++ h ++ "u;\n" ++
   "  let px = min(u32(in.uv.x * f32(w)), w - 1u);\n" ++
   "  let py = min(u32(in.uv.y * f32(h)), h - 1u);\n" ++
-  "  let packed = pixels[py * w + px];\n" ++
-  "  let r = f32(packed & 0xFFu) / 255.0;\n" ++
-  "  let g = f32((packed >> 8u) & 0xFFu) / 255.0;\n" ++
-  "  let b = f32((packed >> 16u) & 0xFFu) / 255.0;\n" ++
-  "  return vec4<f32>(r, g, b, 1.0);\n" ++
+  "  let v = grid[(py / " ++ toString cellPx ++ "u) * " ++ toString gw ++ "u + px / " ++ toString cellPx ++ "u];\n" ++
+  "  var c = vec3<f32>(12.0, 15.0, 22.0);\n" ++
+  "  if (v == " ++ toString WALL ++ "u) { c = vec3<f32>(114.0, 114.0, 127.0); }\n" ++
+  "  if (v == " ++ toString SAND ++ "u) { c = vec3<f32>(216.0, 183.0, 89.0); }\n" ++
+  "  return vec4<f32>(c / 255.0, 1.0);\n" ++
   "}\n"
 
 structure Fields where
-  reserved    : Fld (.bytes 64)
+  wg          : Fld (.bytes 1536)
   stepSh      : Fld (.bytes 8192)
   paintSh     : Fld (.bytes 2048)
-  renderSh    : Fld (.bytes 2048)
   seedSh      : Fld (.bytes 2048)
   blitSh      : Fld (.bytes 2048)
   title       : Fld (.bytes 64)
   events      : Fld (.bytes eventBytes)
   paramsMem   : Fld (.bytes 32)
-  bindSeed    : Fld (.bytes 8)
-  bindPaintA  : Fld (.bytes 16)
-  bindPaintB  : Fld (.bytes 16)
-  bindStepAB  : Fld (.bytes 24)
-  bindStepBA  : Fld (.bytes 24)
-  bindRenderA : Fld (.bytes 16)
-  bindRenderB : Fld (.bytes 16)
   quit        : Fld .i64
   nEvents     : Fld .i64
   frame       : Fld .i64
@@ -302,25 +265,16 @@ structure Fields where
   brushMat    : Fld .i64
   gridInit    : Fld (.bytes gridBytes)
   gridOut     : Fld (.bytes gridBytes)
-  pixels      : Fld (.bytes pixelBytes)
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
-  let reserved    ← field (.bytes 64)
+  let wg          ← field (.bytes 1536)
   let stepSh      ← field (.bytes 8192)
   let paintSh     ← field (.bytes 2048)
-  let renderSh    ← field (.bytes 2048)
   let seedSh      ← field (.bytes 2048)
   let blitSh      ← field (.bytes 2048)
   let title       ← field (.bytes 64)
   let events      ← field (.bytes eventBytes)
   let paramsMem   ← field (.bytes 32)
-  let bindSeed    ← field (.bytes 8)
-  let bindPaintA  ← field (.bytes 16)
-  let bindPaintB  ← field (.bytes 16)
-  let bindStepAB  ← field (.bytes 24)
-  let bindStepBA  ← field (.bytes 24)
-  let bindRenderA ← field (.bytes 16)
-  let bindRenderB ← field (.bytes 16)
   let quit        ← field .i64
   let nEvents     ← field .i64
   let frame       ← field .i64
@@ -330,14 +284,43 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let brushMat    ← field .i64
   let gridInit    ← field (.bytes gridBytes)
   let gridOut     ← field (.bytes gridBytes)
-  let pixels      ← field (.bytes pixelBytes)
-  pure { reserved, stepSh, paintSh, renderSh, seedSh, blitSh, title, events,
-         paramsMem, bindSeed, bindPaintA, bindPaintB, bindStepAB, bindStepBA,
-         bindRenderA, bindRenderB, quit, nEvents, frame, mouseX, mouseY,
-         brushDown, brushMat, gridInit, gridOut, pixels }
+  pure { wg, stepSh, paintSh, seedSh, blitSh, title, events,
+         paramsMem, quit, nEvents, frame, mouseX, mouseY,
+         brushDown, brushMat, gridInit, gridOut }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
+
+/-- The buffers: the two grids and the parameters. -/
+def GRID_A : Nat := 0
+def GRID_B : Nat := 1
+def PARAMS : Nat := 2
+
+/-- The pipelines: clearing grid A, painting the brush into it, and a sand
+    step each way between the grids. -/
+def SEED : Nat := 0
+def PAINT : Nat := 1
+def STEP_AB : Nat := 2
+def STEP_BA : Nat := 3
+
+/-- The grids and the parameters, the pipelines over them, and the window
+    grid A is drawn to, called through wgpu and the window library directly. -/
+def app : Wg.App :=
+  { bufs := [gridBytes, gridBytes, 32],
+    pipes := [
+      { shaderOff := f.seedSh.offset, shaderLen := utf8Len% seedShader, binds := [(GRID_A, false)] },
+      { shaderOff := f.paintSh.offset, shaderLen := utf8Len% paintShader,
+        binds := [(GRID_A, false), (PARAMS, true)] },
+      { shaderOff := f.stepSh.offset, shaderLen := utf8Len% stepShader,
+        binds := [(GRID_A, true), (GRID_B, false), (PARAMS, true)] },
+      { shaderOff := f.stepSh.offset, shaderLen := utf8Len% stepShader,
+        binds := [(GRID_B, true), (GRID_A, false), (PARAMS, true)] }],
+    memSize := layoutMeta.totalSize, org := f.wg.offset,
+    blit := some { shaderOff := f.blitSh.offset, shaderLen := utf8Len% blitShaderSource, buf := GRID_A,
+                   titleOff := f.title.offset, titleCap := 64 } }
+
+/-- wgpu's and the window's state fit their field. -/
+theorem app_fits : app.stateEnd ≤ f.wg.offset + 1536 := by decide
 
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
@@ -382,9 +365,9 @@ def processEvents (ptr : V .i64) : Prog V L Unit := do
       let bd1 ← iadd bd (← imul isMDown (← isub (← iconst64 1) bd))
       fldStore ptr f.brushDown (← isub bd1 (← imul isMUp bd1)))
 
-def pollAndProcess (ptr : V .i64) : Prog V L Unit := do
-  let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
-  fldStore ptr f.nEvents (← sextend64 n)
+def pollAndProcess (ptr win : V .i64) : Prog V L Unit := do
+  let n ← app.pollEvents ptr win (← iaddImm ptr f.events.offset) eventSlots
+  fldStore ptr f.nEvents n
   processEvents ptr
 
 def putParam (ptr : V .i64) (idx : Nat) (v : V .i64) : Prog V L Unit := do
@@ -424,91 +407,74 @@ def writeOutput (passV actualV expectedV : V .i64) : Prog V L Unit := do
     storeAt out 8 actualV
     storeAt out 16 expectedV
 
--- Create the 4 buffers (gridA=0, gridB=1, pixels=2, params=3).
-def mkBuffers (ptr : V .i64) : Prog V L (V .i32 × V .i32 × V .i32 × V .i32) := do
-  gpuInit ptr
-  let gridA ← gpuCreateBuffer ptr (← iconst64 gridBytes)
-  let gridB ← gpuCreateBuffer ptr (← iconst64 gridBytes)
-  let pixels ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
-  let params ← gpuCreateBuffer ptr (← iconst64 32)
-  pure (gridA, gridB, pixels, params)
+/-- Hand the parameters to the GPU. -/
+def uploadParams (ptr : V .i64) : Prog V L Unit := do
+  app.upload ptr PARAMS (← iaddImm ptr f.paramsMem.offset) (← iconst64 32)
 
 def mainBody : Prog V L Unit := do
   let ptr ← basePtr
-  windowInit ptr
-  let (_gridA, _gridB, pixels, params) ← mkBuffers ptr
-  let seedP ← gpuCreatePipeline ptr (← fldOffset f.seedSh) (← fldOffset f.bindSeed) (← iconst32 1)
-  let paintA ← gpuCreatePipeline ptr (← fldOffset f.paintSh) (← fldOffset f.bindPaintA) (← iconst32 2)
-  let stepAB ← gpuCreatePipeline ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
-  let stepBA ← gpuCreatePipeline ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepBA) (← iconst32 3)
-  let renderA ← gpuCreatePipeline ptr (← fldOffset f.renderSh) (← fldOffset f.bindRenderA) (← iconst32 2)
-  let w64 ← iconst64 imageWidth
-  let h64 ← iconst64 imageHeight
-  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.utf8ByteSize : Int))
-                      (← fldOffset f.blitSh) (← iconst64 (blitShaderSource.utf8ByteSize : Int))
+  app.setup ptr
   let gwg ← iconst32 gridWgX
   let ghg ← iconst32 gridWgY
-  let rwx ← iconst32 renderWgX
-  let rwy ← iconst32 renderWgY
   let one32 ← iconst32 1
-  let paramsOff ← fldOffset f.paramsMem
-  let p32 ← iconst64 32
-  let _ ← gpuDispatch ptr seedP gwg ghg one32
+  app.dispatch ptr SEED gwg ghg one32
   fldStore ptr f.quit (← iconst64 0)
   fldStore ptr f.frame (← iconst64 0)
   fldStore ptr f.brushDown (← iconst64 0)
   fldStore ptr f.brushMat (← iconst64 SAND)
-  let bumpFrame : Prog V L Unit := do
-    fldStore ptr f.frame (← iadd (← fldLoad ptr f.frame) (← iconst64 1))
-  let subStep : V .i64 → V .i32 → Prog V L Unit := fun parity pipe => do
-    writeParams ptr parity
-    let _ ← gpuUpload ptr params paramsOff p32
-    let _ ← gpuDispatch ptr pipe gwg ghg one32
-    bumpFrame
-  let zero64 ← iconst64 0
-  let one64 ← iconst64 1
-  let _ ← wloop %[] (head := fun _ => do
-      pollAndProcess ptr
-      let q ← fldLoad ptr f.quit
-      return (exitIf .ne q zero64, %[], ()))
-    (body := fun _ _ => do
-      -- stamp the brush into A once, then run 8 Margolus sub-steps (4 ping-pong
-      -- pairs, parity alternating) so sand advances fast; render A and present once.
-      writeParams ptr zero64
-      let _ ← gpuUpload ptr params paramsOff p32
-      let _ ← gpuDispatch ptr paintA gwg ghg one32
-      for _ in List.range 4 do
-        subStep zero64 stepAB
-        subStep one64 stepBA
-      let _ ← gpuDispatch ptr renderA rwx rwy one32
-      let _ ← windowPresentGpuBuffer ptr pixels
-      return %[])
-  windowCleanup ptr
-  gpuCleanup ptr
+  app.withWindow ptr imageWidth imageHeight fun win => do
+    let bumpFrame : Prog V L Unit := do
+      fldStore ptr f.frame (← iadd (← fldLoad ptr f.frame) (← iconst64 1))
+    let subStep : V .i64 → Nat → Prog V L Unit := fun parity pipe => do
+      writeParams ptr parity
+      uploadParams ptr
+      app.dispatch ptr pipe gwg ghg one32
+      bumpFrame
+    let zero64 ← iconst64 0
+    let one64 ← iconst64 1
+    let _ ← wloop %[] (head := fun _ => do
+        pollAndProcess ptr win
+        let q ← fldLoad ptr f.quit
+        return (exitIf .ne q zero64, %[], ()))
+      (body := fun _ _ => do
+        -- stamp the brush into A once, then run 8 Margolus sub-steps (4 ping-pong
+        -- pairs, parity alternating) so sand advances fast; draw A once.
+        writeParams ptr zero64
+        uploadParams ptr
+        app.dispatch ptr PAINT gwg ghg one32
+        forLoop (← iconst64 4) fun _ => do
+          subStep zero64 STEP_AB
+          subStep one64 STEP_BA
+        app.present ptr win
+        return %[])
+  app.cleanup ptr
 
--- Shared test setup: buffers + stepAB pipeline, params zeroed (parity 0, brush off).
-def testSetup (ptr : V .i64) : Prog V L (V .i32 × V .i32 × V .i32) := do
-  let (gridA, gridB, _pixels, params) ← mkBuffers ptr
-  let stepAB ← gpuCreatePipeline ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
+-- Shared test setup: wgpu up, params zeroed (parity 0, brush off).
+def testSetup (ptr : V .i64) : Prog V L Unit := do
+  app.setup ptr
   fldStore ptr f.frame (← iconst64 0)
   fldStore ptr f.mouseX (← iconst64 0)
   fldStore ptr f.mouseY (← iconst64 0)
   fldStore ptr f.brushDown (← iconst64 0)
   fldStore ptr f.brushMat (← iconst64 0)
   writeParams ptr (← iconst64 0)
-  let _ ← gpuUpload ptr params (← fldOffset f.paramsMem) (← iconst64 32)
-  pure (gridA, gridB, stepAB)
+  uploadParams ptr
+
+/-- One sand step from grid A, as set up in `gridInit`, read back from grid B
+    into `gridOut`. -/
+def stepOnce (ptr : V .i64) : Prog V L Unit := do
+  app.upload ptr GRID_A (← iaddImm ptr f.gridInit.offset) (← iconst64 gridBytes)
+  app.dispatch ptr STEP_AB (← iconst32 gridWgX) (← iconst32 gridWgY) (← iconst32 1)
+  app.download ptr GRID_B (← iaddImm ptr f.gridOut.offset) (← iconst64 gridBytes)
+  app.cleanup ptr
 
 -- A lone grain with empty below drops to the next row (straight or scattered).
 def testGrainFalls : Prog V L Unit := do
   let ptr ← basePtr
-  let (gridA, gridB, stepAB) ← testSetup ptr
+  testSetup ptr
   clearGrid ptr
   setCell ptr 10 10 SAND
-  let _ ← gpuUpload ptr gridA (← fldOffset f.gridInit) (← iconst64 gridBytes)
-  let _ ← gpuDispatch ptr stepAB (← iconst32 gridWgX) (← iconst32 gridWgY) (← iconst32 1)
-  let _ ← gpuDownload ptr gridB (← fldOffset f.gridOut) (← iconst64 gridBytes)
-  gpuCleanup ptr
+  stepOnce ptr
   let bl ← readOut ptr 10 11
   let br ← readOut ptr 11 11
   let orig ← readOut ptr 10 10
@@ -520,15 +486,12 @@ def testGrainFalls : Prog V L Unit := do
 -- Sand is conserved: a 4×4 blob keeps its 16 grains after one step.
 def testConservation : Prog V L Unit := do
   let ptr ← basePtr
-  let (gridA, gridB, stepAB) ← testSetup ptr
+  testSetup ptr
   clearGrid ptr
   for cy in [20, 21, 22, 23] do
     for cx in [40, 41, 42, 43] do
       setCell ptr cx cy SAND
-  let _ ← gpuUpload ptr gridA (← fldOffset f.gridInit) (← iconst64 gridBytes)
-  let _ ← gpuDispatch ptr stepAB (← iconst32 gridWgX) (← iconst32 gridWgY) (← iconst32 1)
-  let _ ← gpuDownload ptr gridB (← fldOffset f.gridOut) (← iconst64 gridBytes)
-  gpuCleanup ptr
+  stepOnce ptr
   let gridOutBase ← iadd ptr (← fldOffset f.gridOut)
   let four ← iconst64 4
   let sandC ← iconst64 SAND
@@ -546,24 +509,14 @@ def clifIrSource : Except String (List IR.FuncData) :=
      Prog.entry "test_grain_falls" (Prog.compileProg 2 testGrainFalls),
      Prog.entry "test_conservation" (Prog.compileProg 3 testConservation)]
 
-def bindBytes (pairs : List (Nat × Nat)) : List UInt8 :=
-  pairs.foldl (fun acc (b, ro) => acc ++ uint32ToBytes (UInt32.ofNat b) ++ uint32ToBytes (UInt32.ofNat ro)) []
-
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
+    f.wg.init app.stateInit,
     f.stepSh.init (stringToBytes stepShader),
     f.paintSh.init (stringToBytes paintShader),
-    f.renderSh.init (stringToBytes renderShader),
     f.seedSh.init (stringToBytes seedShader),
     f.blitSh.init (stringToBytes blitShaderSource),
-    f.title.init (stringToBytes titleText),
-    f.bindSeed.init    (bindBytes [(0, 0)]),
-    f.bindPaintA.init  (bindBytes [(0, 0), (3, 1)]),
-    f.bindPaintB.init  (bindBytes [(1, 0), (3, 1)]),
-    f.bindStepAB.init  (bindBytes [(0, 1), (1, 0), (3, 1)]),
-    f.bindStepBA.init  (bindBytes [(1, 1), (0, 0), (3, 1)]),
-    f.bindRenderA.init (bindBytes [(0, 1), (2, 0)]),
-    f.bindRenderB.init (bindBytes [(1, 1), (2, 0)])
+    f.title.init (stringToBytes titleText)
   ]
 
 def gameSetup (clif : List IR.FuncData) : Artifact := {

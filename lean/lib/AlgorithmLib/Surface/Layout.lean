@@ -114,7 +114,7 @@ def mkPayload (size : Nat) (inits : List FieldInit) : List UInt8 :=
 
   `LayoutBuilder` allocates offsets automatically, but large applications keep
   a *hand-written* memory map: fixed hex constants, chosen once and referenced
-  from CLIF code all over the file.  Qwen2's map has forty-odd of them.
+  from CLIF code all over the file.
 
   Nothing checked that map, and the failure mode is brutal — a new constant
   landing on an existing one produces a segfault inside JIT'd code with no

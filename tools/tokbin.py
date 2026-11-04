@@ -1,6 +1,6 @@
-"""The tokenizer binary both models load, written once.
+"""The tokenizer binary gpt-oss loads, written once.
 
-The format `Qwen2Common`'s CLIF already reads, with the pre-tokenizer tables
+The format the tokenizer's CLIF reads (`TokenizerCommon`), with the pre-tokenizer tables
 appended.  Appending is safe: every existing offset is computed forward from
 the header and the byte pool's length is in it, so a reader that predates this
 section cannot see it.  The header's fourth word was spare and now points at

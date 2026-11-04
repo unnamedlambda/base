@@ -5,6 +5,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Wg
+meta import AlgorithmLib.Surface.Wg
 public import AlgorithmLib.Vocab.WGSL
 meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
@@ -303,9 +305,7 @@ def cornellBoxShader : String :=
 -- CLIF IR: GPU init -> buffer -> pipeline -> dispatch -> download -> cleanup -> file write
 -- ---------------------------------------------------------------------------
 
--- Payload layout
-def hdrBase : Nat := 0x40
-def bindDesc_off : Nat := 0x100
+-- Payload layout: wgpu's state (`app`) from 0, the shader from 0x200
 def shader_off : Nat := 0x200
 def shaderRegionSize : Nat := 16384   -- 16KB for the larger ray tracing shader
 def filename_off : Nat := shader_off + shaderRegionSize
@@ -328,8 +328,7 @@ def wgY : Nat := imageHeight / 16   -- 256
     buffer, so there is no constant to bound the regions against; `okB` is the
     whole check here. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"hdr",        hdrBase, bindDesc_off - hdrBase⟩,
-   ⟨"bind",       bindDesc_off, shader_off - bindDesc_off⟩,
+  [⟨"wg",         0, shader_off⟩,
    ⟨"shader",     shader_off, shaderRegionSize⟩,
    ⟨"filename",   filename_off, filenameRegionSize⟩,
    ⟨"flag",       flag_off, clifIr_off - flag_off⟩,
@@ -344,21 +343,22 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 open AlgorithmLib.Prog
 
 
+/-- The image's one buffer and the one pipeline that fills it, called through
+    wgpu directly. -/
+def app : Wg.App :=
+  { bufs := [pixelBytes],
+    pipes := [{ shaderOff := shader_off, shaderLen := utf8Len% cornellBoxShader, binds := [(0, false)] }],
+    memSize := pixels_off + pixelBytes }
+
+/-- wgpu's state fits below the shader. -/
+theorem app_fits : app.stateEnd ≤ shader_off := by decide
+
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  gpuInit ptr
-  let dataSz ← iconst64 pixelBytes
-  let bufId  ← gpuCreateBuffer ptr dataSz
-  let shOff  ← iconst64 shader_off
-  let bdOff  ← iconst64 bindDesc_off
-  let one32  ← iconst32 1
-  let pipeId ← gpuCreatePipeline ptr shOff bdOff one32
-  let wgx    ← iconst32 wgX
-  let wgy    ← iconst32 wgY
-  let _      ← gpuDispatch ptr pipeId wgx wgy one32
-  let pxOff  ← iconst64 pixels_off
-  let _      ← gpuDownload ptr bufId pxOff dataSz
-  gpuCleanup ptr
+  app.setup ptr
+  app.dispatch ptr 0 (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+  app.download ptr 0 (← iaddImm ptr pixels_off) (← iconst64 pixelBytes)
+  app.cleanup ptr
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← writeFile0 ptr filename_off filenameRegionSize bmpHeader_off total
 
@@ -370,18 +370,14 @@ def clifIrSource : Except String (List FuncData) :=
 -- ---------------------------------------------------------------------------
 
 def payloads : List UInt8 :=
-  let reserved := zeros hdrBase
-  let hdrPad := zeros (bindDesc_off - hdrBase)
-  let bindDesc := uint32ToBytes 0 ++ uint32ToBytes 0
-  let bindPad := zeros (shader_off - bindDesc_off - 8)
+  let wgState := zeros app.NAME ++ "main".toUTF8.toList ++ zeros (shader_off - app.NAME - 4)
   let shaderBytes := padTo (stringToBytes cornellBoxShader) shaderRegionSize
   let filenameBytes := padTo (stringToBytes "cornell_box.bmp") filenameRegionSize
   let flagBytes := uint64ToBytes 0
   let flagPad := zeros (clifIr_off - flag_off - 8)
   let clifPad := zeros clifIrRegionSize
   let bmpBytes := bmpHeader
-  reserved ++ hdrPad ++
-  bindDesc ++ bindPad ++
+  wgState ++
   shaderBytes ++ filenameBytes ++ flagBytes ++ flagPad ++
   clifPad ++ bmpBytes
 

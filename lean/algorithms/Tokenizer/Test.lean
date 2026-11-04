@@ -5,6 +5,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
 public import Tokenizer.Pretok
 meta import Tokenizer.Pretok
 import all Init.Data.Repr
@@ -62,7 +64,7 @@ def T_OUT_TOK : Nat := T_CP_BYTE + 4 * (TEXT_MAX + 1)
 def T_MEM_SIZE : Nat := T_OUT_TOK + 4 * TEXT_MAX + 0x100
 
 def tokMem : TokenizerCommon.TokMem :=
-  { htCtx := ContextSlots.ht, cudaCtx := ContextSlots.cuda
+  { htCtx := ContextSlots.ht
     pathPtr := T_PATH_PTR, pathCap := T_PATH_CAP, bufPtr := T_BUF_PTR
     tokenBuf := T_TOKEN_BUF, tokenCount := T_TOKEN_COUNT
     textIn := T_TEXT_IN, textOut := T_TEXT_OUT, textLen := T_TEXT_LEN
@@ -106,7 +108,7 @@ def tMainFn : Prog V L Unit :=
   let flag ← load32 (← absAddr ptr T_INIT)
   let zero32 ← iconst32 0
   when .eq flag zero32 (do
-    cudaInit ptr
+    Drv.up ptr ContextSlots.cuda
     storeI64 (← iaddImm dataPtr D_PATH) (← absAddr ptr T_PATH_PTR)
     storeI64 (← iconst64 (D_TEXT - D_PATH)) (← absAddr ptr T_PATH_CAP)
     TokenizerCommon.loadTokenizerM tokMem

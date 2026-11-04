@@ -24,8 +24,6 @@ structure Quiet (w w' : World) : Prop where
   calls : ∃ cs : List (Callee × List V), callsOf w'.obs = cs.reverse ++ callsOf w.obs
   dev : w'.dev = w.dev
   lmdb : w'.lmdb = w.lmdb
-  win : w'.win = w.win
-  gpu : w'.gpu = w.gpu
   thread : w'.thread = w.thread
   display : w'.display = w.display
   cudaDevice : w'.cudaDevice = w.cudaDevice
@@ -33,24 +31,24 @@ structure Quiet (w w' : World) : Prop where
   kernel : w'.kernel = w.kernel
   vendor : w'.vendor = w.vendor
 
-theorem Quiet.refl (w : World) : Quiet w w := ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+theorem Quiet.refl (w : World) : Quiet w w := ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem Quiet.trans {w w' w'' : World} (h1 : Quiet w w') (h2 : Quiet w' w'') : Quiet w w'' := by
   obtain ⟨a, ha⟩ := h1.calls
   obtain ⟨b, hb⟩ := h2.calls
   exact ⟨⟨a ++ b, by rw [hb, ha, List.reverse_append, List.append_assoc]⟩, h2.dev.trans h1.dev,
-    h2.lmdb.trans h1.lmdb, h2.win.trans h1.win, h2.gpu.trans h1.gpu, h2.thread.trans h1.thread,
+    h2.lmdb.trans h1.lmdb, h2.thread.trans h1.thread,
     h2.display.trans h1.display, h2.cudaDevice.trans h1.cudaDevice, h2.gpuAdapter.trans h1.gpuAdapter,
     h2.kernel.trans h1.kernel, h2.vendor.trans h1.vendor⟩
 
 /-- Noting a call is quiet. -/
 theorem Quiet.obsCall (w : World) (c : Callee) (vs : List V) : Quiet w (obsCall w c vs) :=
-  ⟨⟨[(c, vs)], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  ⟨⟨[(c, vs ++ callWords w c vs)], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- A store is quiet. -/
 theorem Quiet.stored (w : World) (a : UInt64) (n : Nat) (v : UInt64) (m : Mem) :
     Quiet w { obsStore w a n v with mem := m } :=
-  ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  ⟨⟨[], rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- The callees a library function names: the program's own functions and the
     C library's. -/
@@ -91,7 +89,7 @@ theorem callOf_quiet {L : Locals} (hL : QuietLocals L) {c : Callee} (hq : quietC
       cases e with
       | c f =>
           have hs := Contracts.c_step (bits := []) h
-          exact ⟨⟨[], by rw [hs.obs]; rfl⟩, hs.dev, hs.lmdb, hs.win, hs.gpu, hs.thread, hs.display, hs.cudaDevice,
+          exact ⟨⟨[], by rw [hs.obs]; rfl⟩, hs.dev, hs.lmdb, hs.thread, hs.display, hs.cudaDevice,
             hs.gpuAdapter, hs.kernel, hs.vendor⟩
       | _ => cases hq
   | _ => cases hq

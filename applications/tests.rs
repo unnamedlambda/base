@@ -37,8 +37,6 @@ mod lean4_evaluator_comparison;
 mod lz4_ptx_compress_roundtrip;
 #[path = "matmul/tests/smoke.rs"]
 mod matmul_smoke;
-#[path = "qwen2/tests/golden_cli.rs"]
-mod qwen2_golden_cli;
 #[path = "raymarch-demo/tests/logic.rs"]
 mod raymarch_demo;
 #[path = "raymarch-demo/tests/smoke.rs"]

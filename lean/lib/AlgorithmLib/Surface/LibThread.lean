@@ -38,28 +38,39 @@ def init : Body := do
   when .ne s (← iconst64 0) (storeI64 (← iconst64 1) (← at_ s NEXT))
   storeI64 s slot
 
-/-- Run function `fn` on `arg` on a new thread: its handle, or `-1`. -/
+/-- Room for one more running thread: the array of threads grown to twice
+    its capacity (eight at first) where it is full. `0`, or `-1` where the
+    larger array cannot be allocated, which leaves the array as it was. -/
+def reserve (s : V .i64) : Prog V L (V .i32) := do
+  let i ← iaddImm (← load64 (← at_ s NEXT)) (-1)
+  let capA ← at_ s CAP
+  let cap ← load64 capA
+  let r ← ifte (jTys := [.i32]) .ult i cap (do pure %[← iconst32 0]) (do
+    let nc ← select (← icmp .eq cap (← iconst64 0)) (← iconst64 8) (← ishlImm cap 1)
+    let na ← calloc (← ishlImm nc 3)
+    let r ← ifte (jTys := [.i32]) .eq na (← iconst64 0) (do pure %[← iconst32 (-1)]) (do
+      let old ← load64 (← at_ s ARR)
+      when .ne old (← iconst64 0) (do
+        let _ ← memcpy na old (← ishlImm cap 3)
+        free old)
+      storeI64 na (← at_ s ARR)
+      storeI64 nc capA
+      pure %[← iconst32 0])
+    pure %[r.head])
+  pure r.head
+
+/-- Run function `fn` on `arg` on a new thread: its handle, or `-1`. Room for
+    the thread's handle is made first, so a failure starts no thread. -/
 def spawn : StatusBody := do
   let (s ::ᵥ fn ::ᵥ arg ::ᵥ .nil) ← entryParams [.i64, .i64, .i64]
   failIf .eq s (← iconst64 0) (do
-    let t ← ext (.base .threadStart) %[fn, arg]
-    failIf .eq t (← iconst64 (-1)) (do
-      let h ← load64 (← at_ s NEXT)
-      let i ← iaddImm h (-1)
-      let capA ← at_ s CAP
-      when .uge i (← load64 capA) (do
-        let cap ← load64 capA
-        let nc ← select (← icmp .eq cap (← iconst64 0)) (← iconst64 8) (← ishlImm cap 1)
-        let na ← calloc (← ishlImm nc 3)
-        let old ← load64 (← at_ s ARR)
-        when .ne old (← iconst64 0) (do
-          let _ ← memcpy na old (← ishlImm cap 3)
-          free old)
-        storeI64 na (← at_ s ARR)
-        storeI64 nc capA)
-      storeI64 t (← iadd (← load64 (← at_ s ARR)) (← ishlImm i 3))
-      storeI64 (← iaddImm h 1) (← at_ s NEXT)
-      pure h))
+    failIf .ne (← reserve s) (← iconst32 0) (do
+      let t ← ext (.base .threadStart) %[fn, arg]
+      failIf .eq t (← iconst64 (-1)) (do
+        let h ← load64 (← at_ s NEXT)
+        storeI64 t (← iadd (← load64 (← at_ s ARR)) (← ishlImm (← iaddImm h (-1)) 3))
+        storeI64 (← iaddImm h 1) (← at_ s NEXT)
+        pure h)))
 
 /-- Wait for the thread a handle names: `0`, or `-1` for a handle that names
     none running. The handle is read as `u32`. -/

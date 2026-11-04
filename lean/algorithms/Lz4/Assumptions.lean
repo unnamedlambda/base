@@ -43,7 +43,7 @@ import all Init.Data.List.Sort.Basic
   | 2 | `ptxas` and the GPU | Instruction semantics below PTX.  Fatter than CompCert's assembler, because `ptxas` optimises. |
   | 3 | `serializeKernel` | An unverified printer, `Array SInstr → String`.  Structure is proven up to it; the text it emits is not tied back to `SInstr` semantics. |
   | 4 | `LZ4Imp.decompress ⊨ the LZ4 format` | The spec is a Lean decoder, not the format document.  Validated empirically — `compress_roundtrip.rs` decodes every emitted block with `lz4_flex` and compares byte-for-byte over 209.7 MB. |
-  | 5 | the Rust runtime and CUDA FFI | That `cudaUploadRaw` puts the caller's bytes in the input buffer and the download reads back the output buffer.  Nothing ties the theorem's `gm` to the host's `data`. |
+  | 5 | the CUDA driver | That `cuMemcpyHtoD` puts the caller's bytes in the allocation and `cuMemcpyDtoH` reads back its output region.  Nothing ties the theorem's `gm` to the host's `data`. |
   | 6 | the hardware realises *some* schedule | PTX's documented DRF-SC guarantee.  Race-freedom itself is proven (`schedule_completes`). |
 
   ## Open obligations
@@ -57,11 +57,10 @@ import all Init.Data.List.Sort.Basic
     Its placement clause is an equation, `outPtr = inPtr + totIn`, both halves of
     which are facts about the shipped program: the kernel computes its output base
     from its input base (`prologueInstrs` index 1), and the host makes ONE
-    allocation bound to both parameters (every run makes one
-    `cudaCreateBuffer`, `Lz4CompSafe.warp15_calls` in `Ship.Lz4Comp`; both
-    bind slots name it, `Lz4Host.bind_table_same_buffer`).  `Lz4NonVacuity.layoutOK_of_alloc` derives every
+    allocation handed to both parameters (`Lz4Host.params_same_buffer`, the
+    calls in `Lz4CompSafe.warp15_calls`).  `Lz4NonVacuity.layoutOK_of_alloc` derives every
     per-warp clause from that one equation.  What remains is that
-    `cudaCreateBuffer n` yields `n` contiguous addressable bytes — row 5.
+    `cuMemAlloc n` yields `n` contiguous addressable bytes — row 5.
 
   The chain below it is proven throughout, at both geometries, and — the part a
   name-based check cannot see — each link is *applied* to the next, ending at the
@@ -139,12 +138,10 @@ structure Anchors where
       j < outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 4 →
       j < outPtr + w' * (WP.mk b).outStride ∨
         outPtr + w' * (WP.mk b).outStride + (WP.mk b).lenOff + 4 ≤ j
-  /-- The payload image and the offsets derived from it agree. -/
-  payloadLen : ∀ w : WP, (warpPayloadDSL w).length = w.bindOff + 8
+  /-- The payload image fits the arena. -/
   payloadFits : ∀ w : WP, (warpPayloadDSL w).length ≤ w.memSize
-  /-- Both bind slots of the launch name buffer 0. -/
-  bindTable : ∀ w : WP, ∃ pre : List UInt8, pre.length = w.bindOff ∧
-    warpPayloadDSL w = pre ++ (AlgorithmLib.uint32ToBytes 0 ++ AlgorithmLib.uint32ToBytes 0)
+  /-- Both of the kernel's parameters name allocation 0. -/
+  sameBuffer : ∀ w : WP, (lzApp w).kernels.map (·.args) = [[0, 0]]
 
 def anchors : Anchors :=
   { shipped32   := shipped32_correct
@@ -152,8 +149,7 @@ def anchors : Anchors :=
     whole32     := fun i o s g h => Lz4Whole.shipped32_run_correct i o s g h
     whole64     := fun i o s g h => Lz4Whole.shipped64_run_correct i o s g h
     disjoint    := warp_regions_disjoint
-    payloadLen  := payload_length
     payloadFits := payload_fits
-    bindTable   := Lz4Host.bind_table_same_buffer }
+    sameBuffer  := Lz4Host.params_same_buffer }
 
 end Lz4Assumptions

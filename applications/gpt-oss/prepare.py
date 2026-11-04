@@ -298,9 +298,8 @@ def main():
     # ---- the tokenizer, in the binary the CLIF reads ----
     #
     # Written here rather than beside the checkpoint because it is part of the
-    # bank: the engine loads one directory.  The emitter is shared with Qwen2's
-    # converter -- the format carries every dimension in its header, so one
-    # CLIF tokenizer serves both models and what differs between them is data.
+    # bank: the engine loads one directory.  The format carries every dimension
+    # in its header, so the CLIF tokenizer reads any model's vocabulary as data.
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))), "tools"))
     import tokbin

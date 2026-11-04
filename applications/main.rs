@@ -28,10 +28,6 @@ mod matmul;
 mod mlp_cifar;
 #[path = "mlp-warp/src/main.rs"]
 mod mlp_warp;
-#[path = "qwen2/src/main.rs"]
-mod qwen2;
-#[path = "qwen2/src/bin/qwen2_on_disk.rs"]
-mod qwen2_on_disk;
 #[path = "raymarch-demo/src/main.rs"]
 mod raymarch_demo;
 #[path = "raytrace/src/main.rs"]
@@ -69,8 +65,6 @@ fn main() {
         "matmul" => matmul::main(args),
         "mlp-cifar" => mlp_cifar::main(args),
         "mlp-warp" => mlp_warp::main(args),
-        "qwen2" => qwen2::main(args),
-        "qwen2_on_disk" => qwen2_on_disk::main(args),
         "raymarch-demo" => raymarch_demo::main(args),
         "raytrace" => raytrace::main(args),
         "sand-demo" => sand_demo::main(args),
@@ -96,8 +90,6 @@ fn main() {
             eprintln!("  matmul");
             eprintln!("  mlp-cifar");
             eprintln!("  mlp-warp");
-            eprintln!("  qwen2");
-            eprintln!("  qwen2_on_disk");
             eprintln!("  raymarch-demo");
             eprintln!("  raytrace");
             eprintln!("  sand-demo");

@@ -29,15 +29,16 @@ def putF32 (b : ByteArray) (i : Nat) (x : Float32) : ByteArray :=
 def i32 (x : UInt64) : Nat := (Sem.asI32 x).toNat
 def flt (x : UInt64) : Float32 := Float32.ofBits x.toUInt32
 
-/-- `y ← alpha·op(A)·x + beta·y`, `A` is `m × n` column-major with `lda = m`. -/
-def sgemvRef (trans m n alpha beta : UInt64) (A X Y : ByteArray) : ByteArray :=
+/-- `y ← alpha·op(A)·x + beta·y`, `A` is `m × n` column-major with `lda = m`,
+    each operand read from its element offset (`a0`, `x0`, `y0`). -/
+def sgemvRef (trans m n alpha beta : UInt64) (a0 x0 y0 : Nat) (A X Y : ByteArray) : ByteArray :=
   let (M, N) := (i32 m, i32 n)
   let (rows, cols) := if Sem.asI32 trans != 0 then (N, M) else (M, N)
   (List.range rows).foldl (fun y i =>
     let acc := (List.range cols).foldl (fun acc j =>
-      let aij := if Sem.asI32 trans != 0 then f32At A (i * M + j) else f32At A (j * M + i)
-      acc + aij * f32At X j) 0
-    putF32 y i (flt alpha * acc + flt beta * f32At Y i)) Y
+      let aij := if Sem.asI32 trans != 0 then f32At A (a0 + i * M + j) else f32At A (a0 + j * M + i)
+      acc + aij * f32At X (x0 + j)) 0
+    putF32 y (y0 + i) (flt alpha * acc + flt beta * f32At Y (y0 + i))) Y
 
 /-- A `bf16` element: the high half of an `f32`. -/
 def bf16At (b : ByteArray) (i : Nat) : Float32 :=
@@ -93,7 +94,9 @@ def gemmBf16Ref (sc : List UInt64) (A B C : ByteArray) : ByteArray :=
 
 def vendorRef (c : Sem.VendorCall) (ins : List ByteArray) : ByteArray :=
   match c.op, c.scalars, ins with
-  | "sgemv", [trans, m, n, alpha, beta], [A, X, Y] => sgemvRef trans m n alpha beta A X Y
+  | "sgemv", [trans, m, n, alpha, beta], [A, X, Y] => sgemvRef trans m n alpha beta 0 0 0 A X Y
+  | "sgemv", [trans, m, n, alpha, beta, oa, ox, oy], [A, X, Y] =>
+      sgemvRef trans m n alpha beta oa.toNat ox.toNat oy.toNat A X Y
   | "sgemmStridedBatched", sc, [A, B, C] => sgemmRef sc A B C
   | "gemmExBf16", sc, [A, B, C] => gemmBf16Ref sc A B C
   | "gemmStridedBatchedExBf16", sc, [A, B, C] => gemmRefWith bf16At sc A B C

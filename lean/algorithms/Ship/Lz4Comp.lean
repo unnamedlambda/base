@@ -1,16 +1,20 @@
 import AlgorithmLib.Check.Entry
+import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
 import Lz4.Comp
 
 /-!
 # The LZ4 compressor neither misuses a call nor faults
 
-Both shipped geometries, 32 KiB and 64 KiB blocks, for any lengths of data and
-output the caller hands over: the input is uploaded into one allocation (a
-length past it is refused), the kernel launched on it, and the blocks copied
-back only into an output with room for all of them.
+Both shipped geometries, 32 KiB and 64 KiB blocks. `load` brings the CUDA
+driver up and makes the compressor's one allocation, loads the kernel and
+writes its parameters, in the driver's standard layout (`Drv.App`); `main`
+starts from what it leaves (`Drv.App.runTS`) and, for any lengths of data and
+output the caller hands over, uploads the input into the allocation (a length
+past the input's room is refused), launches the kernel on it, and copies the
+blocks back only into an output with room for all of them.
 
-The binding table sits past the kernel's text, so its offset is the text's
+The layout's state sits past the kernel's text, so its offset is the text's
 length: the compiled one computes it, since the kernel would serialize the
 kernel to check it.
 
@@ -27,77 +31,72 @@ namespace Lz4CompSafe
 
 theorem bindOff_15 : (Lz4Ship.WP.mk 15).bindOff = 10720 := by native_decide
 theorem bindOff_16 : (Lz4Ship.WP.mk 16).bindOff = 10720 := by native_decide
-theorem memSize_15 : (Lz4Ship.WP.mk 15).memSize = 10848 := by native_decide
-theorem memSize_16 : (Lz4Ship.WP.mk 16).memSize = 10848 := by native_decide
 
-abbrev Start (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena 10848, .roomArg .data dl, .roomArg .out ol,
-   .cstrIn (regionBase .arena + UInt64.ofNat Lz4Ship.rPTX_OFF) (10720 - Lz4Ship.rPTX_OFF)]
+theorem load15_eq : (Lz4Ship.loadCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit) =
+    Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 15) 10720 := by rw [Lz4Ship.loadCode, bindOff_15]
+theorem load16_eq : (Lz4Ship.loadCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit) =
+    Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 16) 10720 := by rw [Lz4Ship.loadCode, bindOff_16]
+theorem warp15_eq : (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit) =
+    Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 := by rw [Lz4Ship.warpCode, bindOff_15]
+theorem warp16_eq : (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit) =
+    Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 := by rw [Lz4Ship.warpCode, bindOff_16]
+
+/-- What `load` starts from: the driver loaded, nothing made, the kernel's
+    text and its entry point's name in the arena. -/
+abbrev Load (b : Nat) : World → Prop := Contracts.TState.holds (Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 10720).loadTS
+
+/-- What `main` starts from: what `load` leaves, and the caller's data and
+    output of any lengths. -/
+abbrev Run (b : Nat) (dl ol : UInt64) : World → Prop := Contracts.TState.holds
+  ((Lz4Ship.lzAppAt (Lz4Ship.WP.mk b) 10720).runTS ++ [.roomArg .data dl, .roomArg .out ol])
+
+ship_entry load15 : Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 15) 10720 under (Load 15)
+ship_entry load16 : Lz4Ship.loadCodeAt (Lz4Ship.WP.mk 16) 10720 under (Load 16)
 
 theorem warp15_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
   ⟨by decide +kernel, by decide +kernel⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem warp15_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena (Lz4Ship.WP.mk 15).memSize,
-      .roomArg .data dataLen, .roomArg .out outLen,
-      .cstrIn (regionBase .arena + UInt64.ofNat Lz4Ship.rPTX_OFF) ((Lz4Ship.WP.mk 15).bindOff - Lz4Ship.rPTX_OFF)] w)
+theorem warp15_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 15 dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  rw [memSize_15, bindOff_15] at h
-  rw [show (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit) = (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 : Prog Slot Lvl Unit) by
-    rw [Lz4Ship.warpCode, bindOff_15]]
+  rw [warp15_eq]
   check_body
 
 open AlgorithmLib.Check in
-/-- **The calls the host program makes**, in order, at geometry `g` with the
-    binding table at `bo`: start the device; make one buffer, for the input and
-    the output; upload the data to its start; launch the kernel at `rPTX_OFF`
-    on that one buffer bound twice, `rLaunches` times, each on a grid of
-    `g.gridX` blocks of `wBlockDim` threads; copy the blocks back from
-    `g.outOff`, where the output has room for them; stop the device. An
-    argument written `none` is one the program computes as it runs: the
-    buffer `cudaCreateBuffer` answered, and the data's length. -/
-def warpCalls (g : Lz4Ship.WP) (bo : Nat) : Tr :=
+/-- **The calls one compression makes**, in order, at geometry `g` with the
+    layout at `org`: the caller's data copied to the allocation's start, of a
+    length within the input's room (or no copy); the kernel launched
+    `rLaunches` times on the default stream, each on a grid of `g.gridX`
+    blocks of `wBlockDim` threads, with both its parameters the allocation's
+    pointer; and the blocks copied back from `g.outOff` into the caller's
+    output (or no copy, where it has no room for them). -/
+def warpCalls (g : Lz4Ship.WP) (org : Nat) : Tr :=
   .seq
-    (.lit [⟨.ffi .cudaInit, [some (regionBase .arena + 16)]⟩,
-      ⟨.ffi .cudaCreateBuffer, [some cudaCtx, some (UInt64.ofNat (g.outOff + g.outAlloc))]⟩,
-      ⟨.ffi .cudaUploadOffset, [some cudaCtx, none, some 0, some (regionBase .data), none]⟩])
+    (.alt (.lit [⟨.ext (.cuda .memcpyHtoD), [.is (devPtr 0), .is (regionBase .data), .within 0 g.outOff]⟩])
+      (.lit []))
     (.seq
-      (.rep Lz4Ship.rLaunches (.lit [⟨.ffi .cudaLaunch,
-        [some cudaCtx, some (regionBase .arena + UInt64.ofNat Lz4Ship.rPTX_OFF), some 2,
-         some (regionBase .arena + UInt64.ofNat bo), some (UInt64.ofNat g.gridX), some 1, some 1,
-         some (UInt64.ofNat Lz4Ship.wBlockDim), some 1, some 1]⟩]))
-      (.seq
-        (.alt
-          (.lit [⟨.ffi .cudaDownloadOffset,
-            [some cudaCtx, none, some (UInt64.ofNat g.outOff), some (regionBase .out),
-             some (UInt64.ofNat g.totOut)]⟩])
-          (.lit []))
-        (.lit [⟨.ffi .cudaCleanup, [some (regionBase .arena + 16)]⟩])))
+      (.rep Lz4Ship.rLaunches (.lit [⟨.ext (.cuda .launchKernel),
+        [.is (drvHandle kFunc 0), .is (UInt64.ofNat g.gridX), .is 1, .is 1, .is (UInt64.ofNat Lz4Ship.wBlockDim),
+         .is 1, .is 1, .is 0, .is 0, .is (Drv.App.at_ ((Lz4Ship.lzAppAt g org).paramsOff 0)), .is 0,
+         .is (devPtr 0), .is (devPtr 0)]⟩]))
+      (.alt (.lit [⟨.ext (.cuda .memcpyDtoH),
+          [.is (regionBase .out), .is (devPtr 0 + UInt64.ofNat g.outOff), .is (UInt64.ofNat g.totOut)]⟩])
+        (.lit [])))
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-/-- **Every run of the 32 KiB host program that ends makes the calls
-    `warpCalls` admits**, after whatever was observed before it: one
-    allocation, one upload before any launch, exactly `rLaunches` launches,
-    each on a grid of `numBlk` blocks of `modelBlockDim` threads, and nothing
-    after the device is stopped. A statement about runs of the emitted body, not a reading of
-    its text. -/
-theorem warp15_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena (Lz4Ship.WP.mk 15).memSize,
-      .roomArg .data dataLen, .roomArg .out outLen,
-      .cstrIn (regionBase .arena + UInt64.ofNat Lz4Ship.rPTX_OFF) ((Lz4Ship.WP.mk 15).bindOff - Lz4Ship.rPTX_OFF)] w)
+/-- **Every run of the 32 KiB compression that ends makes the calls
+    `warpCalls` admits**, after whatever was observed before it. A statement
+    about runs of the emitted body, not a reading of its text. -/
+theorem warp15_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 15 dataLen outLen w)
     {obs : List Obs} {w' : World}
     (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit))
       = .ok obs w') :
-    (warpCalls (Lz4Ship.WP.mk 15) (Lz4Ship.WP.mk 15).bindOff).Covers w obs := by
-  rw [memSize_15, bindOff_15] at h
-  rw [show (Lz4Ship.warpCode (Lz4Ship.WP.mk 15) : Prog Slot Lvl Unit) = (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 15) 10720 : Prog Slot Lvl Unit) by
-    rw [Lz4Ship.warpCode, bindOff_15]] at hr
-  rw [bindOff_15]
+    (warpCalls (Lz4Ship.WP.mk 15) 10720).Covers w obs := by
+  rw [warp15_eq] at hr
   check_calls
 
 theorem warp16_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
@@ -105,38 +104,27 @@ theorem warp16_fine : Fine (emitGo (fnBody ptrParams (Lz4Ship.warpCodeAt (Lz4Shi
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem warp16_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena (Lz4Ship.WP.mk 16).memSize,
-      .roomArg .data dataLen, .roomArg .out outLen,
-      .cstrIn (regionBase .arena + UInt64.ofNat Lz4Ship.rPTX_OFF) ((Lz4Ship.WP.mk 16).bindOff - Lz4Ship.rPTX_OFF)] w)
+theorem warp16_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 16 dataLen outLen w)
     (m : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit)) ≠ .fault m := by
-  rw [memSize_16, bindOff_16] at h
-  rw [show (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit) = (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit) by
-    rw [Lz4Ship.warpCode, bindOff_16]]
+  rw [warp16_eq]
   check_body
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-/-- The same of the 64 KiB host program. -/
-theorem warp16_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : Contracts.TState.holds [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena (Lz4Ship.WP.mk 16).memSize,
-      .roomArg .data dataLen, .roomArg .out outLen,
-      .cstrIn (regionBase .arena + UInt64.ofNat Lz4Ship.rPTX_OFF) ((Lz4Ship.WP.mk 16).bindOff - Lz4Ship.rPTX_OFF)] w)
+/-- The same of the 64 KiB compression. -/
+theorem warp16_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 16 dataLen outLen w)
     {obs : List Obs} {w' : World}
     (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit))
       = .ok obs w') :
-    (warpCalls (Lz4Ship.WP.mk 16) (Lz4Ship.WP.mk 16).bindOff).Covers w obs := by
-  rw [memSize_16, bindOff_16] at h
-  rw [show (Lz4Ship.warpCode (Lz4Ship.WP.mk 16) : Prog Slot Lvl Unit) = (Lz4Ship.warpCodeAt (Lz4Ship.WP.mk 16) 10720 : Prog Slot Lvl Unit) by
-    rw [Lz4Ship.warpCode, bindOff_16]] at hr
-  rw [bindOff_16]
+    (warpCalls (Lz4Ship.WP.mk 16) 10720).Covers w obs := by
+  rw [warp16_eq] at hr
   check_calls
 
 end Lz4CompSafe
 
+#print axioms Lz4CompSafe.load15_no_misuse
 #print axioms Lz4CompSafe.warp15_no_misuse
-#print axioms Lz4CompSafe.warp16_no_misuse
 #print axioms Lz4CompSafe.warp15_calls
 #print axioms Lz4CompSafe.warp16_calls

@@ -1,10 +1,10 @@
 module
 public import Lean
 public import Std
-public import Scan.Layout
-meta import Scan.Layout
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -15,119 +15,86 @@ open AlgorithmLib.IR
 
 namespace CudaGemvPersist
 
-/-
-  Persistent GEMV: A stays on GPU, only x is uploaded per call.
+/-!
+Persistent GEMV: `A` stays on the device, and each call uploads only `x`.
 
-  fn1  load   — init CUDA, alloc 3 bufs (A, x, y), upload A, store m/n
-  fn2  prep   — upload x to buf1
-  fn3  infer  — cuBLAS SGEMV, sync, optional download y from buf2
+- `main`, data `[m: u64][n: u64][A: m·n f32, row-major]`: brings the driver
+  and cuBLAS up and, for `0 < m, n < 2^31` with `4·m·n < 2^35`, keeps `m` and
+  `n`, makes the allocations of `A`, `x` and `y`, and uploads `A`, where the
+  data holds exactly `A` after its header.
+- `prep`, data `[x: n f32]`: uploads `x`, where it fits.
+- `infer`, output `[y: m f32]`: `y = A x` by cuBLAS, then downloads as many
+  bytes of `y` as the output asks for, where they fit.
 
-  Shared memory app fields (after 56-byte runtime header):
-    0x38  m (i64)
-    0x40  n (i64)
-
-  Buffer IDs are sequential: buf0=A, buf1=x, buf2=y (hardcoded in infer/prep).
-
-  Data formats:
-    load  data: [m: u64][n: u64][A: m*n f32]
-    prep  data: [x: n f32]  (data_len = n*4)
-    infer out:  [y: m f32]  (optional; compute-only if out_len=0)
+The program calls the CUDA driver and cuBLAS directly, in `Drv.App`'s layout;
+all three allocations are sized at run time.
 -/
-
-def MEM_SIZE   : Nat := 0x50
-def M_OFF      : Nat := 0x38
-def N_OFF      : Nat := 0x40
 
 open AlgorithmLib.Prog
 
+/-- Where `main` keeps `m` and `n`, and where the driver's state starts. -/
+def M_OFF : Nat := 0x38
+def N_OFF : Nat := 0x40
+def ORG : Nat := 0x100
 
-/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
-def CTX_OFF : Nat := 0x10
+/-- **The program in the driver's standard layout**: `A`, `x` and `y` as
+    three allocations sized at run time, and cuBLAS. -/
+def app : Drv.App := { bufs := [0, 0, 0], kernels := [], memSize := 0x200, blas := true, org := ORG }
 
 def loadCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
-
-  cudaInit ptr CTX_OFF
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-
-  let dataLen ← dataLen
-  -- the header only when the caller handed over its 16 bytes
-  Prog.when .ule (← iconst64 16) dataLen do
-    let m  ← load64 dataPtr
-    let n  ← load64 (← iaddImm dataPtr 8)
-
-    -- Dimensions sgemv takes as positive `i32`s, so the buffer sizes below do not
-    -- wrap: other dimensions make no buffers, and `infer` finds none.
-    let one ← iconst64 1
-    let lim ← iconst64 0x7FFFFFFF
-    let _ ← ifte .ult (← isub m one) lim
-      (thn := do
-        let _ ← ifte .ult (← isub n one) lim
-          (thn := do
-            store m (← absAddr ptr M_OFF)
-            store n (← absAddr ptr N_OFF)
-
-            let mNBytes ← ishlImm (← imul m n) 2
-            let nBytes  ← ishlImm n 2
-            let mBytes  ← ishlImm m 2
-
-            let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, mNBytes]  -- A (buf id 0)
-            let _    ← ffi .cudaCreateBuffer %[ctxPtr, nBytes]   -- x (buf id 1)
-            let _    ← ffi .cudaCreateBuffer %[ctxPtr, mBytes]   -- y (buf id 2)
-
-            -- Upload A from data[16..] (after m, n header), where the data holds
-            -- it: an input shorter than its header says uploads nothing.
-            let hdr ← iconst64 16
-            let _ ← ifte .uge dataLen hdr
-              (thn := do
-                let _ ← ifte .ule mNBytes (← isub dataLen hdr)
-                  (thn := do
-                    let aPtr ← iaddImm dataPtr 16
-                    let _ ← ffi .cudaUpload %[ctxPtr, buf0, aPtr, mNBytes]
-                    pure %[])
-                  (els := pure %[])
-                pure %[])
-              (els := pure %[])
-            pure %[])
-          (els := pure %[])
-        pure %[])
-      (els := pure %[])
+  let a := app
+  let base ← basePtr
+  let dp ← dataPtr
+  let dl ← dataLen
+  a.setup base
+  Prog.when .ule (← iconst64 16) dl do
+    let m ← load64 dp
+    let n ← load64 (← iaddImm dp 8)
+    Prog.when .ne m (← iconst64 0) do
+    Prog.when .ult m (← iconst64 (2 ^ 31)) do
+    Prog.when .ne n (← iconst64 0) do
+    Prog.when .ult n (← iconst64 (2 ^ 31)) do
+      let mnBytes ← imul (← imul m n) (← iconst64 4)
+      Prog.when .ult mnBytes (← iconst64 (2 ^ 35)) do
+      -- `A` is what follows the header, all of it
+      let aBytes ← isub dl (← iconst64 16)
+      Prog.when .eq mnBytes aBytes do
+        storeI64 m (← iaddImm base M_OFF)
+        storeI64 n (← iaddImm base N_OFF)
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 0), aBytes]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 1), ← imul n (← iconst64 4)]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 2), ← imul m (← iconst64 4)]
+        let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (a.bufSlot 0)), ← iaddImm dp 16, aBytes]
 
 def prepCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
-  let dataLen ← dataLen
-  let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
-  let xBuf    ← iconst32 1
-  let _ ← ffi .cudaUpload %[ctxPtr, xBuf, dataPtr, dataLen]
+  let base ← basePtr
+  let dl ← dataLen
+  let n ← load64 (← iaddImm base N_OFF)
+  Prog.when .ule dl (← imul n (← iconst64 4)) do
+    let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (app.bufSlot 1)), ← dataPtr, dl]
 
-/-- The download branch joins rather than returning from each arm: `Code` has no
-    early return, so both arms reach one `ret`. -/
+/-- `y = A x`: `A` is row-major `m × n`, so cuBLAS reads it as the
+    column-major `n × m` matrix and transposes it. -/
 def inferCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let outPtr ← outPtr
-  let outLen ← outLen
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-  let m      ← load64 (← absAddr ptr M_OFF)
-  let n      ← load64 (← absAddr ptr N_OFF)
-  let m32    ← ireduce32 m
-  let n32    ← ireduce32 n
-
-  let alpha  ← iconst32 0x3f800000  -- 1.0f
-  let zero32 ← iconst32 0
-  let one32  ← iconst32 1
-  let two32  ← iconst32 2
-  -- sgemv(ctx, trans=1, m=n, n=m, alpha=1.0, a_buf=0, x_buf=1, beta=0, y_buf=2)
-  let _ ← ffi .cublasSgemv %[ctxPtr, one32, n32, m32, alpha, zero32, one32, zero32, two32]
-  let _ ← cudaSync ptr CTX_OFF
-  let _ ← ifte .eq outLen (← iconst64 0)
-    (thn := pure %[])
-    (els := do
-      let _ ← ffi .cudaDownload %[ctxPtr, two32, outPtr, outLen]
-      pure %[])
-  return ()
-
+  let a := app
+  let base ← basePtr
+  let m ← load64 (← iaddImm base M_OFF)
+  let n ← load64 (← iaddImm base N_OFF)
+  Prog.when .ne m (← iconst64 0) do
+  Prog.when .ult m (← iconst64 (2 ^ 31)) do
+  Prog.when .ne n (← iconst64 0) do
+  Prog.when .ult n (← iconst64 (2 ^ 31)) do
+    let m32 ← ireduce32 m
+    let n32 ← ireduce32 n
+    let one ← iconst32 1
+    let _ ← ext (.cublas .sgemv) %[← load64 (← iaddImm base a.BLAS), one, n32, m32, ← iaddImm base a.ONE,
+      ← load64 (← iaddImm base (a.bufSlot 0)), n32, ← load64 (← iaddImm base (a.bufSlot 1)), one,
+      ← iaddImm base a.ZERO, ← load64 (← iaddImm base (a.bufSlot 2)), one]
+    Drv.sync
+    let ol ← outLen
+    Prog.when .ne ol (← iconst64 0) do
+      Prog.when .ule ol (← imul m (← iconst64 4)) do
+        let _ ← ext (.cuda .memcpyDtoH) %[← outPtr, ← load64 (← iaddImm base (a.bufSlot 2)), ol]
 
 def clifIR : Except String (List FuncData) :=
   Prog.program
@@ -136,29 +103,10 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "prep" (Prog.compileProg 2 prepCode),
      Prog.entry "infer" (Prog.compileProg 3 inferCode)]
 
-
-/-- Every byte of shared memory this program names.
-
-    The offsets are assigned by hand, and a collision between two of them is
-    invisible at every other layer: both stores succeed and the second wins.
-    `0x00`-`0x18` are the context slots the FFI's init calls fill, so naming
-    those is what stops an offset being placed where one of those calls will
-    overwrite it. -/
-def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda",   CTX_OFF, 8⟩,
-   ⟨"m",          M_OFF, 8⟩,
-   ⟨"n",          N_OFF, 8⟩]
-
-
-#eval LayoutScan.check "Bench.CudaGemvPersist" [``memMap]
-theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
-
-theorem memMap_within :
-    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
-
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
-  required_memory := MEM_SIZE
+  required_memory := app.memSize,
+  initial_memory := app.initialMemory []
 }
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=

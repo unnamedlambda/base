@@ -15,8 +15,10 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let bytes = lean_artifacts::by_name(name).unwrap_or_else(|| panic!("no artifact {name}"));
     let art = Artifact::from_bytes(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
     let base = Driver::load(art).expect("compile");
+    // The driver, the allocation and the kernel, made once.
+    unsafe { base.execute("load", &[], &mut []) }.expect("load");
 
-    // Layout mirrors Lz4Ship.WP in lean/algorithms/Lz4/Comp.lean; asserted against the
+    // Layout mirrors Lz4Ship.WP in lean/algorithms/Lz4/Kernel.lean; asserted against the
     // geometry the program writes after the blocks.
     let num_blk = CORPUS_BYTES / block;
     let len_off = block + block / 16 + 256;
@@ -127,9 +129,10 @@ pub fn main(_args: Vec<String>) {
     println!(
 "warp-cooperative GPU LZ4 compression, {:.1} MB Silesia prefix (= Lz4CompAlgorithm.corpusBytes)
 
-WHAT IS TIMED (ours): one Driver::execute_into = device buffer allocation + H2D upload
-  of the whole corpus + every kernel launch + D2H download of the whole output.
-  JIT compilation is NOT timed: Driver::load runs before the timed loop. 2 warmup execs,
+WHAT IS TIMED (ours): one Driver::execute_into = H2D upload of the whole corpus +
+  every kernel launch + D2H download of the whole output. JIT compilation, the device
+  allocation and the kernel's load are NOT timed: Driver::load and the artifact's own
+  `load` run before the timed loop. 2 warmup execs,
   then {} timed. Transfers are ~4% of the number below (see LAUNCH MODEL).
 WHAT IS TIMED (nvCOMP, {}): device-side encode only, input pre-staged on the GPU
   — host transfers excluded, i.e. generous to nvCOMP. Its encode() also allocates its

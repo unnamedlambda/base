@@ -14,7 +14,7 @@ open AlgorithmLib AlgorithmLib.ML
 /-!
   # What the ViT artifact ships
 
-  Its own module because the well-formedness of ninety bodies is decided
+  Its own module because the well-formedness of its bodies is decided
   here, and that decision is the longest single step in building this
   development. Nothing that reads the tape needs it, so keeping it beside
   them rather than under them keeps it off the critical path.
@@ -29,32 +29,23 @@ open AlgorithmLib.IR
     The bodies are named here rather than at the `compileProg` calls so that
     the list is the one place a function index is chosen. -/
 def vBodies : List (Nat × String × Prog.Body) :=
-  [ (1, "main", vLoadFn)
-  , (2, "run", vRunFn)
-  , (3, "fetch", vFetchFn VOUT (SQ * NC * 4)) ]
-    ++ (List.range VDBG).map (fun b => (4 + b, s!"buf{b}", vFetchFn b (vBufBytes.getD b 0)))
-    ++ [ (VFN,        "captureChain",     vCaptureAt 0 VFWD_N VGRAPH_OFF)
-       , (VFN + 1,    "replayChain",      vReplayAt VGRAPH_OFF 1)
-       , (VFN + 2,    "step",             vRangeFn 0 VSTEP_N)
-       -- The backward and the updates, from where the seed was uploaded. Not
-       -- the whole step: `dL/dlogits` is written between the forward and the
-       -- backward, so a graph spanning both would replay against the seed it
-       -- captured.
-       , (VFN + 3,    "captureStepChain", vCaptureAt VFWD_N VSTEP_N VGRAPH_STEP_OFF)
-       , (VFN + 4,    "replayStepChain",  vReplayAt VGRAPH_STEP_OFF 1)
-       , (VFN + 5,    "seed",             vSeedFn)
-       , (VFN + 6,    "fetchAny",         vFetchAnyFn)
-       , (VFN + 7,    "bwd",              vRangeFn VFWD_N VBWD_N)
-       , (VFN + 8,    "sgd",              vRangeFn VBWD_N VSTEP_N)
-       , (VFN + 9,    "reload",           vReloadFn)
-       , (VFN + 10,   "capture",          vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)
-       , (VFN + 11,   "replay",           vReplayAt VGRAPH_DFWD_OFF 1)
-       , (VFN + 12,   "captureStep",      vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)
-       , (VFN + 13,   "replayStep",       vReplayAt VGRAPH_DSTEP_OFF 1)
-       , (VFN + 14,   "captureBlas",      vCaptureClassAt true VGRAPH_BLAS_OFF)
-       , (VFN + 15,   "replayBlas",       vReplayAt VGRAPH_BLAS_OFF 1)
-       , (VFN + 16,   "captureRow",       vCaptureClassAt false VGRAPH_ROW_OFF)
-       , (VFN + 17,   "replayRow",        vReplayAt VGRAPH_ROW_OFF 1) ]
+  [ (1,  "main",        vLoadFn)
+  , (2,  "run",         vRangeFn 0 VFWD_N)
+  , (3,  "fetch",       vFetchFn VOUT (SQ * NC * 4))
+  , (4,  "step",        vRangeFn 0 VSTEP_N)
+  , (5,  "seed",        vSeedFn)
+  , (6,  "fetchAny",    vFetchAnyFn)
+  -- The backward and the updates, from where the seed was uploaded. Not the
+  -- whole step: `dL/dlogits` is written between the forward and the
+  -- backward, so a graph spanning both would replay against the seed it
+  -- captured.
+  , (7,  "bwd",         vRangeFn VFWD_N VBWD_N)
+  , (8,  "sgd",         vRangeFn VBWD_N VSTEP_N)
+  , (9,  "reload",      vReloadFn)
+  , (10, "capture",     vCaptureAt 0 VFWD_N VGRAPH_FWD VEXEC_FWD)
+  , (11, "replay",      vReplayAt VEXEC_FWD 1)
+  , (12, "captureStep", vCaptureAt VFWD_N VSTEP_N VGRAPH_STEP VEXEC_STEP)
+  , (13, "replayStep",  vReplayAt VEXEC_STEP 1) ]
 
 def vClifIR : Except String (List FuncData) := Prog.program (.ok noopFunction ::
   vBodies.map (fun (i, name, body) => Prog.entry name (Prog.compileProg i body)))
@@ -66,13 +57,9 @@ def vGradMapBytes : List UInt8 :=
   (List.range VBASE).flatMap (fun i => u32le ((vGradOf i).getD 0))
 
 def vInitialMemory : List UInt8 :=
-  zeros VHOST_LEN_OFF ++ u32le VHOST_BYTES
-    ++ zeros (VPTX_OFF - VHOST_LEN_OFF - 4)
-    ++ vPtx.flatMap vSlotBytes
-    ++ zeros (VMASK_OFF - VBIND_OFF)
-    ++ vMaskBytes
-    ++ vGradMapBytes
-    ++ zeros (VMEM_SIZE - VGMAP_OFF - 4 * VBASE)
+  vApp.initialMemory (vKernUnits.map fun k => vPtx.getD (vSlotIx k) "")
+    [(VHOST_LEN_OFF, u32le VHOST_BYTES), (VMASK_OFF, vMaskBytes),
+     (VSIZES_OFF, vBufBytes.flatMap fun n => u32le n ++ [0, 0, 0, 0]), (VGMAP_OFF, vGradMapBytes)]
 
 def vSetup (clif : List FuncData) : Artifact := {
   functions := clif
@@ -98,7 +85,7 @@ def report : IO Unit := do
                   ("update", Vit.vSgd), ("step", Vit.vAll)] do
     let v := (t.filter Vit.vIsVendor).length
     IO.println s!"[vit] {nm}: {t.length} ops ({v} cuBLAS, {t.length - v} proven)"
-  IO.println s!"[vit] distinct kernels {Vit.VNSLOT}, {Vit.VNUNIT} launches for {Vit.vAll.length} operations, widest group binds {Vit.VLOCAL_SLOTS}"
+  IO.println s!"[vit] distinct kernels {Vit.VNSLOT}, {Vit.VNUNIT} launches for {Vit.vAll.length} operations, widest group binds {Vit.VCELLS}"
   IO.println s!"[vit] buffers {Vit.VNBUF}, device {(Vit.vBufBytes.foldl (· + ·) 0) / 1048576} MiB"
   IO.println s!"[vit] host in {Vit.VHOST_BYTES} B, artifact mem {Vit.VMEM_SIZE / 1048576} MiB"
   IO.println s!"[vit] trained parameters {Vit.vSgd.length} of {Vit.VBASE - 5}"
@@ -106,7 +93,7 @@ def report : IO Unit := do
   IO.println s!"[vit] PTX: max kernel {ls.foldl max 0} B, all slots {Vit.VPTX_BYTES / 1024} KiB"
   let d := Vit.vLevel.foldl max 0
   let sp := (List.range Vit.VNSTRM).map (fun s =>
-    (Vit.vDag.strm.toList.filter (· == s)).length)
+    (Vit.vStrm.toList.filter (· == s)).length)
   IO.println s!"[vit] schedule: depth {d} of {Vit.VNUNIT} launches, {Vit.VNSTRM} streams, per-stream {sp}"
   let sizes := Vit.vUnitsRaw.map List.length
   let hist := (List.range 8).map (fun k => (k+1, (sizes.filter (· == k+1)).length))
@@ -124,7 +111,6 @@ def report : IO Unit := do
   IO.println s!"[vit] fusion sites {Vit.vFuseCensus}"
   IO.println s!"[vit] chains {Vit.vChainCensus}"
   IO.println s!"[vit] contractions (tA,tB,m,n,k) {Vit.vGemmCensus}"
-  IO.println s!"[vit] batched: {Vit.vBatchGroups.length} groups, {Vit.vBatchGroups.foldl (fun a g => a + (g.length - 1)) 0} launches removed, widest {Vit.vBatchGroups.foldl (fun a g => max a g.length) 0}"
   IO.println s!"[vit] horizontal {Vit.vHoriz}"
   IO.println s!"[vit] horizontal contiguity {Vit.vHorizContig}"
   IO.println s!"[vit] self-contained {Vit.vSelfContained}"
@@ -139,7 +125,8 @@ def report : IO Unit := do
   IO.println s!"[vit] grid pairs at a break {Vit.vGridPairs}"
   let szN := Vit.vUnitsNorm.map List.length
   IO.println s!"[vit] row-chunked elementwise would give {Vit.vUnitsNorm.length} launches, sizes {(List.range 10).map (fun k => (k+1, (szN.filter (· == k+1)).length))}"
-  IO.println s!"[vit] schedule: {Vit.vDag.nev} events, {(Vit.vDag.ewait.toList.map List.length).foldl (· + ·) 0} waits"
+  for (nm, d) in [("forward", Vit.vDagFwd), ("step", Vit.vDagStep)] do
+    IO.println s!"[vit] {nm} schedule: {d.nev} events, {(d.ewait.toList.map List.length).foldl (· + ·) 0} waits"
 
 def Vit.Ship.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args

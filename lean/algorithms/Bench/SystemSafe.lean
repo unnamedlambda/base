@@ -1,7 +1,7 @@
 import AlgorithmLib.Check.Entry
 import Bench.System
 import AlgorithmLib.Proof.Typestate
-import Host.StaticChecks
+import AlgorithmLib.Check.Entry
 
 /-!
 # The system benchmarks never misuse a library

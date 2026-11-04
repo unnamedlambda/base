@@ -3,6 +3,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Wg
+meta import AlgorithmLib.Surface.Wg
 public import AlgorithmLib.Vocab.WGSL
 meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
@@ -185,9 +187,9 @@ def blitShaderSource : String :=
   "  return vec4<f32>(r, g, b, a);\n" ++
   "}\n"
 
+-- `wg` holds wgpu's and the window's state (`app`).
 structure Fields where
-  reserved    : Fld (.bytes 64)
-  bindDesc    : Fld (.bytes 16)
+  wg          : Fld (.bytes 512)
   shader      : Fld (.bytes 8192)
   blitShader  : Fld (.bytes 2048)
   title       : Fld (.bytes 64)
@@ -202,8 +204,7 @@ structure Fields where
   pixels      : Fld (.bytes pixelBytes)
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
-  let reserved    ← field (.bytes 64)
-  let bindDesc    ← field (.bytes 16)
+  let wg          ← field (.bytes 512)
   let shader      ← field (.bytes 8192)
   let blitShader  ← field (.bytes 2048)
   let title       ← field (.bytes 64)
@@ -216,11 +217,25 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let camZ        ← field .i64
   let nEvents     ← field .i64
   let pixels      ← field (.bytes pixelBytes)
-  pure { reserved, bindDesc, shader, blitShader, title, events, params, keyMask,
+  pure { wg, shader, blitShader, title, events, params, keyMask,
          quit, camX, camY, camZ, nEvents, pixels }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
+
+/-- The frame and its parameters, the pipeline that draws one, and the window
+    the frame is shown in, called through wgpu and the window library
+    directly. -/
+def app : Wg.App :=
+  { bufs := [pixelBytes, paramsBytes],
+    pipes := [{ shaderOff := f.shader.offset, shaderLen := utf8Len% shaderSource,
+                binds := [(0, false), (1, true)] }],
+    memSize := layoutMeta.totalSize, org := f.wg.offset,
+    blit := some { shaderOff := f.blitShader.offset, shaderLen := utf8Len% blitShaderSource, buf := 0,
+                   titleOff := f.title.offset, titleCap := 64 } }
+
+/-- wgpu's and the window's state fit their field. -/
+theorem app_fits : app.stateEnd ≤ f.wg.offset + 512 := by decide
 
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
@@ -329,39 +344,31 @@ def assertEq (ptr actual : V .i64) (expected : Int) : Prog V L Unit := do
   let exp ← iconst64 expected
   writeOutput (← sextend64 (← icmp .eq actual exp)) actual exp
 
-def dispatchScene (ptr : V .i64) (paramBuf pipeId : V .i32) : Prog V L Unit := do
-  let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-  let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
-  pure ()
+/-- Hand the frame's parameters to the GPU and draw the scene. -/
+def dispatchScene (ptr : V .i64) : Prog V L Unit := do
+  app.upload ptr 1 (← iaddImm ptr f.params.offset) (← iconst64 paramsBytes)
+  app.dispatch ptr 0 (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
 
 def mainBody : Prog V L Unit := do
   let ptr ← basePtr
-  windowInit ptr
-  gpuInit ptr
-  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
-  let w64 ← iconst64 imageWidth
-  let h64 ← iconst64 imageHeight
-  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.utf8ByteSize : Int))
-                      (← fldOffset f.blitShader) (← iconst64 (blitShaderSource.utf8ByteSize : Int))
+  app.setup ptr
   clearState ptr
-  let _ ← wloop1 (← iconst64 0)
-    (head := fun c => do
-      let q ← fldLoad ptr f.quit
-      let z ← iconst64 0
-      return (contIf .eq q z, %[c], ()))
-    (body := fun frame _ => do
-      let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
-      fldStore ptr f.nEvents (← sextend64 n)
-      processEvents ptr
-      applyMovement ptr
-      writeParams ptr frame
-      dispatchScene ptr paramBuf pipeId
-      let _ ← windowPresentGpuBuffer ptr pixelBuf
-      return %[← iaddImm frame 1])
-  windowCleanup ptr
-  gpuCleanup ptr
+  app.withWindow ptr imageWidth imageHeight fun win => do
+    let _ ← wloop1 (← iconst64 0)
+      (head := fun c => do
+        let q ← fldLoad ptr f.quit
+        let z ← iconst64 0
+        return (contIf .eq q z, %[c], ()))
+      (body := fun frame _ => do
+        let n ← app.pollEvents ptr win (← iaddImm ptr f.events.offset) eventSlots
+        fldStore ptr f.nEvents n
+        processEvents ptr
+        applyMovement ptr
+        writeParams ptr frame
+        dispatchScene ptr
+        app.present ptr win
+        return %[← iaddImm frame 1])
+  app.cleanup ptr
 
 def testMoveForward : Prog V L Unit := do
   let ptr ← basePtr
@@ -397,15 +404,12 @@ def testQuitOnClose : Prog V L Unit := do
 
 def testRenderScene : Prog V L Unit := do
   let ptr ← basePtr
-  gpuInit ptr
-  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+  app.setup ptr
   clearState ptr
   writeParams ptr (← iconst64 0)
-  dispatchScene ptr paramBuf pipeId
-  let _ ← gpuDownload ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
-  gpuCleanup ptr
+  dispatchScene ptr
+  app.download ptr 0 (← iaddImm ptr f.pixels.offset) (← iconst64 pixelBytes)
+  app.cleanup ptr
   let skyB ← uload8_64 (← absAddr ptr (f.pixels.offset + skyByteOff))
   let groundB ← uload8_64 (← absAddr ptr (f.pixels.offset + groundByteOff))
   let thresh ← iadd groundB (← iconst64 20)
@@ -424,7 +428,7 @@ def clifIrSource : Except String (List FuncData) :=
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
-    f.bindDesc.init (uint32ToBytes 0 ++ uint32ToBytes 0 ++ uint32ToBytes 1 ++ uint32ToBytes 1),
+    f.wg.init app.stateInit,
     f.shader.init (stringToBytes shaderSource),
     f.blitShader.init (stringToBytes blitShaderSource),
     f.title.init (stringToBytes titleText),

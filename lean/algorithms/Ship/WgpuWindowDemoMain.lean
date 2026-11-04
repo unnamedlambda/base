@@ -1,5 +1,6 @@
 import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
+import AlgorithmLib.Check.WgState
 import Demo.WindowDemo
 
 /-!
@@ -19,36 +20,11 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace WgpuSafe
 
-/-- What the game starts in, but for whether there is a display. -/
-abbrev WindowDemoMain : World → Prop := Contracts.TState.holds
-  [.part .gpuAdapter true, .part .frozen false, .part .gpu false, .part .win false, .room .arena 930008,
-   .cstrIn (regionBase .arena + 80) 4096]
+/-- What the game starts in: wgpu untouched, in its terms; with a display or
+    without, which the window library's answer tells the game. -/
+abbrev WindowDemoMain : World → Prop := Contracts.TState.holds WindowDemo.app.loadTS
 
-abbrev WindowDemoMainOn (d : Bool) : World → Prop := Contracts.TState.holds
-  [.part .display d, .part .gpuAdapter true, .part .frozen false, .part .gpu false, .part .win false, .room .arena 930008,
-   .cstrIn (regionBase .arena + 80) 4096]
-
-theorem WindowDemo_main_fine :
-    Fine (emitGo (fnBody ptrParams (WindowDemo.mainBody : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-ship_entry WindowDemo_main_display : WindowDemo.mainBody under (WindowDemoMainOn true)
-
-ship_entry WindowDemo_main_headless : WindowDemo.mainBody under (WindowDemoMainOn false)
-
-/-- **The game neither misuses a call nor faults**, whether or not there is a display. -/
-theorem WindowDemo_main_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : WindowDemoMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (WindowDemo.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
-  have h' : WindowDemoMainOn w.display w := by
-    intro f hf
-    rcases List.mem_cons.mp hf with rfl | hf
-    · rfl
-    · exact h f hf
-  cases hd : w.display
-  · rw [hd] at h'; exact WindowDemo_main_headless_no_misuse cfg dataLen outLen w h' m
-  · rw [hd] at h'; exact WindowDemo_main_display_no_misuse cfg dataLen outLen w h' m
+ship_entry WindowDemo_main : WindowDemo.mainBody under WindowDemoMain
 
 end WgpuSafe
 

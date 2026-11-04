@@ -23,9 +23,9 @@ open AlgorithmLib.IR
 
 /-- **Seam guard: the slot each launch names holds that group's own kernel.**
 
-    `vit_capture_records_the_forward` recovers, from the emitted instruction
-    stream, that launch `k` reads PTX at `vSlotOff (vSlotIx k)`.  That is an
-    offset into a table; this is what the table holds there.
+    Launch `k` loads its kernel from the PTX at `vSlotOff (vSlotIx k)`
+    (`vKSpec`).  That is an offset into a table; this is what the table holds
+    there.
 
     The two are separated by a dedup — `vSlotMap` files groups under a
     `Std.HashMap` keyed on `(nbufs, warps, EWStmt)`, which is what makes twelve

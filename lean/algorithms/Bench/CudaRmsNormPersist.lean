@@ -1,12 +1,12 @@
 module
 public import Lean
 public import Std
-public import Scan.Layout
-meta import Scan.Layout
 public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -18,16 +18,29 @@ open AlgorithmLib.PTX
 
 namespace CudaRmsNormPersist
 
-def PTX_SOURCE_OFF : Nat := 0x0100
-def BIND_DESC_OFF  : Nat := 0x1100
-def MEM_SIZE       : Nat := 0x1200
+/-!
+Persistent RMSNorm over `N` floats: the weights stay on the device, and each
+call uploads only `x`.
 
--- App fields in shared memory (after 0x38 reserved header)
-def N_OFF      : Nat := 0x38   -- i64: element count N
-def BUF0_OFF   : Nat := 0x40   -- i32: buf0 id (x + weights)
-def BUF1_OFF   : Nat := 0x44   -- i32: buf1 id (output)
+- `main`, data `[N: u64][w: N f32]`: brings the driver up and, for
+  `0 < N < 2^30`, keeps `N`, makes the allocations and uploads `N` and `w`.
+- `prep`, data `[x: N f32]`: uploads `x`, where the data holds it.
+- `infer`, output `[y: N f32]`: one block of 256 threads computes
+  `y = x / rms(x) · w`, then downloads as many bytes of `y` as the output
+  asks for, where they fit.
 
--- buf0 = [N:u32][x:N*f32][w:N*f32], buf1 = output y
+The program calls the CUDA driver directly, in `Drv.App`'s layout. The
+kernel reads allocation 0 as `[N: u64][x: N f32][w: N f32]` and writes `y`
+to allocation 1; both are sized at run time.
+-/
+
+/-- Where `main` keeps `N`, where the driver's state starts, and where the
+    kernel's PTX lies and how many bytes are kept for it. -/
+def N_OFF : Nat := 0x38
+def ORG : Nat := 0x100
+def PTX_OFF : Nat := 0x400
+def PTX_LEN : Nat := 0x1000
+
 def ptxSource : String := buildModule 36 [{ name := "main", params := ["buf0", "buf1"], body := do
   let buf0 ← ldParam "buf0"
   let buf1 ← ldParam "buf1"
@@ -67,106 +80,61 @@ def ptxSource : String := buildModule 36 [{ name := "main", params := ["buf0", "
     mulF xi xi scale; mulF xi xi wi; stGlobalF yAddr xi
   ptxRet }]
 
-/-
-  Load: init CUDA, read N and weights from data, alloc 2 GPU bufs,
-  upload N + weights into buf0.
-  Shared memory app fields: N_OFF (i64), BUF0_OFF (i32), BUF1_OFF (i32)
--/
 open AlgorithmLib.Prog
 
+/-- **The program in the driver's standard layout**: `N`, `x` and `w` in
+    allocation 0, `y` in allocation 1, and one kernel handed both. -/
+def app : Drv.App :=
+  { bufs := [0, 0], kernels := [⟨PTX_OFF, PTX_LEN, [0, 1], (1, 1, 1), (256, 1, 1)⟩],
+    memSize := PTX_OFF + PTX_LEN, org := ORG }
 
-/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
-def CTX_OFF : Nat := 0x10
-
-/-- Load: init CUDA, read N and weights from data, alloc 2 GPU bufs, upload
-    N + weights into buf0. -/
+/-- Bring the driver up and load the kernel; then, where the data is `N` and
+    then `N` weights, `0 < N < 2^30`: keep `N`, make the allocations, hand
+    them to the kernel and upload `N` and the weights. -/
 def loadCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
+  let a := app
+  let base ← basePtr
+  let dp ← dataPtr
+  let dl ← dataLen
+  a.setup base
+  Prog.when .ule (← iconst64 8) dl do
+  Prog.when .ult dl (← iconst64 (2 ^ 33)) do
+    let n ← load64 dp
+    Prog.when .ne n (← iconst64 0) do
+    Prog.when .ult n (← iconst64 (2 ^ 30)) do
+      -- the weights are what follows `N`, all of it
+      let wBytes ← isub dl (← iconst64 8)
+      Prog.when .eq (← imul n (← iconst64 4)) wBytes do
+        storeI64 n (← iaddImm base N_OFF)
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 0), ← iadd dl wBytes]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 1), wBytes]
+        a.rebind base 0
+        let buf0 ← load64 (← iaddImm base (a.bufSlot 0))
+        let _ ← ext (.cuda .memcpyHtoD) %[buf0, ← iaddImm base N_OFF, ← iconst64 8]
+        let _ ← ext (.cuda .memcpyHtoD) %[← iadd buf0 dl, ← iaddImm dp 8, wBytes]
 
-  cudaInit ptr CTX_OFF
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-
-  -- Read N from data[0], store at N_OFF
-  let dataLen ← dataLen
-  -- the element count only when the caller handed over its 8 bytes
-  Prog.when .ule (← iconst64 8) dataLen do
-    let n    ← load64 dataPtr
-    store n (← absAddr ptr N_OFF)
-
-    -- buf0 size = N*4 (input x) + 8 (N header) + N*4 (weights) = 8 + N*8
-    let nBytes ← ishlImm n 2
-    let buf0Sz ← iaddImm (← iadd nBytes nBytes) 8
-    -- buf1 size = N*4 (output)
-    let buf1Sz ← ishlImm n 2
-
-    let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, buf0Sz]
-    let buf1 ← ffi .cudaCreateBuffer %[ctxPtr, buf1Sz]
-    store buf0 (← absAddr ptr BUF0_OFF)
-    store buf1 (← absAddr ptr BUF1_OFF)
-
-    -- Upload N (8 bytes) to buf0 at offset 0
-    let nAddr  ← absAddr ptr N_OFF
-    let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
-
-    -- Upload weights (data[1..N], N*4 bytes) to buf0 at offset 8 + N*4, where
-    -- the data holds them: an input shorter than its header says uploads none.
-    let hdr ← iconst64 8
-    let _ ← ifte .uge dataLen hdr
-      (thn := do
-        let _ ← ifte .ule nBytes (← isub dataLen hdr)
-          (thn := do
-            let wSrc ← iaddImm dataPtr 8
-            let wOff ← iaddImm nBytes 8
-            let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, wOff, wSrc, nBytes]
-            pure %[])
-          (els := pure %[])
-        pure %[])
-      (els := pure %[])
-
-/-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8, where the
-    data holds that many. -/
+/-- Upload `x` after `N`, where the data holds it. -/
 def prepCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
-  let n       ← load64 (← absAddr ptr N_OFF)
-  let buf0    ← load32 (← absAddr ptr BUF0_OFF)
-  let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
-  let nBytes  ← ishlImm n 2
-  let dataLen ← dataLen
-  -- x where the data holds it: shorter data uploads nothing.
-  let _ ← ifte .ule nBytes dataLen
-    (thn := do
-      let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
-      pure %[])
-    (els := pure %[])
+  let base ← basePtr
+  let n ← load64 (← iaddImm base N_OFF)
+  Prog.when .ult n (← iconst64 (2 ^ 30)) do
+    let bytes ← imul n (← iconst64 4)
+    Prog.when .ule bytes (← dataLen) do
+      let _ ← ext (.cuda .memcpyHtoD) %[← iaddImm (← load64 (← iaddImm base (app.bufSlot 0))) 8, ← dataPtr, bytes]
 
-/-- Infer: launch the kernel (1 block, 256 threads), sync, and download only if
-    the caller asked for output.
-
-    The download branch joins rather than returning from each arm: `Code` has no
-    early return, so both arms reach one `ret`. The join block holds nothing but
-    that `ret`, which costs nothing once the backend threads the jump. -/
+/-- Run the kernel and wait for it; then download as many bytes of `y` as the
+    caller's output asks for, where it asks for some and they fit. -/
 def inferCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let outPtr ← outPtr
-  let outLen ← outLen
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-  let nBufs  ← iconst32 2
-  let one32  ← iconst32 1
-  let blk256 ← iconst32 256
-
-  let _ ← cudaLaunch ptr (← iconst64 PTX_SOURCE_OFF) nBufs
-             (← iconst64 BIND_DESC_OFF) one32 one32 one32 blk256 one32 one32
-  let _ ← cudaSync ptr CTX_OFF
-  let _ ← ifte .eq outLen (← iconst64 0)
-    (thn := pure %[])
-    (els := do
-      let buf1 ← load32 (← absAddr ptr BUF1_OFF)
-      let _ ← ffi .cudaDownload %[ctxPtr, buf1, outPtr, outLen]
-      pure %[])
-  return ()
-
+  let a := app
+  let base ← basePtr
+  let n ← load64 (← iaddImm base N_OFF)
+  a.run base 0
+  Drv.sync
+  let ol ← outLen
+  Prog.when .ne ol (← iconst64 0) do
+  Prog.when .ult n (← iconst64 (2 ^ 30)) do
+    Prog.when .ule ol (← imul n (← iconst64 4)) do
+      let _ ← ext (.cuda .memcpyDtoH) %[← outPtr, ← load64 (← iaddImm base (a.bufSlot 1)), ol]
 
 def clifIR : Except String (List FuncData) :=
   Prog.program
@@ -175,47 +143,15 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "prep" (Prog.compileProg 2 prepCode),
      Prog.entry "infer" (Prog.compileProg 3 inferCode)]
 
-def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
-def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]
-
-def buildInitialMemory : List UInt8 :=
-  let reserved := zeros 0x0100
-  let ptx := ptxBytes ++ zeros (BIND_DESC_OFF - PTX_SOURCE_OFF - ptxBytes.length)
-  let bind := bindDesc ++ zeros (MEM_SIZE - BIND_DESC_OFF - bindDesc.length)
-  reserved ++ ptx ++ bind
-
-/-- Every byte of shared memory this program names.
-
-    The offsets are assigned by hand, and a collision between two of them is
-    invisible at every other layer: both stores succeed and the second wins.
-    `0x00`-`0x18` are the context slots the FFI's init calls fill, so naming
-    those is what stops an offset being placed where one of those calls will
-    overwrite it. -/
-def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda",   CTX_OFF, 8⟩,
-   ⟨"n",          N_OFF, 8⟩,
-   ⟨"buf0",       BUF0_OFF, 4⟩,
-   ⟨"buf1",       BUF1_OFF, 4⟩,
-   ⟨"ptx",        PTX_SOURCE_OFF, BIND_DESC_OFF - PTX_SOURCE_OFF⟩,
-   ⟨"bind",       BIND_DESC_OFF, MEM_SIZE - BIND_DESC_OFF⟩]
-
-
-#eval LayoutScan.check "Bench.CudaRmsNormPersist" [``memMap]
-theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
-
-theorem memMap_within :
-    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
-
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
-  required_memory := MEM_SIZE,
-  initial_memory := buildInitialMemory
+  required_memory := app.memSize,
+  initial_memory := app.initialMemory [ptxSource]
 }
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[
     artifactEntry "cuda_rmsnorm" (buildSetup clif)
   ]
-
 
 end CudaRmsNormPersist

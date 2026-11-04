@@ -7,6 +7,10 @@ public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Host.Driver
+meta import AlgorithmLib.Host.Driver
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -1405,10 +1409,8 @@ def ptxSource (spec : BlackHoleSpec) : String :=
     BGRA pipeline.  We now hold:
 
       * one PTX text region with two `.entry` functions
-      * two kernel-name strings (passed to `cl_cuda_launch_named`)
-      * two binding-descriptor regions (1-buffer for `render_hdr`,
-        2-buffer for `composite_bloom`), written at runtime by
-        the CLIF stub once `cudaCreateBuffer` returns IDs
+      * two kernel-name regions and two binding-descriptor regions,
+        which nothing reads
       * the existing filename, BMP-header, and final BGRA-pixel
         regions
 
@@ -1436,45 +1438,33 @@ def hdrPixelBytes (spec : BlackHoleSpec) : Nat := pixelCount spec * 16
 open AlgorithmLib.Prog
 
 
+/-- **The renderer in the driver's standard layout**: the HDR scratch (RGB
+    `f32`, padded to 16 bytes a pixel) and the final BGRA pixels as two
+    allocations, and two entry points of one module, the HDR render over the
+    scratch and the bloom composite over both. Its state lies in the region
+    `clifIrOff` keeps. -/
+def app (spec : BlackHoleSpec) : Drv.App :=
+  let grid := ((imageWidth spec + 15) / 16, (imageHeight spec + 15) / 16, 1)
+  { bufs := [hdrPixelBytes spec, pixelBytes spec],
+    kernels := [⟨ptxOff, ptxRegion, [0], grid, (16, 16, 1)⟩, ⟨ptxOff, ptxRegion, [0, 1], grid, (16, 16, 1)⟩],
+    entries := ["render_hdr", "composite_bloom"],
+    memSize := pixelsOff + pixelBytes spec, org := clifIrOff }
+
+/-- Bring the driver up, render the HDR image, composite it, download the
+    pixels beside the BMP header, free both allocations and write the file.
+    The default stream orders the two launches. -/
 def code (spec : BlackHoleSpec) : Prog V L Unit :=
+  let a := app spec
   do
-    let ptr ← basePtr
-    cudaInit ptr
-    -- Allocate device buffers: HDR scratch (RGB f32, padded to 16 B/pixel)
-    -- and final BGRA u32 output.
-    let hdrSz ← iconst64 (hdrPixelBytes spec)
-    let bgraSz ← iconst64 (pixelBytes spec)
-    let hdrBuf ← cudaCreateBuffer ptr hdrSz
-    let bgraBuf ← cudaCreateBuffer ptr bgraSz
-    -- Write the two binding descriptors into host memory at the
-    -- pre-reserved offsets.  Each is just a packed list of i32
-    -- buffer IDs; the FFI side reads N=`nBufs` of them.
-    store hdrBuf (← absAddr ptr bindOffA)
-    store hdrBuf (← absAddr ptr bindOffB)
-    store bgraBuf (← absAddr ptr (bindOffB + 4))
-    -- Launch kernel A: HDR render.
-    let ptxOffV ← iconst64 ptxOff
-    let nameAV ← iconst64 nameOffRender
-    let nBufs1 ← iconst32 1
-    let bindAV ← iconst64 bindOffA
-    let gridX ← iconst32 ((imageWidth spec + 15) / 16)
-    let gridY ← iconst32 ((imageHeight spec + 15) / 16)
-    let one32 ← iconst32 1
-    let blk16 ← iconst32 16
-    let _ ← cudaLaunchNamed ptr ptxOffV nameAV nBufs1 bindAV gridX gridY one32 blk16 blk16 one32
-    let _ ← cudaSync ptr
-    -- Launch kernel B: bloom composite (HDR + bloom → BGRA).
-    let nameBV ← iconst64 nameOffComposite
-    let nBufs2 ← iconst32 2
-    let bindBV ← iconst64 bindOffB
-    let _ ← cudaLaunchNamed ptr ptxOffV nameBV nBufs2 bindBV gridX gridY one32 blk16 blk16 one32
-    let _ ← cudaSync ptr
-    -- Download final BGRA pixels and write the BMP file.
-    let pxOffV ← iconst64 pixelsOff
-    let _ ← cudaDownload ptr bgraBuf pxOffV bgraSz
-    cudaCleanup ptr
+    let base ← basePtr
+    a.setup base
+    a.run base 0
+    a.run base 1
+    a.download base (← iaddImm base pixelsOff) 1 (pixelBytes spec)
+    Drv.free base (a.bufSlot 0)
+    Drv.free base (a.bufSlot 1)
     let total ← iconst64 (54 + pixelBytes spec)
-    let _ ← writeFile0 ptr filenameOff filenameRegion bmpHeaderOff total
+    let _ ← writeFile0 base filenameOff filenameRegion bmpHeaderOff total
 
 
 -- Generic in the spec, so there is no instance to `decide` at; the
@@ -1483,20 +1473,12 @@ def clifIrSource (spec : BlackHoleSpec) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code spec))]
 
 def payloads (spec : BlackHoleSpec) : List UInt8 :=
-  let reserved := zeros ptxOff
-  let ptxBytes := padTo (stringToBytes (ptxSource spec)) ptxRegion
-  let nameA := padTo (stringToBytes "render_hdr") nameRegion
-  let nameB := padTo (stringToBytes "composite_bloom") nameRegion
-  let bindAPad := zeros bindRegionA
-  let bindBPad := zeros bindRegionB
-  let filenameBytes := padTo (stringToBytes spec.filename) filenameRegion
-  let clifPad := zeros clifIrRegion
-  reserved ++ ptxBytes ++ nameA ++ nameB ++ bindAPad ++ bindBPad ++
-    filenameBytes ++ clifPad ++ bmpHeader spec
+  (app spec).initialMemory [ptxSource spec, ptxSource spec]
+    [(filenameOff, stringToBytes spec.filename), (bmpHeaderOff, bmpHeader spec)]
 
 def config (spec : BlackHoleSpec) (clif : List FuncData) : Artifact := {
   functions := clif,
-  required_memory := (payloads spec).length + pixelBytes spec,
+  required_memory := (app spec).memSize,
   initial_memory := payloads spec
 }
 

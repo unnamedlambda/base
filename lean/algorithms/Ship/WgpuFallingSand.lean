@@ -1,21 +1,20 @@
 import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
+import AlgorithmLib.Check.WgState
 import Demo.FallingSand
 
 /-!
 # FallingSand's tests neither misuse a call nor fault
 
 Each entry point, proven by the condition generator from the typestate it
-starts in, for any lengths of data and output the caller hands over. A program
-starts from its initial memory: the shader text it hands `gpuCreatePipeline`
-is a NUL-terminated string inside the field the layout gives it (`cstrIn`),
-which the calls before the pipeline leave alone. Buffer sizes need no facts:
-an upload or download of the wrong size answers `-1`. The caller's data and
-output hold the lengths it passes (`roomArg`); a test writes its results only
-where the output has room for them.
+starts in, for any lengths of data and output the caller hands over. The
+tests call wgpu directly and start from what `Wg.App.loadTS` states of
+wgpu and of its memory.
 
 Not faulting means every load and store finds the bytes it reaches, and every
-operation answers.
+operation answers, where the caller's data and output hold the lengths it
+passes. The game itself is proven in `FallingSandMain`, which builds beside
+this file.
 
 A plain file, not a module: under the module system the generator's
 arithmetic on 64-bit constants unfolds one step at a time.
@@ -27,15 +26,13 @@ namespace WgpuSafe
 
 -- FallingSand: the headless tests
 
-abbrev FallingSandTest (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.roomArg .data dl, .roomArg .out ol, .part .gpuAdapter true, .part .frozen false, .part .gpu false, .room .arena 2783568, .cstrIn (regionBase .arena + 64) 8192]
+/-- What the tests start from: wgpu untouched, in its terms. -/
+abbrev FallingSandTestIO (dl ol : UInt64) : World → Prop := Contracts.TState.holds
+  ([.roomArg .data dl, .roomArg .out ol] ++ FallingSand.app.loadTS)
 
-theorem FallingSand_layout : FallingSand.layoutMeta.totalSize = 2783568 ∧ FallingSand.f.stepSh.offset = 64 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+ship_entry FallingSand_grainFalls : FallingSand.testGrainFalls under FallingSandTestIO dataLen outLen
 
-ship_entry FallingSand_grainFalls : FallingSand.testGrainFalls under FallingSandTest dataLen outLen
-
-ship_entry FallingSand_conservation : FallingSand.testConservation under FallingSandTest dataLen outLen
+ship_entry FallingSand_conservation : FallingSand.testConservation under FallingSandTestIO dataLen outLen
 
 end WgpuSafe
 

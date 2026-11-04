@@ -3,6 +3,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Wg
+meta import AlgorithmLib.Surface.Wg
 public import AlgorithmLib.Vocab.WGSL
 meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
@@ -44,8 +46,7 @@ def maxN : Nat := 1024 * 1024  -- max 1M complex numbers
 def maxDataSize : Nat := maxN * 8  -- 8 bytes per complex (2 × f32)
 def metaSize : Nat := 16  -- N, stage, direction, padding (aligned to 4)
 
--- Offsets
-def bindDesc_off : Nat := 0x100
+-- Offsets: wgpu's state (`app`) from 0, the shader from 0x200
 def shader_off : Nat := 0x200
 def shaderRegionSize : Nat := 8192
 def inputFilename_off : Nat := shader_off + shaderRegionSize  -- 0x2200
@@ -131,10 +132,19 @@ def fftShader : String :=
 
 open AlgorithmLib.Prog
 
+/-- The two buffers the stages pass between and the stage parameters, and
+    the one butterfly pipeline over all three, called through wgpu directly. -/
+def app : Wg.App :=
+  { bufs := [maxDataSize, maxDataSize, metaSize],
+    pipes := [{ shaderOff := shader_off, shaderLen := utf8Len% fftShader,
+                binds := [(0, false), (1, false), (2, true)] }],
+    memSize := meta_off + metaSize }
+
+/-- wgpu's state fits below the shader. -/
+theorem app_fits : app.stateEnd ≤ shader_off := by decide
 
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  -- FFI declarations
 
   let c0  ← iconst64 0
   let c1  ← iconst64 1
@@ -172,17 +182,10 @@ def code : Prog V L Unit := do
       storeUnaligned (← load32 srcAbs) dstAbs
       storeUnaligned (← load32 (← iadd srcAbs c4)) (← iadd dstAbs c4)
 
-    gpuInit ptr
+    app.setup ptr
 
-    -- N*8 bytes: already the multiple of 4 wgpu asks of a buffer
+    -- N*8 bytes: already the multiple of 4 wgpu asks of a copy
     let dataSz ← imul bigN c8
-    let alignedSz := dataSz
-
-    -- Create 3 buffers
-    let buf0 ← gpuCreateBuffer ptr alignedSz
-    let buf1 ← gpuCreateBuffer ptr alignedSz
-    let metaSzC ← iconst64 metaSize
-    let buf2 ← gpuCreateBuffer ptr metaSzC
 
     -- Write N into meta region
     let metaOffC ← iconst64 meta_off
@@ -191,13 +194,7 @@ def code : Prog V L Unit := do
     store nI32 metaAbs
 
     -- Upload buf_a
-    let _ ← gpuUpload ptr buf0 bufAOff alignedSz
-
-    -- Create pipeline (3 bindings)
-    let shOffC ← iconst64 shader_off
-    let bdOffC ← iconst64 bindDesc_off
-    let c3_i32 ← iconst32 3
-    let pipeId ← gpuCreatePipeline ptr shOffC bdOffC c3_i32
+    app.upload ptr 0 (← iadd ptr bufAOff) dataSz
 
     -- Compute dispatch size: ceil(N/2 / 64)
     let halfN ← ushr bigN c1
@@ -209,33 +206,30 @@ def code : Prog V L Unit := do
     let one32 ← iconst32 1
 
     -- Step 4: Stage loop — counter `stage` for log2Result iterations,
-    -- accumulator `dir` toggled each iteration.
+    -- accumulator `dir` toggled each iteration. Each stage's parameters are
+    -- written before its dispatch is submitted, so in the queue's order.
     let finalDir ← forLoopAcc log2Result c0 fun stage dir => do
-      -- Write stage and direction into meta
       let metaStage ← iadd metaAbs c4
       storeUnaligned (← ireduce32 stage) metaStage
       let metaDir ← iadd metaStage c4
       storeUnaligned (← ireduce32 dir) metaDir
-      -- Upload meta, dispatch, then sync via download-to-scratch
-      let _ ← gpuUpload ptr buf2 metaOffC metaSzC
-      let _ ← gpuDispatch ptr pipeId wgCount32 one32 one32
-      let scratchOff ← iconst64 64
-      let _ ← gpuDownload ptr buf2 scratchOff metaSzC
+      app.upload ptr 2 metaAbs (← iconst64 metaSize)
+      app.dispatch ptr 0 wgCount32 one32 one32
       bxor dir c1   -- next direction
 
     -- Step 5: Download the buffer the last stage wrote and write it out:
     -- direction 0 after the loop → the last stage wrote buf_a, else buf_b.
     let outFnOff ← iconst64 outputFilename_off
     let outFnCap ← iconst64 filenameRegionSize
-    let finish (dstOff : V .i64) (bufId : V .i32) : Prog V L Unit := do
-      let _ ← gpuDownload ptr bufId dstOff alignedSz
-      gpuCleanup ptr
+    let finish (dstOff : V .i64) (i : Nat) : Prog V L Unit := do
+      app.download ptr i (← iadd ptr dstOff) dataSz
+      app.cleanup ptr
       let _ ← replaceFileAt ptr outFnOff outFnCap dstOff dataSz
     let bufAOffC ← iconst64 bufA_off
     let bufBOffC ← iconst64 bufB_off
     let _ ← ifte .eq finalDir c0
-      (thn := do finish bufAOffC buf0; pure %[])
-      (els := do finish bufBOffC buf1; pure %[])
+      (thn := do finish bufAOffC 0; pure %[])
+      (els := do finish bufBOffC 1; pure %[])
     pure %[])
    pure %[])
 
@@ -247,22 +241,14 @@ def clifIrSource : Except String (List FuncData) :=
 -- ---------------------------------------------------------------------------
 
 def payloads : List UInt8 :=
-  let reserved := zeros 0x40
-  let hdrPad := zeros (bindDesc_off - 0x40)
-  -- 3 binding descriptors: [buf_id (u32), read_only (u32)] × 3
-  let bindDesc :=
-    uint32ToBytes 0 ++ uint32ToBytes 0 ++   -- buf0: buf_a, read_write
-    uint32ToBytes 1 ++ uint32ToBytes 0 ++   -- buf1: buf_b, read_write
-    uint32ToBytes 2 ++ uint32ToBytes 1       -- buf2: meta, read_only
-  let bindPad := zeros (shader_off - bindDesc_off - 24)
+  let wgState := zeros app.NAME ++ "main".toUTF8.toList ++ zeros (shader_off - app.NAME - 4)
   let shaderBytes := padTo (stringToBytes fftShader) shaderRegionSize
   let inputFnameBytes := zeros filenameRegionSize
   let outputFnameBytes := padTo (stringToBytes "fft_output.bin") filenameRegionSize
   let flagBytes := uint64ToBytes 0
   let flagPad := zeros (clifIr_off - flag_off - 8)
   let clifPad := zeros clifIrRegionSize
-  reserved ++ hdrPad ++
-  bindDesc ++ bindPad ++
+  wgState ++
   shaderBytes ++ inputFnameBytes ++ outputFnameBytes ++
   flagBytes ++ flagPad ++ clifPad
 

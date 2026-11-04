@@ -328,8 +328,8 @@ def slotLiveCount : Nat :=
 
 /-- **A handle the model calls `slot p d` came from the address `p + d`.**
 
-    This is what makes a buffer handle identifiable — without it Qwen2's `Wq`,
-    `Wk` and `Wv` launches are the same record — so it is worth checking that
+    This is what makes a buffer handle identifiable — without it two launches
+    of one kernel on different buffers are the same record — so it is worth checking that
     the address the model names is the address the load read.  At every load
     kind: the model's `.load` arm does not look at one. -/
 theorem stepPure_slot_agrees : slotOk = true := by native_decide
@@ -1827,8 +1827,7 @@ def DenotesAt (vs : Vals) (v : Val) (d : DExp) : Prop :=
     own statement of when it can name a value without inventing a root, and it
     answers for `const`, `offset` and `derived` alike — so this is not three
     invariants stapled together but the single property those three cases were
-    always instances of.  It is also, verbatim, the value half of
-    `Qwen2NonVacuity.MetaFaithful`. -/
+    always instances of. -/
 def Denotes (vs : Vals) (e : Env) : Prop :=
   ∀ v d, (e v).toD? = some d → DenotesAt vs v d
 
@@ -1851,9 +1850,9 @@ theorem denotes_empty (vs : Vals) : Denotes vs Env.empty := by
     Deliberately **not** a condition on the whole value map.  A value the model
     has named already carries its own tracked type inside `Denotes`, and a
     program is free to hold floats and bytes in values the model says nothing
-    about — which shipped programs do: `Qwen2Common` builds `.f32` values and
-    `CliAlgorithm` uses `.i8`.  A condition over every value would be false of
-    both, and a theorem resting on it would say nothing about either. -/
+    about — which shipped programs do: `CliAlgorithm` uses `.i8`.  A condition
+    over every value would be false of it, and a theorem resting on it would
+    say nothing about it. -/
 def UnnamedTracked (vs : Vals) (e : Env) (a : Val) : Prop :=
   ∀ t w, getV vs a = some (.sc t w) → (e a).toD? = none → TrackedTy t
 

@@ -1,6 +1,7 @@
 import AlgorithmLib.Check.Entry
+import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
-import Host.StaticChecks
+import AlgorithmLib.Check.Entry
 import Warp.Silu
 import Warp.SumSq
 import Warp.Mlp
@@ -30,15 +31,13 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace CudaSafe
 
--- SiluWarp
+-- SiluWarp: the driver called directly, in its standard layout
 
 abbrev SiluWarpLoad : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena SiluWarp.MEM_SIZE, .room .data (SiluWarp.N * 4)]
+  (SiluWarp.app.loadTS ++ [.room .data (SiluWarp.N * 4)])
 
 abbrev SiluWarpRun : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena SiluWarp.MEM_SIZE, .room .out (SiluWarp.N * 4),
-   .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat SiluWarp.PTX_OFF), .cstr (regionBase .arena + UInt64.ofNat SiluWarp.PTX_L_OFF)]
+  (SiluWarp.app.runTS ++ [.room .out (SiluWarp.N * 4)])
 
 ship_entry SiluWarp_load : SiluWarp.loadFnCode under SiluWarpLoad
 
@@ -51,12 +50,10 @@ ship_entry SiluWarp_fetch : SiluWarp.fetchFnCode under SiluWarpRun
 -- WarpSumSq
 
 abbrev WarpSumSqLoad : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena WarpSumSq.MEM_SIZE, .room .data (WarpSumSq.N * 4)]
+  (WarpSumSq.app.loadTS ++ [.room .data (WarpSumSq.N * 4)])
 
 abbrev WarpSumSqRun : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena WarpSumSq.MEM_SIZE, .room .out (WarpSumSq.GRID * 4),
-   .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat WarpSumSq.PTX_OFF)]
+  (WarpSumSq.app.runTS ++ [.room .out (WarpSumSq.GRID * 4)])
 
 ship_entry WarpSumSq_load : WarpSumSq.loadFnCode under WarpSumSqLoad
 
@@ -67,12 +64,10 @@ ship_entry WarpSumSq_fetch : WarpSumSq.fetchFnCode under WarpSumSqRun
 -- MlpWarp
 
 abbrev MlpWarpLoad : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena MlpWarp.MEM_SIZE, .room .data (MlpWarp.NIN * 4)]
+  (MlpWarp.app.loadTS ++ [.room .data (MlpWarp.NIN * 4)])
 
 abbrev MlpWarpRun : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena MlpWarp.MEM_SIZE, .room .out (MlpWarp.NOUT * 4),
-   .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat MlpWarp.PTX_OFF)]
+  (MlpWarp.app.runTS ++ [.room .out (MlpWarp.NOUT * 4)])
 
 ship_entry MlpWarp_load : MlpWarp.loadFnCode under MlpWarpLoad
 
@@ -83,12 +78,10 @@ ship_entry MlpWarp_fetch : MlpWarp.fetchFnCode under MlpWarpRun
 -- GradWarp
 
 abbrev GradWarpLoad : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena GradWarp.MEM_SIZE, .room .data (GradWarp.NIN * 4)]
+  (GradWarp.app.loadTS ++ [.room .data (GradWarp.NIN * 4)])
 
 abbrev GradWarpRun : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena GradWarp.MEM_SIZE, .room .out (GradWarp.NOUT * 4),
-   .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx, .cstr (regionBase .arena + UInt64.ofNat GradWarp.PTX_OFF), .cstr (regionBase .arena + UInt64.ofNat GradWarp.PTX_D_OFF)]
+  (GradWarp.app.runTS ++ [.room .out (GradWarp.NOUT * 4)])
 
 ship_entry GradWarp_load : GradWarp.loadFnCode under GradWarpLoad
 

@@ -17,20 +17,29 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 
 namespace AlgorithmLib.Check
 
-/-- A call as the checker records it: its callee and, of each argument, the
-    bits where they are known. -/
-structure CallRec where
-  callee : Callee
-  args : List (Option UInt64)
+/-- What a record says of one value a call is observed with: nothing, its
+    bits, or that its bits are a number from `lo` to `hi`. -/
+inductive ArgPat where
+  | any
+  | is (b : UInt64)
+  | within (lo hi : Nat)
   deriving Repr, DecidableEq
 
-/-- A value carries the bits a record gives its place, where it gives any. -/
-def argOk : Option UInt64 → V → Prop
-  | none, _ => True
-  | some b, v => asBits v = some b
+/-- A call as the checker records it: its callee and what it knows of each
+    value the call is observed with. -/
+structure CallRec where
+  callee : Callee
+  args : List ArgPat
+  deriving Repr, DecidableEq
 
-/-- Arguments carry the bits a record gives, place by place. -/
-def argsOk : List (Option UInt64) → List V → Prop
+/-- A value is one a record's place admits. -/
+def argOk : ArgPat → V → Prop
+  | .any, _ => True
+  | .is b, v => asBits v = some b
+  | .within lo hi, v => ∃ b, asBits v = some b ∧ lo ≤ b.toNat ∧ b.toNat ≤ hi
+
+/-- Values a record admits, place by place. -/
+def argsOk : List ArgPat → List V → Prop
   | [], [] => True
   | o :: os, v :: vs => argOk o v ∧ argsOk os vs
   | _, _ => False
@@ -44,6 +53,13 @@ def recsMatch : List CallRec → List (Callee × List V) → Prop
   | [], [] => True
   | r :: rs, x :: xs => r.Matches x ∧ recsMatch rs xs
   | _, _ => False
+
+theorem argsOk_append : ∀ {os os' : List ArgPat} {vs vs' : List V},
+    argsOk os vs → argsOk os' vs' → argsOk (os ++ os') (vs ++ vs')
+  | [], _, [], _, _, h => h
+  | _ :: _, _, _ :: _, _, ⟨h1, h2⟩, h => ⟨h1, argsOk_append h2 h⟩
+  | [], _, _ :: _, _, h, _ => h.elim
+  | _ :: _, _, [], _, h, _ => h.elim
 
 theorem recsMatch_append : ∀ {a b : List CallRec} {s t : List (Callee × List V)},
     recsMatch a s → recsMatch b t → recsMatch (a ++ b) (s ++ t)

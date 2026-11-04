@@ -1,4 +1,6 @@
 module
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
 public import Lean
 public import AlgorithmLib.Surface.Link
 meta import AlgorithmLib.Surface.Link
@@ -11,8 +13,10 @@ public import AlgorithmLib.ML.Machine.Geometry
 meta import AlgorithmLib.ML.Machine.Geometry
 public import AlgorithmLib.ML.Ptx.Print
 meta import AlgorithmLib.ML.Ptx.Print
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Host.Driver
+meta import AlgorithmLib.Host.Driver
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -90,10 +94,7 @@ theorem sumsq_geometry : GRID * CHUNK = N := by decide
 
 -- ── memory layout ───────────────────────────────────────────────────────────
 
-def PTX_OFF   : Nat := 0x0100
-def BIND_OFF  : Nat := 0x1400
-def IN_ID     : Nat := 0x0040
-def OUT_ID    : Nat := 0x0044
+def PTX_OFF   : Nat := 0x0200
 def MEM_SIZE  : Nat := 0x1500
 
 -- ── CLIF: allocate, upload, launch, sync, download ──────────────────────────
@@ -101,49 +102,29 @@ def MEM_SIZE  : Nat := 0x1500
 open AlgorithmLib.Prog
 
 
-/-- **The kernel, as a record the launch sites read.**
-
-    The bind table is written in `load` and the launch is issued from `run`, so
-    nothing inside either function relates the table's length to the arity the
-    driver is told.  Both halves take it from `params` here instead. -/
-def kernel : AlgorithmLib.Kernel := {
-  name   := "main"
-  params := [{ shape := [.sta N],    ro := true,  name := "inBuf" },
-             { shape := [.sta GRID], ro := false, name := "outBuf" }]
-  geom   := AlgorithmLib.Kernel.Geom.static GRID 1 1 32 1 1
-  ptxOff := PTX_OFF
-  ptxText := some ptx
-}
+/-- **The program, in the driver's standard layout**: the input and the
+    partials' allocations, and the kernel, handed them in that order. -/
+def app : Drv.App :=
+  { bufs := [N * 4, GRID * 4],
+    kernels := [⟨PTX_OFF, MEM_SIZE - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩],
+    memSize := MEM_SIZE }
 
 /-- `load`: allocate device buffers and upload once. -/
 def loadFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  let inBytes ← iconst64 (N * 4)
-  let inId ← cudaCreateBuffer ptr inBytes
-  store inId (← absAddr ptr IN_ID)
-  let outBytes ← iconst64 (GRID * 4)
-  let outId ← cudaCreateBuffer ptr outBytes
-  store outId (← absAddr ptr OUT_ID)
-  let _ ← ffi .cudaUpload %[ctxPtr, inId, dataPtr, inBytes]
-  kernelBindAt kernel ptr BIND_OFF [inId, outId]
+  let base ← basePtr
+  app.setup base
+  app.upload base 0 (← dataPtr) (N * 4)
 
 /-- `run`: launch + sync only.  Isolates kernel time from PCIe upload. -/
 def runFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch kernel ptr BIND_OFF
-  let _ ← cudaSync ptr
+  let base ← basePtr
+  app.run base 0
+  Drv.sync
 
 /-- `fetch`: download the partials. -/
 def fetchFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let outId ← load32 (← absAddr ptr OUT_ID)
-  let outBytes ← iconst64 (GRID * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, outBytes]
+  let base ← basePtr
+  app.download base (← outPtr) 1 (GRID * 4)
 
 
 def clifIR : Except String (List FuncData) :=
@@ -153,29 +134,21 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "run" (Prog.compileProg 2 runFnCode),
      Prog.entry "fetch" (Prog.compileProg 3 fetchFnCode)]
 
-theorem ptx_fits_slot : ptx.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_OFF := by
+theorem ptx_fits_slot : ptx.toUTF8.toList.length + 1 ≤ MEM_SIZE - PTX_OFF := by
   native_decide
 
-/-- **The whole map, not the interesting part of it.**
+/-- The signature the entry points' typestates state of the kernel. -/
+theorem sumsq_sig : HProg.Sem.ptxParamSizes ptx "main" = some [8, 8] := by native_decide
 
-    The context slots and the buffer-id words are live offsets this file
-    writes; a map that omits them cannot see a collision involving them, and
-    the check reads as if it had. -/
+/-- **The whole map, not the interesting part of it.** -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"in_id",      IN_ID, 4⟩,
-   ⟨"out_id",     OUT_ID, 4⟩,
-   ⟨"ptx",        PTX_OFF, BIND_OFF - PTX_OFF⟩,
-   ⟨"bind",       BIND_OFF, 8⟩]
+  [⟨"driver", 0, app.stateEnd⟩,
+   ⟨"ptx",    PTX_OFF, MEM_SIZE - PTX_OFF⟩]
 
 theorem mem_map_ok :
     memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 
-def initialMemory : List UInt8 :=
-  let ptxBytes := AlgorithmLib.Kernel.ptxBytes kernel
-  zeros PTX_OFF
-    ++ ptxBytes
-    ++ zeros (MEM_SIZE - PTX_OFF - ptxBytes.length)
+def initialMemory : List UInt8 := app.initialMemory [ptx]
 
 def setup (clif : List FuncData) : Artifact := {
   functions := clif

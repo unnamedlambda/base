@@ -80,7 +80,7 @@ def ofF64 (x : Float) : UInt64 := x.toBits
     called with. -/
 inductive Region where
   | arena | data | out
-  /-- Page-locked host memory `cl_cuda_pinned_alloc` hands out: addressable
+  /-- Page-locked host memory `cuMemAllocHost` hands out: addressable
       only inside a live allocation. -/
   | pinned
   deriving Repr, BEq, DecidableEq, Inhabited
@@ -959,8 +959,8 @@ abbrev Clock := Array Nat
 
 def Clock.get (c : Clock) (p : Nat) : Nat := c.getD p 0
 
-def Clock.join (a b : Clock) : Clock :=
-  (Array.range (max a.size b.size)).map fun i => max (a.get i) (b.get i)
+@[irreducible] def Clock.join (a b : Clock) : Clock :=
+  ((List.range (max a.size b.size)).map fun i => max (a.get i) (b.get i)).toArray
 
 def Clock.bump (c : Clock) (p : Nat) : Clock :=
   let c := if p < c.size then c else c ++ Array.replicate (p + 1 - c.size) 0
@@ -968,7 +968,7 @@ def Clock.bump (c : Clock) (p : Nat) : Clock :=
 
 /-- The host, which issues everything and waits when it synchronises. -/
 def hostParty : Nat := 0
-/-- The default stream: `cl_cuda_launch`, the synchronous copies, the default
+/-- The default stream: a launch on stream `0`, the synchronous copies, the default
     cuBLAS handle, and buffer frees. -/
 def defaultParty : Nat := 1
 /-- Created stream `id`. -/
@@ -984,7 +984,7 @@ structure Race where
   clocks : Array Clock := #[]
   lastW : Array (Option (Nat × Nat)) := #[]
   reads : Array (List (Nat × Nat)) := #[]
-  deriving Inhabited
+  deriving Inhabited, Repr, DecidableEq
 
 def Race.clock (r : Race) (p : Nat) : Clock := r.clocks.getD p #[]
 
@@ -1039,12 +1039,12 @@ structure Capture where
   ops : Array DevOp
 
 /-- The device as the host observes it: whether a context is live, and every
-    buffer `cl_cuda_create_buffer` has handed out, at the index it returned. A
+    allocation the driver has handed out, at the index it numbers. A
     freed buffer keeps its slot, empty, so an id is never reused. -/
 structure Dev where
   live : Bool := false
   bufs : Array (Option ByteArray) := #[]
-  /-- Pinned host allocations by the id `cl_cuda_pinned_alloc` returned:
+  /-- Page-locked host allocations by the index `cuMemAllocHost` numbers:
       `(offset, length)` in `Mem.pinned`, empty once freed. -/
   pinned : Array (Option (Nat × Nat)) := #[]
   /-- Created streams, alive or destroyed, by id. -/
@@ -1077,33 +1077,12 @@ def Dev.get? (d : Dev) (id : Int) : Option ByteArray :=
 def Dev.put (d : Dev) (id : Nat) (b : Option ByteArray) : Dev :=
   { d with bufs := d.bufs.setIfInBounds id b }
 
-/-- The wgpu context: a Rust allocation, stored and passed, never loaded. -/
-def gpuCtx : UInt64 := 0x7000000000
-
-/-- A wgpu compute pipeline: its WGSL source and, binding by binding, the
-    buffer it binds and whether the binding is read-only. -/
-structure Pipe where
-  shader : String
-  binds : List (Nat × Bool)
-
 /-- One dispatch as the host requests it: the pipeline's shader and bindings,
     and the workgroup counts. -/
 structure Dispatch where
   shader : String
   binds : List (Nat × Bool)
   groups : List UInt64
-
-/-- The wgpu device as the host observes it. `pending` is what `cl_gpu_dispatch`
-    has recorded and not yet submitted: the runtime submits it at the next
-    dispatch or download, and `queue.write_buffer` lands before that submit —
-    so an upload made after a dispatch and before the flush is one the dispatch
-    sees. -/
-structure Wgpu where
-  live : Bool := false
-  bufs : Array ByteArray := #[]
-  pipes : Array Pipe := #[]
-  pending : List (Nat × List UInt64) := []
-  deriving Inhabited
 
 /-- The LMDB context: a Rust allocation, stored and passed, never loaded. -/
 def lmdbCtx : UInt64 := 0x8000000000
@@ -1138,28 +1117,6 @@ structure Threads where
   live : Bool := false
   next : Nat := 1
   outstanding : Option Nat := none
-  deriving Inhabited
-
-/-- The window context: a Rust allocation, stored and passed, never loaded. -/
-def winCtx : UInt64 := 0x9000000000
-
-/-- One input event as `cl_window_poll` writes it: kind, then three operands. -/
-structure WinEvent where
-  kind : UInt64
-  a : UInt64 := 0
-  b : UInt64 := 0
-  c : UInt64 := 0
-
-/-- The window context as the host observes it: whether one is live, whether
-    its one window is open and with which blit shader, and the events that
-    have arrived and not been polled. -/
-structure Win where
-  live : Bool := false
-  isOpen : Bool := false
-  /-- The blit shader the window was opened with, compiled at the first
-      present. -/
-  blit : String := ""
-  pending : List WinEvent := []
   deriving Inhabited
 
 -- ---------------------------------------------------------------------------
@@ -1231,23 +1188,26 @@ def WgData.kind : WgData → IR.WgObj
 /-- wgpu as the program has made it: every object by the handle it was
     answered as, and whether the program still holds it. A released object
     stays while another holds it — a bind group its buffers — as wgpu keeps
-    it. -/
+    it. The device is `lost` once wgpu's handles have run out (`WG_OBJS`):
+    from then on every call does nothing, and one that makes an object
+    answers a handle to one that is never live. -/
 structure WgState where
   objs : Array (Bool × WgData) := #[]
+  lost : Bool := false
   deriving Inhabited
 
 /-- The object `h` names, if the program holds it and it is of kind `k`. -/
 def WgState.get? (s : WgState) (k : IR.WgObj) (h : UInt64) : Option (Nat × WgData) := do
   let i ← wgIndex h
   let (live, d) ← s.objs[i]?
-  if live && d.kind == k then some (i, d) else none
+  if live && decide (d.kind = k) then some (i, d) else none
 
 /-- A new object, and its handle. -/
 def WgState.push (s : WgState) (d : WgData) : UInt64 × WgState :=
-  (wgHandle s.objs.size, { objs := s.objs.push (true, d) })
+  (wgHandle s.objs.size, { s with objs := s.objs.push (true, d) })
 
 def WgState.set (s : WgState) (i : Nat) (d : WgData) : WgState :=
-  { objs := s.objs.modify i fun (l, _) => (l, d) }
+  { s with objs := s.objs.modify i fun (l, _) => (l, d) }
 
 def WgState.data? (s : WgState) (i : Nat) : Option WgData := (s.objs[i]?).map (·.2)
 
@@ -1372,28 +1332,20 @@ structure World where
   /-- **What a fresh device allocation holds**, by its index and length:
       `cuMemAlloc` does not clear it, so nothing here computes it. -/
   devFill : Nat → Nat → ByteArray := fun _ n => ByteArray.mk (Array.replicate n 0)
-  /-- **Where each device buffer lives**, by id: what `cl_cublas_ptr_array`
-      writes and `cl_cublas_sgemm_batched_on_stream` follows. Live buffers do
-      not overlap, as the driver's allocations do not. -/
-  devAddr : Nat → UInt64 := fun id => (0x700000000000 : UInt64) + (UInt64.ofNat id <<< 32)
   /-- **Time between two completed events**, as the bits of an `f32` count of
       milliseconds, by their ids. -/
   elapsed : Nat → Nat → UInt32 := fun _ _ => 0
-  gpu : Wgpu := {}
-  win : Win := {}
   thread : Threads := {}
   /-- **Whether there is a display**: without one, the window library's event
       loop does not start. -/
   display : Bool := false
   /-- **Whether there is a CUDA device**: without one, `cudaInit` stores null. -/
   cudaDevice : Bool := true
-  /-- **Whether wgpu finds an adapter**: without one, `gpuInit` stores null. -/
+  /-- **Whether wgpu finds an adapter**: without one,
+      `wgpuInstanceRequestAdapter` answers `0`. -/
   gpuAdapter : Bool := true
   /-- **Whether WGSL compiles**: shader sources the device accepts. -/
   wgslOk : String → Bool := fun _ => true
-  /-- **What arrives**: each time the runtime pumps the event loop — at a poll
-      and at a present — the next batch here joins the pending events. -/
-  winInput : List (List WinEvent) := []
   /-- The buffers presented to the window, oldest first. -/
   shown : List ByteArray := []
   /-- Machine code `cl_native_load` placed, by load order, empty once freed.
@@ -1445,8 +1397,6 @@ structure World where
       its contents whatever this says, by construction. -/
   shader : Dispatch → List ByteArray → List ByteArray := fun _ bs => bs
   wg : WgState := {}
-  /-- **Whether there is a GPU adapter** for wgpu to hand out. -/
-  wgAdapter : Bool := true
   wl : WlState := {}
   /-- **What arrives through the window library**: each pump appends the next
       batch, each record to the events of the window it names by opening

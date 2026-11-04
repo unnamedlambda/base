@@ -5,7 +5,11 @@ import Scan.Ship
 import AlgorithmLib.ML.Model.Frontend
 import AlgorithmLib.ML.Machine.Geometry
 import AlgorithmLib.ML.Launch.HostBridge
-import AlgorithmLib.Surface.ProgCuda
+import AlgorithmLib.Surface.Drv
+import AlgorithmLib.Surface.Cuda
+import AlgorithmLib.Surface.Layout
+import AlgorithmLib.Surface.Link
+import AlgorithmLib.Host.Driver
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 namespace BackwardWide
@@ -263,51 +267,37 @@ def WGRID : Nat := wgeom.grid
     assert its packing against the Lean layout instead of duplicating it. -/
 def HOST_LEN_OFF : Nat := 0x0080
 
-def PTX_OFF    : Nat := 0x0100
-def PTX_DW_OFF : Nat := 0x1400
-def PTX_SB_OFF : Nat := 0x2600
-def PTX_T_OFF  : Nat := 0x3E00
-def PTX_Q_OFF  : Nat := 0x5000
-def PTX_S_OFF  : Nat := 0x6200
-def PTX_DXR_OFF: Nat := 0x7400
-def PTX_FWD_OFF: Nat := 0x8C00
-def PTX_Y_OFF  : Nat := 0xA400
-def PTX_DY_OFF : Nat := 0xBC00
-def PTX_SGD_OFF: Nat := 0xD400
-def PTX_ADJ_OFF: Nat := 0xEC00
-def BIND_OFF   : Nat := 0x10400
-def ADJ_ID     : Nat := 0x0040
-def W_ID       : Nat := 0x0044
-def DX_ID      : Nat := 0x0048
-def X_ID       : Nat := 0x004C
-def DW_ID      : Nat := 0x0050
-def Z_ID       : Nat := 0x0054
-def DY_ID      : Nat := 0x0058
-def GAM_ID     : Nat := 0x005C
-def T_ID       : Nat := 0x0060
-def Y_ID       : Nat := 0x0070
-def YS_ID      : Nat := 0x0074
-def Q_ID       : Nat := 0x0064
-def S_ID       : Nat := 0x0068
-def DXR_ID     : Nat := 0x006C
-def MEM_SIZE   : Nat := 0x10500
+def PTX_OFF    : Nat := 0x1000
+def PTX_DW_OFF : Nat := 0x2300
+def PTX_SB_OFF : Nat := 0x3500
+def PTX_T_OFF  : Nat := 0x4D00
+def PTX_Q_OFF  : Nat := 0x5F00
+def PTX_S_OFF  : Nat := 0x7100
+def PTX_DXR_OFF: Nat := 0x8300
+def PTX_FWD_OFF: Nat := 0x9B00
+def PTX_Y_OFF  : Nat := 0xB300
+def PTX_DY_OFF : Nat := 0xCB00
+def PTX_SGD_OFF: Nat := 0xE300
+def PTX_ADJ_OFF: Nat := 0xFB00
+def MEM_SIZE   : Nat := 0x11300
 
-/-- **Every byte this file names.**
+/-- **The program, in the driver's standard layout**, its driver state past
+    the published input size: the fourteen allocations in binding order, and
+    the twelve kernels, each handed all fourteen. -/
+def app : Drv.App :=
+  { bufs := [N * 4, N * N * 4, N * 4, N * 4, N * N * 4, N * 4, N * 4, N * 4, N * 4, 4, 4, N * 4, N * 4, N * 4],
+    kernels := [(PTX_OFF, PTX_DW_OFF, GRID), (PTX_DW_OFF, PTX_SB_OFF, GRID), (PTX_SB_OFF, PTX_T_OFF, EGRID),
+                (PTX_T_OFF, PTX_Q_OFF, EGRID), (PTX_Q_OFF, PTX_S_OFF, 1), (PTX_S_OFF, PTX_DXR_OFF, 1),
+                (PTX_DXR_OFF, PTX_FWD_OFF, EGRID), (PTX_FWD_OFF, PTX_Y_OFF, GRID), (PTX_Y_OFF, PTX_DY_OFF, EGRID),
+                (PTX_DY_OFF, PTX_SGD_OFF, EGRID), (PTX_SGD_OFF, PTX_ADJ_OFF, WGRID),
+                (PTX_ADJ_OFF, MEM_SIZE, EGRID)].map fun (o, e, g) =>
+      (⟨o, e - o, List.range 14, (g, 1, 1), (32, 1, 1)⟩ : Drv.KSpec),
+    memSize := MEM_SIZE, org := 0x100 }
 
-    The fourteen buffer-id words are written here and read at every launch, so
-    a map that lists only the PTX slots would call itself disjoint while two
-    of them shared a word.  They are named one by one rather than as one
-    block, because that is the collision worth catching. -/
+/-- **Every byte this file names.** -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-      [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
-       ⟨"adj_id", ADJ_ID, 4⟩, ⟨"w_id", W_ID, 4⟩,
-       ⟨"dx_id", DX_ID, 4⟩,   ⟨"x_id", X_ID, 4⟩,
-       ⟨"dw_id", DW_ID, 4⟩,   ⟨"z_id", Z_ID, 4⟩,
-       ⟨"dy_id", DY_ID, 4⟩,   ⟨"gam_id", GAM_ID, 4⟩,
-       ⟨"t_id", T_ID, 4⟩,     ⟨"q_id", Q_ID, 4⟩,
-       ⟨"s_id", S_ID, 4⟩,     ⟨"dxr_id", DXR_ID, 4⟩,
-       ⟨"y_id", Y_ID, 4⟩,     ⟨"ys_id", YS_ID, 4⟩,
-       ⟨"host_len", HOST_LEN_OFF, 8⟩,
+      [⟨"host_len", HOST_LEN_OFF, 8⟩,
+       ⟨"driver", app.org, app.stateEnd - app.org⟩,
        ⟨"ptx", PTX_OFF, PTX_DW_OFF - PTX_OFF⟩,
        ⟨"ptxDw", PTX_DW_OFF, PTX_SB_OFF - PTX_DW_OFF⟩,
        ⟨"ptxSiluBwd", PTX_SB_OFF, PTX_T_OFF - PTX_SB_OFF⟩,
@@ -319,8 +309,7 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
        ⟨"ptxY", PTX_Y_OFF, PTX_DY_OFF - PTX_Y_OFF⟩,
        ⟨"ptxDy", PTX_DY_OFF, PTX_SGD_OFF - PTX_DY_OFF⟩,
        ⟨"ptxSgd", PTX_SGD_OFF, PTX_ADJ_OFF - PTX_SGD_OFF⟩,
-       ⟨"ptxAdj", PTX_ADJ_OFF, BIND_OFF - PTX_ADJ_OFF⟩,
-       ⟨"bind", BIND_OFF, 4 * NBUF⟩]
+       ⟨"ptxAdj", PTX_ADJ_OFF, MEM_SIZE - PTX_ADJ_OFF⟩]
 
 
 #eval LayoutScan.check "Warp.BackwardWide" [``memMap]
@@ -452,7 +441,7 @@ theorem trainPtx_fits :
       ∧ (ptxY.toUTF8.toList.length + 1 ≤ PTX_DY_OFF - PTX_Y_OFF)
       ∧ (ptxDy.toUTF8.toList.length + 1 ≤ PTX_SGD_OFF - PTX_DY_OFF)
       ∧ (ptxSgd.toUTF8.toList.length + 1 ≤ PTX_ADJ_OFF - PTX_SGD_OFF)
-      ∧ (ptxAdj.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_ADJ_OFF) := by
+      ∧ (ptxAdj.toUTF8.toList.length + 1 ≤ MEM_SIZE - PTX_ADJ_OFF) := by
   refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> native_decide
 
 theorem bwdPtx_fits :
@@ -510,186 +499,83 @@ def bindSlots : List String :=
 /-- **Seam guard: the binding table has exactly `NBUF` entries.** -/
 theorem bind_count : bindSlots.length = NBUF := by decide
 
-/-- Byte offset of binding slot `i`. -/
-def bindOff (i : Nat) : Nat := BIND_OFF + 4 * i
+/-- **Seam guard: the program makes exactly the `NBUF` allocations the table
+    names.** -/
+theorem bind_bufs : app.bufs.length = bindSlots.length := by decide
+
+/-- The signature the entry points' typestates state of every kernel: `main`
+    takes fourteen pointers. -/
+theorem bwd_sigs :
+    ([ptx, ptxDw, ptxSiluBwd, ptxT, ptxQ, ptxS, ptxDxr, ptxFwd, ptxY, ptxDy, ptxSgd, ptxAdj].all fun p =>
+      HProg.Sem.ptxParamSizes p "main" == some (List.replicate 14 8)) = true := by native_decide
 
 open AlgorithmLib.Prog
 
-/-- **The backward kernels, as one record per PTX slot.**
-
-    All five launches read the same fourteen-entry table at `BIND_OFF`; they
-    differ in which program they run and over how many blocks.  The table is
-    written once in `load` and each launch takes its arity from `params` here,
-    so a stage added without a matching handle cannot elaborate. -/
-def bwdK (off g : Nat) : AlgorithmLib.Kernel :=
-  { name   := "main"
-    params := [{ shape := [.sta N],        ro := true,  name := "adj" },
-               { shape := [.sta N, .sta N], ro := true,  name := "w" },
-               { shape := [.sta N],        ro := false, name := "dx" },
-               { shape := [.sta N],        ro := true,  name := "x" },
-               { shape := [.sta N, .sta N], ro := false, name := "dw" },
-               { shape := [.sta N],        ro := true,  name := "z" },
-               { shape := [.sta N],        ro := true,  name := "dy" },
-               { shape := [.sta N],        ro := true,  name := "gam" },
-               { shape := [.sta N],        ro := false, name := "t" },
-               { shape := [.sta 1],        ro := false, name := "q" },
-               { shape := [.sta 1],        ro := false, name := "s" },
-               { shape := [.sta N],        ro := false, name := "dxr" },
-               { shape := [.sta N],        ro := false, name := "y" },
-               { shape := [.sta N],        ro := true,  name := "ys" }]
-    geom   := AlgorithmLib.Kernel.Geom.static g 1 1 32 1 1
-    ptxOff := off }
-
 def loadFn : Prog V L Unit := do
-  let ptr ← basePtr
+  let base ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  let adjBytes ← iconst64 (N * 4)
-  let wBytes ← iconst64 (N * N * 4)
-  let dxBytes ← iconst64 (N * 4)
-  let adjId ← cudaCreateBuffer ptr adjBytes
-  store adjId (← absAddr ptr ADJ_ID)
-  let wId ← cudaCreateBuffer ptr wBytes
-  store wId (← absAddr ptr W_ID)
-  let dxId ← cudaCreateBuffer ptr dxBytes
-  store dxId (← absAddr ptr DX_ID)
-  let xId ← cudaCreateBuffer ptr dxBytes
-  store xId (← absAddr ptr X_ID)
-  let dwId ← cudaCreateBuffer ptr wBytes
-  store dwId (← absAddr ptr DW_ID)
-  let zId ← cudaCreateBuffer ptr dxBytes
-  store zId (← absAddr ptr Z_ID)
-  let dyId ← cudaCreateBuffer ptr dxBytes
-  store dyId (← absAddr ptr DY_ID)
-  let gamId ← cudaCreateBuffer ptr dxBytes
-  store gamId (← absAddr ptr GAM_ID)
-  let tId ← cudaCreateBuffer ptr dxBytes
-  store tId (← absAddr ptr T_ID)
-  let four ← iconst64 4
-  let qId ← cudaCreateBuffer ptr four
-  store qId (← absAddr ptr Q_ID)
-  let sId ← cudaCreateBuffer ptr four
-  store sId (← absAddr ptr S_ID)
-  let dxrId ← cudaCreateBuffer ptr dxBytes
-  store dxrId (← absAddr ptr DXR_ID)
-  let yId ← cudaCreateBuffer ptr dxBytes
-  store yId (← absAddr ptr Y_ID)
-  let ysId ← cudaCreateBuffer ptr dxBytes
-  store ysId (← absAddr ptr YS_ID)
-  -- host buffer holds `adj`, then `x`, then `W`, contiguously
-  let _ ← ffi .cudaUpload %[ctxPtr, adjId, dataPtr, adjBytes]
-  let xSrc ← iaddImm dataPtr (hostOff 1)
-  let _ ← ffi .cudaUpload %[ctxPtr, xId, xSrc, dxBytes]
-  let zSrc ← iaddImm dataPtr (hostOff 2)
-  let _ ← ffi .cudaUpload %[ctxPtr, zId, zSrc, dxBytes]
-  let dySrc ← iaddImm dataPtr (hostOff 3)
-  let _ ← ffi .cudaUpload %[ctxPtr, dyId, dySrc, dxBytes]
-  let gamSrc ← iaddImm dataPtr (hostOff 4)
-  let _ ← ffi .cudaUpload %[ctxPtr, gamId, gamSrc, dxBytes]
-  let ysSrc ← iaddImm dataPtr (hostOff 6)
-  let _ ← ffi .cudaUpload %[ctxPtr, ysId, ysSrc, dxBytes]
-  let wSrc ← iaddImm dataPtr (hostOff 5)
-  let _ ← ffi .cudaUpload %[ctxPtr, wId, wSrc, wBytes]
-  kernelBindAt (bwdK PTX_OFF GRID) ptr BIND_OFF
-    [adjId, wId, dxId, xId, dwId, zId, dyId, gamId, tId, qId, sId, dxrId, yId, ysId]
+  app.setup base
+  -- the host's arrays, packed as `hostIn` lays them out
+  app.upload base 0 dataPtr (N * 4)
+  app.upload base 3 (← iaddImm dataPtr (hostOff 1)) (N * 4)
+  app.upload base 5 (← iaddImm dataPtr (hostOff 2)) (N * 4)
+  app.upload base 6 (← iaddImm dataPtr (hostOff 3)) (N * 4)
+  app.upload base 7 (← iaddImm dataPtr (hostOff 4)) (N * 4)
+  app.upload base 13 (← iaddImm dataPtr (hostOff 6)) (N * 4)
+  app.upload base 1 (← iaddImm dataPtr (hostOff 5)) (N * N * 4)
 
-def runFn : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch (bwdK PTX_OFF GRID) ptr BIND_OFF
-  let _ ← cudaSync ptr
+/-- Launch the kernels `js` names, in order, and wait for them. -/
+def launchSeq (js : List Nat) : Prog V L Unit := do
+  let base ← basePtr
+  for j in js do
+    app.run base j
+  Drv.sync
+
+def runFn : Prog V L Unit := launchSeq [0]
 
 /-- The activation backward: one element per lane, `N/32` blocks. -/
-def runSiluBwdFn : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch (bwdK PTX_SB_OFF EGRID) ptr BIND_OFF
-  let _ ← cudaSync ptr
+def runSiluBwdFn : Prog V L Unit := launchSeq [2]
 
-/-- A launch of the kernel at `off` over `g` blocks of one warp. -/
-def launchAt (off g : Nat) : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch (bwdK off g) ptr BIND_OFF
-  let _ ← cudaSync ptr
-
-def runTFn : Prog V L Unit := launchAt PTX_T_OFF EGRID
-def runQFn : Prog V L Unit := launchAt PTX_Q_OFF 1
-def runSFn : Prog V L Unit := launchAt PTX_S_OFF 1
-def runDxrFn : Prog V L Unit := launchAt PTX_DXR_OFF EGRID
+def runTFn : Prog V L Unit := launchSeq [3]
+def runQFn : Prog V L Unit := launchSeq [4]
+def runSFn : Prog V L Unit := launchSeq [5]
+def runDxrFn : Prog V L Unit := launchSeq [6]
 
 /-- The training step's four launches.  `runSgd` covers all `N²` weights. -/
-def runFwdFn : Prog V L Unit := launchAt PTX_FWD_OFF GRID
-def runYFn : Prog V L Unit := launchAt PTX_Y_OFF EGRID
-def runDyFn : Prog V L Unit := launchAt PTX_DY_OFF EGRID
-def runSgdFn : Prog V L Unit := launchAt PTX_SGD_OFF WGRID
-def runAdjFn : Prog V L Unit := launchAt PTX_ADJ_OFF EGRID
+def runFwdFn : Prog V L Unit := launchSeq [7]
+def runYFn : Prog V L Unit := launchSeq [8]
+def runDyFn : Prog V L Unit := launchSeq [9]
+def runSgdFn : Prog V L Unit := launchSeq [10]
+def runAdjFn : Prog V L Unit := launchSeq [11]
 
 /-- Fetch the forward activations, so the host can compute the loss. -/
 def fetchYFn : Prog V L Unit := do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let yId ← load32 (← absAddr ptr Y_ID)
-  let dxBytes ← iconst64 (N * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, yId, outPtr, dxBytes]
+  let base ← basePtr
+  app.download base (← outPtr) 12 (N * 4)
 
 /-- Fetch RMSNorm's `dx`. -/
 def fetchDxrFn : Prog V L Unit := do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let dxrId ← load32 (← absAddr ptr DXR_ID)
-  let dxBytes ← iconst64 (N * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, dxrId, outPtr, dxBytes]
+  let base ← basePtr
+  app.download base (← outPtr) 11 (N * 4)
 
-/-- **Fill the launch argument array from the buffer table.**
+/-- The kernels the backward pass launches, in pipeline order. -/
+def bwdAllSeq : List Nat := [2, 0, 1]
 
-    `Clif.bindsOf` recovers a launch's buffer-pointer array from the stores
-    preceding it, so a function that only launches recovers `bufs := none` and
-    realises no stage.  Re-establishing the array here changes no handle — it is
-    the same one `loadFn` wrote — and makes the run function *say* what it
-    launches over.
-
-    Before **every** launch, not once: `Clif.stepMem` maps a call to the empty
-    store map, because a call could write anything. -/
-def bindPass (ptr : V .i64) : Prog V L Unit := do
-  for i in List.range NBUF do
-    let id ← load32 (← absAddr ptr (bindOff i))
-    store id (← absAddr ptr (bindOff i))
-
-/-- **The backward pass as one function**, so the launch sequence the pipeline
-    claims is a sequence *some emitted program actually performs*.
-
-    The three stages otherwise run as three separate host calls, and a pipeline
-    is a claim about an order — an order no single program exhibited. -/
-def runBwdAllFn : Prog V L Unit := do
-  let ptr ← basePtr
-  for (off, g) in [(PTX_SB_OFF, EGRID), (PTX_OFF, GRID), (PTX_DW_OFF, GRID)] do
-    bindPass ptr
-    kernelRelaunch (bwdK off g) ptr BIND_OFF
-  let _ ← cudaSync ptr
+/-- **The backward pass as one function**, so the launch sequence the
+    pipeline claims is a sequence some emitted program performs. -/
+def runBwdAllFn : Prog V L Unit := launchSeq bwdAllSeq
 
 /-- The weight gradient, same geometry: one warp per row. -/
-def runDwFn : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch (bwdK PTX_DW_OFF GRID) ptr BIND_OFF
-  let _ ← cudaSync ptr
+def runDwFn : Prog V L Unit := launchSeq [1]
 
 def fetchFn : Prog V L Unit := do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let dxId ← load32 (← absAddr ptr DX_ID)
-  let dxBytes ← iconst64 (N * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, dxId, outPtr, dxBytes]
+  let base ← basePtr
+  app.download base (← outPtr) 2 (N * 4)
 
 /-- Fetch the weight gradient — `N·N` floats. -/
 def fetchDwFn : Prog V L Unit := do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let dwId ← load32 (← absAddr ptr DW_ID)
-  let wBytes ← iconst64 (N * N * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, dwId, outPtr, wBytes]
+  let base ← basePtr
+  app.download base (← outPtr) 4 (N * N * 4)
 
 def clifIR : Except String (List FuncData) :=
   Prog.program
@@ -719,32 +605,8 @@ def u32le (v : Nat) : List UInt8 :=
    UInt8.ofNat (v / 65536 % 256), UInt8.ofNat (v / 16777216 % 256)]
 
 def initialMemory : List UInt8 :=
-  let p := ptx.toUTF8.toList ++ [0]
-  let q := ptxDw.toUTF8.toList ++ [0]
-  let r := ptxSiluBwd.toUTF8.toList ++ [0]
-  let t := ptxT.toUTF8.toList ++ [0]
-  let u := ptxQ.toUTF8.toList ++ [0]
-  let v := ptxS.toUTF8.toList ++ [0]
-  let w := ptxDxr.toUTF8.toList ++ [0]
-  let f := ptxFwd.toUTF8.toList ++ [0]
-  let g := ptxY.toUTF8.toList ++ [0]
-  let h := ptxDy.toUTF8.toList ++ [0]
-  let k := ptxSgd.toUTF8.toList ++ [0]
-  let a := ptxAdj.toUTF8.toList ++ [0]
-  zeros HOST_LEN_OFF ++ u32le HOST_BYTES
-    ++ zeros (PTX_OFF - HOST_LEN_OFF - 4)
-    ++ p ++ zeros (PTX_DW_OFF - PTX_OFF - p.length)
-    ++ q ++ zeros (PTX_SB_OFF - PTX_DW_OFF - q.length)
-    ++ r ++ zeros (PTX_T_OFF - PTX_SB_OFF - r.length)
-    ++ t ++ zeros (PTX_Q_OFF - PTX_T_OFF - t.length)
-    ++ u ++ zeros (PTX_S_OFF - PTX_Q_OFF - u.length)
-    ++ v ++ zeros (PTX_DXR_OFF - PTX_S_OFF - v.length)
-    ++ w ++ zeros (PTX_FWD_OFF - PTX_DXR_OFF - w.length)
-    ++ f ++ zeros (PTX_Y_OFF - PTX_FWD_OFF - f.length)
-    ++ g ++ zeros (PTX_DY_OFF - PTX_Y_OFF - g.length)
-    ++ h ++ zeros (PTX_SGD_OFF - PTX_DY_OFF - h.length)
-    ++ k ++ zeros (PTX_ADJ_OFF - PTX_SGD_OFF - k.length)
-    ++ a ++ zeros (MEM_SIZE - PTX_ADJ_OFF - a.length)
+  app.initialMemory [ptx, ptxDw, ptxSiluBwd, ptxT, ptxQ, ptxS, ptxDxr, ptxFwd, ptxY, ptxDy, ptxSgd, ptxAdj]
+    [(HOST_LEN_OFF, u32le HOST_BYTES)]
 
 def setup (clif : List FuncData) : Artifact := {
   functions := clif,
@@ -991,233 +853,35 @@ theorem bwdPipelineFull_exclusive : bwdPipelineFull.Exclusive := by
       · exact absurd h'' (by simp)
 
 -- ---------------------------------------------------------------------------
--- The host program that launches them
--- ---------------------------------------------------------------------------
-
--- ---------------------------------------------------------------------------
 -- The shipped function launches exactly this pipeline
 -- ---------------------------------------------------------------------------
 
-/-! `bwdDriver` below is a *model* of a host program: nothing emits it.
-    `runBwdAllFn` is the shipped function, and it is what carries the three
+/-! `runBwdAllFn` is the shipped function, and it is what carries the three
     stages in one program, so it is the one a `Pipeline` claim can be about.
+    What follows matches its launches against `bwdPipelineFull`. -/
 
-    What follows recovers the launches from `runBwdAllFn`'s own instruction
-    stream and matches them against `bwdPipelineFull`. -/
+/-- The launches of the kernels `runBwdAllFn` launches, in its order.
+    That every run of `runBwdAllFn` makes exactly these launches is
+    `CudaSafe.BackwardWide_runBwdAll_realises`, read off the shipped body by
+    the checker. -/
+def bwdAllOps : List DeviceOp := bwdAllSeq.map (appLaunch app)
 
-/-- The memory's address: `v4`, which an entry point's first statement takes,
-    after its four arguments. -/
-def ROOT : Nat := 4
-
-/-- The bind array as `Clif.bindsOf` recovers it — entry `i` is the handle at
-    layout slot `bindOff i`, which is buffer `i`. -/
-def bwdBufs : List AlgorithmLib.Clif.BufDesc :=
-  (List.range NBUF).map (fun i => .near (Int.ofNat (bindOff i)))
-
-def bwdRec (off g : Nat) : AlgorithmLib.Clif.LaunchRec :=
-  { fnName    := "cl_cuda_launch"
-    kernelOff := some (Int.ofNat off)
-    nBufs     := some (Int.ofNat NBUF)
-    bindOff   := some (Int.ofNat BIND_OFF)
-    gridX     := some (Int.ofNat g)
-    blockX    := some 32 }
-
-/-- The three launches, in pipeline order. -/
-def bwdAllOps : List DeviceOp :=
-  [(bwdRec PTX_SB_OFF EGRID, { bufs := some bwdBufs }),
-   (bwdRec PTX_OFF GRID,     { bufs := some bwdBufs }),
-   (bwdRec PTX_DW_OFF GRID,  { bufs := some bwdBufs })]
-
-/-- **Which slot holds which stage**, for the shipped function.  One shared
-    pointer array, so the slot is what tells the three apart. -/
+/-- **Which kernel holds which stage**, for the shipped function: its PTX
+    and the parameter array it launches with. -/
 def bwdAllTable : List KernelBinding :=
-  [ ⟨PTX_SB_OFF, BIND_OFF, bwdBufs, sbStage⟩
-  , ⟨PTX_OFF,    BIND_OFF, bwdBufs, dxStage⟩
-  , ⟨PTX_DW_OFF, BIND_OFF, bwdBufs, dwStage⟩ ]
-
-/-- **Seam guard: the emitted CLIF performs these launches**, in this order,
-    over these buffers, at these grids.
-
-    Stated over the compiled body rather than the term it was written as, so
-    what the generator is written in does not enter the claim --- only what
-    was emitted. -/
-theorem bwdAll_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 18 runBwdAllFn) = bwdAllOps := by
-  native_decide
+  [ ⟨PTX_SB_OFF, app.paramsOff 2, appBufs app 2, sbStage⟩
+  , ⟨PTX_OFF,    app.paramsOff 0, appBufs app 0, dxStage⟩
+  , ⟨PTX_DW_OFF, app.paramsOff 1, appBufs app 1, dwStage⟩ ]
 
 /-- …and those launches are the proven three-stage pipeline. -/
 theorem bwdAll_realises :
     pipelineOf? bwdAllTable none bwdAllOps = some bwdPipelineFull := rfl
 
-/-- **The shipped backward pass computes its denotation.**
-
-    Unlike `bwd_host_computes` below, the launch sequence here is read out of a
-    function that is actually built into the artifact. -/
+/-- **The shipped backward pass computes its denotation.** -/
 theorem bwdAll_host_computes (st : WSt) :
-    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 18 runBwdAllFn))
-        = some bwdPipelineFull
+    pipelineOf? bwdAllTable none bwdAllOps = some bwdPipelineFull
       ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
-  ⟨by rw [bwdAll_ops_are]; exact bwdAll_realises,
-   bwdPipelineFull.run_denote bwdPipelineFull_exclusive st⟩
-
-/-- **Which PTX slot holds which stage.**  The single place the host-to-kernel
-    correspondence is asserted; everything below is derived from it. -/
-def bwdTable : List KernelBinding :=
-  [ ⟨0,  100, [.near 0x40, .near 0x48],              sbStage⟩
-  , ⟨8,  108, [.near 0x48, .near 0x50, .near 0x58], dxStage⟩
-  , ⟨16, 116, [.near 0x48, .near 0x60, .near 0x68], dwStage⟩ ]
-
-/-- The slots each launch stores into its pointer array — the `ExternArg` side
-    of the same three entries.  `HStmt.binds` maps these through
-    `ExternArg.toBuf`, so a disagreement with `bwdTable` above makes the
-    realisation theorems fail rather than quietly match. -/
-def sbBinds : List ExternArg := [.slot 0x40, .slot 0x48]
-def dxBinds : List ExternArg := [.slot 0x48, .slot 0x50, .slot 0x58]
-def dwBinds : List ExternArg := [.slot 0x48, .slot 0x60, .slot 0x68]
-
-/-- **The driver, as a host program.**  Three launches in pipeline order, with
-    the geometry each stage declares — not a grid number written twice. -/
-def bwdDriver : HStmt :=
-  .seq (.launch ⟨0, 2, 100, EGRID, 32, sbBinds⟩)
-    (.seq (.launch ⟨8, 3, 108, GRID, 32, dxBinds⟩)
-          (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))
-
-/-- The emitted host code — a real instruction list, compiled by `flatHI`. -/
-def bwdCode : List HI := code (.ffi .cudaLaunch) ⟨0⟩ 1 0 bwdDriver
-
-/-- **The driver's launch sequence is the backward pipeline.**  Decided, not
-    assumed: a drifted slot or a grid disagreeing with the stage's own `grid`
-    field makes this `none` and the proof fails. -/
-theorem bwdDriver_realises :
-    pipelineOf? bwdTable none bwdDriver.deviceOps = some bwdPipelineFull := rfl
-
-/-- **The whole host side, end to end, on the kernels this file ships.**
-
-    Executing the emitted CLIF instruction by instruction performs three
-    launches; under `bwdTable` those launches *are* `bwdPipelineFull`; and that
-    pipeline computes its denotation.  Every hypothesis is discharged at a
-    concrete value, so nothing here is vacuous.
-
-    The remaining trusted step is `bwdTable` itself — that the PTX at slot `0`
-    is `sbStage.ew` compiled, and so on.  `sb_ptx_exact`, `dx_ptx_exact` and
-    `dW_ptx_exact` above are what make each of those three claims checkable. -/
-theorem bwd_host_computes (st : WSt) :
-    ∃ k c', hsteps 0 bwdCode k
-              ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
-      ∧ pipelineOf? bwdTable none (c'.trace.zip c'.btrace) = some bwdPipelineFull
-      ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
-  host_computes_denote (.ffi .cudaLaunch) ⟨0⟩ rfl bwdCode bwdDriver 1 0
-    AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
-    (AlgorithmLib.Host.FarOk.of_noBases (by decide))
-    (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)
-    (fun j _ => by rw [Nat.zero_add]; rfl)
-    bwdTable bwdPipelineFull none bwdDriver_realises bwdPipelineFull_exclusive st
-
--- ---------------------------------------------------------------------------
--- The same driver with a vendor call in it
--- ---------------------------------------------------------------------------
-
-/-!
-  The shipped inference model does not consist only of kernels this development
-  compiled: about 99.9% of Qwen2's arithmetic goes through `cl_cublas_sgemv`,
-  whose fold order NVIDIA does not specify.  What follows is the same driver
-  with such a call in the middle of it — a `DeclaredStep`, sitting *in* the
-  sequence rather than excluded from it, so the composition covers every device
-  write and the number of assumed steps is a value.
--/
-
-def bwdBlasRef : Callee := .ffi .cublasSgemv
-
-/-- Buffer-handle slots, as a generator would lay them out. -/
-def SLOT_W : Nat := 0x100
-def SLOT_X : Nat := 0x108
-def SLOT_Z : Nat := 0x110
-def SLOT_Q : Nat := 0x118
-
-/-- `cl_cublas_sgemv(ctx, trans, m, n, alpha, A, x, beta, y)` — the real
-    signature.  The scalars are immediates; the three buffers are handles loaded
-    from their slots, which is what makes this call site distinguishable from
-    another of the same shape. -/
-def sgemvArgs (aSlot xSlot ySlot : Nat) : List ExternArg :=
-  [ .const 0, .const (Int.ofNat N), .const (Int.ofNat K), .const 1
-  , .slot aSlot, .slot xSlot, .const 0, .slot ySlot ]
-
-def blasCall (aSlot xSlot ySlot : Nat) : HStmt :=
-  .extern { name := "cl_cublas_sgemv", fn := bwdBlasRef
-            argv := sgemvArgs aSlot xSlot ySlot }
-
-/-- Two vendor calls of **identical shape**, differing only in which buffers
-    they touch — the situation Qwen2 is in with `Wq`/`Wk`/`Wv`. -/
-noncomputable def zStep : DeclaredStep := cublasStep wB xB zB N K
-noncomputable def qStep : DeclaredStep := cublasStep wB xB qB N K
-
-noncomputable def bwdDeclared : List DeclaredBinding :=
-  [ { name := "cl_cublas_sgemv", args := (sgemvArgs SLOT_W SLOT_X SLOT_Z).map ExternArg.toBuf
-      decl := zStep }
-  , { name := "cl_cublas_sgemv", args := (sgemvArgs SLOT_W SLOT_X SLOT_Q).map ExternArg.toBuf
-      decl := qStep } ]
-
-/-- Launch, two same-shape vendor calls, launch, launch. -/
-def bwdDriverBlas : HStmt :=
-  .seq (.launch ⟨0, 2, 100, EGRID, 32, sbBinds⟩)
-    (.seq (blasCall SLOT_W SLOT_X SLOT_Z)
-      (.seq (blasCall SLOT_W SLOT_X SLOT_Q)
-        (.seq (.launch ⟨8, 3, 108, GRID, 32, dxBinds⟩)
-              (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))))
-
-def bwdCodeBlas : List HI := code (.ffi .cudaLaunch) ⟨0⟩ 1 0 bwdDriverBlas
-
-/-- **The plan: three proven steps and two declared ones, in host order.**
-
-    The two declared steps are *different* — `zStep` writes `zB`, `qStep` writes
-    `qB` — and the only thing separating their two launch records is the slot
-    each output handle was loaded from.  Keying on the primitive's name alone
-    would collapse them. -/
-noncomputable def bwdPlan : Plan :=
-  ⟨[ .proven sbStage, .declared zStep, .declared qStep,
-     .proven dxStage, .proven dwStage ]⟩
-
-/-- The device-write sequence realises it — vendor calls included, in position,
-    and told apart by their arguments. -/
-theorem bwdDriverBlas_realises :
-    planOf? bwdTable bwdDeclared none bwdDriverBlas.deviceOps = some bwdPlan := rfl
-
-/-- **How much of this plan is assumed: two steps.**  A number, not a caveat. -/
-theorem bwdPlan_declaredCount : bwdPlan.declaredCount = 2 := rfl
-
-/-- …and they name themselves. -/
-theorem bwdPlan_declaredNames :
-    bwdPlan.declaredNames = ["cl_cublas_sgemv", "cl_cublas_sgemv"] := rfl
-
-theorem bwdPlan_exclusive : bwdPlan.Exclusive := by
-  intro S hS
-  simp only [bwdPlan, List.mem_cons, List.not_mem_nil, or_false, reduceCtorEq,
-             false_or, PStep.proven.injEq] at hS
-  rcases hS with h | h | h
-  · subst h; exact mapStage_exclusive _ _ _ _ _
-  · subst h; exact reduceStage_exclusive _ _ _ _ _ _ _ _ _
-  · subst h; exact outerStage_exclusive _ _ _ _ _ _ (by decide) _ _
-
-/-- **Proven all the way, with the gap named and counted.**
-
-    Executing the emitted CLIF performs five device writes; under the kernel and
-    declared tables those *are* `bwdPlan`; and the plan computes its denotation.
-    What it rests on is `Honours R` — one hypothesis, covering exactly the two
-    declared steps, which `bwdPlan_declaredNames` identifies.  Everything else
-    in the chain is proven. -/
-theorem bwd_host_computes_plan (R : Realisation) (hR : Honours R) (st : WSt) :
-    ∃ k c', hsteps 0 bwdCodeBlas k
-              ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
-      ∧ planOf? bwdTable bwdDeclared none (c'.trace.zip c'.btrace) = some bwdPlan
-      ∧ (bwdPlan.run R st).mem = bwdPlan.denote st.mem :=
-  host_computes_plan (.ffi .cudaLaunch) ⟨0⟩ rfl bwdCodeBlas bwdDriverBlas 1 0
-    AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
-    (AlgorithmLib.Host.FarOk.of_noBases (by decide))
-    (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)
-    (fun j _ => by rw [Nat.zero_add]; rfl)
-    bwdTable bwdDeclared bwdPlan none bwdDriverBlas_realises R hR
-    bwdPlan_exclusive st
-
+  ⟨bwdAll_realises, bwdPipelineFull.run_denote bwdPipelineFull_exclusive st⟩
 
 theorem bwdPipelineFull_runs (st : WSt) :
     (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=

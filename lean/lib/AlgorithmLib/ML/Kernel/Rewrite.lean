@@ -114,8 +114,8 @@ def SumAssoc : Prop :=
 
 /-- **What relying on a vendor GEMM costs.**
 
-    `cl_cublas_sgemv` computes `y = A·x`, and the shipped Qwen2 model routes
-    every matmul through it — around 99.9% of the model's arithmetic.
+    `cublasSgemv` computes `y = A·x`, and a decoder that routes its matmuls
+    through it puts nearly all of its arithmetic there.
 
     It differs from `SumAssoc` in a way that matters. `SumAssoc` names a
     *specific* identity you can write down: butterfly equals sequential fold.
@@ -592,12 +592,12 @@ def MaskUnderflows : Prop :=
 
 /-! ### The contraction a batch of one performs
 
-    Every contraction the ViT ships is `cl_cublas_sgemm_strided_batched` at
+    Every contraction the ViT ships is `cublasSgemmStridedBatched` at
     `batchCount = 1`, with zero strides, zero operand offsets and the leading
     dimensions its shape implies — `vit_contractions_are_plain_gemms` decides
     that from the emitted instruction stream rather than assuming it, and
     `cublas_gemm_batch_one_vs_plain` (a GPU test over the fifteen shapes the
-    model launches) measures that call bit-identical to `cl_cublas_sgemm`.  So
+    model launches) measures that call bit-identical to `cublasSgemm`.  So
     one opaque stands for both entry points in that configuration, and there is
     a contraction to state a law about.
 
@@ -718,21 +718,21 @@ def Law.why : Law → String
       "Every kernel here is proven against the butterfly, which is what the " ++
       "hardware does; this law is what it would cost to claim Expr.sum instead."
   | .cublasIsSomeReassoc =>
-      "cl_cublas_sgemv sums the right products, each once, in some association. " ++
+      "cublasSgemv sums the right products, each once, in some association. " ++
       "This is what the vendor actually promises and it is all of the leeway " ++
       "that is expressible over Float32; it is true of one call and says " ++
       "nothing about a sequence of them, which is why a chained theorem needs " ++
       "the stronger cublas-is-matvec instead. Still outside it: fusing a " ++
       "multiply-add into one rounding, and accumulating at another width."
   | .cublasIsMatvec =>
-      "cl_cublas_sgemv computes y = A·x, but NVIDIA specifies no fold order, " ++
+      "cublasSgemv computes y = A·x, but NVIDIA specifies no fold order, " ++
       "so this states the one order that is expressible here: a left-to-right " ++
       "Float32 fold. That is stronger than the vendor guarantees, which is the " ++
       "cost of having no R semantics for Float32 to state it at instead. " ++
-      "~99.9% of the shipped Qwen2 model's arithmetic depends on it. Compare " ++
+      "A decoder routing its matmuls through cuBLAS rests nearly all its arithmetic on it. Compare " ++
       "TF32, which other frameworks enable by default without stating it at all."
   | .cublasBatchedIsSomeReassoc =>
-      "cl_cublas_sgemm_batched performs P contractions of one shape in one " ++
+      "cublasSgemmBatched performs P contractions of one shape in one " ++
       "launch, and member p sums p's own products in some association. The " ++
       "stronger reading -- that a member lands what its own separate call " ++
       "would -- was MEASURED FALSE: the same ViT forward batched and not " ++
@@ -740,8 +740,8 @@ def Law.why : Law → String
       "So batching gives up the closed form that chains through a sequence, " ++
       "which is what cublas-is-matvec buys for the unbatched call."
   | .cublasGemmIsSomeReassoc =>
-      "cl_cublas_sgemm_strided_batched at a batch of one is a plain GEMM -- " ++
-      "measured bit-identical to cl_cublas_sgemm on all fifteen shapes the " ++
+      "cublasSgemmStridedBatched at a batch of one is a plain GEMM -- " ++
+      "measured bit-identical to cublasSgemm on all fifteen shapes the " ++
       "ViT launches -- and each of its output elements sums that element's own " ++
       "k products, each once, in some association. The weak form, for the " ++
       "reason cublas-sums-in-some-order is weak, and one step further: the " ++

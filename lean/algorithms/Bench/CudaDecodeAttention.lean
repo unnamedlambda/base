@@ -1,10 +1,12 @@
 module
 public import Lean
 public import Std
-public import Scan.Layout
-meta import Scan.Layout
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -45,11 +47,18 @@ namespace CudaDecodeAttention
     2. probs  = softmax(scores)       one CUDA block per head
     3. out    = V^T @ probs           batched over heads via cuBLAS
 
-  Algorithms:
-    u0:1  load      — alloc resident buffers, upload K/V once
-    u0:2  prep      — upload q
-    u0:3  core      — scores + softmax + V mix, no sync/download
-    u0:4  finalize  — sync and optional download
+  Entry points:
+    main      — for 0 < seq_len ≤ 2048 and data holding exactly K and V:
+                make the allocations, upload K and V once
+    prep      — upload q, where the data holds it
+    infer     — core, then finalize; stack: core 64 times, then finalize
+    core      — scores + softmax + V mix, no wait or download
+    finalize  — wait, then download as many bytes of out as the output
+                asks for, where they fit
+
+  The program calls the CUDA driver and cuBLAS directly, in `Drv.App`'s
+  layout. Allocations, made by `main` in this order: q, K and V back to back
+  as the data has them, scores, probs, out, meta.
 -/
 
 def N_HEADS : Nat := 14
@@ -59,20 +68,14 @@ def MAX_SEQ : Nat := 2048
 
 def D_MODEL_BYTES : Nat := D_MODEL * 4
 
-def PTX_SOURCE_OFF : Nat := 0x0200
-def BIND_DESC_OFF  : Nat := 0x5000
-def MEM_SIZE       : Nat := 0x5100
-
--- App fields: stored starting at 0x38 (past the 56-byte reserved header)
-def BUF_Q_OFF      : Nat := 0x38
-def BUF_K_OFF      : Nat := 0x3C
-def BUF_V_OFF      : Nat := 0x40
-def BUF_SCORES_OFF : Nat := 0x44
-def BUF_PROBS_OFF  : Nat := 0x48
-def BUF_OUT_OFF    : Nat := 0x4C
-def BUF_META_OFF   : Nat := 0x50
--- seq_len (i64) staging + seq_len value stored at 0x58
-def SEQ_LEN_OFF    : Nat := 0x58  -- i64 seq_len value (also used as staging for GPU upload)
+/-- Where `main` keeps `seq_len`; where the `0.125` the scores are scaled by
+    lies; where the driver's state starts; where the PTX lies and how many
+    bytes are kept for it. -/
+def SEQ_LEN_OFF : Nat := 0x58
+def EIGHTH_OFF : Nat := 0x60
+def ORG : Nat := 0x100
+def PTX_OFF : Nat := 0x400
+def PTX_LEN : Nat := 0x4C00
 
 def ptxSource : String := buildModule 64 [{ name := "main", params := ["scores_buf", "meta_buf", "probs_buf"], body := do
   let scoresBuf ← ldParam "scores_buf"
@@ -124,167 +127,86 @@ def ptxSource : String := buildModule 64 [{ name := "main", params := ["scores_b
 -- Load: init CUDA, alloc 7 bufs, upload K/V/meta, store buf IDs and seq_len
 open AlgorithmLib.Prog
 
+/-- **The program in the driver's standard layout**: six allocations, made by
+    `main`, cuBLAS, and the softmax kernel handed scores, meta and probs. -/
+def app : Drv.App :=
+  { bufs := [0, 0, 0, 0, 0, 0], kernels := [⟨PTX_OFF, PTX_LEN, [2, 5, 3], (N_HEADS, 1, 1), (256, 1, 1)⟩],
+    memSize := PTX_OFF + PTX_LEN, blas := true, org := ORG }
 
-/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
-def CTX_OFF : Nat := 0x10
-
+/-- Bring the driver and cuBLAS up and load the kernel; then, where the data
+    is `seq_len`, `0 < seq_len ≤ 2048`, then exactly K and V: keep
+    `seq_len`, make the allocations, hand them to the kernel and upload
+    `seq_len` and K and V. -/
 def loadCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
+  let a := app
+  let base ← basePtr
+  let dp ← dataPtr
+  let dl ← dataLen
+  a.setup base
+  Prog.when .ule (← iconst64 8) dl do
+  Prog.when .ult dl (← iconst64 (2 ^ 35)) do
+    let seq ← load64 dp
+    Prog.when .ne seq (← iconst64 0) do
+    Prog.when .ult seq (← iconst64 (MAX_SEQ + 1)) do
+      let kvBytes ← isub dl (← iconst64 8)
+      Prog.when .eq (← imul seq (← iconst64 (2 * D_MODEL_BYTES))) kvBytes do
+        storeI64 seq (← iaddImm base SEQ_LEN_OFF)
+        let scoreBytes ← imul seq (← iconst64 (N_HEADS * 4))
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 0), ← iconst64 D_MODEL_BYTES]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 1), kvBytes]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 2), scoreBytes]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 3), scoreBytes]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 4), ← iconst64 D_MODEL_BYTES]
+        let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 5), ← iconst64 8]
+        a.rebind base 0
+        let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (a.bufSlot 5)), ← iaddImm base SEQ_LEN_OFF,
+          ← iconst64 8]
+        let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (a.bufSlot 1)), ← iaddImm dp 8, kvBytes]
 
-  cudaInit ptr CTX_OFF
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-
-  let dataLen ← dataLen
-  -- the sequence length only when the caller handed over its 8 bytes
-  Prog.when .ule (← iconst64 8) dataLen do
-    let seqLen    ← load64 dataPtr
-    -- A length the kernels take as a positive `u32` and the buffers are sized
-    -- by without wrapping: any other makes no buffers, and later entries find
-    -- none.
-    let one    ← iconst64 1
-    let maxSeq ← iconst64 MAX_SEQ
-    let _ ← ifte .ult (← isub seqLen one) maxSeq
-      (thn := do
-        let dMBytes   ← iconst64 D_MODEL_BYTES
-        let nHeads64  ← iconst64 N_HEADS
-        let kvBytes   ← imul seqLen dMBytes              -- seq_len * D_MODEL * 4
-        let scoreBytes← ishlImm (← imul seqLen nHeads64) 2  -- seq_len * N_HEADS * 4
-        let eight     ← iconst64 8
-
-        -- buf order: 0=q, 1=K, 2=V, 3=scores, 4=probs, 5=out, 6=meta
-        let bufQ      ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
-        let bufK      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
-        let bufV      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
-        let bufScores ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
-        let bufProbs  ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
-        let bufOut    ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
-        let bufMeta   ← ffi .cudaCreateBuffer %[ctxPtr, eight]
-
-        store bufQ      (← absAddr ptr BUF_Q_OFF)
-        store bufK      (← absAddr ptr BUF_K_OFF)
-        store bufV      (← absAddr ptr BUF_V_OFF)
-        store bufScores (← absAddr ptr BUF_SCORES_OFF)
-        store bufProbs  (← absAddr ptr BUF_PROBS_OFF)
-        store bufOut    (← absAddr ptr BUF_OUT_OFF)
-        store bufMeta   (← absAddr ptr BUF_META_OFF)
-
-        -- Pack [seq_len:u32][0:u32] at SEQ_LEN_OFF, upload to meta buf
-        let seqLen32 ← ireduce32 seqLen
-        let seqLen64 ← uextend64 seqLen32
-        let metaSlot ← absAddr ptr SEQ_LEN_OFF
-        store seqLen64 metaSlot
-        let _ ← ffi .cudaUpload %[ctxPtr, bufMeta, metaSlot, eight]
-
-        -- Upload K and V from data (K at data+8, V at data+8+kvBytes), where the
-        -- data holds both: an input shorter than its header says uploads neither.
-        let _ ← ifte .uge dataLen eight
-          (thn := do
-            let rest ← isub dataLen eight
-            let _ ← ifte .ule kvBytes rest
-              (thn := do
-                let _ ← ifte .ule kvBytes (← isub rest kvBytes)
-                  (thn := do
-                    let kSrc ← iaddImm dataPtr 8
-                    let _ ← ffi .cudaUpload %[ctxPtr, bufK, kSrc, kvBytes]
-                    let vSrc ← iadd kSrc kvBytes
-                    let _ ← ffi .cudaUpload %[ctxPtr, bufV, vSrc, kvBytes]
-                    pure %[])
-                  (els := pure %[])
-                pure %[])
-              (els := pure %[])
-            pure %[])
-          (els := pure %[])
-        pure %[])
-      (els := pure %[])
-
-/-- Prep: upload q from data_ptr to buf0, where the data holds it. -/
+/-- Upload `q`, where the data holds it. -/
 def prepCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
-  let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
-  let bufQ    ← load32 (← absAddr ptr BUF_Q_OFF)
-  let dMBytes ← iconst64 D_MODEL_BYTES
-  let dataLen ← dataLen
-  -- q where the data holds it: shorter data uploads nothing.
-  let _ ← ifte .ule dMBytes dataLen
-    (thn := do
-      let _ ← ffi .cudaUpload %[ctxPtr, bufQ, dataPtr, dMBytes]
-      pure %[])
-    (els := pure %[])
+  let base ← basePtr
+  Prog.when .ule (← iconst64 D_MODEL_BYTES) (← dataLen) do
+    let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (app.bufSlot 0)), ← dataPtr,
+      ← iconst64 D_MODEL_BYTES]
 
-/-- **The softmax kernel, as a record its launch site reads.**
-
-    Scores and probs are one row per head, as long as the sequence, which is
-    a runtime value; `meta` carries the two `u32`s that say how long.  The
-    bind table and the launch both take their length from `params`. -/
-def softmaxK : AlgorithmLib.Kernel := {
-  name   := "softmax"
-  params := [{ shape := [.sta N_HEADS, .dyn], ro := true,  name := "scores" },
-             { shape := [.sta 2],             ro := true,  name := "meta" },
-             { shape := [.sta N_HEADS, .dyn], ro := false, name := "probs" }]
-  geom   := AlgorithmLib.Kernel.Geom.static N_HEADS 1 1 256 1 1
-  ptxOff := PTX_SOURCE_OFF
-}
-
-/-- Core: K@q scores, softmax, V^T@probs output. -/
+/-- `scores = 0.125 · K q` per head, the softmax kernel, `out = Vᵀ probs`
+    per head. K and V are `seq_len × head_dim` per head, row-major, so cuBLAS
+    reads each as the column-major `head_dim × seq_len` matrix. -/
 def coreCode : Prog V L Unit := do
-  let ptr       := (← basePtr)
-  let ctxPtr    ← load64 (← absAddr ptr CTX_OFF)
-  let seqLen    ← load64 (← absAddr ptr SEQ_LEN_OFF)
-  let seqLen32  ← ireduce32 seqLen
-  let headDim64 ← iconst64 HEAD_DIM
-  let headDim32 ← iconst32 HEAD_DIM
-  let nHeads32  ← iconst32 N_HEADS
-  let seqHead   ← imul seqLen headDim64  -- stride: seq_len * HEAD_DIM
-  let one32     ← iconst32 1
-  let zero32    ← iconst32 0
-  let alpha0125 ← iconst32 0x3e000000   -- 0.125f
-  let alpha1f   ← iconst32 0x3f800000   -- 1.0f
-  -- No operand offsets, and `0` asks the wrapper for the default leading
-  -- dimension. Six arguments the signature has carried since it gained
-  -- `off_a/b/c` and `ld_a/b/c`; these call sites never grew them.
-  let zero64    ← iconst64 0
+  let a := app
+  let base ← basePtr
+  let seq ← load64 (← iaddImm base SEQ_LEN_OFF)
+  Prog.when .ne seq (← iconst64 0) do
+  Prog.when .ult seq (← iconst64 (MAX_SEQ + 1)) do
+    let seq32 ← ireduce32 seq
+    let seqHead ← imul seq (← iconst64 HEAD_DIM)
+    let one ← iconst32 1
+    let zero ← iconst32 0
+    let hd ← iconst32 HEAD_DIM
+    let heads ← iconst32 N_HEADS
+    let h ← load64 (← iaddImm base a.BLAS)
+    let kv ← load64 (← iaddImm base (a.bufSlot 1))
+    let _ ← ext (.cublas .sgemmStridedBatched) %[h, one, zero, seq32, one, hd, ← iaddImm base EIGHTH_OFF,
+      kv, hd, seqHead, ← load64 (← iaddImm base (a.bufSlot 0)), hd, ← iconst64 HEAD_DIM,
+      ← iaddImm base a.ZERO, ← load64 (← iaddImm base (a.bufSlot 2)), seq32, seq, heads]
+    a.run base 0
+    let vv ← iadd kv (← imul seq (← iconst64 D_MODEL_BYTES))
+    let _ ← ext (.cublas .sgemmStridedBatched) %[h, zero, zero, hd, one, seq32, ← iaddImm base a.ONE,
+      vv, hd, seqHead, ← load64 (← iaddImm base (a.bufSlot 3)), seq32, seq,
+      ← iaddImm base a.ZERO, ← load64 (← iaddImm base (a.bufSlot 4)), hd, ← iconst64 HEAD_DIM, heads]
 
-  let bufQ      ← load32 (← absAddr ptr BUF_Q_OFF)
-  let bufK      ← load32 (← absAddr ptr BUF_K_OFF)
-  let bufV      ← load32 (← absAddr ptr BUF_V_OFF)
-  let bufScores ← load32 (← absAddr ptr BUF_SCORES_OFF)
-  let bufProbs  ← load32 (← absAddr ptr BUF_PROBS_OFF)
-  let bufOut    ← load32 (← absAddr ptr BUF_OUT_OFF)
-  let bufMeta   ← load32 (← absAddr ptr BUF_META_OFF)
-
-  -- scores = 0.125 * K @ q, batched over N_HEADS heads
-  let _ ← ffi .cublasSgemm
-    %[ctxPtr, one32, zero32, seqLen32, one32, headDim32, alpha0125,
-     bufK, seqHead, bufQ, headDim64, zero32, bufScores, seqLen, nHeads32,
-     zero64, zero64, zero64, zero32, zero32, zero32]
-
-  kernelLaunchAt softmaxK ptr BIND_DESC_OFF [bufScores, bufMeta, bufProbs]
-
-  -- out = V^T @ probs, batched over N_HEADS heads
-  let _ ← ffi .cublasSgemm
-    %[ctxPtr, zero32, zero32, headDim32, one32, seqLen32, alpha1f,
-     bufV, seqHead, bufProbs, seqLen, zero32, bufOut, headDim64, nHeads32,
-     zero64, zero64, zero64, zero32, zero32, zero32]
-
-/-- Finalize: sync, then download only if the caller asked for output. -/
+/-- Wait; then download as many bytes of `out` as the caller's output asks
+    for, where it asks for some and they fit. -/
 def finalizeCode : Prog V L Unit := do
-  let ptr    := (← basePtr)
-  let outPtr ← outPtr
-  let outLen ← outLen
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-  let bufOut ← load32 (← absAddr ptr BUF_OUT_OFF)
+  let base ← basePtr
+  Drv.sync
+  let ol ← outLen
+  Prog.when .ne ol (← iconst64 0) do
+  Prog.when .ule ol (← iconst64 D_MODEL_BYTES) do
+    let _ ← ext (.cuda .memcpyDtoH) %[← outPtr, ← load64 (← iaddImm base (app.bufSlot 4)), ol]
 
-  let _ ← cudaSync ptr CTX_OFF
-  let _ ← ifte .eq outLen (← iconst64 0)
-    (thn := pure %[])
-    (els := do
-      let _ ← ffi .cudaDownload %[ctxPtr, bufOut, outPtr, outLen]
-      pure %[])
-  return ()
-
-
+/-- Stack depth baked into the `stack` entry's wrapper. -/
 def STACK_DEPTH : Nat := 64
 
 def clifIR : Except String (List FuncData) :=
@@ -297,59 +219,10 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "infer" (Prog.compileProg 5 (Prog.sequenceWrapper [3, 4])),
      Prog.entry "stack" (Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4])))]
 
-def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
-def bindDesc : List UInt8 := [3, 0, 0, 0, 6, 0, 0, 0, 4, 0, 0, 0]
-
-/-- Every byte of shared memory this program names.
-
-    The offsets are assigned by hand, and a collision between two of them is
-    invisible at every other layer: both stores succeed and the second wins.
-    `0x00`-`0x18` are the context slots the FFI's init calls fill, so naming
-    those is what stops an offset being placed where one of those calls will
-    overwrite it. -/
-def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_ht",     ContextSlots.ht, 8⟩,
-   ⟨"ctx_wgpu",   ContextSlots.wgpu, 8⟩,
-   ⟨"ctx_cuda",   CTX_OFF, 8⟩,
-   ⟨"buf_q",      BUF_Q_OFF, 4⟩,
-   ⟨"buf_k",      BUF_K_OFF, 4⟩,
-   ⟨"buf_v",      BUF_V_OFF, 4⟩,
-   ⟨"buf_scores", BUF_SCORES_OFF, 4⟩,
-   ⟨"buf_probs",  BUF_PROBS_OFF, 4⟩,
-   ⟨"buf_out",    BUF_OUT_OFF, 4⟩,
-   ⟨"buf_meta",   BUF_META_OFF, 4⟩,
-   ⟨"seq_len",    SEQ_LEN_OFF, 8⟩,
-   ⟨"ptx",        PTX_SOURCE_OFF, BIND_DESC_OFF - PTX_SOURCE_OFF⟩,
-   -- Three buffers, which is the arity the launch declares.
-   ⟨"bind_desc",  BIND_DESC_OFF, 12⟩]
-
-
-#eval LayoutScan.check "Bench.CudaDecodeAttention" [``memMap]
-theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
-
-theorem memMap_within :
-    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
-
-/-- **The PTX and the bind descriptor fit the slots they are placed in.**
-
-    `buildInitialMemory` pads with `zeros (next - this - length)`, on `Nat`: a
-    text longer than its slot pads by zero rather than by a negative amount, so
-    the overrun is written over whatever follows and every offset after it
-    shifts. The failure shows up as a device launching garbage. -/
-theorem regions_fit :
-    ptxBytes.length ≤ BIND_DESC_OFF - PTX_SOURCE_OFF
-      ∧ bindDesc.length ≤ MEM_SIZE - BIND_DESC_OFF := by native_decide
-
-def buildInitialMemory : List UInt8 :=
-  let reserved := zeros PTX_SOURCE_OFF
-  let ptx := ptxBytes ++ zeros (BIND_DESC_OFF - PTX_SOURCE_OFF - ptxBytes.length)
-  let bind := bindDesc ++ zeros (MEM_SIZE - BIND_DESC_OFF - bindDesc.length)
-  reserved ++ ptx ++ bind
-
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
-  required_memory := MEM_SIZE,
-  initial_memory := buildInitialMemory
+  required_memory := app.memSize,
+  initial_memory := app.initialMemory [ptxSource] [(EIGHTH_OFF, [0, 0, 0, 0x3e])]
 }
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=

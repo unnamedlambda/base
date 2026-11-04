@@ -115,7 +115,7 @@ def notYetStated : List String :=
      operation with one target and one reindexing",
     "that a weave's regrouping of axes is an address permutation — splitPt \
      and mergePt are proven inverse on points, not yet on flat addresses",
-    "that Qwen2 and gpt-oss tapes are algebra programs — only CIFAR and ViT \
+    "that gpt-oss's tape is an algebra program — only CIFAR and ViT \
      are checked" ]
 
 end WeaveScan

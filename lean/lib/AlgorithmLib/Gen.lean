@@ -1,8 +1,8 @@
 module
 public import AlgorithmLib.Surface.FFI
 meta import AlgorithmLib.Surface.FFI
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
+public import AlgorithmLib.Surface.Cuda
+meta import AlgorithmLib.Surface.Cuda
 public import AlgorithmLib.Surface.CudaPipeline
 meta import AlgorithmLib.Surface.CudaPipeline
 public import AlgorithmLib.Vocab.WGSL

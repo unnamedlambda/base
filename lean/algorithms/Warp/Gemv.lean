@@ -6,10 +6,12 @@ import Scan.Ship
 import AlgorithmLib.ML.Machine.Geometry
 import AlgorithmLib.ML.Kernel.Sched
 import AlgorithmLib.Surface.ProgFFI
+import AlgorithmLib.Surface.Drv
+import AlgorithmLib.Host.Driver
 /-!
   # A proven GEMV, versus cuBLAS — and across schedules
 
-  Qwen2 decode is bottlenecked on `cl_cublas_sgemv`: every token streams the
+  A small decoder is bottlenecked on `cl_cublas_sgemv`: every token streams the
   whole weight matrix, so the kernel is memory-bound and `M = 1`.  That is
   precisely the shape where cuBLAS is *not* the last word — llama.cpp, vLLM and
   the Marlin family all beat it there.
@@ -217,13 +219,11 @@ theorem gemv_geometry : ((qwen.n / 128) * 128 = qwen.n ∧ (qwen.n / 32) * 32 = 
 /-! Each schedule gets its own PTX slot: the CUDA module cache is keyed by the
     address the source was read from, so two kernels sharing a slot would be
     the same compiled module. -/
-def PTX_OFF : Nat := 0x0100
+def PTX_OFF : Nat := 0x0800
 def SLOT : Nat := 0x1400
 
-/-- Six kernels, six slots: `{dot, sumsq} x {vec4, strided, blocked}`.  Each gets
-    its own address because the CUDA module cache is keyed by the address the
-    source was read from, so two kernels sharing a slot would be the same
-    compiled module. -/
+/-- Six kernels, six slots: `{dot, sumsq} x {vec4, strided, blocked}`, each
+    loaded as a module of its own. -/
 def slotOf : Bool → Sched → Nat
   | false, .vec4    => PTX_OFF
   | false, .strided => PTX_OFF + SLOT
@@ -232,77 +232,54 @@ def slotOf : Bool → Sched → Nat
   | true,  .strided => PTX_OFF + 4*SLOT
   | true,  .blocked => PTX_OFF + 5*SLOT
 
-def BIND_OFF : Nat := PTX_OFF + 6*SLOT
-def A_ID : Nat := 0x0040
-def X_ID : Nat := 0x0044
-def Y_ID : Nat := 0x0048
-def MEM_SIZE : Nat := BIND_OFF + 0x100
+/-- Which of the six a kernel is, in the order `slotOf` lays them out. -/
+def kidx : Bool → Sched → Nat
+  | false, .vec4 => 0 | false, .strided => 1 | false, .blocked => 2
+  | true, .vec4 => 3 | true, .strided => 4 | true, .blocked => 5
+
+def MEM_SIZE : Nat := PTX_OFF + 6*SLOT
+
+/-- **The program, in the driver's standard layout**: the matrix, the
+    vector and the output, and the six kernels, each handed them in that
+    order over one warp per output element; cuBLAS for the baseline. -/
+def app (sh : Shape) : Drv.App :=
+  { bufs := [sh.m * sh.n * 4, sh.n * 4, sh.m * 4],
+    kernels := ([false, true].flatMap fun sq => Sched.all.map fun s =>
+      (⟨slotOf sq s, SLOT, [0, 1, 2], (sh.m, 1, 1), (32, 1, 1)⟩ : Drv.KSpec)),
+    memSize := MEM_SIZE, blas := true }
 
 open AlgorithmLib.Prog
 
 
 def loadCode (sh : Shape) : Prog V L Unit :=
   do
-    let ptr ← basePtr
+    let base ← basePtr
     let dataPtr ← dataPtr
-    cudaInit ptr
-    let ctxPtr ← cudaCtxPtr ptr
-    let aBytes ← iconst64 (sh.m * sh.n * 4)
-    let xBytes ← iconst64 (sh.n * 4)
-    let yBytes ← iconst64 (sh.m * 4)
-    let aId ← cudaCreateBuffer ptr aBytes
-    store aId (← absAddr ptr A_ID)
-    let xId ← cudaCreateBuffer ptr xBytes
-    store xId (← absAddr ptr X_ID)
-    let yId ← cudaCreateBuffer ptr yBytes
-    store yId (← absAddr ptr Y_ID)
-    let _ ← ffi .cudaUpload %[ctxPtr, aId, dataPtr, aBytes]
-    let xSrc ← iadd dataPtr aBytes
-    let _ ← ffi .cudaUpload %[ctxPtr, xId, xSrc, xBytes]
-    store aId (← absAddr ptr BIND_OFF)
-    store xId (← absAddr ptr (BIND_OFF + 4))
-    store yId (← absAddr ptr (BIND_OFF + 8))
+    (app sh).setup base
+    (app sh).upload base 0 dataPtr (sh.m * sh.n * 4)
+    (app sh).upload base 1 (← iaddImm dataPtr (sh.m * sh.n * 4)) (sh.n * 4)
 
 /-- One launch per schedule: same grid, same buffers, same output, differing
-    only in which PTX slot it reads.  That is what makes the timings
-    comparable. -/
+    only in which PTX it runs.  That is what makes the timings comparable. -/
 def runCode (sh : Shape) (sq : Bool) (s : Sched) : Prog V L Unit :=
   do
-    let ptr ← basePtr
-    let ptxOff ← iconst64 (slotOf sq s)
-    let nBufs ← iconst32 3
-    let bindOff ← iconst64 BIND_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 sh.m
-    let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
-    let _ ← cudaSync ptr
+    let base ← basePtr
+    (app sh).run base (kidx sq s)
+    Drv.sync
 
-/-- The cuBLAS baseline on the same buffers: `y = A·x`, `A` is `m x n`. -/
+/-- The cuBLAS baseline on the same buffers: `y = A·x`, `A` is `m x n`;
+    row-major `A` is column-major `n x m`, and `trans = 1` gives
+    `yᵢ = Σₖ A[i,k]·xₖ`. -/
 def blasCode (sh : Shape) : Prog V L Unit :=
   do
-    let ptr ← basePtr
-    let ctxPtr ← cudaCtxPtr ptr
-    let aId ← load32 (← absAddr ptr A_ID)
-    let xId ← load32 (← absAddr ptr X_ID)
-    let yId ← load32 (← absAddr ptr Y_ID)
-    -- row-major A (m x n) is column-major (n x m); trans=1 gives yᵢ = Σₖ A[i,k]·xₖ
-    let trans ← iconst32 1
-    let mm ← iconst32 sh.n
-    let nn ← iconst32 sh.m
-    let alpha ← iconst32 0x3F800000
-    let beta ← iconst32 0
-    let _ ← ffi .cublasSgemv %[ctxPtr, trans, mm, nn, alpha, aId, xId, beta, yId]
-    let _ ← cudaSync ptr
+    let base ← basePtr
+    (app sh).sgemv base 1 sh.n sh.m 0 1 2
+    Drv.sync
 
 def fetchCode (sh : Shape) : Prog V L Unit :=
   do
-    let ptr ← basePtr
-    let ctxPtr ← cudaCtxPtr ptr
-    let outPtr ← outPtr
-    let yId ← load32 (← absAddr ptr Y_ID)
-    let yBytes ← iconst64 (sh.m * 4)
-    let _ ← ffi .cudaDownload %[ctxPtr, yId, outPtr, yBytes]
+    let base ← basePtr
+    (app sh).download base (← outPtr) 2 (sh.m * 4)
 
 /-- The nine bodies this file ships, at one shape.
 
@@ -322,33 +299,29 @@ def clifIR (sh : Shape) : Except String (List FuncData) :=
      Prog.entry "sq_strided" (Prog.compileProg 8 (runCode sh true .strided)),
      Prog.entry "sq_blocked" (Prog.compileProg 9 (runCode sh true .blocked))]
 
-/-- **Every byte this file names.**  The context slots and the three
-    buffer-id words are written here too, so leaving them out would let a slot
-    be placed on top of one without the check noticing. -/
+/-- **Every byte this file names.** -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"a_id",       A_ID, 4⟩,
-   ⟨"x_id",       X_ID, 4⟩,
-   ⟨"y_id",       Y_ID, 4⟩]
+  [⟨"driver", 0, (app wide).stateEnd⟩]
     ++ (Sched.all.flatMap (fun s => [⟨"dot", slotOf false s, SLOT⟩,
                                      ⟨"sumsq", slotOf true s, SLOT⟩]))
-    ++ [⟨"bind", BIND_OFF, 12⟩]
 
 
 #eval LayoutScan.check "Warp.Gemv" [``memMap]
 theorem mem_map_ok :
     memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by native_decide
 
-/-- One slot's worth of bytes: the kernel source, NUL-terminated, zero-padded. -/
-def slotBytes (src : String) : List UInt8 :=
-  let b := src.toUTF8.toList ++ [0]
-  b ++ zeros (SLOT - b.length)
-
 def initialMemory (sh : Shape) : List UInt8 :=
-  zeros PTX_OFF
-    ++ (Sched.all.flatMap (fun s => slotBytes (ptxOf sh s)))
-    ++ (Sched.all.flatMap (fun s => slotBytes (ptxSqOf sh s)))
-    ++ zeros (MEM_SIZE - BIND_OFF)
+  (app sh).initialMemory (Sched.all.map (ptxOf sh) ++ Sched.all.map (ptxSqOf sh))
+
+/-- The signature the entry points' typestates state of every kernel at
+    every shape: `main` takes three pointers. -/
+theorem gemv_sigs :
+    (shapes.all fun sh => Sched.all.all fun s =>
+      HProg.Sem.ptxParamSizes (ptxOf sh s) "main" == some [8, 8, 8] &&
+        HProg.Sem.ptxParamSizes (ptxSqOf sh s) "main" == some [8, 8, 8]) = true := by native_decide
+
+/-- Every shape lays its driver state out below the first PTX slot. -/
+theorem gemv_layout : (shapes.all fun sh => decide ((app sh).stateEnd ≤ PTX_OFF)) = true := by decide
 
 def artifactOf (sh : Shape) : Except String ArtifactEntry := do
   let functions ← clifIR sh

@@ -7,6 +7,10 @@ public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Host.Driver
+meta import AlgorithmLib.Host.Driver
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -937,43 +941,39 @@ def pixelsOff : Nat := bmpHeaderOff + 54
 open AlgorithmLib.Prog
 
 
+/-- **The renderer in the driver's standard layout**: one allocation for the
+    pixels and one kernel over it, a 16×16 block per 16×16 tile. Its state
+    lies in the region `clifIrOff` keeps. -/
+def app (spec : SceneSpec) : Drv.App :=
+  { bufs := [pixelBytes spec],
+    kernels := [⟨ptxOff, ptxRegion, [0], ((imageWidth spec + 15) / 16, (imageHeight spec + 15) / 16, 1),
+      (16, 16, 1)⟩],
+    memSize := pixelsOff + pixelBytes spec, org := clifIrOff }
+
+/-- Bring the driver up, render into the allocation, download the pixels
+    beside the BMP header, free the allocation and write the file. -/
 def code (spec : SceneSpec) : Prog V L Unit :=
+  let a := app spec
   do
-    let ptr ← basePtr
-    cudaInit ptr
-    let dataSz ← iconst64 (pixelBytes spec)
-    let bufId ← cudaCreateBuffer ptr dataSz
-    let ptxOffV ← iconst64 ptxOff
-    let nBufs ← iconst32 1
-    let bindOffV ← iconst64 bindOff
-    let gridX ← iconst32 ((imageWidth spec + 15) / 16)
-    let gridY ← iconst32 ((imageHeight spec + 15) / 16)
-    let one32 ← iconst32 1
-    let blk16 ← iconst32 16
-    let _ := bufId
-    let _ ← cudaLaunch ptr ptxOffV nBufs bindOffV gridX gridY one32 blk16 blk16 one32
-    let pxOffV ← iconst64 pixelsOff
-    let _ ← cudaDownload ptr bufId pxOffV dataSz
-    cudaCleanup ptr
+    let base ← basePtr
+    a.setup base
+    a.run base 0
+    a.download base (← iaddImm base pixelsOff) 0 (pixelBytes spec)
+    Drv.free base (a.bufSlot 0)
     let total ← iconst64 (54 + pixelBytes spec)
-    let _ ← writeFile0 ptr filenameOff filenameRegion bmpHeaderOff total
+    let _ ← writeFile0 base filenameOff filenameRegion bmpHeaderOff total
 
 
 def clifIrSource (spec : SceneSpec) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code spec))]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
-  let reserved := zeros ptxOff
-  let ptxBytes := padTo (stringToBytes (ptxSource spec)) ptxRegion
-  let bindDesc := uint32ToBytes 0
-  let bindPad := zeros (filenameOff - bindOff - bindDesc.length)
-  let filenameBytes := padTo (stringToBytes spec.filename) filenameRegion
-  let clifPad := zeros clifIrRegion
-  reserved ++ ptxBytes ++ bindDesc ++ bindPad ++ filenameBytes ++ clifPad ++ bmpHeader spec
+  (app spec).initialMemory [ptxSource spec]
+    [(filenameOff, stringToBytes spec.filename), (bmpHeaderOff, bmpHeader spec)]
 
 def config (spec : SceneSpec) (clif : List FuncData) : Artifact := {
   functions := clif,
-  required_memory := (payloads spec).length + pixelBytes spec,
+  required_memory := (app spec).memSize,
   initial_memory := payloads spec
 }
 

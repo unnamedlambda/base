@@ -106,9 +106,6 @@ def main():
     ] + expert_parts)
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
-    assert not ex, f"this artifact should have no extras; it has {sorted(ex)}"
-    print(f"  the artifact has one entry and no extras: everything a token needs "
-          f"happens inside it")
 
     # ---- the reference: the layer, written the way the model defines it ----
     qkv_w = bf16_to_f32(qkv_w_raw.view(np.uint16).reshape(QKV, H))

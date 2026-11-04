@@ -142,92 +142,10 @@ theorem devOnly_track {w : World} {k : Option (Option V × Dev)} {r : Option V} 
   obtain ⟨-, rfl⟩ := he
   exact hk _ _ hkd
 
-theorem track_cudaCreateBuffer {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaCreateBuffer bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaCreateBuffer at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · simp only [Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-        exact ht.congr rfl rfl rfl
-  · cases hk
-
 theorem track_fresh {d : Dev} (hr : d.race = {}) (hc : d.capture = none) (he : d.events = #[]) :
     TrackOk d := by
   refine ⟨⟨[], hr ▸ .init, fun i clk h => by rw [he] at h; simp at h⟩, ?_⟩
   rw [hc]; exact fun i clk h => by rw [he] at h; simp at h
-
-theorem track_cudaInit {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaInit bits w = some (r, w')) : TrackOk w'.dev := by
-  unfold ffiCudaInit at h
-  split at h
-  · split at h <;>
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-      exact track_fresh rfl rfl rfl
-  · cases h
-
-theorem track_cudaCleanup {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaCleanup bits w = some (r, w')) : TrackOk w'.dev := by
-  unfold ffiCudaCleanup at h
-  split at h
-  · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-    simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-    exact track_fresh rfl rfl rfl
-  · cases h
-
-
-
-
-
-theorem track_cudaFreeBuffer {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaFreeBuffer bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaFreeBuffer at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · obtain ⟨r', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-          simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-          obtain ⟨⟨evs, h1, h2⟩, h3⟩ := ht
-          exact ⟨⟨evs, .op _ _ _ h1 hop, h2⟩, h3⟩
-  · cases hk
-
-theorem track_cudaSync {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaSync bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaSync at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-      obtain ⟨⟨evs, h1, h2⟩, h3⟩ := ht
-      exact ⟨⟨evs, .learnParty _ _ h1, h2⟩, h3⟩
-  · cases hk
-
-theorem cudaLaunchOn_track {w : World} {p : Nat} {kernel entry : String} {nBufs bindPtr : UInt64}
-    {dims : List UInt64} {r : Option V} {d : Dev}
-    (hk : cudaLaunchOn w p kernel entry nBufs bindPtr dims = some (r, d)) (ht : TrackOk w.dev) :
-    TrackOk d := by
-  unfold cudaLaunchOn at hk
-  obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-  split at hk
-  · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · obtain ⟨d', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-    simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_track hop ht
 
 theorem memInfoOf_track {w : World} {ctx : UInt64} {pick : UInt64 × UInt64 → UInt64}
     {r : Option V} {d : Dev} (hk : memInfoOf w ctx pick = some (r, d)) (ht : TrackOk w.dev) :
@@ -235,43 +153,6 @@ theorem memInfoOf_track {w : World} {ctx : UInt64} {pick : UInt64 × UInt64 → 
   unfold memInfoOf at hk
   obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
   split at hk <;> (simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht)
-
-theorem track_cudaPinnedAlloc {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaPinnedAlloc bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaPinnedAlloc at h
-  split at h
-  · split at h
-    · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · dsimp only at h
-        split at h
-        · cases h
-        · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht.congr rfl rfl rfl
-  · cases h
-
-theorem track_cudaPinnedFree {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaPinnedFree bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaPinnedFree at h
-  split at h
-  · split at h
-    · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · split at h
-        · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-        · simp only [cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht.congr rfl rfl rfl
-  · cases h
-
-
-
-
-
-
-
-
 
 /-- `EvOk` over an events array. -/
 theorem evOk_iff (evs : List Clock) (fl : Bool) (d : Dev) :
@@ -336,176 +217,6 @@ theorem track_race {d : Dev} (ht : TrackOk d) {r : Race}
       obtain ⟨evs', c4, c5⟩ := c3
       exact ⟨evs', c4, fun i clk hi => c5 i clk (h3 ▸ hi)⟩
 
-theorem track_cudaStreamCreate {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaStreamCreate bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaStreamCreate at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-      exact track_race ht (fun evs c => .learnTwo _ _ _ c) _ rfl rfl rfl
-  · cases hk
-
-theorem track_cudaStreamSync {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaStreamSync bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaStreamSync at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · cases hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-          exact track_race ht (fun evs c => .learnParty _ _ c) _ rfl rfl rfl
-  · cases hk
-
-theorem track_cudaStreamDestroy {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaStreamDestroy bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaStreamDestroy at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · dsimp only at hk
-          split at hk
-          · cases hk
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-            exact track_race ht (fun evs c => .learnParty _ _ c) _ rfl rfl rfl
-  · cases hk
-
-theorem track_cudaEventCreate {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaEventCreate bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaEventCreate at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-      obtain ⟨⟨evs, c1, c2⟩, c3⟩ := ht
-      refine ⟨⟨evs, c1, evOk_push c2 rfl⟩, ?_⟩
-      show match w.dev.capture with
-        | none => EvOk [] true _
-        | some c => ∃ evs, CReached c.race evs ∧ EvOk evs true _
-      cases hcap : w.dev.capture with
-      | none => rw [hcap] at c3; exact evOk_push c3 rfl
-      | some c =>
-          rw [hcap] at c3
-          obtain ⟨evs', c4, c5⟩ := c3
-          exact ⟨evs', c4, evOk_push c5 rfl⟩
-  · cases hk
-
-theorem track_cudaEventDestroy {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaEventDestroy bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaEventDestroy at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-          obtain ⟨⟨evs, c1, c2⟩, c3⟩ := ht
-          have hv : ∀ (fl : Bool) (evs : List Clock) clk,
-              (none : Option (Option (Clock × Bool))) = some (some (clk, fl)) → clk = #[] ∨ clk ∈ evs :=
-            fun _ _ _ h => by cases h
-          refine ⟨⟨evs, c1, evOk_set c2 _ none (hv _ _) rfl⟩, ?_⟩
-          show match w.dev.capture with
-            | none => EvOk [] true _
-            | some c => ∃ evs, CReached c.race evs ∧ EvOk evs true _
-          cases hcap : w.dev.capture with
-          | none => rw [hcap] at c3; exact evOk_set c3 _ none (hv _ _) rfl
-          | some c =>
-              rw [hcap] at c3
-              obtain ⟨evs', c4, c5⟩ := c3
-              exact ⟨evs', c4, evOk_set c5 _ none (hv _ _) rfl⟩
-  · cases hk
-
-theorem track_cudaGraphBeginCapture {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaGraphBeginCapture bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaGraphBeginCapture at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · split at hk
-          · cases hk
-          · rename_i hnone
-            simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-            obtain ⟨c1, c3⟩ := ht
-            refine ⟨c1, ?_⟩
-            cases hcap : w.dev.capture with
-            | none =>
-                rw [hcap] at c3
-                exact ⟨[], .init, c3⟩
-            | some c => rw [hcap] at hnone; simp at hnone
-  · cases hk
-
-theorem track_cudaGraphEndCapture {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaGraphEndCapture bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaGraphEndCapture at h
-  refine devOnly_track h ?_
-  intro r d hk
-  have hend : ∀ d' : Dev, d'.race = w.dev.race → d'.capture = none →
-      d'.events = w.dev.endCapture.events → TrackOk d' := by
-    intro d' h1 h2 h3
-    obtain ⟨⟨evs, c1, c2⟩, _⟩ := ht
-    refine ⟨⟨evs, h1 ▸ c1, fun i clk hi => evOk_endCapture_false c2 i clk (h3 ▸ hi)⟩, ?_⟩
-    rw [h2]; exact fun i clk hi => evOk_endCapture_true i clk (h3 ▸ hi)
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · split at hk
-      · split at hk
-        · cases hk
-        · split at hk
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact hend _ rfl rfl rfl
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact hend _ rfl rfl rfl
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · cases hk
-
-
-theorem track_cudaGraphDestroy {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaGraphDestroy bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaGraphDestroy at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht.congr rfl rfl rfl
-  · cases hk
-
 theorem foldlM_ops_meta (w : World) : ∀ (ops : List DevOp) (d d' : Dev),
     ops.foldlM (fun d op => match op with
       | .launch l ids => d.runLaunch w.kernel l ids
@@ -521,28 +232,6 @@ theorem foldlM_ops_meta (w : World) : ∀ (ops : List DevOp) (d d' : Dev),
         | launch l ids => exact runLaunch_meta h1
         | vendor c ins out => exact runVendor_meta h1
       exact ⟨e1.trans this.1, e2.trans this.2.1, e3.trans this.2.2⟩
-
-theorem track_cudaGraphLaunch {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaGraphLaunch bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaGraphLaunch at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · split at hk
-      · split at hk
-        · cases hk
-        · dsimp only at hk
-          obtain ⟨r', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-          obtain ⟨d', hf, hk⟩ := Option.bind_eq_some_iff.mp hk
-          simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-          rw [← Array.foldlM_toList] at hf
-          obtain ⟨e1, e2, e3⟩ := foldlM_ops_meta w _ _ _ hf
-          exact track_race ht (fun evs c => .op _ _ _ c hop) _ e1 e2 e3
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · cases hk
 
 /-- Recording an event on the device's tracker: an issue, then the event holds
     the party's new clock. -/
@@ -585,26 +274,6 @@ theorem track_record_inner {d : Dev} (ht : TrackOk d) {c : Capture} (hcap : d.ca
   simp only [Option.some.injEq, Prod.mk.injEq] at hv
   exact Or.inr (by rw [← hv.1, Race.issue_clock]; exact List.mem_cons_self ..)
 
-theorem track_cudaEventRecord {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaEventRecord bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaEventRecord at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · split at hk
-      · dsimp only at hk
-        split at hk
-        · rename_i c hcap
-          split at hk
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact track_record_inner ht hcap _ _ _ rfl rfl rfl
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact track_record_outer ht (Or.inr trivial) _ _ _ rfl rfl rfl
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact track_record_outer ht (Or.inr trivial) _ _ _ rfl rfl rfl
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · cases hk
-
 theorem event_clock {d : Dev} {evs : List Clock} {fl : Bool} (h : EvOk evs fl d) {eid : Int}
     {clk : Clock} (hev : d.event? eid = some (some (clk, fl))) : clk = #[] ∨ clk ∈ evs := by
   simp only [Dev.event?] at hev
@@ -612,64 +281,6 @@ theorem event_clock {d : Dev} {evs : List Clock} {fl : Bool} (h : EvOk evs fl d)
   · cases hev
   · rw [Option.join_eq_some_iff] at hev
     exact h _ clk hev
-
-theorem track_cudaStreamWaitEvent {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaStreamWaitEvent bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaStreamWaitEvent at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · rename_i ctx sid eid
-    obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-    split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · cases hp : w.dev.party? (asI32 sid) with
-      | none => simp only [hp] at hk; simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      | some p =>
-        cases hev : w.dev.event? (asI32 eid) with
-        | none => simp only [hp, hev] at hk; simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        | some ev =>
-          simp only [hp, hev] at hk
-          cases ev with
-          | none => simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-          | some pr =>
-            obtain ⟨clk, fl⟩ := pr
-            cases fl <;> cases hcap : w.dev.capture <;> simp only [hcap] at hk
-            · -- outside, no capture
-              split at hk
-              · cases hk
-              simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-              obtain ⟨⟨evs, c1, c2⟩, c3⟩ := ht
-              have hi : CReached (w.dev.race.issue p).1 evs := CReached.op p [] [] c1 (Race.op_nil _ p)
-              refine ⟨⟨evs, ?_, c2⟩, by rw [hcap] at c3; exact c3⟩
-              rcases event_clock c2 hev with rfl | hin
-              · exact .learnNothing p hi
-              · exact .learnEvent p clk hi hin
-            · -- outside, a capture in progress
-              rename_i c
-              split at hk
-              · cases hk
-              · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-                obtain ⟨⟨evs, c1, c2⟩, c3⟩ := ht
-                have hi : CReached (w.dev.race.issue p).1 evs := CReached.op p [] [] c1 (Race.op_nil _ p)
-                refine ⟨⟨evs, ?_, c2⟩, by rw [hcap] at c3; exact c3⟩
-                rcases event_clock c2 hev with rfl | hin
-                · exact .learnNothing p hi
-                · exact .learnEvent p clk hi hin
-            · cases hk
-            · -- inside the capture in progress
-              rename_i c
-              simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-              obtain ⟨c1, c3⟩ := ht
-              refine ⟨c1, ?_⟩
-              rw [hcap] at c3
-              obtain ⟨evs', c4, c5⟩ := c3
-              have hi : CReached (c.race.issue p).1 evs' := CReached.op p [] [] c4 (Race.op_nil c.race p)
-              refine ⟨evs', ?_, c5⟩
-              rcases event_clock c5 hev with rfl | hin
-              · exact .learnNothing p hi
-              · exact .learnEvent p clk hi hin
-  · cases hk
 
 theorem sgemvOn_track {w : World} {p : Nat} {trans m n alpha a x beta y : UInt64} {r : Option V}
     {d : Dev} (hk : sgemvOn w p trans m n alpha a x beta y = some (r, d)) (ht : TrackOk w.dev) :
@@ -696,13 +307,6 @@ theorem sgemmOn_track {w : World} {p : Nat}
       simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_track hop ht
   · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
 
-
-
-
-
-
-
-
 theorem devOps_fold_track {α : Type} (w : World) (p : Nat) (f : α → DevOp) (rs ws : α → List Nat) :
     ∀ (xs : List α) (d d' : Dev), xs.foldlM (fun d x => d.devOp w p (f x) (rs x) (ws x)) d = some d' →
       TrackOk d → TrackOk d'
@@ -711,34 +315,6 @@ theorem devOps_fold_track {α : Type} (w : World) (p : Nat) (f : α → DevOp) (
       simp only [List.foldlM_cons] at h
       obtain ⟨d1, h1, h2⟩ := Option.bind_eq_some_iff.mp h
       exact devOps_fold_track w p f rs ws xs d1 d' h2 (devOp_track h1 ht)
-
-theorem track_cublasSgemmBatchedOnStream {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCublasSgemmBatchedOnStream bits w = some (r, w')) (ht : TrackOk w.dev) :
-    TrackOk w'.dev := by
-  unfold ffiCublasSgemmBatchedOnStream at h
-  refine devOnly_track h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · split at hk
-          · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-            simp only at hk
-            split at hk
-            · cases hk
-            · split at hk
-              · cases hk
-              · obtain ⟨d', hf, hk⟩ := Option.bind_eq_some_iff.mp hk
-                simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-                exact devOps_fold_track w _ _ _ _ _ _ _ hf ht
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · cases hk
-
 
 theorem asyncCopy_track {w : World} {p : Nat} {hostAddr : UInt64} {n : Nat} {wr : Bool}
     {rs ws : List Nat} {k : Race → Option (Dev × Mem)} {r : Option V} {w' : World}
@@ -756,90 +332,17 @@ theorem asyncCopy_track {w : World} {p : Nat} {hostAddr : UInt64} {n : Nat} {wr 
     obtain ⟨⟨evs, h1, h2⟩, h3⟩ := ht
     exact ⟨⟨evs, .op p rs ws h1 hr, h2⟩, h3⟩
 
-theorem uploadAsyncAt_track {w : World} {ctx buf off src size sid : UInt64} {r w'}
-    (h : ffiCudaUploadAsyncAt w ctx buf off src size sid = some (r, w')) (ht : TrackOk w.dev) :
-    TrackOk w'.dev := by
-  unfold ffiCudaUploadAsyncAt at h
-  split at h
-  · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-  · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · split at h
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · split at h
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-        · split at h
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-          · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-            refine asyncCopy_track h ht ?_
-            intro r' d m _ hkd ht1
-            simp only [Option.some.injEq, Prod.mk.injEq] at hkd
-            obtain ⟨rfl, -⟩ := hkd
-            exact ht1.congr rfl rfl rfl
-
-theorem downloadAsyncAt_track {w : World} {ctx buf dst size sid : UInt64} {r w'}
-    (h : ffiCudaDownloadAsyncAt w ctx buf dst size sid = some (r, w')) (ht : TrackOk w.dev) :
-    TrackOk w'.dev := by
-  unfold ffiCudaDownloadAsyncAt at h
-  split at h
-  · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-  · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-    · split at h
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-      · rename_i p _
-        split at h
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-        · split at h
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; exact ht
-          · refine asyncCopy_track h ht ?_
-            intro r' d m _ hkd ht1
-            obtain ⟨_, _, hkd⟩ := Option.bind_eq_some_iff.mp hkd
-            simp only [Option.some.injEq, Prod.mk.injEq] at hkd
-            obtain ⟨rfl, -⟩ := hkd
-            obtain ⟨⟨evs, h1, h2⟩, h3⟩ := ht1
-            split
-            · exact ⟨⟨evs, h1, h2⟩, h3⟩
-            · exact ⟨⟨evs, .learnParty hostParty p h1, h2⟩, h3⟩
-
-theorem track_cudaUploadAsync {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaUploadAsync bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaUploadAsync at h
-  split at h
-  · exact uploadAsyncAt_track h ht
-  · cases h
-
-theorem track_cudaUploadOffsetAsync {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaUploadOffsetAsync bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaUploadOffsetAsync at h
-  split at h
-  · exact uploadAsyncAt_track h ht
-  · cases h
-
-theorem track_cudaDownloadAsync {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaDownloadAsync bits w = some (r, w')) (ht : TrackOk w.dev) : TrackOk w'.dev := by
-  unfold ffiCudaDownloadAsync at h
-  split at h
-  · exact downloadAsyncAt_track h ht
-  · cases h
-
-/-- The entry points whose contracts never touch the device: files, streams,
-    libm, wgpu, LMDB, the window, native code and threads. -/
+/-- The entry points whose contracts never touch the device: libm, LMDB and
+    threads. -/
 def devUntouched : List IR.Ffi :=
-  [.sinf, .cosf, .powf, .gpuInit, .gpuCleanup, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuUploadPtr, .gpuDispatch, .gpuDownload, .gpuDownloadPtr, .lmdbInit, .lmdbCleanup, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .lmdbCursorScan, .windowInit, .windowCleanup, .windowOpen, .windowPoll, .windowPresentGpuBuffer, .threadInit, .threadCleanup, .threadJoin]
-
-theorem pump_dev (w : World) : w.pump.dev = w.dev := by
-  unfold World.pump; split <;> rfl
+  [.sinf, .cosf, .powf, .lmdbInit, .lmdbCleanup, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn, .lmdbCursorScan, .threadInit, .threadCleanup, .threadJoin]
 
 /-- Follow a contract that never touches the device to each of its answers. -/
 macro "dev_keep" h:ident : tactic => `(tactic| (
-  try simp only [bind, Option.bind, cudaFail, lmdbI32, gpuUploadAt] at $h:ident
+  try simp only [bind, Option.bind, cudaFail, lmdbI32] at $h:ident
   repeat' (first
     | (cases $h:ident; done)
     | (injection $h:ident with h1; injection h1 with h2 h3; subst h3; rfl)
-    | (injection $h:ident with h1; injection h1 with h2 h3; subst h3; exact pump_dev _)
     | split at $h:ident
     | (dsimp only at $h:ident))))
 
@@ -879,7 +382,6 @@ macro "track_close" : tactic => `(tactic| (
     | refine syncWrite_track (by assumption) ?_
     | refine syncRead_track (by assumption) ?_
     | refine memInfoOf_track (by assumption) ?_
-    | refine cudaLaunchOn_track (by assumption) ?_
     | refine sgemvOn_track (by assumption) ?_
     | refine sgemmOn_track (by assumption) ?_)))
 
@@ -892,28 +394,6 @@ theorem callBits_track (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option
   by_cases hu : f ∈ devUntouched
   · rw [callBits_dev_same f hu h]; exact ht
   cases f with
-  | cudaCreateBuffer => exact track_cudaCreateBuffer h ht
-  | cudaInit => exact track_cudaInit h
-  | cudaCleanup => exact track_cudaCleanup h
-  | cudaFreeBuffer => exact track_cudaFreeBuffer h ht
-  | cudaSync => exact track_cudaSync h ht
-  | cudaPinnedAlloc => exact track_cudaPinnedAlloc h ht
-  | cudaPinnedFree => exact track_cudaPinnedFree h ht
-  | cudaStreamCreate => exact track_cudaStreamCreate h ht
-  | cudaStreamSync => exact track_cudaStreamSync h ht
-  | cudaStreamDestroy => exact track_cudaStreamDestroy h ht
-  | cudaEventCreate => exact track_cudaEventCreate h ht
-  | cudaEventDestroy => exact track_cudaEventDestroy h ht
-  | cudaGraphBeginCapture => exact track_cudaGraphBeginCapture h ht
-  | cudaGraphEndCapture => exact track_cudaGraphEndCapture h ht
-  | cudaGraphDestroy => exact track_cudaGraphDestroy h ht
-  | cudaGraphLaunch => exact track_cudaGraphLaunch h ht
-  | cudaEventRecord => exact track_cudaEventRecord h ht
-  | cudaStreamWaitEvent => exact track_cudaStreamWaitEvent h ht
-  | cublasSgemmBatchedOnStream => exact track_cublasSgemmBatchedOnStream h ht
-  | cudaUploadAsync => exact track_cudaUploadAsync h ht
-  | cudaUploadOffsetAsync => exact track_cudaUploadOffsetAsync h ht
-  | cudaDownloadAsync => exact track_cudaDownloadAsync h ht
   | _ =>
     first
       | exact absurd (by decide) hu

@@ -157,59 +157,6 @@ def ptxBytes (k : _root_.AlgorithmLib.Kernel) : List UInt8 :=
 
 end Kernel
 
-namespace Tensor
-
-
-end Tensor
-
--- ---------------------------------------------------------------------------
--- BufferSlot: shape-typed Layout slot for a CUDA buffer id.
---
--- Closes the loop between Layout (where buffers are allocated) and Tensor
--- (where shapes are tracked).  A `BufferSlot s` is an `Fld .i32` whose
--- contents — a CUDA buffer id — point to memory holding a `Tensor s`.
--- Loading the slot returns a typed `Tensor s` directly; no `⟨buf⟩` casts.
--- ---------------------------------------------------------------------------
-
-namespace Tensor
-
-/-- A shape-typed memory slot for a CUDA buffer id. -/
-structure BufferSlot (s : Shape) where
-  fld : Layout.Fld .i32
-
-/-- Allocate a typed buffer slot in the current layout. -/
-def slotOf (s : Shape) : Layout.LayoutBuilder (BufferSlot s) := do
-  let fld ← Layout.field .i32
-  return ⟨fld⟩
-
-/-- Construct a typed buffer slot at a fixed, externally-known offset.
-    Shape is inferred from the expected return type.  Useful for incremental
-    migration: keep an existing offset constant while gaining typed load/store. -/
-def slotOfAt {s : Shape} (offset : Nat) : BufferSlot s := ⟨{ offset := offset }⟩
-
-end Tensor
-
--- ---------------------------------------------------------------------------
--- Typed cuBLAS wrappers.
---
--- Hide the cuBLAS column-major + transpose flag mess behind a logical
--- "y = A @ x" interface where `A` has row-major shape [outN, inN].
--- ---------------------------------------------------------------------------
-
-namespace CuBlas
-
-
-end CuBlas
-
--- ---------------------------------------------------------------------------
--- Typed CUDA host/device transfer wrappers.
--- ---------------------------------------------------------------------------
-
-namespace Tensor
-
-
-end Tensor
-
 end AlgorithmLib
 
 -- ---------------------------------------------------------------------------

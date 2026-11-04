@@ -3,6 +3,8 @@ public import AlgorithmLib.Host.HostIR
 meta import AlgorithmLib.Host.HostIR
 public import AlgorithmLib.ML.Launch.Declared
 meta import AlgorithmLib.ML.Launch.Declared
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -99,6 +101,37 @@ def bindingOf? : List KernelBinding → Nat → Nat → List BufDesc → Option 
     by `stageOf?` rather than matched on the record alone. -/
 abbrev DeviceOp := LaunchRec × OpBinds
 
+/-- The bind array kernel `j` of a program in the driver's standard layout
+    (`Drv.App`) launches with: entry `p` is the pointer in the slot of the
+    `p`th allocation it is handed. -/
+def appBufs (a : Drv.App) (j : Nat) : List BufDesc :=
+  ((a.kernels[j]?).map fun k => k.args.map fun i => BufDesc.near (Int.ofNat (a.bufSlot i))).getD []
+
+/-- **A launch of kernel `j` of a program in the standard layout, handed the
+    buffers `bs`**, as a pipeline reads it: its PTX, how many parameters it
+    takes, the array of pointers to them, its grid and block, and `bs`. -/
+def appLaunchWith (a : Drv.App) (j : Nat) (bs : List BufDesc) : DeviceOp :=
+  match a.kernels[j]? with
+  | some k =>
+      ({ fnName    := "cuLaunchKernel"
+         kernelOff := some (Int.ofNat k.ptxOff)
+         nBufs     := some (Int.ofNat k.args.length)
+         bindOff   := some (Int.ofNat (a.paramsOff j))
+         gridX     := some (Int.ofNat k.grid.1)
+         blockX    := some (Int.ofNat k.block.1) },
+       { bufs := some bs })
+  | none => ({ fnName := "", kernelOff := none, nBufs := none, bindOff := none, gridX := none, blockX := none },
+             { bufs := none })
+
+/-- **A launch of kernel `j` of a program in the standard layout**, handed the
+    allocations its declaration lists. -/
+def appLaunch (a : Drv.App) (j : Nat) : DeviceOp := appLaunchWith a j (appBufs a j)
+
+/-- The launches a stage can be read from: the engine's positional entry
+    points, and the driver's `cuLaunchKernel`, whose record a program in the
+    driver's standard layout states (`Drv.App`). -/
+def stageLaunchNames : List String := AlgorithmLib.Clif.positionalLaunchNames ++ ["cuLaunchKernel"]
+
 /-- **The stage a launch record names.**
 
     Five checks, each of which a `Pipeline` claim silently depends on.
@@ -123,7 +156,7 @@ abbrev DeviceOp := LaunchRec × OpBinds
       later one, so `Clif.launchAt` declines to recover its fields and the
       match below would be reading the wrong positions. -/
 def stageOf? (T : List KernelBinding) (str : Option Nat) (op : DeviceOp) : Option StageSpec :=
-  if op.1.fnName ∉ AlgorithmLib.Clif.positionalLaunchNames then none
+  if op.1.fnName ∉ stageLaunchNames then none
   else if op.1.stream ≠ str then none else
   match op.1.kernelOff, op.1.gridX, op.1.bindOff, op.1.nBufs, op.2.bufs with
   | some off, some g, some bo, some nb, some bs =>
@@ -270,51 +303,6 @@ theorem cublasGemmStep_isSomeReassoc (hg : CuBlasGemmIsSomeReassoc)
       show (⟨(i * n + j) % n, by omega⟩ : Fin n) = ⟨j, hj⟩ from Fin.ext hm]
   exact ht
 
-/-- **A batched GEMM's row**, and this one really is opaque.
-
-    Attention issues two of these per layer — the score contraction and the
-    output contraction — and they are a *stronger* assumption than the GEMV,
-    not a weaker one.  `cublasStep` is written in terms of the law's own
-    symbol, so `Law.cublasIsMatvec` says what it computes.  Nothing says what
-    this computes: batched strided mode selects its operand slices by four
-    stride and batch-count arguments the launch model recovers as constants but
-    does not interpret, so writing an equation here would be inventing a
-    contract rather than recording one.
-
-    So of a layer's nine declared steps, seven are covered by a named law and
-    two are bare.  `declaredLawGap` below is that number, and it is the honest
-    answer to "how much of attention is assumed". -/
-opaque sgemmBatchedRow (mem : Buf → Nat → Float32) (aB bB : Buf) (k i : Nat) : Float32
-
-/-- `C = A·B`, batched, as a plan step.  As with `cublasStep`, *what* lands in
-    `C` is assumed and *where* it can land is proven. -/
-noncomputable def sgemmBatchedStep (aB bB cB : Buf) (rows k : Nat) : DeclaredStep where
-  kernel := .cublasSgemmStridedBatched
-  outs  := [cB]
-  step  := fun mem b a =>
-             if b = cB ∧ a < rows then sgemmBatchedRow mem aB bB k a else mem b a
-  frame := by
-    intro mem b hb
-    funext a
-    simp [show b ≠ cB from fun h => hb (by simp [h])]
-
-/-- **The primitives assumed with no stated equation behind them.**
-
-    Derived by filtering `VendorKernel.all`, which `VendorKernel.all_covers`
-    holds to every constructor — so a primitive added without a law cannot be
-    missing from this bill. -/
-def lawlessNames : List String :=
-  (VendorKernel.all.filter VendorKernel.lawless).map VendorKernel.symbol
-
-/-- **How many of a plan's declared steps no law says anything about.**
-
-    `Plan.declaredCount` counts what is not proven.  This counts what is not
-    even *stated*: a step whose primitive has a law is assumed only up to that
-    law's content, and one without is assumed entirely.  For a Qwen2 layer the
-    two numbers are 9 and 2. -/
-def Plan.declaredLawGap (P : Plan) : Nat :=
-  (P.declaredNames.filter (fun n => n ∈ lawlessNames)).length
-
 -- ---------------------------------------------------------------------------
 -- Realising a whole device-write sequence
 -- ---------------------------------------------------------------------------
@@ -325,12 +313,20 @@ def Plan.declaredLawGap (P : Plan) : Nat :=
 structure DeclaredBinding where
   name : String
   /-- **Which call this is.**  A vendor primitive has no PTX slot, so name alone
-      does not identify a call site: Qwen2 issues seven `cl_cublas_sgemv` calls
-      per layer and three of them are the same 896×896 shape.  Matching on the
-      recovered argument descriptors — which slot each buffer handle came from —
-      is what tells `Wq` from `Wk` from `Wv`. -/
+      does not identify a call site: a transformer layer's query, key and value
+      projections can be three calls of one shape.  Matching on the recovered
+      argument descriptors — which slot each buffer handle came from — is what
+      tells them apart. -/
   args : List BufDesc
   decl : DeclaredStep
+
+/-- The calls a declared step can be read from: the engine's vendor entry
+    points, and cuBLAS's own and the driver's graph launch, which a program in
+    the driver's standard layout calls (`Drv.App`). -/
+def writerNames : List String :=
+  AlgorithmLib.Clif.deviceWriterNames ++
+    ["cublasSgemv", "cublasSgemm", "cublasSgemmStridedBatched", "cublasGemmEx", "cublasGemmStridedBatchedEx",
+     "cuGraphLaunch"]
 
 def declaredOf? : List DeclaredBinding → String → List BufDesc → Option DeclaredStep
   | [],                   _,  _  => none
@@ -349,16 +345,16 @@ def declaredOf? : List DeclaredBinding → String → List BufDesc → Option De
 /-- **The plan step a device-write record realises.**
 
     A launch record on this fragment's stream goes through the kernel table and
-    yields a proven stage; anything named in `deviceWriterNames` goes through
+    yields a proven stage; anything named in `writerNames` goes through
     the declared table and yields an assumed one.  Anything else — a launch on
     another stream, an unbound slot, a grid disagreeing with the stage's own —
     yields `none`, so a plan claim is simply unavailable rather than quietly
     wrong. -/
 def stepOf? (T : List KernelBinding) (D : List DeclaredBinding)
     (str : Option Nat) (op : DeviceOp) : Option PStep :=
-  if op.1.fnName ∈ AlgorithmLib.Clif.launchNames then
+  if op.1.fnName ∈ stageLaunchNames then
     (stageOf? T str op).map PStep.proven
-  else if op.1.fnName ∈ deviceWriterNames then
+  else if op.1.fnName ∈ writerNames then
     (declaredOf? D op.1.fnName op.2.args).map PStep.declared
   else none
 
@@ -414,12 +410,10 @@ theorem stepsOf?_append (T : List KernelBinding) (D : List DeclaredBinding)
 
 /-! **A resolution against a table survives extending that table.**
 
-    Not a convenience.  Qwen2's token-level tables are the layer's plus three
-    more kernels and two more vendor calls, so without these the same
-    twenty-two device writes are resolved twice — once against `layerKernels`
-    and again against `tokenKernels` — and each resolution is a linear scan of
-    the table for every op.  Measured: the second scan alone was 12.1 s of a
-    30 s build.  With these it is a rewrite.
+    Not a convenience.  A table for a whole step is often a layer's table plus
+    a few more entries, and without these the same device writes are resolved
+    twice, each resolution a linear scan of the table for every op.  With these
+    the second is a rewrite.
 
     The lemmas are stated as `T ++ T'` rather than as a `Sublist` because that
     is the shape the tables actually have, and because a prepended entry could
@@ -461,7 +455,7 @@ theorem stageOf?_append (T T' : List KernelBinding) (str : Option Nat)
     (op : DeviceOp) (S : StageSpec)
     (h : stageOf? T str op = some S) : stageOf? (T ++ T') str op = some S := by
   unfold stageOf? at h ⊢
-  by_cases hn : op.1.fnName ∉ AlgorithmLib.Clif.positionalLaunchNames
+  by_cases hn : op.1.fnName ∉ stageLaunchNames
   · rw [if_pos hn] at h; exact Option.noConfusion h
   rw [if_neg hn] at h ⊢
   by_cases hst : op.1.stream ≠ str
@@ -485,23 +479,23 @@ theorem stageOf?_append (T T' : List KernelBinding) (str : Option Nat)
 theorem stepOf?_append (T T' : List KernelBinding) (D D' : List DeclaredBinding)
     (str : Option Nat) (op : DeviceOp) (t : PStep) (h : stepOf? T D str op = some t) :
     stepOf? (T ++ T') (D ++ D') str op = some t := by
-  have h0 : (if op.1.fnName ∈ AlgorithmLib.Clif.launchNames then
+  have h0 : (if op.1.fnName ∈ stageLaunchNames then
                (stageOf? T str op).map PStep.proven
-             else if op.1.fnName ∈ Clif.deviceWriterNames then
+             else if op.1.fnName ∈ writerNames then
                (declaredOf? D op.1.fnName op.2.args).map PStep.declared
              else none) = some t := h
-  show (if op.1.fnName ∈ AlgorithmLib.Clif.launchNames then
+  show (if op.1.fnName ∈ stageLaunchNames then
           (stageOf? (T ++ T') str op).map PStep.proven
-        else if op.1.fnName ∈ Clif.deviceWriterNames then
+        else if op.1.fnName ∈ writerNames then
           (declaredOf? (D ++ D') op.1.fnName op.2.args).map PStep.declared
         else none) = some t
-  by_cases hl : op.1.fnName ∈ AlgorithmLib.Clif.launchNames
+  by_cases hl : op.1.fnName ∈ stageLaunchNames
   · rw [if_pos hl] at h0 ⊢
     cases hs : stageOf? T str op with
     | none => rw [hs] at h0; exact Option.noConfusion h0
     | some S => rw [stageOf?_append T T' str op S hs]; rw [hs] at h0; exact h0
   rw [if_neg hl] at h0 ⊢
-  by_cases hw : op.1.fnName ∈ Clif.deviceWriterNames
+  by_cases hw : op.1.fnName ∈ writerNames
   · rw [if_pos hw] at h0 ⊢
     cases hd : declaredOf? D op.1.fnName op.2.args with
     | none => rw [hd] at h0; exact Option.noConfusion h0
@@ -536,15 +530,6 @@ theorem stepsOf?_appendTable (T T' : List KernelBinding) (D D' : List DeclaredBi
           cases hr : stepsOf? T D str rest with
           | none => rw [hr] at h0; exact Option.noConfusion h0
           | some rest' => rw [ih rest' hr]; rw [hr] at h0; exact h0
-
-/-- **Every device write is accounted for, and the assumed ones are counted.**
-
-    The number a report should quote.  It is not a caveat in prose: it is a
-    projection of the plan, and it reaches zero exactly when every step has a
-    `StageSpec`. -/
-def declaredCountOf (T : List KernelBinding) (D : List DeclaredBinding)
-    (str : Option Nat) (rs : List DeviceOp) : Option Nat :=
-  (planOf? T D str rs).map Plan.declaredCount
 
 -- ---------------------------------------------------------------------------
 -- The two halves, joined

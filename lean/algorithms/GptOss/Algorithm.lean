@@ -11,6 +11,8 @@ public import GptOss.Kernels
 meta import GptOss.Kernels
 public import AlgorithmLib.Host.HostIR
 meta import AlgorithmLib.Host.HostIR
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -112,11 +114,17 @@ def GPTX_OFF : Nat := 0x0100
     worth on the one path a token is spent in. -/
 def GSLOT : Nat := 0x20000
 def gSlotOff (i : Nat) : Nat := GPTX_OFF + i * GSLOT
+/-- Each allocation's device pointer, in buffer order. -/
 def GBIND_OFF : Nat := gSlotOff gptossPtx.length
-def gBindOff (i : Nat) : Nat := GBIND_OFF + 4 * i
-def GLOCAL_OFF : Nat := GBIND_OFF + 4 * GNBUF
-def GMEM_SIZE : Nat := GLOCAL_OFF + 4 * 8 + 0x100
+def gBindOff (i : Nat) : Nat := GBIND_OFF + 8 * i
+/-- Each kernel's module and function handles. -/
+def GFN_OFF : Nat := GBIND_OFF + 8 * GNBUF
+/-- A launch's eight parameter cells, then the array of pointers to them. -/
+def GLOCAL_OFF : Nat := GFN_OFF + 16 * gptossPtx.length
+def GMEM_SIZE : Nat := GLOCAL_OFF + 128 + 0x100
 def GHOST_LEN_OFF : Nat := 0x0080
+/-- `main`, the entry point every module declares. -/
+def GNAME_OFF : Nat := 0x0088
 
 theorem gptoss_ptx_fits :
     gptossPtx.all (fun t => decide (t.utf8ByteSize + 1 ≤ GSLOT)) = true := by
@@ -135,8 +143,9 @@ def GHOST_BYTES : Nat := AlgorithmLib.Layout.RegionMap.total gHostIn
 
 def gMemMap : AlgorithmLib.Layout.RegionMap :=
   (List.range gptossPtx.length).map (fun i => ⟨s!"ptx{i}", gSlotOff i, GSLOT⟩)
-    ++ [⟨"hostLen", GHOST_LEN_OFF, 4⟩,
-        ⟨"bind", GBIND_OFF, 4 * GNBUF⟩, ⟨"local", GLOCAL_OFF, 4 * 8⟩]
+    ++ [⟨"hostLen", GHOST_LEN_OFF, 4⟩, ⟨"name", GNAME_OFF, 5⟩,
+        ⟨"bind", GBIND_OFF, 8 * GNBUF⟩, ⟨"fns", GFN_OFF, 16 * gptossPtx.length⟩,
+        ⟨"local", GLOCAL_OFF, 128⟩]
 
 theorem gptossMap_ok :
     gMemMap.okB = true ∧ gMemMap.withinB GMEM_SIZE = true := by native_decide
@@ -144,41 +153,43 @@ theorem gptossMap_ok :
 /-! ## The host program -/
 
 
-/-- Allocate every buffer and upload the shared inputs and the whole store. -/
+/-- Kernel `i` launched over `g` blocks of `blk` threads. -/
+def gKern (i g blk : Nat) : Drv.Kern :=
+  { ptxOff := gSlotOff i, nameOff := GNAME_OFF, modSlot := GFN_OFF + 16 * i, fnSlot := GFN_OFF + 16 * i + 8,
+    paramsOff := GLOCAL_OFF + 64, bufs := [], grid := (g, 1, 1), block := (blk, 1, 1) }
+
+/-- Bring the driver up, make every allocation, load every kernel, and upload
+    the shared inputs and the whole store. -/
 def gLoadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
+  Drv.up ptr ContextSlots.cuda
   for (i, nb) in (List.range GNBUF).zip gBufBytes do
-    let sz ← iconst64 nb
-    let id ← cudaCreateBuffer ptr sz
-    storeI32 id (← absAddr ptr (gBindOff i))
+    Drv.alloc ptr (gBindOff i) nb
+  for i in List.range gptossPtx.length do
+    Drv.loadModule ptr (gKern i 1 1)
+    Drv.getFunction ptr (gKern i 1 1)
   for i in List.range 2 do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt gHostIn i)
-    let id ← load32 (← absAddr ptr (gBindOff i))
-    let bytes ← iconst64 (gBufBytes.getD i 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    Drv.upload ptr (gBindOff i) src (gBufBytes.getD i 0)
   for k in List.range (PIECES * NE) do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt gHostIn (2 + k))
-    let id ← load32 (← absAddr ptr (gBindOff (GSTORE + k)))
-    let bytes ← iconst64 (pieceBytes.getD (k % PIECES) 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    Drv.upload ptr (gBindOff (GSTORE + k)) src (pieceBytes.getD (k % PIECES) 0)
 
 /-- **Choosing experts, as the host does it.**
 
     One `u32` per slot arrives in the input region.  For slot `j` holding
-    expert `e`, the six ids at `GSTORE + 6e` are copied into the six entries
-    slot `j`'s kernels read.  The expert index is *loaded*, so the address is
-    computed at run time and nothing about which expert is chosen is baked into
-    the image — which is what makes this a cache lookup rather than a
-    recompilation. -/
+    expert `e`, the six pointers at `GSTORE + 6e` are copied into the six
+    entries slot `j`'s kernels read.  The expert index is *loaded*, so the
+    address is computed at run time and nothing about which expert is chosen
+    is baked into the image — which is what makes this a cache lookup rather
+    than a recompilation. -/
 def gBindExperts : Prog V L Unit :=
   do
   let ptr ← basePtr
   let dataPtr ← dataPtr
-  let four ← iconst64 4
+  let eight ← iconst64 8
   let six ← iconst64 PIECES
   for j in List.range TOPK do
     let e ← load32 (← iaddImm dataPtr (4 * j))
@@ -186,32 +197,27 @@ def gBindExperts : Prog V L Unit :=
     let e6 ← imul e64 six
     for t in List.range PIECES do
       let srcIx ← iaddImm e6 (GSTORE + t)
-      let srcOff ← imul srcIx four
+      let srcOff ← imul srcIx eight
       let srcAddr ← iadd (← absAddr ptr GBIND_OFF) srcOff
-      let id ← load32 srcAddr
-      storeI32 id (← absAddr ptr (gBindOff (slotBuf j t)))
+      let p ← load64 srcAddr
+      storeI64 p (← absAddr ptr (gBindOff (slotBuf j t)))
 
-/-- Copy the ids one launch names into its own table, so the entries
-    `gBindExperts` rewrote are what the kernel reads. -/
-def gBindLocal (ptr : V .i64) (bs : List Nat) : Prog V L Unit := do
-  for (j, gb) in (List.range bs.length).zip bs do
-    let id ← load32 (← absAddr ptr (gBindOff gb))
-    storeI32 id (← absAddr ptr (GLOCAL_OFF + 4 * j))
-
-/-- Enqueue the kernel in slot `i` over `g` blocks of `blk` threads. -/
+/-- Launch the kernel in slot `i` over `g` blocks of `blk` threads, handed
+    the pointers the entries `bs` hold now, so the entries `gBindExperts`
+    rewrote are what the kernel reads. -/
 def gEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
-  gBindLocal ptr bs
-  let ptxOff ← iconst64 (gSlotOff i)
-  let nBufs ← iconst32 bs.length
-  let bindBase ← iconst64 GLOCAL_OFF
-  let one ← iconst32 1
-  let block ← iconst32 blk
-  let grid ← iconst32 g
-  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one block one one
+  for (gb, j) in bs.zip (List.range bs.length) do
+    let cell ← iaddImm ptr (GLOCAL_OFF + 8 * j)
+    storeI64 (← load64 (← iaddImm ptr (gBindOff gb))) cell
+    storeI64 cell (← iaddImm ptr (GLOCAL_OFF + 64 + 8 * j))
+  Drv.launch ptr (gKern i g blk) (← iconst64 0)
 
 def BLK : Nat := 32 * warpsPerCta
-def GRID_I : Nat := I / warpsPerCta
-def GRID_H : Nat := H / warpsPerCta
+/-- Blocks for the gate/up and the down projection: each warp takes
+    `rowsPerWarpGateUp` and `rowsPerWarpDown` rows, so the grids cover `I` and
+    `H` rows exactly. -/
+def GRID_I : Nat := I / (warpsPerCta * rowsPerWarpGateUp)
+def GRID_H : Nat := H / (warpsPerCta * rowsPerWarpDown)
 def GRID_COMB : Nat := (H + BLK - 1) / BLK
 
 /-- **The mixture: nine launches** — slot, grid, and the buffers each names.
@@ -237,7 +243,7 @@ def gRunExperts : Prog V L Unit :=
   let ptr ← basePtr
   for (i, g, bs) in gExpertBinds do
     gEnqueue ptr i g BLK bs
-  let _ ← cudaSync ptr
+  Drv.sync
 
 /-- **Seam guard: the mixture never names the store.**
 
@@ -267,20 +273,12 @@ theorem gptoss_binds_allocated :
 def gUploadFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← dataPtr
-  let id ← load32 (← absAddr ptr (gBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
+  Drv.upload ptr (gBindOff b) (← dataPtr) n
 
 def gFetchFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let id ← load32 (← absAddr ptr (gBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
+  Drv.download ptr (← outPtr) (gBindOff b) n
 
 def gShippedBodies : List (String × Prog.Body) :=
   [ ("main", gLoadFn)
@@ -307,7 +305,8 @@ def gSlotBytes (t : String) : List UInt8 :=
 
 def gInitialMemory : List UInt8 :=
   zeros GHOST_LEN_OFF ++ u32le GHOST_BYTES
-    ++ zeros (GPTX_OFF - GHOST_LEN_OFF - 4)
+    ++ zeros (GNAME_OFF - GHOST_LEN_OFF - 4) ++ ("main".toUTF8.toList ++ [0])
+    ++ zeros (GPTX_OFF - GNAME_OFF - 5)
     ++ gptossPtx.flatMap gSlotBytes
     ++ zeros (GMEM_SIZE - GBIND_OFF)
 
@@ -321,8 +320,8 @@ def gSetup (clif : List FuncData) : Artifact := {
 /-! # One layer's attention
 
   The other half of the slice, and the half that reuses rather than invents:
-  every kernel here is an `EWStmt` carrying the same soundness theorem the
-  Qwen2 decode kernels carry (`GptOssAttention`), and the two contractions are
+  every kernel here is an `EWStmt` carrying the soundness theorem every
+  `EWStmt` kernel carries (`GptOssAttention`), and the two contractions are
   cuBLAS calls the stack already makes. What is new is arrangement.
 
   ## What the host program has to know
@@ -414,11 +413,22 @@ theorem gptoss_attn_alloc_covers :
 def ASLOT : Nat := 0x20000
 def APTX_OFF : Nat := 0x0100
 def aSlotOff (i : Nat) : Nat := APTX_OFF + i * ASLOT
+/-- Each allocation's device pointer, in buffer order. -/
 def ABIND_OFF : Nat := aSlotOff aPtx.length
-def aBindOff (i : Nat) : Nat := ABIND_OFF + 4 * i
-def ALOCAL_OFF : Nat := ABIND_OFF + 4 * ANBUF
-def AMEM_SIZE : Nat := ALOCAL_OFF + 4 * 8 + 0x100
+def aBindOff (i : Nat) : Nat := ABIND_OFF + 8 * i
+/-- Each kernel's module and function handles. -/
+def AFN_OFF : Nat := ABIND_OFF + 8 * ANBUF
+/-- A launch's eight parameter cells, then the array of pointers to them. -/
+def ALOCAL_OFF : Nat := AFN_OFF + 16 * aPtx.length
+def AMEM_SIZE : Nat := ALOCAL_OFF + 128 + 0x100
 def AHOST_LEN_OFF : Nat := 0x0080
+/-- `main`, the entry point every module declares; the scalars `1`, `0` and
+    `1/8` cuBLAS reads; the cuBLAS handle. -/
+def ANAME_OFF : Nat := 0x0088
+def AONE_OFF : Nat := 0x0090
+def AZERO_OFF : Nat := 0x0094
+def ASCALE_OFF : Nat := 0x0098
+def ABLAS_OFF : Nat := 0x00A0
 
 theorem gptoss_attn_ptx_fits :
     aPtx.all (fun t => decide (t.utf8ByteSize + 1 ≤ ASLOT)) = true := by
@@ -441,8 +451,10 @@ def AHOST_BYTES : Nat := AlgorithmLib.Layout.RegionMap.total aHostIn
 
 def aMemMap : AlgorithmLib.Layout.RegionMap :=
   (List.range aPtx.length).map (fun i => ⟨s!"ptx{i}", aSlotOff i, ASLOT⟩)
-    ++ [⟨"hostLen", AHOST_LEN_OFF, 4⟩,
-        ⟨"bind", ABIND_OFF, 4 * ANBUF⟩, ⟨"local", ALOCAL_OFF, 4 * 8⟩]
+    ++ [⟨"hostLen", AHOST_LEN_OFF, 4⟩, ⟨"name", ANAME_OFF, 5⟩, ⟨"one", AONE_OFF, 4⟩,
+        ⟨"zero", AZERO_OFF, 4⟩, ⟨"scale", ASCALE_OFF, 4⟩, ⟨"blas", ABLAS_OFF, 8⟩,
+        ⟨"bind", ABIND_OFF, 8 * ANBUF⟩, ⟨"fns", AFN_OFF, 16 * aPtx.length⟩,
+        ⟨"local", ALOCAL_OFF, 128⟩]
 
 theorem gptossAttnMap_ok :
     aMemMap.okB = true ∧ aMemMap.withinB AMEM_SIZE = true := by native_decide
@@ -454,49 +466,43 @@ theorem gptossAttnMap_ok :
 def aResident : List Nat :=
   [A_ANORM, A_QKVW, A_QKVB, A_SINKS, A_OW, A_OB, A_ROPE, A_NMH, A_NMQ]
 
+/-- Kernel `i` launched over `g` blocks of `blk` threads. -/
+def aKern (i g blk : Nat) : Drv.Kern :=
+  { ptxOff := aSlotOff i, nameOff := ANAME_OFF, modSlot := AFN_OFF + 16 * i, fnSlot := AFN_OFF + 16 * i + 8,
+    paramsOff := ALOCAL_OFF + 64, bufs := [], grid := (g, 1, 1), block := (blk, 1, 1) }
+
+/-- Bring the driver and cuBLAS up, make every allocation, load every kernel,
+    and upload what stays resident. -/
 def aLoadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
+  Drv.up ptr ContextSlots.cuda
+  let _ ← ext (.cublas .create) %[← iaddImm ptr ABLAS_OFF]
   for (i, nb) in (List.range ANBUF).zip aBufBytes do
-    let sz ← iconst64 nb
-    let id ← cudaCreateBuffer ptr sz
-    storeI32 id (← absAddr ptr (aBindOff i))
+    Drv.alloc ptr (aBindOff i) nb
+  for i in List.range aPtx.length do
+    Drv.loadModule ptr (aKern i 1 1)
+    Drv.getFunction ptr (aKern i 1 1)
   for (k, b) in (List.range aResident.length).zip aResident do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt aHostIn (2 + k))
-    let id ← load32 (← absAddr ptr (aBindOff b))
-    let bytes ← iconst64 (aHostSizes.getD (2 + k) 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    Drv.upload ptr (aBindOff b) src (aHostSizes.getD (2 + k) 0)
 
 /-- The two per-step uploads: this token's row of the residual stream, and the
     integers that say where it sits. -/
 def aUploadStep : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← dataPtr
   for (i, b) in [(0, A_X), (1, A_META)] do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt aHostIn i)
-    let id ← load32 (← absAddr ptr (aBindOff b))
-    let bytes ← iconst64 (aHostSizes.getD i 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    Drv.upload ptr (aBindOff b) src (aHostSizes.getD i 0)
 
-def aBindLocal (ptr : V .i64) (bs : List Nat) : Prog V L Unit := do
-  for (j, gb) in (List.range bs.length).zip bs do
-    let id ← load32 (← absAddr ptr (aBindOff gb))
-    storeI32 id (← absAddr ptr (ALOCAL_OFF + 4 * j))
-
+/-- Launch kernel `i` over `g` blocks of `blk` threads, handed the pointers
+    the entries `bs` hold. -/
 def aEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
-  aBindLocal ptr bs
-  let ptxOff ← iconst64 (aSlotOff i)
-  let nBufs ← iconst32 bs.length
-  let bindBase ← iconst64 ALOCAL_OFF
-  let one ← iconst32 1
-  let block ← iconst32 blk
-  let grid ← iconst32 g
-  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one block one one
+  Drv.bindFrom ptr ALOCAL_OFF (ALOCAL_OFF + 64) (bs.map aBindOff)
+  Drv.launch ptr (aKern i g blk) (← iconst64 0)
 
 def NBLK : Nat := 32 * GptOssKernels.warpsPerCta
 
@@ -517,28 +523,30 @@ def aStepFn : Prog V L Unit :=
   let seqLen ← load32 (← iaddImm dataPtr
     (AlgorithmLib.Layout.RegionMap.offAt aHostIn 1 + 4 * M_SEQ))
   let seqLen64 ← uextend64 seqLen
-  let zero32 ← iconst32 0
   let one32 ← iconst32 1
-  let oneF ← iconst32 0x3F800000
+  let h ← load64 (← iaddImm ptr ABLAS_OFF)
+  let oneF ← iaddImm ptr AONE_OFF
+  let zeroF ← iaddImm ptr AZERO_OFF
   -- 1/sqrt(64), the attention scale, folded into the score contraction
-  let scaleF ← iconst32 0x3E000000
-  let bKC ← load32 (← absAddr ptr (aBindOff A_KC))
-  let bVC ← load32 (← absAddr ptr (aBindOff A_VC))
-  let bQKV ← load32 (← absAddr ptr (aBindOff A_QKV))
-  let bSC ← load32 (← absAddr ptr (aBindOff A_SC))
-  let bPR ← load32 (← absAddr ptr (aBindOff A_PR))
-  let bATT ← load32 (← absAddr ptr (aBindOff A_ATT))
-  let bXNB ← load32 (← absAddr ptr (aBindOff A_XNB))
-  let bATTB ← load32 (← absAddr ptr (aBindOff A_ATTB))
-  let bQKVW ← load32 (← absAddr ptr (aBindOff A_QKVW))
-  let bOW ← load32 (← absAddr ptr (aBindOff A_OW))
-  let bTMP ← load32 (← absAddr ptr (aBindOff A_TMP))
+  let scaleF ← iaddImm ptr ASCALE_OFF
+  let buf := fun (b : Nat) => do load64 (← iaddImm ptr (aBindOff b))
+  let bKC ← buf A_KC
+  let bVC ← buf A_VC
+  let bQKV ← buf A_QKV
+  let bSC ← buf A_SC
+  let bPR ← buf A_PR
+  let bATT ← buf A_ATT
+  let bXNB ← buf A_XNB
+  let bATTB ← buf A_ATTB
+  let bQKVW ← buf A_QKVW
+  let bOW ← buf A_OW
+  let bTMP ← buf A_TMP
   -- normalise, narrow, project
   aEnqueue ptr S_RMS 1 32 [A_X, A_ANORM, A_XN]
   aEnqueue ptr S_NARROW ((H / 2 + NBLK - 1) / NBLK) NBLK [A_XN, A_XNB, A_NMH]
   let mQKV ← iconst32 QKV
   let kH ← iconst32 H
-  let _ ← cublasGemmExBf16 ptr one32 zero32 mQKV one32 kH oneF bQKVW bXNB zero32 bQKV
+  Drv.gemmBf16 h 1 0 mQKV one32 kH oneF bQKVW bXNB zeroF bQKV
   aEnqueue ptr S_ADD (QKV / 32) 32 [A_QKV, A_QKVB]
   -- rotate, then keep
   aEnqueue ptr S_ROPEQ NQ 32 [A_QKV, A_META, A_ROPE]
@@ -553,29 +561,23 @@ def aStepFn : Prog V L Unit :=
   let strideQ ← iconst64 (GQA * HD)
   let gqa64 ← iconst64 GQA
   let strideS ← imul gqa64 seqLen64
-  let _ ← cublasSgemmStridedBatched ptr one32 zero32 seqLen gqa32 hd32 scaleF
-    bKC strideKV bQKV strideQ zero32 bSC strideS nkv32
+  Drv.sgemmStrided h 1 0 seqLen gqa32 hd32 scaleF bKC strideKV bQKV strideQ zeroF bSC strideS nkv32
   aEnqueue ptr S_SOFTMAX NQ 32 [A_SC, A_META, A_PR, A_SINKS]
   let strideA ← iconst64 (GQA * HD)
-  let _ ← cublasSgemmStridedBatched ptr zero32 zero32 hd32 gqa32 seqLen oneF
-    bVC strideKV bPR strideS zero32 bATT strideA nkv32
+  Drv.sgemmStrided h 0 0 hd32 gqa32 seqLen oneF bVC strideKV bPR strideS zeroF bATT strideA nkv32
   -- project out and rejoin the stream
   aEnqueue ptr S_NARROW ((QO / 2 + NBLK - 1) / NBLK) NBLK [A_ATT, A_ATTB, A_NMQ]
   let mH ← iconst32 H
   let kQO ← iconst32 QO
-  let _ ← cublasGemmExBf16 ptr one32 zero32 mH one32 kQO oneF bOW bATTB zero32 bTMP
+  Drv.gemmBf16 h 1 0 mH one32 kQO oneF bOW bATTB zeroF bTMP
   aEnqueue ptr S_ADD (H / 32) 32 [A_TMP, A_OB]
   aEnqueue ptr S_ADD (H / 32) 32 [A_X, A_TMP]
-  let _ ← cudaSync ptr
+  Drv.sync
 
 def aFetchFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let id ← load32 (← absAddr ptr (aBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
+  Drv.download ptr (← outPtr) (aBindOff b) n
 
 def aShippedBodies : List (String × Prog.Body) :=
   [ ("main", aLoadFn)
@@ -597,7 +599,9 @@ def aSlotBytes (t : String) : List UInt8 :=
 
 def aInitialMemory : List UInt8 :=
   zeros AHOST_LEN_OFF ++ u32le AHOST_BYTES
-    ++ zeros (APTX_OFF - AHOST_LEN_OFF - 4)
+    ++ zeros (ANAME_OFF - AHOST_LEN_OFF - 4) ++ ("main".toUTF8.toList ++ [0, 0, 0, 0])
+    ++ [0, 0, 0x80, 0x3f] ++ [0, 0, 0, 0] ++ [0, 0, 0, 0x3e]
+    ++ zeros (APTX_OFF - ASCALE_OFF - 4)
     ++ aPtx.flatMap aSlotBytes
     ++ zeros (AMEM_SIZE - ABIND_OFF)
 
@@ -712,16 +716,27 @@ theorem gptoss_layer_alloc_covers :
 def LSLOT : Nat := 0x20000
 def LPTX_OFF : Nat := 0x0100
 def lSlotOff (i : Nat) : Nat := LPTX_OFF + i * LSLOT
+/-- Each allocation's device pointer, in buffer order. -/
 def LBIND_OFF : Nat := lSlotOff lPtx.length
-def lBindOff (i : Nat) : Nat := LBIND_OFF + 4 * i
-def LLOCAL_OFF : Nat := LBIND_OFF + 4 * LNBUF
+def lBindOff (i : Nat) : Nat := LBIND_OFF + 8 * i
+/-- Each kernel's module and function handles. -/
+def LFN_OFF : Nat := LBIND_OFF + 8 * LNBUF
+/-- A launch's eight parameter cells, then the array of pointers to them. -/
+def LLOCAL_OFF : Nat := LFN_OFF + 16 * lPtx.length
 /-- Where the four chosen ids land when they come back. -/
-def LCHOSEN_OFF : Nat := LLOCAL_OFF + 4 * 8
+def LCHOSEN_OFF : Nat := LLOCAL_OFF + 128
 /-- Nonzero once the weights are up.  A server loads once and answers many
     times, so the load has to be something the one entry point can skip. -/
 def LINIT_OFF : Nat := LCHOSEN_OFF + 4 * TOPK
 def LMEM_SIZE : Nat := LINIT_OFF + 4 + 0x100
 def LHOST_LEN_OFF : Nat := 0x0080
+/-- `main`, the entry point every module declares; the scalars `1`, `0` and
+    `1/8` cuBLAS reads; the cuBLAS handle. -/
+def LNAME_OFF : Nat := 0x0088
+def LONE_OFF : Nat := 0x0090
+def LZERO_OFF : Nat := 0x0094
+def LSCALE_OFF : Nat := 0x0098
+def LBLAS_OFF : Nat := 0x00A0
 
 theorem gptoss_layer_ptx_fits :
     lPtx.all (fun t => decide (t.utf8ByteSize + 1 ≤ LSLOT)) = true := by
@@ -747,7 +762,9 @@ def LHOST_BYTES : Nat := AlgorithmLib.Layout.RegionMap.total lHostIn
 def lMemMap : AlgorithmLib.Layout.RegionMap :=
   (List.range lPtx.length).map (fun i => ⟨s!"ptx{i}", lSlotOff i, LSLOT⟩)
     ++ [⟨"hostLen", LHOST_LEN_OFF, 4⟩,
-        ⟨"bind", LBIND_OFF, 4 * LNBUF⟩, ⟨"local", LLOCAL_OFF, 4 * 8⟩,
+        ⟨"name", LNAME_OFF, 5⟩, ⟨"one", LONE_OFF, 4⟩, ⟨"zero", LZERO_OFF, 4⟩,
+        ⟨"scale", LSCALE_OFF, 4⟩, ⟨"blas", LBLAS_OFF, 8⟩,
+        ⟨"bind", LBIND_OFF, 8 * LNBUF⟩, ⟨"fns", LFN_OFF, 16 * lPtx.length⟩, ⟨"local", LLOCAL_OFF, 128⟩,
         ⟨"chosen", LCHOSEN_OFF, 4 * TOPK⟩, ⟨"init", LINIT_OFF, 4⟩]
 
 theorem gptossLayerMap_ok :
@@ -760,51 +777,41 @@ def lResident : List Nat :=
   [L_ANORM, L_QKVW, L_QKVB, L_SINKS, L_OW, L_OB, L_ROPE, L_NMH, L_NMQ,
    L_MNORM, L_RW, L_RB]
 
+/-- Kernel `i` launched over `g` blocks of `blk` threads. -/
+def lKern (i g blk : Nat) : Drv.Kern :=
+  { ptxOff := lSlotOff i, nameOff := LNAME_OFF, modSlot := LFN_OFF + 16 * i, fnSlot := LFN_OFF + 16 * i + 8,
+    paramsOff := LLOCAL_OFF + 64, bufs := [], grid := (g, 1, 1), block := (blk, 1, 1) }
+
 def lLoadM : Prog V L Unit := do
   let ptr ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
+  Drv.up ptr ContextSlots.cuda
+  let _ ← ext (.cublas .create) %[← iaddImm ptr LBLAS_OFF]
   for (i, nb) in (List.range LNBUF).zip lBufBytes do
-    let sz ← iconst64 nb
-    let id ← cudaCreateBuffer ptr sz
-    storeI32 id (← absAddr ptr (lBindOff i))
+    Drv.alloc ptr (lBindOff i) nb
+  for i in List.range lPtx.length do
+    Drv.loadModule ptr (lKern i 1 1)
+    Drv.getFunction ptr (lKern i 1 1)
   for (k, b) in (List.range lResident.length).zip lResident do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt lHostIn (2 + k))
-    let id ← load32 (← absAddr ptr (lBindOff b))
-    let bytes ← iconst64 (lHostSizes.getD (2 + k) 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    Drv.upload ptr (lBindOff b) src (lHostSizes.getD (2 + k) 0)
   for k in List.range (PIECES * NE) do
     let src ← iaddImm dataPtr
       (AlgorithmLib.Layout.RegionMap.offAt lHostIn (2 + lResident.length + k))
-    let id ← load32 (← absAddr ptr (lBindOff (LSTORE + k)))
-    let bytes ← iconst64 (pieceBytes.getD (k % PIECES) 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    Drv.upload ptr (lBindOff (LSTORE + k)) src (pieceBytes.getD (k % PIECES) 0)
 
 def lUploadStepM : Prog V L Unit := do
   let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← dataPtr
   for (i, b) in [(0, L_X), (1, L_META)] do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt lHostIn i)
-    let id ← load32 (← absAddr ptr (lBindOff b))
-    let bytes ← iconst64 (lHostSizes.getD i 0)
-    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
+    Drv.upload ptr (lBindOff b) src (lHostSizes.getD i 0)
 
-def lBindLocal (ptr : V .i64) (bs : List Nat) : Prog V L Unit := do
-  for (j, gb) in (List.range bs.length).zip bs do
-    let id ← load32 (← absAddr ptr (lBindOff gb))
-    storeI32 id (← absAddr ptr (LLOCAL_OFF + 4 * j))
-
+/-- Launch kernel `i` over `g` blocks of `blk` threads, handed the pointers
+    the entries `bs` hold. -/
 def lEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
-  lBindLocal ptr bs
-  let ptxOff ← iconst64 (lSlotOff i)
-  let nBufs ← iconst32 bs.length
-  let bindBase ← iconst64 LLOCAL_OFF
-  let one ← iconst32 1
-  let block ← iconst32 blk
-  let grid ← iconst32 g
-  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one block one one
+  Drv.bindFrom ptr LLOCAL_OFF (LLOCAL_OFF + 64) (bs.map lBindOff)
+  Drv.launch ptr (lKern i g blk) (← iconst64 0)
 
 def NBLK : Nat := 32 * warpsPerCta
 
@@ -815,29 +822,31 @@ def lAttnM : Prog V L Unit := do
   let seqLen ← load32 (← iaddImm dataPtr
     (AlgorithmLib.Layout.RegionMap.offAt lHostIn 1 + 4 * M_SEQ))
   let seqLen64 ← uextend64 seqLen
-  let zero32 ← iconst32 0
   let one32 ← iconst32 1
-  let oneF ← iconst32 0x3F800000
-  let scaleF ← iconst32 0x3E000000
-  let bKC ← load32 (← absAddr ptr (lBindOff L_KC))
-  let bVC ← load32 (← absAddr ptr (lBindOff L_VC))
-  let bQKV ← load32 (← absAddr ptr (lBindOff L_QKV))
-  let bSC ← load32 (← absAddr ptr (lBindOff L_SC))
-  let bPR ← load32 (← absAddr ptr (lBindOff L_PR))
-  let bATT ← load32 (← absAddr ptr (lBindOff L_ATT))
-  let bXNB ← load32 (← absAddr ptr (lBindOff L_XNB))
-  let bATTB ← load32 (← absAddr ptr (lBindOff L_ATTB))
-  let bQKVW ← load32 (← absAddr ptr (lBindOff L_QKVW))
-  let bOW ← load32 (← absAddr ptr (lBindOff L_OW))
-  let bTMP ← load32 (← absAddr ptr (lBindOff L_TMP))
-  let bRW ← load32 (← absAddr ptr (lBindOff L_RW))
-  let bXM ← load32 (← absAddr ptr (lBindOff L_XM))
-  let bRLOG ← load32 (← absAddr ptr (lBindOff L_RLOG))
+  let h ← load64 (← iaddImm ptr LBLAS_OFF)
+  let oneF ← iaddImm ptr LONE_OFF
+  let zeroF ← iaddImm ptr LZERO_OFF
+  let scaleF ← iaddImm ptr LSCALE_OFF
+  let buf := fun (b : Nat) => do load64 (← iaddImm ptr (lBindOff b))
+  let bKC ← buf L_KC
+  let bVC ← buf L_VC
+  let bQKV ← buf L_QKV
+  let bSC ← buf L_SC
+  let bPR ← buf L_PR
+  let bATT ← buf L_ATT
+  let bXNB ← buf L_XNB
+  let bATTB ← buf L_ATTB
+  let bQKVW ← buf L_QKVW
+  let bOW ← buf L_OW
+  let bTMP ← buf L_TMP
+  let bRW ← buf L_RW
+  let bXM ← buf L_XM
+  let bRLOG ← buf L_RLOG
   lEnqueue ptr S_RMS 1 32 [L_X, L_ANORM, L_XN]
   lEnqueue ptr S_NARROW ((H / 2 + NBLK - 1) / NBLK) NBLK [L_XN, L_XNB, L_NMH]
   let mQKV ← iconst32 QKV
   let kH ← iconst32 H
-  let _ ← cublasGemmExBf16 ptr one32 zero32 mQKV one32 kH oneF bQKVW bXNB zero32 bQKV
+  Drv.gemmBf16 h 1 0 mQKV one32 kH oneF bQKVW bXNB zeroF bQKV
   lEnqueue ptr S_ADD (QKV / 32) 32 [L_QKV, L_QKVB]
   lEnqueue ptr S_ROPEQ NQ 32 [L_QKV, L_META, L_ROPE]
   lEnqueue ptr S_ROPEK NKV 32 [L_QKV, L_META, L_ROPE]
@@ -850,34 +859,28 @@ def lAttnM : Prog V L Unit := do
   let strideQ ← iconst64 (GQA * HD)
   let gqa64 ← iconst64 GQA
   let strideS ← imul gqa64 seqLen64
-  let _ ← cublasSgemmStridedBatched ptr one32 zero32 seqLen gqa32 hd32 scaleF
-    bKC strideKV bQKV strideQ zero32 bSC strideS nkv32
+  Drv.sgemmStrided h 1 0 seqLen gqa32 hd32 scaleF bKC strideKV bQKV strideQ zeroF bSC strideS nkv32
   lEnqueue ptr S_SOFTMAX NQ 32 [L_SC, L_META, L_PR, L_SINKS]
   let strideA ← iconst64 (GQA * HD)
-  let _ ← cublasSgemmStridedBatched ptr zero32 zero32 hd32 gqa32 seqLen oneF
-    bVC strideKV bPR strideS zero32 bATT strideA nkv32
+  Drv.sgemmStrided h 0 0 hd32 gqa32 seqLen oneF bVC strideKV bPR strideS zeroF bATT strideA nkv32
   lEnqueue ptr S_NARROW ((QO / 2 + NBLK - 1) / NBLK) NBLK [L_ATT, L_ATTB, L_NMQ]
   let mH ← iconst32 H
   let kQO ← iconst32 QO
-  let _ ← cublasGemmExBf16 ptr one32 zero32 mH one32 kQO oneF bOW bATTB zero32 bTMP
+  Drv.gemmBf16 h 1 0 mH one32 kQO oneF bOW bATTB zeroF bTMP
   lEnqueue ptr S_ADD (H / 32) 32 [L_TMP, L_OB]
   lEnqueue ptr S_ADD (H / 32) 32 [L_X, L_TMP]
   -- the router: a 32-row projection of the normalised stream, kept in f32
   -- because thirty-two rows is not what a decode step is bound by
   lEnqueue ptr S_RMS 1 32 [L_X, L_MNORM, L_XM]
   let ne32 ← iconst32 NE
-  let _ ← cublasSgemv ptr one32 kH ne32 oneF bRW bXM zero32 bRLOG
+  let _ ← ext (.cublas .sgemv) %[h, one32, kH, ne32, oneF, bRW, kH, bXM, one32, zeroF, bRLOG, one32]
   lEnqueue ptr S_ADD 1 32 [L_RLOG, L_RB]
   -- …and the choice, taken on the device.  One warp, a hundred and twenty-eight
   -- comparisons, and the four ids come back as sixteen bytes instead of the
   -- router's whole row going out and four buffer bindings coming in.
   lEnqueue ptr S_TOP4 1 32 [L_RLOG, L_GATES, L_CHOSEN]
-  let _ ← cudaSync ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  let bCh ← load32 (← absAddr ptr (lBindOff L_CHOSEN))
-  let dst ← absAddr ptr LCHOSEN_OFF
-  let n16 ← iconst64 (TOPK * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, bCh, dst, n16]
+  Drv.sync
+  Drv.download ptr (← absAddr ptr LCHOSEN_OFF) (lBindOff L_CHOSEN) (TOPK * 4)
 
 /-- **Binding the four slots, from ids the device chose.**
 
@@ -887,7 +890,7 @@ def lAttnM : Prog V L Unit := do
     where the expert index came from. -/
 def lBindM : Prog V L Unit := do
   let ptr ← basePtr
-  let four ← iconst64 4
+  let eight ← iconst64 8
   let six ← iconst64 PIECES
   for j in List.range TOPK do
     let e ← load32 (← absAddr ptr (LCHOSEN_OFF + 4 * j))
@@ -895,10 +898,9 @@ def lBindM : Prog V L Unit := do
     let e6 ← imul e64 six
     for t in List.range PIECES do
       let srcIx ← iaddImm e6 (LSTORE + t)
-      let srcOff ← imul srcIx four
+      let srcOff ← imul srcIx eight
       let srcAddr ← iadd (← absAddr ptr LBIND_OFF) srcOff
-      let id ← load32 srcAddr
-      storeI32 id (← absAddr ptr (lBindOff (lSlotBuf j t)))
+      storeI64 (← load64 srcAddr) (← absAddr ptr (lBindOff (lSlotBuf j t)))
 
 /-- **The mixture, and the second residual.** -/
 def lExpertBinds : List (Nat × Nat × List Nat) :=
@@ -915,7 +917,7 @@ def lMoeM : Prog V L Unit := do
   for (i, g, bs) in lExpertBinds do
     lEnqueue ptr i g NBLK bs
   lEnqueue ptr S_ADD (H / 32) 32 [L_X, L_MOUT]
-  let _ ← cudaSync ptr
+  Drv.sync
 
 /-- **Seam guard: the mixture half of a whole layer still never names the
     store.** The same property `gptoss_slots_are_bound` states for the isolated
@@ -932,25 +934,16 @@ theorem gptoss_layer_binds_allocated :
 /-- Copy buffer `b` to the caller's output, `at` bytes in. -/
 def lFetchM (b n at_ : Nat) : Prog V L Unit := do
   let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let dst ← iaddImm outPtr at_
-  let id ← load32 (← absAddr ptr (lBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaDownload %[ctxPtr, id, dst, bytes]
+  Drv.download ptr (← iaddImm (← outPtr) at_) (lBindOff b) n
 
 /-- **One token through one layer, and nothing outside it.**
 
-    The artifact carries a single entry and no extras, which is the shape
-    `qwen2.json` has and the shape this was not: seven entries, once, each of
-    them a place the caller held state that belonged in here.
-
-    They went in three steps and the order matters. The router's choice became
-    a kernel, so the layer stopped having to ask. The load became conditional
-    on a flag in this program's own memory, so one entry can load once and
-    answer many times — which is what a server does. And the diagnostic that
-    was its own entry became a second write into the caller's output buffer,
-    because a thing worth reading is worth returning, not worth another door.
+    The artifact carries a single entry and no extras: the state a caller
+    would otherwise hold lives in here. The router's choice is a kernel, so the
+    layer never has to ask. The load is conditional on a flag in this program's
+    own memory, so one entry loads once and answers many times — which is what
+    a server does. And the router's row is a second write into the caller's
+    output buffer rather than an entry of its own.
 
     What the caller passes is a token's row and its position; what it gets back
     is the layer's output and, after it, the router's row. -/
@@ -984,7 +977,9 @@ def lSlotBytes (t : String) : List UInt8 :=
 
 def lInitialMemory : List UInt8 :=
   zeros LHOST_LEN_OFF ++ u32le LHOST_BYTES
-    ++ zeros (LPTX_OFF - LHOST_LEN_OFF - 4)
+    ++ zeros (LNAME_OFF - LHOST_LEN_OFF - 4) ++ ("main".toUTF8.toList ++ [0, 0, 0, 0])
+    ++ [0, 0, 0x80, 0x3f] ++ [0, 0, 0, 0] ++ [0, 0, 0, 0x3e]
+    ++ zeros (LPTX_OFF - LSCALE_OFF - 4)
     ++ lPtx.flatMap lSlotBytes
     ++ zeros (LMEM_SIZE - LBIND_OFF)
 

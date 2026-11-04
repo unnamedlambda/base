@@ -69,7 +69,7 @@ def WP.ptxBytes  (w : WP) : List UInt8 := (warpKernelDSLStr w).toUTF8.toList ++ 
 def WP.ptxLen    (w : WP) : Nat := w.ptxBytes.length
 /-- The binding table, 16-byte aligned. -/
 def WP.bindOff   (w : WP) : Nat := (rPTX_OFF + w.ptxLen + 15) / 16 * 16
-def WP.memSize   (w : WP) : Nat := w.bindOff + 0x80
+def WP.memSize   (w : WP) : Nat := w.bindOff + 0x140
 
 -- ── The shipped claim ─────────────────────────────────────────────────────────
 -- `ShippedCorrect b` is the correctness statement for the artifact

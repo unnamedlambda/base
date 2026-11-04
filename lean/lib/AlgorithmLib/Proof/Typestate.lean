@@ -95,6 +95,7 @@ def tyOp : Op → List ClifTy → Option ClifTy
   | .bitcast ty _, [t] => if t.width == ty.width then some ty else none
   | .iun k _, [t] => if k.admits t then some t else none
   | .iext k ty _, [t] => if k.admits t ty then some ty else none
+  | .fconv .toSint ty _, [t] => if isF t && ty.isInt && decide (ty.width ≥ 32) then some ty else none
   | .select _ _ _, [c, a, b] => if c.isInt && a == b then some a else none
   | _, _ => none
 
@@ -178,6 +179,13 @@ theorem args3 {Γ : Env} {a b c : R} {ts : List ClifTy} (h : ArgsTy Γ [a, b, c]
       ∃ z, Γ[c]? = some (.sc v z) := by
   rcases ts with _ | ⟨t, _ | ⟨u, _ | ⟨v, _ | ⟨_, _⟩⟩⟩⟩ <;> simp only [ArgsTy, and_false, and_true] at h
   exact ⟨t, u, v, rfl, h.1, h.2.1, h.2.2⟩
+
+/-- A saturating conversion answers at the type it converts to. -/
+theorem satToSint_sc (ty : ClifTy) (x : Float) : ∃ z, satToSint ty x = .sc ty z := by
+  unfold satToSint ofInt norm
+  dsimp only
+  repeat' split
+  all_goals exact ⟨_, rfl⟩
 
 set_option linter.unusedSimpArgs false in
 /-- **An operation over scalars of the types `tyOp` asks answers a scalar of the
@@ -374,6 +382,13 @@ theorem tyOp_sound {m : Mem} {Γ : Env} {o : Op} {ts : List ClifTy} {T : ClifTy}
         beq_iff_eq] at h
       obtain ⟨⟨h1, rfl⟩, rfl⟩ := h
       by_cases hc : isTrue (V.sc tc x) <;> simp [evalOp, get, hx, hy, hz, h1, V.ty, hc]
+  | fconv k ty a =>
+      obtain ⟨t, rfl, x, hx⟩ := args1 (by simpa only [Op.regs] using hargs)
+      cases k <;> simp only [tyOp, reduceCtorEq] at h
+      simp only [Option.ite_none_right_eq_some, Option.some.injEq, Bool.and_eq_true, isF,
+        Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq] at h
+      obtain ⟨⟨⟨ht | ht, hi⟩, hw⟩, rfl⟩ := h <;> subst ht <;>
+        simp [evalOp, get, hx, hi, hw, satToSint_sc]
   | _ => simp [tyOp] at h
 
 end AlgorithmLib.HProg.Sem
@@ -574,6 +589,10 @@ theorem TState.holds_obsCall {S : TState} {w : World} {c : Callee} {vs : List V}
   | devBuf _ _ => exact this
   | pinnedUsed _ => exact this
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact this
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ | text _ _ _ _ => exact this
+  | nwg _ | wgo _ _ => exact this
+  | wg1 _ s => cases s <;> exact this
+  | wgText _ _ _ => exact this
 
 /-- **The standard typestates move by the table.** From a typestate that has
     memory unfrozen, a call whose precondition the facts give lands in what
@@ -600,13 +619,6 @@ theorem moves_state_sub (cfg : Cfg) (S S' : TState) {f : Ffi} {vs : List V} {bit
   refine ⟨r, w', hc, fun x hx => hw' x ?_⟩
   rw [ha]
   exact List.mem_filter.mpr ⟨hsub.subset hx, List.all_eq_true.mp hk x hx⟩
-
-/-- **What a call's answer is known to be**, whatever the world: a bound a
-    program may count by. `windowPoll` answers `-1` or at most the events it
-    has room for. Every other answer is known by its type alone. -/
-def answerOk : Ffi → List UInt64 → UInt64 → Prop
-  | .windowPoll, [_, _, maxEvents], x => x.toNat = 4294967295 ∨ x.toNat ≤ (asI32 maxEvents).toNat
-  | _, _, _ => True
 
 theorem ofInt_nat_val {n : Nat} (h : n < 2 ^ 64) :
     UInt64.ofNat ((n : Int).emod (1 <<< 64)).toNat = UInt64.ofNat n := by
@@ -651,38 +663,6 @@ theorem fileRead_answer {a b c d size : UInt64} {w : World} {t : ClifTy} {x : UI
       have := size.toNat_lt
       rw [ofInt_toNat h.1 (k := 64) (by decide) (by decide) (by omega)]
       omega
-
-theorem answerOk_sound {f : Ffi} {bits : List UInt64} {w : World} {t : ClifTy} {x : UInt64} {w' : World}
-    (h : Sem.callBits f bits w = some (some (V.sc t x), w')) : answerOk f bits x := by
-  cases f
-  case windowPoll =>
-    change ffiWindowPoll bits w = _ at h
-    rcases bits with _ | ⟨_, _ | ⟨_, _ | ⟨maxEvents, _ | ⟨_, _⟩⟩⟩⟩ <;>
-      try (simp [ffiWindowPoll] at h; done)
-    · show _ ∨ _
-      simp only [ffiWindowPoll] at h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h
-        exact .inl (by rw [ofInt_neg_one_i32 h.1]; rfl)
-      · split at h
-        · cases h
-        · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h
-          exact .inl (by rw [ofInt_neg_one_i32 h.1]; rfl)
-        · obtain ⟨m, -, h⟩ := Option.bind_eq_some_iff.mp h
-          simp only [Option.some.injEq, Prod.mk.injEq] at h
-          have hm : (asI32 maxEvents).toNat < 2 ^ 31 := by
-            have hb : (maxEvents &&& 4294967295).toNat < 2 ^ 32 := by
-              rw [UInt64.toNat_and]; exact Nat.lt_of_le_of_lt Nat.and_le_right (by decide)
-            have hh : ((1 : UInt64) <<< UInt64.ofNat (32 - 1)).toNat = 2147483648 := by decide
-            unfold asI32 signed
-            simp only [ClifTy.width, widthMask]
-            split
-            · omega
-            · split <;> rename_i hc <;> simp only [UInt64.le_iff_toNat_le, hh] at hc <;> omega
-          right
-          rw [ofInt_toNat h.1 (k := 32) (by decide) (by decide) (by omega)]
-          omega
-  all_goals trivial
 
 /-- A typestate asks less once some of its facts are dropped. -/
 theorem TState.holds_filter {S : TState} {w : World} (p : Fact → Bool) (h : S.holds w) :
@@ -806,7 +786,7 @@ theorem wp_store_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
       | none => rw [hm] at hrun; cases hrun
       | some m =>
           rw [hm] at hrun; cases hrun
-          refine afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+          refine afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
             (fun _ => hm) ?_ ?_ hn
           · intro x hx
             cases st with
@@ -839,7 +819,7 @@ theorem wp_store_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
             rw [← Array.foldlM_toList] at hm
             obtain ⟨hsz, hz⟩ := Contracts.foldl_stores_sizes _
               (fun _ _ _ h => ⟨Contracts.store_sizes_eq h, Contracts.store_frozen h, Contracts.store_busy h⟩) _ _ _ hm
-            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl⟩ hsz
+            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hsz
       · cases hrun
 
 theorem wp_store_known {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
@@ -945,7 +925,7 @@ theorem wp_storeUnaligned_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q 
         | none =>
             rw [← Array.foldlM_toList] at hm
             obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hm
-            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl⟩ hs
+            exact Contracts.nonCell_kept hS (store_parts hz) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩ hs
         | some q =>
             obtain ⟨x, t', y⟩ := q
             obtain ⟨-, hv'⟩ := hst x t' y rfl
@@ -960,14 +940,14 @@ theorem wp_storeUnaligned_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q 
           rw [hm] at hrun; cases hrun
           cases st with
           | none =>
-              exact Contracts.nonCell_kept hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl⟩
+              exact Contracts.nonCell_kept hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) ⟨rfl, rfl, rfl, rfl, rfl⟩
                 (Contracts.store_sizes_eq hm)
           | some q =>
               obtain ⟨x, t', y⟩ := q
               obtain ⟨⟨t0, ht⟩, hv'⟩ := hst x t' y rfl
               rw [ha] at ht; cases ht
               rw [hv] at hv'; cases hv'
-              exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+              exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
                 (fun _ => hm) (fun _ h => by cases h; rfl) (fun _ h => by cases h; rfl) (tyBytes_le _)
 
 theorem wp_storeU_known {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → Env → World → Prop}
@@ -1069,7 +1049,7 @@ theorem wp_istore8_state {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α �
       | none => rw [hm] at hrun; simp only [reduceCtorEq] at hrun
       | some m =>
           rw [hm] at hrun; cases hrun
-          exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
+          exact afterStore_sound hS (store_parts ⟨Contracts.store_frozen hm, Contracts.store_busy hm⟩) (fun k _ => by cases k <;> rfl) rfl ⟨rfl, rfl, rfl, rfl, rfl⟩ (Contracts.store_sizes_eq hm)
             (fun _ => hm) (fun x hx => by
               obtain ⟨t, ht⟩ := ha x hx
               rw [ha'] at ht; cases ht; rfl) (fun _ h => by cases h) (by decide)
@@ -1834,30 +1814,6 @@ theorem callOf_ffi_bits {f : Ffi} (hf : f.engine = true) {lc : Locals} {vs : Lis
     · rename_i bits hb
       exact ⟨bits, hb, h⟩
 
-/-- The same, knowing what the table says of the answer (`answerOk`): a bound
-    what follows may count by. -/
-theorem wp_call_res_ans {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
-    {Q : α → Env → World → Prop}
-    (W W' : World → Prop) {t0 : ClifTy} (ht : f.result = some t0) (hf : f.engine = true) {cs : List V}
-    {bits : List UInt64} (hb : cs.mapM asBits = some bits)
-    (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hK : Moves cfg W f cs W') (hW : W w)
-    (hQ : ∀ x w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t0 x) → answerOk f bits x → W' w' →
-      wp cfg d J (k (resSlot f.result Γ.size)) Q Γ' w') :
-    wp cfg d J (.call f args k) Q Γ w := by
-  rw [wp_call]
-  intro vs hvs
-  rw [hcs] at hvs; cases hvs
-  obtain ⟨r, w', hc, hw'⟩ := hK w hW
-  refine ⟨r, w', hc, ?_⟩
-  simp only [ht, Option.isSome_some, if_true]
-  intro v hv; subst hv
-  obtain ⟨x, rfl⟩ := Contracts.callOf_ffi_scalar hf hc
-  obtain ⟨bits', hb', hc'⟩ := callOf_ffi_bits hf hc
-  rw [hb] at hb'; cases hb'
-  have ht' : f.result.getD .i64 = t0 := by rw [ht]; rfl
-  rw [ht'] at hc' ⊢
-  exact hQ x w' _ (Ext.push Γ _) (by simp) (answerOk_sound hc') hw'
-
 /-- The same for a call that answers nothing. -/
 theorem wp_call_var {f : Ffi} {args : Vals Slot f.params} {k : ResV Slot f.result → Prog Slot Lvl α}
     {Q : α → Env → World → Prop}
@@ -1977,7 +1933,8 @@ theorem wp_ext_res {e : IR.Ext} {args : Vals Slot e.sig.1} {k : ResV Slot e.sig.
     (S S' : TState) {cs : List V} {bits : List UInt64} {hs : List (Held × UInt64)} {rs : List (UInt64 × Nat)}
     (hres : e.sig.2.isSome = true) (ha : e.aside = true)
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hb : cs.mapM asBits = some bits)
-    (hn : extNeeds e bits = some (hs, rs)) (hS' : S.filter Contracts.Fact.plain = S')
+    (hn : extNeeds e bits = some (hs, rs)) (hstr : Contracts.extStrs e bits = [])
+    (hS' : S.filter Contracts.Fact.plain = S')
     (hS : S.holds w) (hh : ∀ p ∈ hs, Fact.held p.1 p.2 ∈ S)
     (hr : rs.all (fun q => roomAt S' q.1 q.2) = true)
     (hQ : ∀ t x w' Γ', Ext Γ Γ' → Γ'[Γ.size]? = some (.sc t x) →
@@ -1990,7 +1947,7 @@ theorem wp_ext_res {e : IR.Ext} {args : Vals Slot e.sig.1} {k : ResV Slot e.sig.
   have hr' : rs.all (fun q => roomAt S q.1 q.2) = true := by
     refine List.all_eq_true.mpr fun q hq => Contracts.roomAt_sub (S' := S') ?_ (List.all_eq_true.mp hr q hq)
     intro x hx; rw [← hS'] at hx; exact (List.mem_filter.mp hx).1
-  have hpre := Contracts.extNeeds_sound hn hS0 hh hr'
+  have hpre := Contracts.extNeeds_sound hn hS0 hh hr' (fun a h => by rw [hstr] at h; cases h)
   have hsome := ExtContracts.ext_pre_safe e bits _ hpre
   rw [Contracts.extCall_bits (cs := e.args bits) (cs' := cs) ha _ (ExtContracts.mapM_asBits_zip _ _ (Contracts.extNeeds_length hn)) hb]
     at hsome
@@ -2007,7 +1964,8 @@ theorem wp_ext_void {e : IR.Ext} {args : Vals Slot e.sig.1} {k : ResV Slot e.sig
     (S S' : TState) {cs : List V} {bits : List UInt64} {hs : List (Held × UInt64)} {rs : List (UInt64 × Nat)}
     (hres : e.sig.2.isSome = false) (ha : e.aside = true)
     (hcs : args.slots.mapM (fun r => Γ[r]?) = some cs) (hb : cs.mapM asBits = some bits)
-    (hn : extNeeds e bits = some (hs, rs)) (hS' : S.filter Contracts.Fact.plain = S')
+    (hn : extNeeds e bits = some (hs, rs)) (hstr : Contracts.extStrs e bits = [])
+    (hS' : S.filter Contracts.Fact.plain = S')
     (hS : S.holds w) (hh : ∀ p ∈ hs, Fact.held p.1 p.2 ∈ S)
     (hr : rs.all (fun q => roomAt S' q.1 q.2) = true)
     (hQ : ∀ w', TState.holds (extAfter e bits none S) w' → wp cfg d J (k (resSlot e.sig.2 0)) Q Γ w') :
@@ -2019,7 +1977,7 @@ theorem wp_ext_void {e : IR.Ext} {args : Vals Slot e.sig.1} {k : ResV Slot e.sig
   have hr' : rs.all (fun q => roomAt S q.1 q.2) = true := by
     refine List.all_eq_true.mpr fun q hq => Contracts.roomAt_sub (S' := S') ?_ (List.all_eq_true.mp hr q hq)
     intro x hx; rw [← hS'] at hx; exact (List.mem_filter.mp hx).1
-  have hpre := Contracts.extNeeds_sound hn hS0 hh hr'
+  have hpre := Contracts.extNeeds_sound hn hS0 hh hr' (fun a h => by rw [hstr] at h; cases h)
   have hsome := ExtContracts.ext_pre_safe e bits _ hpre
   rw [Contracts.extCall_bits (cs := e.args bits) (cs' := cs) ha _ (ExtContracts.mapM_asBits_zip _ _ (Contracts.extNeeds_length hn)) hb]
     at hsome
@@ -3902,7 +3860,7 @@ theorem wp_store_vec {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α 
         rw [← Array.foldlM_toList] at hmm
         obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
         exact hk _ (Contracts.nonCell_kept hS (store_parts hz) (fun kk _ => by cases kk <;> rfl)
-          ⟨rfl, rfl, rfl⟩ hs)
+          ⟨rfl, rfl, rfl, rfl, rfl⟩ hs)
 
 /-- `wp_store_vec`, under default flags: a vector stores lane by lane all the
     same. -/
@@ -3941,7 +3899,7 @@ theorem wp_storeU_vec {cfg : Cfg} {d : Nat} {J : Hoare.Post} {α : Type} {Q : α
         rw [← Array.foldlM_toList] at hmm
         obtain ⟨hs, hz⟩ := foldlM_lane_stores_inv _ _ _ hmm
         exact hk _ (Contracts.nonCell_kept hS (store_parts hz) (fun kk _ => by cases kk <;> rfl)
-          ⟨rfl, rfl, rfl⟩ hs)
+          ⟨rfl, rfl, rfl, rfl, rfl⟩ hs)
 
 /-- `wp_store_vec`, the vector known by its type: the typestate after it given
     as its cells dropped. -/
@@ -4089,10 +4047,6 @@ theorem roomAt_add {S : Contracts.TState} {b x : UInt64} {n K : Nat} {r : Region
   refine ⟨⟨⟨hp, by omega⟩, hz⟩, _, hm, ?_⟩
   simp only [Bool.and_eq_true, decide_eq_true_eq, true_and]
   omega
-
-/-- What a window presents from sees the same device a program opened. -/
-theorem pump_gpu_live (w : World) : w.pump.gpu.live = w.gpu.live := by
-  rw [(Contracts.pump_life w).2.2.2.2.1]
 
 /-- **Room for page-locked memory**, from a bound on what it spans. -/
 theorem pinnedRoom_of_state {S : Contracts.TState} {w : World} {n : Nat} {size : UInt64} (hS : S.holds w)

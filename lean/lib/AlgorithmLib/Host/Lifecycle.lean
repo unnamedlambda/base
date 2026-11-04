@@ -35,36 +35,19 @@ theorem callBits_oracles (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Opti
 theorem callBits_rooms (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : callBits f bits w = some (r, w')) : KeepsRooms w w' := (callBits_keeps f h).rooms
 
-/-- **Every call but the one that allocates it leaves page-locked memory the
-    size it was.** -/
+/-- **Every call leaves page-locked memory the size it was.** -/
 theorem callBits_pinned (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (hf : f ≠ .cudaPinnedAlloc) (h : callBits f bits w = some (r, w')) : KeepsPinned w w' :=
-  (callBits_keeps f h).pinned hf
+    (h : callBits f bits w = some (r, w')) : KeepsPinned w w' :=
+  (callBits_keeps f h).pinned
 
 /-- **An entry point's answer is a scalar of the type its signature gives.** -/
 theorem callBits_scalar (f : IR.Ffi) {bits : List UInt64} {w : World} {v : V} {w' : World}
     (h : callBits f bits w = some (some v, w')) : ∃ x, v = .sc (f.result.getD .i64) x :=
   (callBits_keeps f h).scalar v rfl
 
-
 -- ---------------------------------------------------------------------------
 -- What the movers leave
 -- ---------------------------------------------------------------------------
-
-theorem sets_cudaInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaInit bits w = some (r, w')) :
-    w'.dev.live = w.cudaDevice ∧ w'.dev.capture.isSome = false := by
-  change ffiCudaInit bits w = some (r, w') at h
-  unfold ffiCudaInit at h
-  walk h
-  all_goals first | exact ⟨rfl, rfl⟩ | simp_all | rfl | grind [→ store_frozen]
-
-theorem sets_cudaCleanup {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaCleanup bits w = some (r, w')) : w'.dev.live = false ∧ w'.dev.capture.isSome = false := by
-  change ffiCudaCleanup bits w = some (r, w') at h
-  unfold ffiCudaCleanup at h
-  walk h
-  all_goals first | exact ⟨rfl, rfl⟩ | rfl | grind [→ store_frozen]
 
 theorem sets_lmdbInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : callBits .lmdbInit bits w = some (r, w')) : w'.lmdb.live = true := by
@@ -79,20 +62,6 @@ theorem empties_lmdbInit {bits : List UInt64} {w : World} {r : Option V} {w' : W
   unfold ffiLmdbInit at h
   walk h
   all_goals first | rfl | grind [→ store_frozen]
-
-theorem sets_gpuInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .gpuInit bits w = some (r, w')) : w'.gpu.live = w.gpuAdapter := by
-  change ffiGpuInit bits w = some (r, w') at h
-  unfold ffiGpuInit at h
-  walk h
-  all_goals first | exact ⟨rfl, rfl⟩ | simp_all | rfl | grind [→ store_frozen]
-
-theorem sets_gpuCleanup {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .gpuCleanup bits w = some (r, w')) : w'.gpu.live = false := by
-  change ffiGpuCleanup bits w = some (r, w') at h
-  unfold ffiGpuCleanup at h
-  walk h
-  all_goals first | exact ⟨rfl, rfl⟩ | rfl | grind [→ store_frozen]
 
 theorem sets_threadInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : callBits .threadInit bits w = some (r, w')) : w'.thread.live = true := by
@@ -164,8 +133,72 @@ inductive Fact where
   /-- Event `e` is recorded, outside any capture, at a clock past every access
       the tracker records: a stream that waits on it knows them all. -/
   | evAll (e : Nat)
+  /-- The driver is initialised: `cuInit` has answered. -/
+  | drvInit
+  /-- The primary context is retained `n` times. -/
+  | retained (n : Nat)
+  /-- The device has made `n` allocations, live or freed: the next one is
+      `devPtr n`. -/
+  | nbufs (n : Nat)
+  /-- Allocation `id` is live and holds `n` bytes: it starts at `devPtr id`. -/
+  | alloc (id n : Nat)
+  /-- Memory at `a` holds a C string within `n` bytes, `s` where it is
+      known: what a step that leaves those bytes alone keeps. Where the string
+      is a module's PTX, `sigs` names entry points it declares with their
+      parameters' sizes, so a lookup reads them here and never the text. -/
+  | text (a : UInt64) (s : Option String) (n : Nat) (sigs : List (String × List Nat))
+  /-- The driver has loaded `n` modules, live or unloaded: the next is
+      `drvHandle kModule n`. -/
+  | nmods (n : Nat)
+  /-- The driver has looked up `n` functions: the next is `drvHandle kFunc n`. -/
+  | nfuncs (n : Nat)
+  /-- Module `i` is loaded, and declares each of `sigs`'s entry points with
+      parameters of those sizes. -/
+  | mod (i : Nat) (sigs : List (String × List Nat))
+  /-- Function `i` is an entry point of a loaded module whose declaration
+      takes parameters of these sizes. -/
+  | fn (i : Nat) (sizes : List Nat)
+  /-- cuBLAS has made `n` handles: the next is `drvHandle kBlas n`. -/
+  | nblas (n : Nat)
+  /-- cuBLAS handle `i` is live and runs its routines on stream `s`. -/
+  | blasOn (i : Nat) (s : UInt64)
+  /-- The driver has captured `n` graphs, live or destroyed: the next is
+      `drvHandle kGraph n`. -/
+  | ngraphs (n : Nat)
+  /-- Graph `i` is live, and every allocation its nodes bind is live. -/
+  | graph (i : Nat)
+  /-- The driver has instantiated `n` graphs, live or destroyed: the next is
+      `drvHandle kExec n`. -/
+  | nexecs (n : Nat)
+  /-- Instantiated graph `i` is live, and every allocation its nodes bind is
+      live. -/
+  | exec (i : Nat)
+  /-- A capture is in progress, begun on party `q`, joined by the streams
+      `j`, with the ordering among what it records `r`; each event of `evs`
+      is recorded inside it at its clock, and every allocation its nodes
+      bind is live. -/
+  | cap (q : Nat) (j : List Nat) (r : Race) (evs : List (Nat × Clock))
+  /-- wgpu has made `n` objects, live or released: the next is `wgHandle n`. -/
+  | nwg (n : Nat)
+  /-- wgpu object `i` is live, of shape `s`, or the device is lost. -/
+  | wgo (i : Nat) (s : WgShape)
+  /-- The program holds no live wgpu object of kind `k` (`none`), or at most
+      one, of shape `s`; or the device is lost. -/
+  | wg1 (k : IR.WgObj) (s : Option WgShape)
+  /-- The `n` bytes at `a` are UTF-8, and where `shader` is set, a WGSL source
+      the device accepts: what a step that leaves those bytes alone keeps. -/
+  | wgText (a : UInt64) (n : Nat) (shader : Bool)
   deriving Repr, DecidableEq
 
+/-- A kernel launch whose allocations are live, or a vendor routine whose
+    inputs are live and whose output is its last input. -/
+abbrev OpLive (d : Dev) (op : DevOp) : Prop :=
+  (∃ l ids, op = .launch l ids ∧ ∀ j ∈ ids, ((d.bufs[j]?).join).isSome = true) ∨
+  (∃ c ins out, op = .vendor c ins out ∧ ins.getLast? = some out ∧
+    ∀ j ∈ ins, ((d.bufs[j]?).join).isSome = true)
+
+/-- Every operation of `ops` is one whose allocations are live (`OpLive`). -/
+def OpsLive (d : Dev) (ops : Array DevOp) : Prop := ∀ op ∈ ops.toList, OpLive d op
 
 def Fact.holds : Fact → World → Prop
   | .part p b, w => p.get w = b
@@ -187,6 +220,34 @@ def Fact.holds : Fact → World → Prop
   | .evLive e, w => (w.dev.event? e).isSome = true
   | .readyAll p, w => Device.KnowsAll w.dev.race p
   | .evAll e, w => ∃ clk, w.dev.event? e = some (some (clk, false)) ∧ Device.Covers w.dev.race clk
+  | .drvInit, w => w.dev.drvInit = true
+  | .retained n, w => w.dev.retained = n
+  | .nbufs n, w => w.dev.bufs.size = n
+  | .alloc id n, w => ∃ b, (w.dev.bufs[id]?).join = some b ∧ b.size = n
+  | .text a s n sigs, w => (w.mem.frozen = false ∧ CStr w.mem a ∧ a.toNat + n < 2 ^ 64 ∧
+      ∃ r off k, r ≠ .pinned ∧ off + n < 2 ^ 36 ∧ Sem.strSpan w.mem a = some (r, off, k) ∧ k ≤ n) ∧
+      ∃ t, readCStrAt w.mem a = some t ∧ (∀ x, s = some x → x = t) ∧ ∀ p ∈ sigs, ptxParamSizes t p.1 = some p.2
+  | .nmods n, w => w.dev.modules.size = n
+  | .nfuncs n, w => w.dev.funcs.size = n
+  | .mod i sigs, w => ∃ s, w.dev.modules[i]? = some (some s) ∧ ∀ p ∈ sigs, ptxParamSizes s p.1 = some p.2
+  | .fn i sizes, w => ∃ mi e s, w.dev.funcs[i]? = some (mi, e) ∧ w.dev.modules[mi]? = some (some s) ∧
+      ptxParamSizes s e = some sizes
+  | .nblas n, w => w.dev.blas.size = n
+  | .blasOn i s, w => w.dev.blas[i]? = some (some s)
+  | .ngraphs n, w => w.dev.graphs.size = n
+  | .graph i, w => ∃ ops, w.dev.graphs[i]? = some (some ops) ∧ OpsLive w.dev ops
+  | .nexecs n, w => w.dev.execs.size = n
+  | .exec i, w => ∃ ops, w.dev.execs[i]? = some (some ops) ∧ OpsLive w.dev ops
+  | .cap q j r evs, w => ∃ c, w.dev.capture = some c ∧ c.origin = q ∧ c.joined = j ∧ c.race = r ∧
+      OpsLive w.dev c.ops ∧ ∀ e ∈ evs, w.dev.event? e.1 = some (some (e.2, true))
+  | .nwg n, w => w.wg.objs.size = n
+  | .wgo i s, w => w.wg.lost = true ∨ ∃ d, w.wg.objs[i]? = some (true, d) ∧ w.wg.Fits d s
+  | .wg1 k none, w => w.wg.lost = true ∨ w.wg.NoneOf k
+  | .wg1 k (some s), w => w.wg.lost = true ∨ ∀ (i : Nat) (d : WgData), w.wg.objs[i]? = some (true, d) →
+      d.kind = k → w.wg.isOne k i = true ∧ w.wg.Fits d s
+  | .wgText a n sh, w => w.mem.frozen = false ∧ a.toNat + n < 2 ^ 64 ∧
+      (∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ w.mem.sizes r ∧ off + n ≤ 2 ^ 36) ∧
+      ∃ t, Sem.wgText w.mem a (UInt64.ofNat n) = some t ∧ (sh = true → w.wgslOk t = true)
 
 /-- A fact about the device's streams, events and tracker. -/
 def Fact.isDev : Fact → Bool
@@ -217,6 +278,32 @@ theorem Fact.holds_dev {x : Fact} (hx : x.isDev = true) {w w' : World} (h : w'.d
     x.holds w' :=
   Fact.holds_step hx hw (fun _ => by rw [h]) (fun _ => by rw [h]) (fun _ _ => by rw [h])
     (by rw [h]) (by rw [h]) (by rw [h]; exact DevSpec.Grows.refl _)
+
+/-- A fact about the driver's own state: what `cudaAfter` states of a driver
+    call, and what any step that leaves the device alone keeps. -/
+def Fact.isDrv : Fact → Bool
+  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => true
+  | _ => false
+
+/-- A driver fact survives a step that leaves the device as it was. -/
+theorem Fact.holds_drv {x : Fact} (hx : x.isDrv = true) {w w' : World} (h : w'.dev = w.dev) (hw : x.holds w) :
+    x.holds w' := by
+  cases x <;> simp only [Fact.isDrv, Bool.false_eq_true] at hx
+  all_goals simp only [Fact.holds] at hw ⊢; rw [h]; exact hw
+
+/-- A fact about wgpu's objects: what any step that leaves them alone keeps. -/
+def Fact.isWg : Fact → Bool
+  | .nwg _ | .wgo _ _ | .wg1 _ _ => true
+  | _ => false
+
+/-- A wgpu fact survives a step that leaves wgpu's objects as they were. -/
+theorem Fact.holds_wg {x : Fact} (hx : x.isWg = true) {w w' : World} (h : w'.wg = w.wg) (hw : x.holds w) :
+    x.holds w' := by
+  cases x with
+  | nwg n => show _ = _; rw [h]; exact hw
+  | wgo i s => simp only [Fact.holds] at hw ⊢; rw [h]; exact hw
+  | wg1 k s => cases s <;> (simp only [Fact.holds] at hw ⊢; rw [h]; exact hw)
+  | _ => simp [Fact.isWg] at hx
 
 /-- **A typestate**: facts about the world, all of which hold. -/
 abbrev TState := List Fact
@@ -467,6 +554,21 @@ theorem cstrIn_kept {w w' : World} {a : UInt64} {n : Nat} (hx : (Fact.cstrIn a n
   refine ⟨hz', ?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩
   unfold CStr; rw [hrd]; exact hc
 
+/-- A C string's bytes left alone leave what it reads. -/
+theorem text_kept {w w' : World} {a : UInt64} {s : Option String} {n : Nat} {sg : List (String × List Nat)}
+    (hx : (Fact.text a s n sg).holds w)
+    (hz' : w'.mem.frozen = false) (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.text a s n sg).holds w' := by
+  obtain ⟨⟨hz, hc, hwrap, r, off, k, hp, hspan, hsp, hk⟩, t, hs, hst, hsg⟩ := hx
+  have hd := strSpan_decode hsp
+  have hbytes : ∀ i, i < k → decodeAddr (a + UInt64.ofNat i) = some (r, off + i) := fun i hi =>
+    Sem.decodeAddr_add hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
+  have hb := bytes_kept hp hbytes (strSpan_bound hsp) hz hz' (hsz r hp) (fun i hi => hu i (by omega))
+  obtain ⟨hsp', hrd⟩ := strSpan_congr hsp (hsz r hp) hb
+  refine ⟨⟨hz', ?_, hwrap, r, off, k, hp, hspan, hsp', hk⟩, t, ?_, hst, hsg⟩
+  · unfold CStr; rw [hrd]; exact hc
+  · show readCStr w'.mem a = some t; rw [hrd]; exact hs
+
 /-- Whether a call with these argument bits keeps a fact, whatever it answers. -/
 def keeps (f : IR.Ffi) (bits : List UInt64) : Fact → Bool
   | .part p _ => !(moves f).contains p
@@ -475,13 +577,15 @@ def keeps (f : IR.Ffi) (bits : List UInt64) : Fact → Bool
   | .held _ _ | .opened _ _ => false
   | .cstr a => f == .lmdbInit && otherRegion (bits.headD 0) a
   | .htAt _ _ _ => false
-  | .devSeq => Device.devUntouched.contains f || Device.seqKeepers.contains f
+  | .devSeq => Device.devUntouched.contains f
   | .oracles => true
   | .cstrIn a n => !(frame f).touches bits a n
   | .roomArg r _ => r != .pinned
-  | .devBuf _ _ => Device.devUntouched.contains f || Device.bufKeepers.contains f
-  | .pinnedUsed _ => f != .cudaPinnedAlloc
+  | .devBuf _ _ => Device.devUntouched.contains f
+  | .pinnedUsed _ => true
   | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => Device.devUntouched.contains f
+  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ | .text _ _ _ _ => false
+  | .nwg _ | .wgo _ _ | .wg1 _ _ | .wgText _ _ _ => false
 
 theorem keeps_sound {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : callBits f bits w = some (r, w')) {x : Fact} (hk : keeps f bits x = true) (hx : x.holds w) :
@@ -505,10 +609,8 @@ theorem keeps_sound {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V}
   | devSeq =>
       obtain ⟨ht, hd⟩ := hx
       refine ⟨Device.callBits_track f h ht, ?_⟩
-      simp only [keeps, Bool.or_eq_true, List.contains_iff_mem] at hk
-      rcases hk with hu | hq
-      · rw [Device.callBits_dev_same f hu h]; exact hd
-      · exact Device.callBits_seq f hq h hd
+      simp only [keeps, List.contains_iff_mem] at hk
+      rw [Device.callBits_dev_same f hk h]; exact hd
   | oracles =>
       obtain ⟨e1, e2⟩ := callBits_oracles f h
       show Sem.KeepsSize w'.kernel ∧ VendorKeeps w'.vendor
@@ -523,18 +625,17 @@ theorem keeps_sound {f : IR.Ffi} {bits : List UInt64} {w : World} {r : Option V}
       show x.toNat ≤ w'.mem.sizes rg ∧ _
       rw [callBits_rooms f h rg hp]; exact hx
   | devBuf a n =>
-      simp only [keeps, Bool.or_eq_true, List.contains_iff_mem] at hk
-      rcases hk with hu | hq
-      · show Device.BufIs _ _ w'.dev; rw [Device.callBits_dev_same f hu h]; exact hx
-      · exact Device.callBits_bufs f hq h hx
+      simp only [keeps, List.contains_iff_mem] at hk
+      show Device.BufIs _ _ w'.dev; rw [Device.callBits_dev_same f hk h]; exact hx
   | pinnedUsed n =>
-      have hf : f ≠ .cudaPinnedAlloc := by intro e; subst e; simp [keeps] at hk
       show w'.mem.sizes .pinned ≤ n
-      rw [callBits_pinned f hf h]; exact hx
+      rw [callBits_pinned f h]; exact hx
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ =>
       simp only [keeps, List.contains_iff_mem] at hk
       exact Fact.holds_dev rfl (Device.callBits_dev_same f hk h) hx
   | htAt _ _ _ => simp [keeps] at hk
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ | text _ _ _ _
+  | nwg _ | wgo _ _ | wg1 _ _ | wgText _ _ _ => simp [keeps] at hk
 
 theorem kept_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : World} {r : Option V} {w' : World}
     (hS : S.holds w) (h : callBits f bits w = some (r, w')) : TState.holds (S.filter (keeps f bits)) w' := by
@@ -563,37 +664,16 @@ def afterLife (f : IR.Ffi) (bits : List UInt64) (S : TState) : TState :=
   let k := S.filter (keeps f bits)
   let slot := bits.headD 0
   match f with
-  | .cudaInit =>
-      if S.contains (.part .cudaDevice true) then
-        .devSeq :: .part .cuda true :: .part .capturing false :: slotCell bits cudaCtx k
-      else if S.contains (.part .cudaDevice false) then
-        .devSeq :: .part .cuda false :: .part .capturing false :: slotCell bits 0 k
-      else .devSeq :: .part .capturing false :: k
-  | .cudaCleanup => .devSeq :: .part .cuda false :: .part .capturing false :: slotCell bits 0 k
   | .lmdbInit => .part .lmdb true :: .part .lmdbEmpty true :: slotCell bits lmdbCtx k
-  | .gpuInit =>
-      if S.contains (.part .gpuAdapter true) then .part .gpu true :: slotCell bits gpuCtx k
-      else if S.contains (.part .gpuAdapter false) then .part .gpu false :: slotCell bits 0 k
-      else k
-  | .windowInit =>
-      if S.contains (.part .display true) then .part .win true :: slotCell bits winCtx k
-      else if S.contains (.part .display false) then slotCell bits 0 k
-      else k
-  | .gpuCleanup => .part .gpu false :: slotCell bits 0 k
   | .threadInit => .part .thread true :: slotCell bits threadCtx k
   | .lmdbCleanup =>
       if S.contains (.cell slot 0) then S
       else if S.contains (.cell slot lmdbCtx) then .part .lmdb false :: slotCell bits 0 k else k
-  | .windowCleanup =>
-      if S.contains (.cell slot 0) then S
-      else if S.contains (.cell slot winCtx) then .part .win false :: slotCell bits 0 k else k
   | .threadCleanup =>
       .part .frozen false ::
         if S.contains (.cell slot threadCtx) && cellOk slot then .part .thread false :: .cell slot 0 :: k
         else k
   | .threadJoin => if S.contains (.part .frozen false) then .part .frozen false :: k else k
-  | .cudaPinnedAlloc =>
-      S.filterMap (fun | .pinnedUsed n => some (.pinnedUsed (n + 63 + (bits.getD 1 0).toNat)) | _ => none) ++ k
   | _ => k
 
 /-- A one-slot entry answers only on one argument. -/
@@ -621,35 +701,6 @@ theorem slotCell_one {slot v : UInt64} {S : TState} {w' : World}
 def StoresAt (K : UInt64) (bits : List UInt64) (w' : World) : Prop :=
   ∃ slot, bits = [slot] ∧ (cellOk slot = true → w'.mem.load slot 8 = some K)
 
-/-- What `cudaInit` stores at its slot: the context with a device, null
-    without one. -/
-theorem stores_cudaInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaInit bits w = some (r, w')) :
-    StoresAt (if w.cudaDevice then cudaCtx else 0) bits w' := by
-  change ffiCudaInit bits w = some (r, w') at h
-  unfold ffiCudaInit at h
-  split at h
-  · rename_i slot
-    refine ⟨slot, rfl, fun hok => ?_⟩
-    split at h <;> rename_i hd <;> simp only [hd, if_true, if_false, Bool.false_eq_true] <;>
-      obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h <;> cases h <;> exact cell_of_store hok hm
-  · cases h
-
-theorem stores_cudaCleanup {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaCleanup bits w = some (r, w')) : StoresAt 0 bits w' := by
-  change ffiCudaCleanup bits w = some (r, w') at h
-  unfold ffiCudaCleanup at h
-  split at h
-  · rename_i slot
-    refine ⟨slot, rfl, fun hok => ?_⟩
-    obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-    cases h
-    obtain ⟨rg, off, hd, hp, -⟩ := cellOk_spec hok
-    show ({ m with pinnedLive := [] } : Mem).load slot 8 = some 0
-    rw [load_setLive hd hp]
-    exact cell_of_store hok hm
-  · cases h
-
 theorem stores_lmdbInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : callBits .lmdbInit bits w = some (r, w')) : StoresAt lmdbCtx bits w' := by
   change ffiLmdbInit bits w = some (r, w') at h
@@ -662,55 +713,6 @@ theorem stores_lmdbInit {bits : List UInt64} {w : World} {r : Option V} {w' : Wo
     · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
       cases h
       exact cell_of_store hok hm
-  · cases h
-
-/-- What `windowInit` leaves: with a display, the window's context at its slot
-    and the window live; without one, null there. -/
-theorem windowInit_display {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .windowInit bits w = some (r, w')) :
-    (w.display = true → StoresAt winCtx bits w' ∧ w'.win.live = true) ∧
-    (w.display = false → StoresAt 0 bits w') := by
-  change ffiWindowInit bits w = some (r, w') at h
-  unfold ffiWindowInit at h
-  split at h
-  · rename_i slot
-    split at h
-    · cases h
-    · split at h
-      · rename_i hd
-        obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        cases h
-        exact ⟨fun _ => ⟨⟨slot, rfl, fun hok => cell_of_store hok hm⟩, rfl⟩, fun h0 => by simp_all⟩
-      · rename_i hd
-        obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-        cases h
-        exact ⟨fun h1 => absurd h1 hd, fun _ => ⟨slot, rfl, fun hok => cell_of_store hok hm⟩⟩
-  · cases h
-
-/-- What `gpuInit` stores at its slot: the context with an adapter, null
-    without one. -/
-theorem stores_gpuInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .gpuInit bits w = some (r, w')) :
-    StoresAt (if w.gpuAdapter then gpuCtx else 0) bits w' := by
-  change ffiGpuInit bits w = some (r, w') at h
-  unfold ffiGpuInit at h
-  split at h
-  · rename_i slot
-    refine ⟨slot, rfl, fun hok => ?_⟩
-    split at h <;> rename_i hd <;> simp only [hd, if_true, if_false, Bool.false_eq_true] <;>
-      obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h <;> cases h <;> exact cell_of_store hok hm
-  · cases h
-
-theorem stores_gpuCleanup {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .gpuCleanup bits w = some (r, w')) : StoresAt 0 bits w' := by
-  change ffiGpuCleanup bits w = some (r, w') at h
-  unfold ffiGpuCleanup at h
-  split at h
-  · rename_i slot
-    refine ⟨slot, rfl, fun hok => ?_⟩
-    obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-    cases h
-    exact cell_of_store hok hm
   · cases h
 
 theorem stores_threadInit {bits : List UInt64} {w : World} {r : Option V} {w' : World}
@@ -749,26 +751,6 @@ theorem lmdbCleanup_ctx {slot : UInt64} {w : World} {r : Option V} {w' : World}
     exact ⟨rfl, fun hok => cell_of_store hok hm⟩
   · cases h
 
-theorem windowCleanup_zero {slot : UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .windowCleanup [slot] w = some (r, w')) (hc : w.mem.load slot 8 = some 0) : w' = w := by
-  change ffiWindowCleanup [slot] w = some (r, w') at h
-  simp only [ffiWindowCleanup, hc, Option.bind_eq_bind, Option.bind_some, BEq.rfl, if_true,
-    Option.some.injEq, Prod.mk.injEq] at h
-  exact h.2.symm
-
-theorem windowCleanup_ctx {slot : UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .windowCleanup [slot] w = some (r, w')) (hc : w.mem.load slot 8 = some winCtx) :
-    w'.win.live = false ∧ (cellOk slot = true → w'.mem.load slot 8 = some 0) := by
-  change ffiWindowCleanup [slot] w = some (r, w') at h
-  simp only [ffiWindowCleanup, hc, Option.bind_eq_bind, Option.bind_some] at h
-  have h0 : (winCtx == 0) = false := by decide
-  rw [h0, if_neg (by decide)] at h
-  split at h
-  · obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
-    cases h
-    exact ⟨rfl, fun hok => cell_of_store hok hm⟩
-  · cases h
-
 theorem threadCleanup_ctx {slot : UInt64} {w : World} {r : Option V} {w' : World}
     (h : callBits .threadCleanup [slot] w = some (r, w')) (hok : cellOk slot = true)
     (hc : w.mem.load slot 8 = some threadCtx) :
@@ -791,131 +773,14 @@ theorem TState.holds_cell {S : TState} {w : World} {a v : UInt64} (hS : S.holds 
 theorem TState.holds_cell_mem {S : TState} {w : World} {a v : UInt64} (hS : S.holds w)
     (h : Fact.cell a v ∈ S) : w.mem.load a 8 = some v := hS _ h
 
-/-- `exactly b n` has `n` bytes. -/
-theorem exactly_size' (b : ByteArray) (n : Nat) : (exactly b n).size = n := by
-  rw [exactly, ByteArray.size_append, ByteArray.size_extract]
-  have : (ByteArray.mk (Array.replicate (n - b.size) 0)).size = n - b.size := Array.size_replicate ..
-  rw [this]; omega
-
-/-- **An allocation of page-locked memory grows it by at most its size**, and
-    the alignment before it. -/
-theorem pinnedAlloc_grows {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaPinnedAlloc bits w = some (r, w')) :
-    w'.mem.sizes .pinned ≤ w.mem.sizes .pinned + 63 + (bits.getD 1 0).toNat := by
-  change ffiCudaPinnedAlloc bits w = some (r, w') at h
-  unfold ffiCudaPinnedAlloc at h
-  split at h
-  · rename_i ctx size
-    simp only [List.getD_cons_succ, List.getD_cons_zero]
-    split at h
-    · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; omega
-    · obtain ⟨ok, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · simp only [cudaFail, Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; omega
-      · dsimp only at h
-        split at h
-        · cases h
-        · simp only [Option.some.injEq, Prod.mk.injEq] at h
-          obtain ⟨-, rfl⟩ := h
-          show (w.mem.pinned ++ (ByteArray.mk (Array.replicate _ 0) ++ _)).size ≤ w.mem.pinned.size + 63 + size.toNat
-          rw [ByteArray.size_append, ByteArray.size_append, exactly_size']
-          have : (ByteArray.mk (Array.replicate ((64 - w.mem.pinned.size % 64) % 64) (0 : UInt8))).size =
-              (64 - w.mem.pinned.size % 64) % 64 := Array.size_replicate ..
-          rw [this]
-          have := Nat.mod_lt (64 - w.mem.pinned.size % 64) (by decide : 64 > 0)
-          omega
-  · cases h
-
 /-- **What `afterLife` says of a typestate is true after the call.** -/
 theorem afterLife_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : World} {r : Option V}
     {w' : World} (hS : S.holds w) (h : callBits f bits w = some (r, w')) : (afterLife f bits S).holds w' := by
   have hk := kept_sound hS h
   cases f
-  case cudaInit =>
-    have hq : Fact.holds .devSeq w' := ⟨Device.track_cudaInit h, Device.seq_cudaInit h⟩
-    have hs := sets_cudaInit h
-    have hc0 := stores_cudaInit h
-    have hcap : Fact.holds (.part .capturing false) w' := hs.2
-    change TState.holds (if S.contains (.part .cudaDevice true) = true then
-        .devSeq :: .part .cuda true :: .part .capturing false :: slotCell bits cudaCtx (S.filter (keeps .cudaInit bits))
-      else if S.contains (.part .cudaDevice false) = true then
-        .devSeq :: .part .cuda false :: .part .capturing false :: slotCell bits 0 (S.filter (keeps .cudaInit bits))
-      else .devSeq :: .part .capturing false :: S.filter (keeps .cudaInit bits)) w'
-    split
-    · rename_i h0
-      have hd : w.cudaDevice = true := holds_of_mem hS h0
-      obtain ⟨slot, rfl, hc⟩ := hc0
-      rw [hd, if_pos rfl] at hc
-      exact TState.holds_cons hq (TState.holds_cons (show w'.dev.live = true by rw [hs.1, hd])
-        (TState.holds_cons hcap (slotCell_one hc hk)))
-    · split
-      · rename_i _ h0
-        have hd : w.cudaDevice = false := holds_of_mem hS h0
-        obtain ⟨slot, rfl, hc⟩ := hc0
-        rw [hd] at hc
-        exact TState.holds_cons hq (TState.holds_cons (show w'.dev.live = false by rw [hs.1, hd])
-          (TState.holds_cons hcap (slotCell_one hc hk)))
-      · exact TState.holds_cons hq (TState.holds_cons hcap hk)
-  case cudaCleanup =>
-    have hq : Fact.holds .devSeq w' := ⟨Device.track_cudaCleanup h, Device.seq_cudaCleanup h⟩
-    obtain ⟨slot, rfl, hc⟩ := stores_cudaCleanup h
-    exact TState.holds_cons hq
-      (TState.holds_cons (sets_cudaCleanup h).1 (TState.holds_cons (sets_cudaCleanup h).2 (slotCell_one hc hk)))
-  case cudaPinnedAlloc =>
-    intro x hx
-    rcases List.mem_append.mp hx with hx | hx
-    · obtain ⟨y, hy, hyx⟩ := List.mem_filterMap.mp hx
-      cases y with
-      | pinnedUsed n =>
-          simp only [Option.some.injEq] at hyx; subst hyx
-          have hn : w.mem.sizes .pinned ≤ n := hS _ hy
-          show w'.mem.sizes .pinned ≤ n + 63 + (bits.getD 1 0).toNat
-          have := pinnedAlloc_grows h
-          omega
-      | _ => simp at hyx
-    · exact hk x hx
   case lmdbInit =>
     obtain ⟨slot, rfl, hc⟩ := stores_lmdbInit h
     exact TState.holds_cons (sets_lmdbInit h) (TState.holds_cons (empties_lmdbInit h) (slotCell_one hc hk))
-  case gpuInit =>
-    have hs := sets_gpuInit h
-    have hc0 := stores_gpuInit h
-    change TState.holds (if S.contains (.part .gpuAdapter true) = true then
-        .part .gpu true :: slotCell bits gpuCtx (S.filter (keeps .gpuInit bits))
-      else if S.contains (.part .gpuAdapter false) = true then
-        .part .gpu false :: slotCell bits 0 (S.filter (keeps .gpuInit bits))
-      else S.filter (keeps .gpuInit bits)) w'
-    split
-    · rename_i h0
-      have hd : w.gpuAdapter = true := holds_of_mem hS h0
-      obtain ⟨slot, rfl, hc⟩ := hc0
-      rw [hd, if_pos rfl] at hc
-      exact TState.holds_cons (show w'.gpu.live = true by rw [hs, hd]) (slotCell_one hc hk)
-    · split
-      · rename_i _ h0
-        have hd : w.gpuAdapter = false := holds_of_mem hS h0
-        obtain ⟨slot, rfl, hc⟩ := hc0
-        rw [hd] at hc
-        exact TState.holds_cons (show w'.gpu.live = false by rw [hs, hd]) (slotCell_one hc hk)
-      · exact hk
-  case gpuCleanup =>
-    obtain ⟨slot, rfl, hc⟩ := stores_gpuCleanup h
-    exact TState.holds_cons (sets_gpuCleanup h) (slotCell_one hc hk)
-  case windowInit =>
-    have hi := windowInit_display h
-    change TState.holds (if S.contains (.part .display true) = true then
-        .part .win true :: slotCell bits winCtx (S.filter (keeps .windowInit bits))
-      else if S.contains (.part .display false) = true then slotCell bits 0 (S.filter (keeps .windowInit bits))
-      else S.filter (keeps .windowInit bits)) w'
-    split
-    · rename_i h0
-      obtain ⟨⟨slot, rfl, hc⟩, hl⟩ := hi.1 (holds_of_mem hS h0)
-      exact TState.holds_cons hl (slotCell_one hc hk)
-    · split
-      · rename_i _ h0
-        obtain ⟨slot, rfl, hc⟩ := hi.2 (holds_of_mem hS h0)
-        exact slotCell_one hc hk
-      · exact hk
   case threadInit =>
     obtain ⟨slot, rfl, hc⟩ := stores_threadInit h
     exact TState.holds_cons (sets_threadInit h) (slotCell_one hc hk)
@@ -935,24 +800,6 @@ theorem afterLife_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : Worl
     · split
       · rename_i hc
         have := lmdbCleanup_ctx h (TState.holds_cell hS hc)
-        exact TState.holds_cons this.1 (slotCell_one this.2 hk)
-      · exact hk
-  case windowCleanup =>
-    obtain ⟨slot, rfl⟩ : ∃ slot, bits = [slot] := by
-      change ffiWindowCleanup bits w = some (r, w') at h
-      unfold ffiWindowCleanup at h
-      split at h
-      · exact ⟨_, rfl⟩
-      · cases h
-    change TState.holds (if S.contains (.cell slot 0) = true then S
-      else if S.contains (.cell slot winCtx) = true then
-        .part .win false :: slotCell [slot] 0 (S.filter (keeps .windowCleanup [slot]))
-      else S.filter (keeps .windowCleanup [slot])) w'
-    split
-    · rename_i h0; rw [windowCleanup_zero h (TState.holds_cell hS h0)]; exact hS
-    · split
-      · rename_i hc
-        have := windowCleanup_ctx h (TState.holds_cell hS hc)
         exact TState.holds_cons this.1 (slotCell_one this.2 hk)
       · exact hk
   case threadCleanup =>
@@ -1075,74 +922,6 @@ theorem event?_lt {d : Dev} {e : Nat} (h : (d.event? e).isSome = true) : e < d.e
   · exact hl
   · rw [Array.getElem?_eq_none hl] at h; cases h
 
-/-- **The device facts a call leaves**: of streams, events, and who knows
-    every access, what each device call makes, keeps, or passes on; nothing
-    for every other call, whose `keeps` decides. -/
-def devAfter (f : IR.Ffi) (bits : List UInt64) (S : TState) : TState :=
-  match f, bits with
-  | .cudaInit, _ | .cudaCleanup, _ => [.streams [], .events 0, .readyAll hostParty]
-  | .cudaStreamCreate, [c] =>
-      match streamsOf S with
-      | some l =>
-          if c == cudaCtx && S.contains (.part .cuda true) then
-            .streams (l ++ [true]) :: S.filter (fun x => x.isDev && !(x matches .streams _)) ++
-              (if readyIn S defaultParty then [.readyAll (streamParty l.length)] else [])
-          else []
-      | none => []
-  | .cudaEventCreate, [c] =>
-      match eventsOf S with
-      | some n =>
-          if c == cudaCtx && S.contains (.part .cuda true) then
-            .events (n + 1) :: .evLive n :: S.filter (fun x => x.isDev && !(x matches .events _))
-          else []
-      | none => []
-  | .cudaEventRecord, [c, eid, sid] =>
-      match streamsOf S, evId eid with
-      | some l, some e =>
-          match partyOf l sid with
-          | some p =>
-              if c == cudaCtx && S.contains (.part .cuda true) && S.contains (.part .capturing false) && S.contains (.evLive e) then
-                .evLive e :: S.filter (fun x => x.isDev && x != .evAll e && x != .evLive e) ++
-                  (if readyIn S p then [.evAll e] else [])
-              else []
-          | none => []
-      | _, _ => []
-  | .cudaStreamWaitEvent, [c, sid, eid] =>
-      match streamsOf S, evId eid with
-      | some l, some e =>
-          match partyOf l sid with
-          | some p =>
-              if c == cudaCtx && S.contains (.part .cuda true) && S.contains (.part .capturing false) && S.contains (.evAll e) then .readyAll p :: S.filter Fact.isDev
-              else []
-          | none => []
-      | _, _ => []
-  | .cudaStreamSync, [c, sid] =>
-      match streamsOf S with
-      | some l =>
-          match partyOf l sid with
-          | some p =>
-              if c == cudaCtx && S.contains (.part .cuda true) && S.contains (.part .capturing false) then
-                S.filter Fact.isDev ++ (if readyIn S p then [.readyAll hostParty] else [])
-              else []
-          | none => []
-      | none => []
-  | .cudaLaunch, _ | .cudaLaunchNamed, _ =>
-      if S.contains (.part .capturing false) then
-        S.filter Fact.isMeta ++ (if readyIn S defaultParty then [.readyAll defaultParty] else [])
-      else []
-  | .cudaLaunchOnStream, [_, _, _, _, _, _, _, _, _, _, sid] =>
-      match streamsOf S with
-      | some l =>
-          match partyOf l sid with
-          | some p => if S.contains (.part .capturing false) then S.filter Fact.isMeta ++ (if readyIn S p then [.readyAll p] else []) else []
-          | none => []
-      | none => []
-  | .cudaUpload, _ | .cudaUploadOffset, _ | .cudaDownload, _ | .cudaDownloadOffset, _ =>
-      S.filter Fact.isMeta ++ (if S.contains (.readyAll hostParty) then [.readyAll hostParty] else []) ++
-        (if readyIn S defaultParty then [.readyAll defaultParty] else [])
-  | .cudaCreateBuffer, _ => S.filter Fact.isDev
-  | _, _ => []
-
 /-- What a launch on `p` leaves of the device facts. -/
 theorem devAfter_launch {S : TState} {w w' : World} {p : Nat} (hS : S.holds w)
     (hl : Device.LaunchStep p w.dev w'.dev) :
@@ -1179,224 +958,13 @@ theorem devAfter_copy {S : TState} {w w' : World} (hS : S.holds w) (hc : Device.
       rw [hr]
       exact ((readyIn_sound hS h).op_self hop).grow rfl rfl (DevSpec.sync_grows _ _)
 
-/-- **The device facts a call leaves are true after it.** -/
-theorem devAfter_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : World} {r : Option V}
-    {w' : World} (hS : S.holds w) (h : callBits f bits w = some (r, w')) : (devAfter f bits S).holds w' := by
-  have hlive : S.contains (.part .cuda true) = true → w.dev.live = true := fun hc => holds_of_mem hS hc
-  have hcap : S.contains (.part .capturing false) = true → w.dev.capture = none := fun hc => by
-    have h1 : (Fact.part Part.capturing false).holds w := holds_of_mem hS hc
-    change w.dev.capture.isSome = false at h1
-    cases hcc : w.dev.capture with
-    | none => rfl
-    | some _ => rw [hcc] at h1; cases h1
-  have fresh : ∀ {d : Dev}, d.streams = #[] → d.events = #[] → d.race = {} →
-      ∀ {w'' : World}, w''.dev = d → TState.holds [.streams [], .events 0, .readyAll hostParty] w'' :=
-    fun hs he hr _ hd => TState.holds_cons (by show _ = _; rw [hd, hs]; try rfl)
-      (TState.holds_cons (by show _ = _; rw [hd, he]; try rfl)
-        (TState.holds_one (by show Device.KnowsAll _ _; rw [hd, hr]; exact Device.KnowsAll.empty _)))
-  unfold devAfter
-  split
-  · obtain ⟨h1, h2, h3⟩ := Device.init_dev (show ffiCudaInit _ w = _ from h)
-    exact fresh h1 h2 h3 rfl
-  · obtain ⟨h1, h2, h3⟩ := Device.cleanup_dev (show ffiCudaCleanup _ w = _ from h)
-    exact fresh h1 h2 h3 rfl
-  · -- a stream created
-    rename_i c
-    split
-    · rename_i l hl
-      split
-      · rename_i hc
-        simp only [Bool.and_eq_true, beq_iff_eq] at hc
-        obtain ⟨rfl, hc⟩ := hc
-        obtain ⟨-, hs, he, hr⟩ := Device.streamCreate_dev (show ffiCudaStreamCreate _ w = _ from h) (hlive hc)
-        have hl' := streamsOf_holds hS hl
-        have hacc : w'.dev.race.lastW = w.dev.race.lastW ∧ w'.dev.race.reads = w.dev.race.reads := by
-          rw [hr]; exact ⟨rfl, rfl⟩
-        have hg : DevSpec.Grows w.dev.race w'.dev.race := by rw [hr]; exact DevSpec.joinInto_grows _ _ _
-        have hev : ∀ e : Nat, w'.dev.event? e = w.dev.event? e := fun e => by simp only [Dev.event?, he]
-        refine TState.holds_cons (by show _ = _; rw [hs, Array.toList_push, hl']) ?_
-        refine TState.holds_app (fun x hx => ?_) (TState.holds_if fun hrd => TState.holds_one ?_)
-        · obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
-          simp only [Bool.and_eq_true, Bool.not_eq_true'] at hk
-          refine Fact.holds_step hk.1 (hS x hm) (fun ⟨l, e⟩ => by subst e; simp at hk)
-            (fun ⟨n, e⟩ => by rw [he]) (fun e _ => hev e) hacc.1 hacc.2 hg
-        · show Device.KnowsAll _ _
-          rw [hr, ← hl', Array.length_toList]
-          exact (readyIn_sound hS hrd).learn _ (DevSpec.ClockLe.join_left _ _)
-      · exact fun _ e => nomatch e
-    · exact fun _ e => nomatch e
-  · -- an event created
-    rename_i c
-    split
-    · rename_i n hn
-      split
-      · rename_i hc
-        simp only [Bool.and_eq_true, beq_iff_eq] at hc
-        obtain ⟨rfl, hc⟩ := hc
-        obtain ⟨-, hs, he, hr⟩ := Device.eventCreate_dev (show ffiCudaEventCreate _ w = _ from h) (hlive hc)
-        have hn' := eventsOf_holds hS hn
-        refine TState.holds_cons (by show _ = _; rw [he, Array.size_push, hn'])
-          (TState.holds_cons ?_ (fun x hx => ?_))
-        · show (Dev.event? _ _).isSome = true
-          rw [event?_nat, he, ← hn', Array.getElem?_push_size]; rfl
-        · obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
-          simp only [Bool.and_eq_true, Bool.not_eq_true'] at hk
-          have hx0 := hS x hm
-          refine Fact.holds_step hk.1 hx0 (fun _ => hs) (fun ⟨n, e⟩ => by subst e; simp at hk)
-            (fun e hxe => ?_) (by rw [hr]) (by rw [hr]) (by rw [hr]; exact DevSpec.Grows.refl _)
-          have hlt : e < w.dev.events.size := by
-            rcases hxe with rfl | rfl
-            · exact event?_lt hx0
-            · obtain ⟨clk, hc, -⟩ := hx0; exact event?_lt (by rw [hc]; rfl)
-          rw [event?_nat, event?_nat, he, Array.getElem?_push_lt hlt, Array.getElem?_eq_getElem hlt]
-      · exact fun _ e => nomatch e
-    · exact fun _ e => nomatch e
-  · -- an event recorded
-    rename_i c eid sid
-    split
-    · rename_i l e hl he
-      split
-      · rename_i p hp
-        split
-        · rename_i hc
-          simp only [Bool.and_eq_true, beq_iff_eq] at hc
-          obtain ⟨⟨⟨rfl, hc1⟩, hc2⟩, hc3⟩ := hc
-          have hl' := streamsOf_holds hS hl
-          have hp' : w.dev.party? (asI32 sid) = some p := by rw [partyOf_eq hl']; exact hp
-          have hei := evId_spec he
-          have hlv : (w.dev.event? e).isSome = true := holds_of_mem hS hc3
-          rcases Device.eventRecord_dev (show ffiCudaEventRecord _ w = _ from h) (hlive hc1) (hcap hc2) hp'
-            with hnone | ⟨hs, hev, hr⟩
-          · rw [← hei] at hnone; rw [hnone] at hlv; cases hlv
-          · have hlt := event?_lt hlv
-            have hidx : (asI32 eid).toNat = e := by omega
-            rw [hidx] at hev
-            have hset : ∀ e' : Nat, w'.dev.event? e' =
-                if e' = e then some (some ((w.dev.race.issue p).2, false)) else w.dev.event? e' := fun e' => by
-              rw [event?_nat, event?_nat, hev]
-              split
-              · next he' => subst he'; simp [Array.set!, Array.getElem?_setIfInBounds_self_of_lt hlt]
-              · next he' => simp [Array.set!, Array.getElem?_setIfInBounds_ne (Ne.symm he')]
-            refine TState.holds_cons ?_ (TState.holds_app (fun x hx => ?_) (TState.holds_if fun hrd => TState.holds_one ?_))
-            · show (Dev.event? _ _).isSome = true
-              rw [hset, if_pos rfl]; rfl
-            · obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
-              simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hk
-              obtain ⟨⟨hk1, hk2⟩, hk3⟩ := hk
-              refine Fact.holds_step hk1 (hS x hm) (fun _ => hs) (fun _ => by rw [hev]; simp [Array.set!])
-                (fun e' hxe => ?_) (by rw [hr]; rfl) (by rw [hr]; rfl)
-                (by rw [hr]; exact DevSpec.setClock_issued_grows _ _)
-              have hne : e' ≠ e := by rintro rfl; rcases hxe with rfl | rfl <;> simp_all
-              rw [hset, if_neg hne]
-            · refine ⟨(w.dev.race.issue p).2, by rw [hset, if_pos rfl], ?_⟩
-              rw [hr]; exact Device.Covers.issue (readyIn_sound hS hrd)
-        · exact fun _ e => nomatch e
-      · exact fun _ e => nomatch e
-    · exact fun _ e => nomatch e
-  · -- a stream waits on an event
-    rename_i c sid eid
-    split
-    · rename_i l e hl he
-      split
-      · rename_i p hp
-        split
-        · rename_i hc
-          simp only [Bool.and_eq_true, beq_iff_eq] at hc
-          obtain ⟨⟨⟨rfl, hc1⟩, hc2⟩, hc3⟩ := hc
-          have hl' := streamsOf_holds hS hl
-          have hp' : w.dev.party? (asI32 sid) = some p := by rw [partyOf_eq hl']; exact hp
-          have hei := evId_spec he
-          obtain ⟨clk, hclk, hcov⟩ := (holds_of_mem hS hc3 : Fact.holds (.evAll e) w)
-          rw [hei] at hclk
-          rcases Device.waitEvent_dev (show ffiCudaStreamWaitEvent _ w = _ from h) (hlive hc1) (hcap hc2) hp'
-            with (hn | hn) | ⟨clk', hc', hs, hev, hr⟩
-          · rw [hclk] at hn; cases hn
-          · rw [hclk] at hn; cases hn
-          · rw [hclk] at hc'
-            simp only [Option.some.injEq, Prod.mk.injEq, and_true] at hc'
-            subst hc'
-            refine TState.holds_cons ?_ (fun x hx => ?_)
-            · show Device.KnowsAll _ _; rw [hr]; exact hcov.wait p
-            · obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
-              refine Fact.holds_step hk (hS x hm) (fun _ => hs) (fun _ => by rw [hev])
-                (fun e' _ => by rw [event?_nat, event?_nat, hev]) (by rw [hr]; rfl) (by rw [hr]; rfl)
-                (by rw [hr]; exact (DevSpec.setClock_issued_grows _ _).trans (DevSpec.joinInto_grows _ _ _))
-        · exact fun _ e => nomatch e
-      · exact fun _ e => nomatch e
-    · exact fun _ e => nomatch e
-  · -- the host waits for a stream
-    rename_i c sid
-    split
-    · rename_i l hl
-      split
-      · rename_i p hp
-        split
-        · rename_i hc
-          simp only [Bool.and_eq_true, beq_iff_eq] at hc
-          obtain ⟨⟨rfl, hc1⟩, hc2⟩ := hc
-          have hl' := streamsOf_holds hS hl
-          have hp' : w.dev.party? (asI32 sid) = some p := by rw [partyOf_eq hl']; exact hp
-          obtain ⟨hs, hev, hr⟩ := Device.streamSync_dev (show ffiCudaStreamSync _ w = _ from h) (hlive hc1) (hcap hc2) hp'
-          refine TState.holds_app (fun x hx => ?_) (TState.holds_if fun hrd => TState.holds_one ?_)
-          · obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
-            refine Fact.holds_step hk (hS x hm) (fun _ => hs) (fun _ => by rw [hev])
-              (fun e' _ => by rw [event?_nat, event?_nat, hev]) (by rw [hr]; rfl) (by rw [hr]; rfl)
-              (by rw [hr]; exact DevSpec.sync_grows _ _)
-          · show Device.KnowsAll _ _; rw [hr]; exact (readyIn_sound hS hrd).sync
-        · exact fun _ e => nomatch e
-      · exact fun _ e => nomatch e
-    · exact fun _ e => nomatch e
-  · split
-    · rename_i hc; exact devAfter_launch hS (Device.launch_dev (show ffiCudaLaunch _ w = _ from h) (hcap hc))
-    · exact fun _ e => nomatch e
-  · split
-    · rename_i hc
-      exact devAfter_launch hS (Device.launchNamed_dev (show ffiCudaLaunchNamed _ w = _ from h) (hcap hc))
-    · exact fun _ e => nomatch e
-  · -- a launch on a stream
-    rename_i sid
-    split
-    · rename_i l hl
-      split
-      · rename_i p hp
-        split
-        · rename_i hc
-          have hp' : w.dev.party? (asI32 sid) = some p := by rw [partyOf_eq (streamsOf_holds hS hl)]; exact hp
-          exact devAfter_launch hS (Device.launchOnStream_dev (show ffiCudaLaunchOnStream _ w = _ from h) (hcap hc) hp')
-        · exact fun _ e => nomatch e
-      · exact fun _ e => nomatch e
-    · exact fun _ e => nomatch e
-  · exact devAfter_copy hS (Device.upload_dev (show ffiCudaUpload _ w = _ from h))
-  · exact devAfter_copy hS (Device.uploadOffset_dev (show ffiCudaUploadOffset _ w = _ from h))
-  · exact devAfter_copy hS (Device.download_dev (show ffiCudaDownload _ w = _ from h))
-  · exact devAfter_copy hS (Device.downloadOffset_dev (show ffiCudaDownloadOffset _ w = _ from h))
-  · obtain ⟨hs, hev, hl, hr, hg⟩ := Device.createBuffer_dev (show ffiCudaCreateBuffer _ w = _ from h)
-    intro x hx
-    obtain ⟨hm, hk⟩ := List.mem_filter.mp hx
-    exact Fact.holds_step hk (hS x hm) (fun _ => hs) (fun _ => by rw [hev])
-      (fun e' _ => by rw [event?_nat, event?_nat, hev]) hl hr hg
-  · exact fun _ e => nomatch e
-
-/-- **What a call leaves of a typestate**: what `afterLife` says, and what
-    `devAfter` says of the device's streams and events. -/
-def after (f : IR.Ffi) (bits : List UInt64) (S : TState) : TState := afterLife f bits S ++ devAfter f bits S
-
-/-- The device calls whose device facts after them read none of their
-    arguments. -/
-def devArgFree : IR.Ffi → Bool
-  | .cudaInit | .cudaCleanup | .cudaLaunch | .cudaLaunchNamed | .cudaUpload | .cudaUploadOffset
-  | .cudaDownload | .cudaDownloadOffset | .cudaCreateBuffer => true
-  | _ => false
-
-theorem devAfter_free {f : IR.Ffi} (h : devArgFree f = true) (bits bits' : List UInt64) (S : TState) :
-    devAfter f bits S = devAfter f bits' S := by
-  cases f <;> simp only [devArgFree, Bool.false_eq_true] at h <;> simp only [devAfter]
-
+/-- **What a call leaves of a typestate**: what `afterLife` says. -/
+def after (f : IR.Ffi) (bits : List UInt64) (S : TState) : TState := afterLife f bits S
 
 /-- **What a call leaves of a typestate is true after it.** -/
 theorem after_sound {f : IR.Ffi} {bits : List UInt64} {S : TState} {w : World} {r : Option V}
     {w' : World} (hS : S.holds w) (h : callBits f bits w = some (r, w')) : (after f bits S).holds w' :=
-  TState.holds_app (afterLife_sound hS h) (devAfter_sound hS h)
+  afterLife_sound hS h
 
 theorem reachable_of {m : Mem} {r : Region} (hp : r ≠ .pinned) (hz : m.frozen = false) (off n : Nat) :
     m.reachable r off n = true := by
@@ -1436,6 +1004,47 @@ theorem copyOut_isSome {m : Mem} {a : UInt64} {n : Nat} {r : Region} {off : Nat}
       obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (load_isSome (n := 1) hd' hp (by omega) hz)
       simp only [List.foldlM_cons, hb]
       exact ih _ (fun j hj => hl j (List.mem_cons_of_mem _ hj))
+
+/-- Memory whose bytes from `a` load as they did copies out the same. -/
+theorem copyOut_congr {m m' : Mem} {a : UInt64} {n : Nat}
+    (h : ∀ i, i < n → m'.load (a + UInt64.ofNat i) 1 = m.load (a + UInt64.ofNat i) 1) :
+    copyOut m' a n = copyOut m a n := by
+  unfold copyOut
+  suffices ∀ (l : List Nat) (acc : ByteArray), (∀ i ∈ l, i < n) →
+      l.foldlM (fun (acc : ByteArray) i => do
+        let b ← m'.load (a + UInt64.ofNat i) 1
+        pure (acc.push b.toUInt8)) acc =
+      l.foldlM (fun (acc : ByteArray) i => do
+        let b ← m.load (a + UInt64.ofNat i) 1
+        pure (acc.push b.toUInt8)) acc from
+    this _ _ (fun i hi => List.mem_range.mp hi)
+  intro l
+  induction l with
+  | nil => intro _ _; rfl
+  | cons i l ih =>
+      intro acc hl
+      simp only [List.foldlM_cons, h i (hl i List.mem_cons_self)]
+      cases m.load (a + UInt64.ofNat i) 1 with
+      | none => rfl
+      | some b => exact ih _ (fun j hj => hl j (List.mem_cons_of_mem _ hj))
+
+theorem wgText_kept {w w' : World} {a : UInt64} {n : Nat} {sh : Bool}
+    (hx : (Fact.wgText a n sh).holds w)
+    (hz' : w'.mem.frozen = false) (hsz : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hok : w'.wgslOk = w.wgslOk)
+    (hu : ∀ i, i < n → Unchanged w.mem w'.mem (a + UInt64.ofNat i)) : (Fact.wgText a n sh).holds w' := by
+  obtain ⟨hz, hw, ⟨r, off, hd, hp, hs, hsp⟩, t, ht, hok'⟩ := hx
+  refine ⟨hz', hw, ⟨r, off, hd, hp, by rw [hsz r hp]; exact hs, hsp⟩, t, ?_, by rw [hok]; exact hok'⟩
+  have hn : (UInt64.ofNat n).toNat = n := by rw [UInt64.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
+  have hc : copyOut w'.mem a n = copyOut w.mem a n := copyOut_congr fun i hi => by
+    have hd' := Sem.decodeAddr_add hd (i := i) (by rw [Sem.regionSpan_toNat]; omega)
+    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp (load_isSome (n := 1) hd' hp (by omega) hz)
+    obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp
+      (load_isSome (n := 1) hd' hp (by rw [hsz r hp]; omega) hz')
+    rw [hx, hy, hu i hi x y hx hy]
+  unfold Sem.wgText readBytes at ht ⊢
+  rw [hn] at ht ⊢
+  rw [hc]; exact ht
 
 theorem copyIn_isSome {m : Mem} {a : UInt64} {r : Region} {off : Nat} (src : ByteArray)
     (hd : decodeAddr a = some (r, off)) (hp : r ≠ .pinned) (hs : off + src.size ≤ m.sizes r)
@@ -1534,7 +1143,8 @@ theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.hold
     | part _ _ => cases hr
     | cell _ _ => cases hr
     | held _ _ | opened _ _ | htAt _ _ _ | cstr _ | devSeq | oracles | cstrIn _ _ | roomArg _ _ | devBuf _ _
-    | pinnedUsed _ | streams _ | events _ | evLive _ | readyAll _ | evAll _ => cases hr
+    | pinnedUsed _ | streams _ | events _ | evLive _ | readyAll _ | evAll _ | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ | text _ _ _ _
+    | nwg _ | wgo _ _ | wg1 _ _ | wgText _ _ _ => cases hr
   · cases h
 
 theorem slot8_of_state {S : TState} {w : World} {a : UInt64} (hS : S.holds w) (h : roomAt S a 8 = true) :
@@ -1590,15 +1200,6 @@ theorem roomAt_mono {S : TState} {a : UInt64} {n k : Nat} (h : roomAt S a n = tr
     all_goals first | exact hr | exact ⟨hr.1, by omega⟩
   · cases h
 
-/-- **A poll's events fit** where the typestate gives room for as many records
-    as the program asks for: fewer may arrive, never more. -/
-theorem pollRoom_of_state {S : TState} {w : World} {p m : UInt64} (hS : S.holds w)
-    (h : roomAt S p (32 * (asI32 m).toNat) = true) :
-    Writable w.pump.mem p
-      (winEventBytes (w.pump.win.pending.take (min w.pump.win.pending.length (asI32 m).toNat))).size := by
-  rw [(pump_life w).1, winEventBytes_size]
-  exact writable_of_state hS (roomAt_mono h (by simp only [List.length_take]; omega))
-
 /-- The most room the typestate names past `a`, in `a`'s region. -/
 def roomLeft (S : TState) (a : UInt64) : Nat :=
   match decodeAddr a with
@@ -1637,7 +1238,10 @@ theorem readTo_of_state {S : TState} {w : World} {dst fileOff size : UInt64} {p 
 /-- Whether a store of `n` bytes at `a` keeps a fact. -/
 def storeKeeps (a : UInt64) (n : Nat) : Fact → Bool
   | .part _ _ | .room _ _ | .held _ _ | .opened _ _ | .devSeq | .oracles | .roomArg _ _
-  | .devBuf _ _ | .pinnedUsed _ | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => true
+  | .devBuf _ _ | .pinnedUsed _ | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _
+  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => true
+  | .nwg _ | .wgo _ _ | .wg1 _ _ => true
+  | .text c _ k _ | .wgText c k _ => decide (a.toNat + n ≤ c.toNat ∨ (c.toNat + k ≤ a.toNat ∧ a.toNat + n ≤ 2 ^ 64))
   | .cell c _ => cellOk c && (List.range 8).all fun i => !within a n (c + UInt64.ofNat i)
   | .cstr _ => false
   | .cstrIn c k => decide (a.toNat + n ≤ c.toNat ∨ (c.toNat + k ≤ a.toNat ∧ a.toNat + n ≤ 2 ^ 64))
@@ -1645,7 +1249,7 @@ def storeKeeps (a : UInt64) (n : Nat) : Fact → Bool
       (List.range 8).all fun i => !within a n (c + UInt64.ofNat i)
 
 def Fact.isCell : Fact → Bool
-  | .cell _ _ | .cstr _ | .cstrIn _ _ | .htAt _ _ _ => true
+  | .cell _ _ | .cstr _ | .cstrIn _ _ | .htAt _ _ _ | .text _ _ _ _ | .wgText _ _ _ => true
   | _ => false
 
 /-- **What a store leaves of a typestate**: every part and room; the cells it
@@ -1664,7 +1268,7 @@ def afterStore (a v : Option UInt64) (n : Nat) (S : TState) : TState :=
     held keeps every fact but the cells. -/
 theorem nonCell_kept {S : TState} {w w' : World} (hS : S.holds w) (hp : ∀ p : Part, p.get w' = p.get w)
     (hh : ∀ (k : Held) (a : UInt64), k.live w' a = k.live w a)
-    (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor)
+    (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor ∧ w'.wg = w.wg ∧ w'.wgslOk = w.wgslOk)
     (hsz : w'.mem.sizes = w.mem.sizes) : TState.holds (S.filter (!·.isCell)) w' := by
   intro x hx
   obtain ⟨hm, hc⟩ := List.mem_filter.mp hx
@@ -1678,12 +1282,16 @@ theorem nonCell_kept {S : TState} {w w' : World} (hS : S.holds w) (hp : ∀ p : 
   | cstr _ => cases hc
   | htAt _ _ _ => cases hc
   | devSeq => show Device.TrackOk w'.dev ∧ _; rw [hdv.1]; exact this
-  | oracles => show Sem.KeepsSize w'.kernel ∧ _; rw [hdv.2.1, hdv.2.2]; exact this
+  | oracles => show Sem.KeepsSize w'.kernel ∧ _; rw [hdv.2.1, hdv.2.2.1]; exact this
   | cstrIn _ _ => cases hc
+  | text _ _ _ _ => cases hc
   | roomArg r x => show x.toNat ≤ w'.mem.sizes r ∧ _; rw [hsz]; exact this
   | devBuf _ _ => show Device.BufIs _ _ w'.dev; rw [hdv.1]; exact this
   | pinnedUsed n => show w'.mem.sizes .pinned ≤ n; rw [hsz]; exact this
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl hdv.1 this
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl hdv.1 this
+  | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl hdv.2.2.2.1 this
+  | wgText _ _ _ => cases hc
 
 /-- A store that cannot reach a cell's eight bytes leaves what the cell
     holds. -/
@@ -1700,7 +1308,7 @@ theorem store_cell_kept {w w' : World} {a b c v : UInt64} {n : Nat} (hz : w'.mem
 
 theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (hS : S.holds w)
     (hp : ∀ p : Part, p.get w' = p.get w) (hh : ∀ (k : Held) (a : UInt64), k.live w' a = k.live w a)
-    (hhp : w'.heap = w.heap) (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor)
+    (hhp : w'.heap = w.heap) (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor ∧ w'.wg = w.wg ∧ w'.wgslOk = w.wgslOk)
     (hsz : w'.mem.sizes = w.mem.sizes)
     (h : w.mem.store a n b = some w'.mem) (hn : n ≤ 2 ^ 64) : TState.holds (S.filter (storeKeeps a n)) w' := by
   intro x hx
@@ -1717,13 +1325,43 @@ theorem storeKeeps_sound {S : TState} {w w' : World} {a b : UInt64} {n : Nat} (h
   | devBuf _ _ => show Device.BufIs _ _ w'.dev; rw [hdv.1]; exact hx0
   | pinnedUsed n => show w'.mem.sizes .pinned ≤ n; rw [hsz]; exact hx0
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl hdv.1 hx0
-  | oracles => show Sem.KeepsSize w'.kernel ∧ _; rw [hdv.2.1, hdv.2.2]; exact hx0
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl hdv.1 hx0
+  | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl hdv.2.2.2.1 hx0
+  | wgText c k sh =>
+      simp only [storeKeeps, decide_eq_true_eq] at hk
+      have hz' : w'.mem.frozen = false := by
+        have := hp .frozen; simp only [Part.get] at this; rw [this]; exact hx0.1
+      refine wgText_kept hx0 hz' (fun rg _ => congrFun hsz rg) hdv.2.2.2.2 fun i hi => Unchanged.of_eq ?_
+      refine Mem.store_other h _ fun j hj e => ?_
+      have hw : c.toNat + k < 2 ^ 64 := hx0.2.1
+      have e2 := congrArg UInt64.toNat e
+      rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
+        Nat.mod_eq_of_lt (by omega : i < 2 ^ 64), Nat.mod_eq_of_lt (by omega : j < 2 ^ 64),
+        Nat.mod_eq_of_lt (by omega : c.toNat + i < 2 ^ 64)] at e2
+      rcases hk with h1 | ⟨h1, h2⟩
+      · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
+      · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
+  | oracles => show Sem.KeepsSize w'.kernel ∧ _; rw [hdv.2.1, hdv.2.2.1]; exact hx0
   | cstrIn c k =>
       simp only [storeKeeps, decide_eq_true_eq] at hk
       have hz' : w'.mem.frozen = false := by
         have := hp .frozen; simp only [Part.get] at this; rw [this]; exact hx0.1
       have hw := hx0.2.2.1
       refine cstrIn_kept hx0 hz' (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
+      refine Mem.store_other h _ fun j hj e => ?_
+      have e2 := congrArg UInt64.toNat e
+      rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
+        Nat.mod_eq_of_lt (by omega : i < 2 ^ 64), Nat.mod_eq_of_lt (by omega : j < 2 ^ 64),
+        Nat.mod_eq_of_lt (by omega : c.toNat + i < 2 ^ 64)] at e2
+      rcases hk with h1 | ⟨h1, h2⟩
+      · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
+      · rw [Nat.mod_eq_of_lt (by omega : a.toNat + j < 2 ^ 64)] at e2; omega
+  | text c t k _ =>
+      simp only [storeKeeps, decide_eq_true_eq] at hk
+      have hz' : w'.mem.frozen = false := by
+        have := hp .frozen; simp only [Part.get] at this; rw [this]; exact hx0.1.1
+      have hw := hx0.1.2.2.1
+      refine text_kept hx0 hz' (fun rg _ => congrFun hsz rg) fun i hi => Unchanged.of_eq ?_
       refine Mem.store_other h _ fun j hj e => ?_
       have e2 := congrArg UInt64.toNat e
       rw [UInt64.toNat_add, UInt64.toNat_add, UInt64.toNat_ofNat', UInt64.toNat_ofNat',
@@ -1787,6 +1425,9 @@ theorem storeKeeps_mono {a : UInt64} {m n : Nat} {x : Fact} (h : storeKeeps a m 
   | cstrIn c k =>
       simp only [storeKeeps, decide_eq_true_eq] at h ⊢
       omega
+  | text c _ k _ | wgText c k _ =>
+      simp only [storeKeeps, decide_eq_true_eq] at h ⊢
+      omega
   | cstr _ => simp [storeKeeps] at h
   | htAt c k k' =>
       simp only [storeKeeps, Bool.and_eq_true, List.all_eq_true, List.mem_range, Bool.not_eq_true',
@@ -1797,7 +1438,7 @@ theorem storeKeeps_mono {a : UInt64} {m n : Nat} {x : Fact} (h : storeKeeps a m 
 theorem afterStore_sound {S : TState} {w w' : World} {ao vo : Option UInt64} {a b : UInt64} {n : Nat}
     (hS : S.holds w) (hp : ∀ p : Part, p.get w' = p.get w) (hh : ∀ (k : Held) (a : UInt64), k.live w' a = k.live w a)
     (hhp : w'.heap = w.heap)
-    (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor)
+    (hdv : w'.dev = w.dev ∧ w'.kernel = w.kernel ∧ w'.vendor = w.vendor ∧ w'.wg = w.wg ∧ w'.wgslOk = w.wgslOk)
     (hsz : w'.mem.sizes = w.mem.sizes)
     (h : ao.isSome → w.mem.store a n b = some w'.mem) (ha : ∀ x, ao = some x → x = a)
     (hv : ∀ x, vo = some x → x = b) (hn : n ≤ 2 ^ 64) : (afterStore ao vo n S).holds w' := by
@@ -2083,20 +1724,6 @@ theorem readIds_of_state {S : TState} {w : World} {p : UInt64} {n : Nat} (hS : S
   obtain ⟨raw, hraw⟩ := Option.isSome_iff_exists.mp hl
   unfold readIds
   rw [hraw]; rfl
-
-/-- A pipeline's bindings can be read where the typestate gives their bytes
-    room: each is two four-byte words. -/
-theorem readBinds_of_state {S : TState} {w : World} {p : UInt64} {n : Nat} (hS : S.holds w)
-    (h : roomAt S p (8 * n) = true) : (readBinds w.mem p n).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := roomAt_spec hS h
-  unfold readBinds
-  refine mapM_isSome_of fun i hi => ?_
-  have hi := List.mem_range.mp hi
-  have hd1 := Sem.decodeAddr_add (i := 8 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  have hd2 := Sem.decodeAddr_add (i := 8 * i + 4) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  obtain ⟨a, ha⟩ := Option.isSome_iff_exists.mp (load_isSome (n := 4) hd1 hp (by omega) hz)
-  obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (load_isSome (n := 4) hd2 hp (by omega) hz)
-  rw [ha, hb]; rfl
 
 /-- **A launch's bindings are ready** where they can be read and every access
     is the default stream's. -/

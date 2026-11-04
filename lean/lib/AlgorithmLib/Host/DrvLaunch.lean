@@ -10,7 +10,7 @@ import all Init.Data.List.Sort.Basic
 /-!
 # `Host.DrvLaunch` — `cuLaunchKernel`, as a triple over what the kernel computes
 
-The direct launch's counterpart of `launch_triple`. The allocations a launch
+The host rule for a direct launch. The allocations a launch
 binds are those its parameters point into, each once; under the device's
 honesty about the launch it makes (`Honest`), the call answers and those
 allocations after it stand in `M` to what they held before. A kernel theorem

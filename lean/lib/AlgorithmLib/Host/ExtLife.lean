@@ -161,14 +161,15 @@ structure LibStep (e : Ext) (bits : List UInt64) (w : World) (r : Option V) (w' 
   obs : w'.obs = w.obs
   dev : w'.dev = w.dev
   lmdb : w'.lmdb = w.lmdb
-  win : w'.win = w.win
-  gpu : w'.gpu = w.gpu
   thread : w'.thread = w.thread
   display : w'.display = w.display
   cudaDevice : w'.cudaDevice = w.cudaDevice
   gpuAdapter : w'.gpuAdapter = w.gpuAdapter
   kernel : w'.kernel = w.kernel
   vendor : w'.vendor = w.vendor
+  present : w'.present = w.present
+  wg : w'.wg = w.wg
+  wgslOk : w'.wgslOk = w.wgslOk
   mem : Rewritten w.mem w'.mem
   held : ∀ k a, e.closes ≠ some k → k.live w a = true → k.live w' a = true
   opens : ∀ k x, e.opens = some k → r.bind asBits = some x → x ≠ 0 → k.live w' x = true
@@ -296,12 +297,48 @@ theorem wlCall_of {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V}
        refine ⟨e1, w.mem, ?_, Rewritten.refl _⟩
        rw [e2, ← wlEffect_mem c w])
 
+/-- **A window call but an open answers a value of the type it returns.** -/
+theorem wl_answer {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : wlCall f bits w = some (r, w')) (hf : f ≠ .open) :
+    ∀ v, r = some v → ∃ x, v = .sc ((Ext.window f).sig.2.getD .i64) x := by
+  obtain ⟨c, hc, rfl, -⟩ := wlCall_of h
+  intro v hv
+  cases f with
+  | «open» => exact absurd rfl hf
+  | init =>
+      simp only [wlDecode] at hc; split at hc
+      · cases hc; simp only [wlEffect] at hv; split at hv
+        · cases hv; exact ⟨_, rfl⟩
+        · split at hv <;> (cases hv; exact ⟨_, rfl⟩)
+      · cases hc
+  | close =>
+      simp only [wlDecode, wlDClose] at hc; split at hc
+      · obtain ⟨k, -, rfl⟩ := Option.map_eq_some_iff.mp hc; cases hv
+      · cases hc
+  | pump => simp only [wlDecode] at hc; split at hc
+            · cases hc; cases hv
+            · cases hc
+  | poll =>
+      simp only [wlDecode, wlDPoll] at hc; split at hc
+      · simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at hc
+        obtain ⟨k, -, -, -, hc⟩ := hc
+        cases hc
+        simp only [wlEffect] at hv; split at hv <;> (cases hv; exact ⟨_, rfl⟩)
+      · cases hc
+  | pixels =>
+      simp only [wlDecode, wlDPixels] at hc; split at hc
+      · simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at hc
+        obtain ⟨k, -, hc⟩ := hc
+        cases hc
+        cases hv; exact ⟨_, rfl⟩
+      · cases hc
+
 theorem wl_step {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
     (h : wlCall f bits w = some (r, w')) : LibStep (.window f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := wlCall_of h
   obtain ⟨wl, inp, he⟩ := wlEffect_shape c w
   have hwl : ((wlEffect c w).2).wl = wl := by rw [he]
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | window =>
@@ -324,6 +361,9 @@ theorem wl_step {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {
     | heap =>
         have : ((wlEffect c w).2).heap = w.heap := by rw [he]
         simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
+    | wg _ =>
+        have : ((wlEffect c w).2).wg = w.wg := by rw [he]
+        simp only [Held.live] at hl ⊢; rw [this]; exact hl
   · intro k x hk hx h0
     cases f <;> (try cases hk)
     rcases wlDecode_open hc with rfl | ⟨wd, ht, rfl⟩
@@ -415,7 +455,7 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
     (h : serialCall f bits w = some (r, w')) : LibStep (.serial f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := serialCall_of h
   obtain ⟨ser, he⟩ := serEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | port =>
@@ -438,6 +478,9 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
     | heap =>
         have : ((serEffect c w).2).heap = w.heap := by rw [he]
         simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
+    | wg _ =>
+        have : ((serEffect c w).2).wg = w.wg := by rw [he]
+        simp only [Held.live] at hl ⊢; rw [this]; exact hl
   · intro k x hk hx h0
     cases f <;> (try cases hk)
     rcases serDecode_open hc with rfl | ⟨p, rfl⟩
@@ -567,7 +610,7 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
     (h : usbCall f bits w = some (r, w')) : LibStep (.usb f) bits w r w' := by
   obtain ⟨c, hc, hr, M, rfl, hM⟩ := usbCall_of h
   obtain ⟨usb, ifs, he⟩ := usbEffect_shape c w
-  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
   · intro k a hk hl
     cases k with
     | usbInterface =>
@@ -594,6 +637,9 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
     | heap =>
         have : ((usbEffect c w).2).heap = w.heap := by rw [he]
         simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
+    | wg _ =>
+        have : ((usbEffect c w).2).wg = w.wg := by rw [he]
+        simp only [Held.live] at hl ⊢; rw [this]; exact hl
   · intro k x hk hx h0
     cases f <;> (try cases hk)
     · rcases usbDecode_open hc with rfl | ⟨i, rfl⟩
@@ -623,7 +669,7 @@ theorem cpu_step {f : CpuFn} {bits : List UInt64} {w : World} {r : Option V} {w'
   split at h
   · cases h
   · simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl, ?_,
+    refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl, ?_,
       fun ⟨_, h⟩ => nomatch h⟩
     intro k x hk; simp [Ext.opens] at hk
 
@@ -640,7 +686,7 @@ theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {
   generalize w'.stdout = so at hw
   generalize w'.mem = m at hw hr
   subst hw
-  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hr,
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hr,
     fun k _ _ hl => by cases k <;> exact hl,
     fun k x hk => by simp [Ext.opens] at hk, fun ⟨_, h⟩ => nomatch h⟩
 
@@ -652,7 +698,7 @@ theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {
 theorem LibStep.of_mem {e : Ext} {bits : List UInt64} {w : World} {r : Option V} {m : Mem}
     (hm : Rewritten w.mem m) (ho : e.opens = none) (hl : m.pinnedLive = w.mem.pinnedLive) :
     LibStep e bits w r { w with mem := m } :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hm, fun k _ _ hl => by cases k <;> exact hl,
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, hm, fun k _ _ hl => by cases k <;> exact hl,
     fun k _ hk => (by rw [ho] at hk; cases hk), fun _ _ _ _ h => h.same rfl hm.2.2.1 hl⟩
 
 theorem find_cons_isSome {α : Type} (p : α → Bool) (x : α) (l : List α) (h : (l.find? p).isSome = true) :
@@ -695,13 +741,13 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     · cases h
     split at h
     · cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun k _ _ hl => hl, ?_,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun k _ _ hl => hl, ?_,
         fun _ _ _ _ h => h⟩
       intro k x _ hx h0
       exact (answer_zero rfl hx h0).elim
     · rename_i hz hroom
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, rfl⟩,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, fun r hr => by cases r <;> first | rfl | exact absurd rfl hr, ?_, rfl⟩,
         fun k a _ hl => ?_, ?_, fun _ _ _ _ h => h.alloc _⟩
       · simp only [Mem.sizes, Mem.region, ByteArray.size_append]; omega
       · cases k
@@ -723,7 +769,7 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
       exact LibStep.of_mem (Rewritten.refl _) rfl rfl
     · obtain ⟨⟨off, n⟩, -, h⟩ := Option.bind_eq_some_iff.mp h
       cases h
-      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq rfl (funext fun r => by cases r <;> rfl) rfl,
+      refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.of_eq rfl (funext fun r => by cases r <;> rfl) rfl,
         fun k a hk hl => ?_, ?_, fun _ hc => absurd rfl hc⟩
       · cases k
         all_goals first | exact hl | exact absurd rfl hk
@@ -760,7 +806,7 @@ theorem lib_step {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {r : O
   case c f => exact c_step h
   case present l =>
     obtain ⟨rfl, -⟩ := present_same h
-    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl,
+    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, Rewritten.refl _, fun _ _ _ hl => hl,
       fun k x hk => by simp [Ext.opens] at hk, fun ⟨_, h⟩ => nomatch h⟩
   all_goals
     simp only [extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true, Bool.false_eq_true,
@@ -782,6 +828,10 @@ def extKeeps (e : Ext) (bits : List UInt64) : Fact → Bool
   | .cstrIn a n => e.aside && !(e.frame.touches bits a n)
   | .roomArg _ _ | .devBuf _ _ => e.aside
   | .streams _ | .events _ | .evLive _ | .readyAll _ | .evAll _ => e.aside
+  | .drvInit | .retained _ | .nbufs _ | .alloc _ _ | .nmods _ | .nfuncs _ | .mod _ _ | .fn _ _ | .nblas _ | .blasOn _ _ | .ngraphs _ | .graph _ | .nexecs _ | .exec _ | .cap _ _ _ _ => e.aside
+  | .nwg _ | .wgo _ _ | .wg1 _ _ => e.aside
+  | .wgText a n _ => e.aside && !(e.frame.touches bits a n)
+  | .text _ _ _ _ => false
   | .pinnedUsed _ => false
   | .htAt _ _ _ | .cstr _ => false
 
@@ -810,14 +860,13 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       · show w'.dev.capture.isSome = w.dev.capture.isSome; rw [st.dev]
       · exact st.mem.1
       · show w'.lmdb.live = w.lmdb.live; rw [st.lmdb]
-      · show w'.win.live = w.win.live; rw [st.win]
-      · show w'.gpu.live = w.gpu.live; rw [st.gpu]
       · show w'.thread.live = w.thread.live; rw [st.thread]
       · show w'.lmdb.envs.isEmpty = w.lmdb.envs.isEmpty; rw [st.lmdb]
       · show w'.display = w.display; rw [st.display]
       · show w'.cudaDevice = w.cudaDevice; rw [st.cudaDevice]
       · show w'.gpuAdapter = w.gpuAdapter; rw [st.gpuAdapter]
       · show w'.mem.busy.isEmpty = w.mem.busy.isEmpty; rw [st.mem.2.2.2]
+      · show w'.has _ = w.has _; simp only [World.has, st.present]
   | room rg n =>
       show n ≤ w'.mem.sizes rg
       by_cases hp : rg = .pinned
@@ -850,6 +899,14 @@ theorem extKeeps_sound {e : Ext} {vs : List V} {bits : List UInt64} {w : World} 
       rw [st.dev]; exact hx
   | pinnedUsed _ => simp [extKeeps] at hk
   | streams _ | events _ | evLive _ | readyAll _ | evAll _ => exact Fact.holds_dev rfl st.dev hx
+  | drvInit | retained _ | nbufs _ | alloc _ _ | nmods _ | nfuncs _ | mod _ _ | fn _ _ | nblas _ | blasOn _ _ | ngraphs _ | graph _ | nexecs _ | exec _ | cap _ _ _ _ => exact Fact.holds_drv rfl st.dev hx
+  | text _ _ _ _ => simp [extKeeps] at hk
+  | nwg _ | wgo _ _ | wg1 _ _ => exact Fact.holds_wg rfl st.wg hx
+  | wgText a n sh =>
+      simp only [extKeeps, Bool.and_eq_true, Bool.not_eq_true'] at hk
+      refine wgText_kept hx (by rw [st.mem.1]; exact hx.1) (fun rg hp => st.mem.2.1 rg hp) st.wgslOk fun i hi => ?_
+      exact ExtContracts.ext_respects_frame e vs w r w' h bits hb _
+        (Frame.mayWrite_sound (Frame.touches_false hk.2 i hi) _)
   | roomArg rg x =>
       show x.toNat ≤ w'.mem.sizes rg ∧ _
       refine ⟨?_, hx.2⟩
@@ -1135,10 +1192,15 @@ theorem baseNeeds_pre {f : BaseFn} {bits : List UInt64} {w : World} {hs : List (
          exact ⟨ha, load_isSome hd hp hs hz⟩
        · cases hn)
 
+/-- The C strings a call reads: a window's title. -/
+def extStrs : Ext → List UInt64 → List UInt64
+  | .window .open, [t, _, _] => [t]
+  | _, _ => []
+
 /-- **What a call of the engine's own libraries needs of a typestate**: the
     handles it is handed, held, and room for each buffer it reads or writes,
-    by address and length; `none` for a call the typestate cannot vouch for,
-    such as an open handed a C string. -/
+    by address and length, with the C strings `extStrs` names; `none` for a
+    call the typestate cannot vouch for. -/
 def extNeeds : Ext → List UInt64 → Option (List (Held × UInt64) × List (UInt64 × Nat))
   | .present _, [] => some ([], [])
   | .c .memcpy, [d, s, n] =>
@@ -1149,6 +1211,7 @@ def extNeeds : Ext → List UInt64 → Option (List (Held × UInt64) × List (UI
   | .c .calloc, [n, sz] => if 0 < n.toNat * sz.toNat then some ([], []) else none
   | .c .free, [p] => some ([(.heap, p)], [])
   | .window .init, [] | .window .pump, [] => some ([], [])
+  | .window .open, [_, _, _] => some ([], [])
   | .window .close, [p] | .window .pixels, [p] => some ([(.window, p)], [])
   | .window .poll, [p, out] => some ([(.window, p)], [(out, 32)])
   | .cpu .count, [] | .cpu .unpin, [] => some ([], [])
@@ -1197,7 +1260,8 @@ theorem usbIface_get {w : World} {a : UInt64} {j : Nat} (h : w.usbIface? a = som
 theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
     {hs : List (Held × UInt64)} {rs : List (UInt64 × Nat)}
     (hn : extNeeds e bits = some (hs, rs))
-    (live : ∀ p ∈ hs, p.1.live w p.2 = true) (room : ∀ q ∈ rs, Fits w.mem q.1 q.2) :
+    (live : ∀ p ∈ hs, p.1.live w p.2 = true) (room : ∀ q ∈ rs, Fits w.mem q.1 q.2)
+    (strs : ∀ a ∈ extStrs e bits, CStr w.mem a) :
     ExtContracts.ExtPre e bits w := by
   intro _
   unfold extNeeds at hn
@@ -1224,6 +1288,14 @@ theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
   -- window: init, pump
   · exact ⟨rfl, rfl⟩
   · exact ⟨rfl, rfl⟩
+  -- window: open, its title a C string
+  · obtain ⟨c, hc⟩ := Option.isSome_iff_exists.mp (strs _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [wlDecode, wlDOpen]
+    split
+    · rfl
+    · simp only [hc, Option.bind_eq_bind, Option.bind_some]
+      split <;> rfl
   -- window: close, pixels
   · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
     exact ⟨rfl, by simp [wlDecode, wlDClose, hk]⟩
@@ -1301,8 +1373,9 @@ theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
 theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
     {hs : List (Held × UInt64)} {rs : List (UInt64 × Nat)}
     (hn : extNeeds e bits = some (hs, rs)) (hS : S.holds w)
-    (hh : ∀ p ∈ hs, Fact.held p.1 p.2 ∈ S) (hr : rs.all (fun q => roomAt S q.1 q.2) = true) :
+    (hh : ∀ p ∈ hs, Fact.held p.1 p.2 ∈ S) (hr : rs.all (fun q => roomAt S q.1 q.2) = true)
+    (strs : ∀ a ∈ extStrs e bits, CStr w.mem a) :
     ExtContracts.ExtPre e bits w :=
-  extNeeds_pre hn (fun p hp => hS _ (hh p hp)) (fun q hq => roomAt_spec hS (List.all_eq_true.mp hr q hq))
+  extNeeds_pre hn (fun p hp => hS _ (hh p hp)) (fun q hq => roomAt_spec hS (List.all_eq_true.mp hr q hq)) strs
 
 end AlgorithmLib.HProg.Contracts

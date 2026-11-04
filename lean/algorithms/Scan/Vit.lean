@@ -1,7 +1,6 @@
 import Scan.MlSurface
 import Vit.Guards
 import Vit.Dag
-import Vit.DagStep
 import Vit.Regs
 import Vit.Slot
 /-!
@@ -36,7 +35,11 @@ namespace VitScan
     the speed this artifact has, is equivalent to the tape's own order only if
     that holds.  `vDepsCheckWith` carries a flag that drops one predecessor edge
     per unit; run that way the same check reports unordered pairs, which is what
-    distinguishes a guard from a decoration.
+    distinguishes a guard from a decoration.  And that the streams and events each capture
+    records order every conflicting pair of the operations it records
+    (`vit_captures_ordered`): a capture of a range drops its waits on what ran
+    before it, so an ordering the whole tape had only through an operation
+    outside the range is one that capture lacks.
 
     **The tape.**  That what is emitted computes what the model's own lowering
     computes (`vit_fusion_sound`, `vit_lowering_sound`, `vit_tape_is_the_term`)
@@ -61,30 +64,17 @@ namespace VitScan
     (`vit_slot_holds_the_kernel`), which is what the dedup's hash key would
     otherwise have to be trusted for.
 
-    **The seams outward.**  That the emitted CLIF makes exactly the launches the
-    tape says, recovered from the shipped instruction stream and compared
-    against a list *derived* from `vUnits` (`vit_capture_records_the_forward`,
-    `..._the_step`, with `vit_capture_nonempty` against an empty expectation);
-    that a partly-filled buffer has exactly one writer, so a padded key's rows
+    **The seams outward.**  That a partly-filled buffer has exactly one writer, so a padded key's rows
     stay the zeros they were allocated with (`vit_pad_tail_unwritten`,
     `vit_pad_exists`); and what the contractions cost in assumptions
     (`vit_law_bill`) — 435 launches through a primitive that states one weak
     equation, `Law.cublasGemmIsSomeReassoc`, against 806 whose kernels this
-    development emits.  The law is stated of a batch of one, and that the
-    emitted calls are in that configuration is decided from their recovered
-    arguments (`vit_fwd_contractions_are_plain_gemms`,
-    `vit_step_contractions_are_plain_gemms`). -/
+    development emits.  The law is stated of a product at a batch of one, and
+    every contraction here is a strided-batched product issued at a batch of
+    one. -/
 def roots : List Name :=
-  [ -- the model the two launch streams are recovered through, sound on the
-    -- bodies that ship
-    `Vit.vFwd_entry_sound
-  , `Vit.vFwd_entry_arg
-  , `Vit.vFwd_entry_size
-  , `Vit.vFwd_entry_ok
-  , `Vit.vStep_entry_ok
-  , `Vit.vFwd_blocks_ty_ok
-  , `Vit.vStep_blocks_ty_ok
-  , `Vit.vit_deps_ordered
+  [ `Vit.vit_deps_ordered
+  , `Vit.vit_captures_ordered
   , `Vit.vit_fusion_sound
   , `Vit.vit_fusion_fired
   , `Vit.vit_out_survives
@@ -100,9 +90,6 @@ def roots : List Name :=
   , `Vit.vit_law_bill_nonempty
   , `Vit.vit_lowering_sound
   , `Vit.vit_tape_is_the_term
-  , `Vit.vit_capture_records_the_forward
-  , `Vit.vit_capture_records_the_step
-  , `Vit.vit_capture_nonempty
   , `Vit.vit_groups_sound
   , `Vit.vit_mask_is_padding
   , `Vit.vit_mask_bits
@@ -112,17 +99,16 @@ def roots : List Name :=
   , `Vit.vit_mask_law_applies
   , `Vit.vit_stmts_flat_idxfree
   , `Vit.vit_ptx_exact
-  , `Vit.vit_slot_holds_the_kernel
-  , `Vit.vit_fwd_contractions_are_plain_gemms
-  , `Vit.vit_step_contractions_are_plain_gemms ]
+  , `Vit.vit_slot_holds_the_kernel ]
 
 /-- **What this artifact does not yet state.**
 
-    One thing, and it is the seam between the two halves that *are* stated.
+    Two things. The calls every run of a capture makes, which the checker
+    reads off the driver calls once it reads bodies this long; and the seam
+    between the two halves that *are* stated.
 
     `vit_lowering_sound` says the shipped tape's `TOp.den` fold is the model's.
-    `vit_capture_records_the_forward` / `_the_step` say the emitted CLIF makes
-    exactly the launches the tape describes.  `vit_groups_sound` says the
+    `vit_groups_sound` says the
     conditions under which grouping operations into one kernel is sound all
     hold.  What is missing is the bridge: that **launching a group performs its
     members' denotations**.
@@ -157,7 +143,14 @@ def roots : List Name :=
     Kept here rather than left implicit because both ends being proven is what
     this development has repeatedly mistaken for the middle being proven. -/
 def notYetStated : List String :=
-  [ "that a group's renamed statement elaborates to groupBlk of its members' \
+  [ "that fetchAny downloads only from a live buffer within its size: the \
+     buffer is chosen at run time, so its pointer and size are loads at \
+     an address a run-time value chooses, which the checker does not yet \
+     read",
+    "that every run of a capture makes exactly the calls the tape and its \
+     schedule say: the capture bodies' call traces, which check_calls decides \
+     on the driver calls they make once it reads a body this long",
+    "that a group's renamed statement elaborates to groupBlk of its members' \
      stage blocks (the compactMap seam)",
     "that this model's index expressions land in the block's own chunk, which \
      is what turns the per-stage ReadsIn lemmas into commute_of_reads",
@@ -168,14 +161,8 @@ end VitScan
 
 /-- Claims that rest on the compiler, via `native_decide`. -/
 def nativeRoster : List Name :=
-  [ `Vit.vFwd_entry_sound
-   , `Vit.vFwd_entry_arg
-   , `Vit.vFwd_entry_size
-   , `Vit.vFwd_entry_ok
-   , `Vit.vStep_entry_ok
-   , `Vit.vFwd_blocks_ty_ok
-   , `Vit.vStep_blocks_ty_ok
-   , `Vit.vit_deps_ordered
+  [ `Vit.vit_deps_ordered
+   , `Vit.vit_captures_ordered
    , `Vit.vit_fusion_fired
    , `Vit.vit_out_survives
    , `Vit.vit_pad_tail_unwritten
@@ -183,9 +170,6 @@ def nativeRoster : List Name :=
    , `Vit.vit_regs_ok
    , `Vit.vit_law_bill
    , `Vit.vit_law_bill_nonempty
-   , `Vit.vit_capture_records_the_forward
-   , `Vit.vit_capture_records_the_step
-   , `Vit.vit_capture_nonempty
    , `Vit.vit_groups_sound
    , `Vit.vit_mask_bits
    , `Vit.vit_mask_below_floor
@@ -193,9 +177,7 @@ def nativeRoster : List Name :=
    , `Vit.vit_mask_law_applies
    , `Vit.vit_stmts_flat_idxfree
    , `Vit.vit_ptx_exact
-   , `Vit.vit_slot_holds_the_kernel
-   , `Vit.vit_fwd_contractions_are_plain_gemms
-   , `Vit.vit_step_contractions_are_plain_gemms ]
+   , `Vit.vit_slot_holds_the_kernel ]
 
 open TrustScan VitScan in
 #eval runScan "vit" roots nativeRoster

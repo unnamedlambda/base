@@ -27,7 +27,7 @@ theorem Clock.get_eq (c : Clock) (i : Nat) : c.get i = (c[i]?).getD 0 := by
 
 theorem Clock.get_join (a b : Clock) (i : Nat) : (a.join b).get i = max (a.get i) (b.get i) := by
   rw [Clock.get_eq, Clock.get_eq, Clock.get_eq]
-  simp only [Clock.join, Array.getElem?_map, Array.getElem?_range]
+  simp only [Clock.join, List.getElem?_toArray, List.getElem?_map, List.getElem?_range]
   by_cases h : i < max a.size b.size
   · simp [h, Clock.get_eq]
   · have ha : a[i]? = none := Array.getElem?_eq_none (by omega)

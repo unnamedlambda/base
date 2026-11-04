@@ -3,6 +3,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Wg
+meta import AlgorithmLib.Surface.Wg
 public import AlgorithmLib.Vocab.WGSL
 meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
@@ -128,12 +130,10 @@ def blitShaderSource : String :=
   "}\n"
 
 -- Memory layout --------------------------------------------------------------
--- `reserved` covers 0x00..0x40 (ht/wgpu/cuda ctx slots, an unused gap, and
--- the window ctx slot at 0x38). All game state is i64 for clean 8-byte
--- load/store; only `params` (the GPU uniform) is packed u32.
+-- `wg` holds wgpu's and the window's state (`app`). All game state is i64
+-- for clean 8-byte load/store; only `params` (the GPU uniform) is packed u32.
 structure Fields where
-  reserved    : Fld (.bytes 64)
-  bindDesc    : Fld (.bytes 16)
+  wg          : Fld (.bytes 512)
   shader      : Fld (.bytes 4096)
   blitShader  : Fld (.bytes 2048)
   title       : Fld (.bytes 64)
@@ -147,8 +147,7 @@ structure Fields where
   pixels      : Fld (.bytes pixelBytes)
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
-  let reserved    ← field (.bytes 64)
-  let bindDesc    ← field (.bytes 16)
+  let wg          ← field (.bytes 512)
   let shader      ← field (.bytes 4096)
   let blitShader  ← field (.bytes 2048)
   let title       ← field (.bytes 64)
@@ -160,11 +159,25 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let playerY     ← field .i64
   let nEvents     ← field .i64
   let pixels      ← field (.bytes pixelBytes)
-  pure { reserved, bindDesc, shader, blitShader, title, events, params, keyMask, quit,
+  pure { wg, shader, blitShader, title, events, params, keyMask, quit,
          playerX, playerY, nEvents, pixels }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
+
+/-- The frame and its parameters, the pipeline that draws one, and the window
+    the frame is shown in, called through wgpu and the window library
+    directly. -/
+def app : Wg.App :=
+  { bufs := [pixelBytes, paramsBytes],
+    pipes := [{ shaderOff := f.shader.offset, shaderLen := utf8Len% shaderSource,
+                binds := [(0, false), (1, true)] }],
+    memSize := layoutMeta.totalSize, org := f.wg.offset,
+    blit := some { shaderOff := f.blitShader.offset, shaderLen := utf8Len% blitShaderSource, buf := 0,
+                   titleOff := f.title.offset, titleCap := 64 } }
+
+/-- wgpu's and the window's state fit their field. -/
+theorem app_fits : app.stateEnd ≤ f.wg.offset + 512 := by decide
 
 open AlgorithmLib.IR
 
@@ -281,33 +294,25 @@ def assertEq (ptr actual : V .i64) (expected : Int) : Prog V L Unit := do
 -- Live entry (fn 1): open window, then loop poll → logic → render → present ----
 def mainBody : Prog V L Unit := do
   let ptr ← basePtr
-  windowInit ptr
-  gpuInit ptr
-  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
-  let w64 ← iconst64 imageWidth
-  let h64 ← iconst64 imageHeight
-  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.utf8ByteSize : Int))
-                      (← fldOffset f.blitShader) (← iconst64 (blitShaderSource.utf8ByteSize : Int))
+  app.setup ptr
   clearState ptr playerStartX playerStartY
-  let _ ← wloop1 (← iconst64 0)
-    (head := fun c => do
-      let q ← fldLoad ptr f.quit
-      let z ← iconst64 0
-      return (contIf .eq q z, %[c], ()))
-    (body := fun frame _ => do
-      let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
-      fldStore ptr f.nEvents (← sextend64 n)
-      processEvents ptr
-      applyMovement ptr
-      writeParams ptr frame
-      let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-      let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
-      let _ ← windowPresentGpuBuffer ptr pixelBuf
-      return %[← iaddImm frame 1])
-  windowCleanup ptr
-  gpuCleanup ptr
+  app.withWindow ptr imageWidth imageHeight fun win => do
+    let _ ← wloop1 (← iconst64 0)
+      (head := fun c => do
+        let q ← fldLoad ptr f.quit
+        let z ← iconst64 0
+        return (contIf .eq q z, %[c], ()))
+      (body := fun frame _ => do
+        let n ← app.pollEvents ptr win (← iaddImm ptr f.events.offset) eventSlots
+        fldStore ptr f.nEvents n
+        processEvents ptr
+        applyMovement ptr
+        writeParams ptr frame
+        app.upload ptr 1 (← iaddImm ptr f.params.offset) (← iconst64 paramsBytes)
+        app.dispatch ptr 0 (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+        app.present ptr win
+        return %[← iaddImm frame 1])
+  app.cleanup ptr
 
 -- Headless test scenarios (fn 2+): inject events, step, assert player state ----
 def testMoveRight : Prog V L Unit := do
@@ -346,16 +351,13 @@ def testQuitOnClose : Prog V L Unit := do
 -- into memory, and assert the player pixel is player-coloured. GPU, no window.
 def testRenderPixel : Prog V L Unit := do
   let ptr ← basePtr
-  gpuInit ptr
-  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+  app.setup ptr
   clearState ptr 100 100
   writeParams ptr (← iconst64 0)
-  let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-  let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
-  let _ ← gpuDownload ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
-  gpuCleanup ptr
+  app.upload ptr 1 (← iaddImm ptr f.params.offset) (← iconst64 paramsBytes)
+  app.dispatch ptr 0 (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+  app.download ptr 0 (← iaddImm ptr f.pixels.offset) (← iconst64 pixelBytes)
+  app.cleanup ptr
   -- red byte of pixel (100,100): (y*width + x)*4
   let red ← uload8_64 (← absAddr ptr (f.pixels.offset + (100 * imageWidth + 100) * 4))
   writeOutput (← sextend64 (← icmp .uge red (← iconst64 250))) red (← iconst64 252)
@@ -374,8 +376,7 @@ def clifIrSource : Except String (List FuncData) :=
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
-    -- binding0 → buf 0 (pixels, read_write); binding1 → buf 1 (params, read_only)
-    f.bindDesc.init (uint32ToBytes 0 ++ uint32ToBytes 0 ++ uint32ToBytes 1 ++ uint32ToBytes 1),
+    f.wg.init app.stateInit,
     f.shader.init (stringToBytes shaderSource),
     f.blitShader.init (stringToBytes blitShaderSource),
     f.title.init (stringToBytes titleText),

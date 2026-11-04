@@ -1501,114 +1501,31 @@ def vHorizGroups : List (List Nat) :=
 
 
 -- ---------------------------------------------------------------------------
--- Batched contractions: the launches, after grouping
+-- The launches, in dependence order
 -- ---------------------------------------------------------------------------
 
-/-- **The narrowest contraction group to batch**, or `0` to batch none.
+/-- **The launches**, one per unit, sorted by dependence level with ties in
+    the tape's order: a topological order of the dependence graph, since an
+    edge strictly raises the level, and the tape's own wherever the levels do
+    not force otherwise.
 
-    A batch of `P` same-shaped contractions is one launch where the tape has
-    `P`.  Back to back on the card it is a large win — `batch.cu`, `P separate
-    | batched`, at this tape's four shapes:
-
-    * qkv, `P=9`:            64.65 us | 26.85 us
-    * scores, `P=3`:         16.27 us | 12.22 us
-    * attn x values, `P=3`:  23.36 us | 30.45 us   <- batching loses
-    * out projection, `P=3`: 15.51 us | 12.22 us
-
-    The pointer-array and strided forms land within 1% of each other at every
-    shape, which is why this uses the one that needs no adjacency: merging
-    buffers to get a uniform stride would buy nothing.
-
-    **In the schedule it is worth nothing, and mostly worse.** The step, same
-    tape, same card:
-
-    * batch nothing:           5.74 ms
-    * batch the `P=9` groups:  5.79 ms
-    * batch all 192 groups:    6.59 ms
-
-    The reason is that the tape is issued across sixteen streams, so `P`
-    separate contractions already overlap; a batch cannot overlap with itself,
-    and it has to beat `P` *concurrent* launches rather than `P` sequential
-    ones.  This is the fourth measurement in a row saying launch count is not
-    what binds here.
-
-    It also costs bits: a batched forward is not bit-equal to the unbatched one
-    (`check_replay.py`), which is what moved `Law.cublasBatchedIsSomeReassoc`
-    from the closed form to the weak one.
-
-    So the default is off, and this stays because being able to *choose* it,
-    with the price in launches, in bits and in laws all stated, is the whole
-    point of a schedule menu. -/
-def VBATCHMIN : Nat := 0
-
-/-- **Contractions one batched call performs.**
-
-    `vHKey` already keys a contraction on its dependence level and its gemm
-    shape, so a group of it is a set of same-shaped contractions with no path
-    between them — exactly what `cl_cublas_sgemm_batched_on_stream` takes.  A
-    per-head projection is this: `head` builds q, k and v for each of three
-    heads from one normed stream, so nine contractions of one shape sit at one
-    level and are issued one at a time.
-
-    Nothing about the members' *buffers* is required.  The pointer-array form
-    names each member by pointer, so the members need share no allocation and
-    each member's output stays a whole matrix of its own — which is why this
-    needs neither a merged buffer nor a strided view of anyone's output, and
-    why nothing downstream has to learn to read a slice. -/
-def vBatchGroups : List (List Nat) :=
-  if VBATCHMIN == 0 then [] else
-  vHorizGroups.filter (fun g =>
-    g.length ≥ VBATCHMIN && g.all (fun u =>
-      match vUnitOps (vUnitArrRaw.getD u []) with
-      | [op] => (vGemmOf op).isSome
-      | _    => false))
-
-/-- **The launches.**  A batched group is one entry holding all its members'
-    operations; every other unit is itself.
-
-    Collapsing here — before the dependence graph, not after it — is what keeps
-    the schedule honest: `vPreds`, `vLevel` and `vDag` are computed over what
-    actually launches, so a stream assignment or an event can never be derived
-    for a launch that was then merged away.
-
-    **The order is recomputed, not inherited.**  Merging `P` launches into one
-    position moves the others, and a unit indexed between two members can depend
-    on the earlier one — the bias add after head 0's projection does exactly
-    that — so keeping the tape's order would run it too early.
-
-    Sorting by dependence level is a topological order of the collapsed graph,
-    and the collapsed graph is acyclic for a reason worth stating: an edge
-    strictly raises the level, and `vHKey` keys a group on its level, so every
-    member of a group sits at one level.  A cycle would need that level to be
-    both above and below another group's.  Ties keep the tape's order, so the
-    schedule is the tape's wherever the levels do not force otherwise. -/
-def vUnits : List (List Nat) := Id.run do
-  let mut inG : Array Bool := Array.replicate vUnitsRaw.length false
-  for g in vBatchGroups do
-    for u in g do inG := inG.set! u true
-  let mut nodes : Array (Nat × Nat × List Nat) := #[]
-  for g in vBatchGroups do
-    let lo := (g.head?).getD 0
-    nodes := nodes.push (vLevelRaw.getD lo 0, lo, g)
-  for i in [0:vUnitsRaw.length] do
-    if !(inG.getD i false) then
-      nodes := nodes.push (vLevelRaw.getD i 0, i, [i])
-  let sorted := nodes.qsort (fun x y => x.1 < y.1 || (x.1 == y.1 && x.2.1 < y.2.1))
-  pure (sorted.toList.map (fun n => n.2.2.flatMap (fun u => vUnitArrRaw.getD u [])))
+    Contractions are not batched. A batch of `P` same-shaped contractions is
+    one launch where the tape has `P`, and back to back on the card that wins
+    (`batch.cu`), but issued across the schedule's streams the `P` separate
+    contractions already overlap and a batch cannot overlap with itself: the
+    step measured 5.74 ms unbatched, 5.79 ms batching the `P=9` groups and
+    6.59 ms batching every group, and a batched forward is not bit-equal to
+    the unbatched one (`check_replay.py`). -/
+def vUnits : List (List Nat) :=
+  let nodes : Array (Nat × Nat) := (Array.range vUnitsRaw.length).map (fun i => (vLevelRaw.getD i 0, i))
+  let sorted := nodes.qsort (fun x y => x.1 < y.1 || (x.1 == y.1 && x.2 < y.2))
+  sorted.toList.map (fun n => vUnitArrRaw.getD n.2 [])
 
 def vUnitArr : Array (List Nat) := vUnits.toArray
 def VNUNIT : Nat := vUnitArr.size
 
-/-- How many contractions the launch at `k` performs: one, unless it is a
-    batch. -/
-def vBatchOf (k : Nat) : Nat :=
-  let ops := vUnitOps (vUnitArr.getD k [])
-  if ops.length ≥ 2 && ops.all (fun op => (vGemmOf op).isSome) then ops.length else 1
-
-/-- The distinct kernels and each launch's slot, over the launches rather than
-    over the pre-batch units.  A contraction renders no kernel either way, so
-    batching changes which index a slot is filed under and not the set of
-    texts. -/
+/-- The distinct kernels and each launch's slot. A contraction renders no
+    kernel; its slot is the empty text's. -/
 def vSlotMap : Array Nat × Array String := Id.run do
   let mut seen : Std.HashMap (Nat × Nat × AlgorithmLib.ML.EWStmt) Nat := {}
   let mut seenText : Std.HashMap String Nat := {}
@@ -1694,20 +1611,6 @@ def vLevel : Array Nat := Id.run do
     for j in vPreds.getD i [] do m := max m (lvs.getD j 0)
     lvs := lvs.push (m + 1)
   pure lvs
-
-/-- **Pointer arrays.**  Three per batched launch — one for each operand — each
-    holding one device pointer per member.  They are filled once, after the
-    buffers exist and before anything launches, because a device pointer does
-    not move. -/
-def vBatchUnits : List Nat :=
-  (List.range VNUNIT).filter (fun k => vBatchOf k ≥ 2)
-
-def VNPARR : Nat := 3 * vBatchUnits.length
-
-/-- Which of the three arrays of batched launch `k` a slot holds. -/
-def vParrIx (k : Nat) : Nat :=
-  ((vBatchUnits.zip (List.range vBatchUnits.length)).find? (fun p => p.1 == k)).map
-    Prod.snd |>.getD 0
 
 
 /-- **Which mergeable groups need no operand offset at all.**
@@ -2094,32 +1997,11 @@ def vHorizContig : List (String × Nat) := Id.run do
         ("launches all groups would remove", savedAll)]
 
 
-/-- **The tape dealt onto `VNSTRM` streams, with the events that keep it
-    equivalent to the tape's own order.**
-
-    An operation continues its latest predecessor's stream when that stream is
-    otherwise idle, which costs no event at all; failing that it goes to the
-    least loaded stream that is not already occupied at this depth.  A
-    predecessor left on another stream then needs one edge — unless the two
-    streams have already been synchronised at or past that point, which
-    `cov` tracks, since ordering after a later operation orders after every
-    earlier one on the same stream.
-
-    Returns the stream per operation, the event each operation records (when
-    some later operation on another stream needs it), the events each waits on
-    before launching, and how many events that is. -/
-structure VDag where
-  strm : Array Nat
-  erec : Array (Option Nat)
-  ewait : Array (List Nat)
-  /-- The operation each event is recorded after.  A range that begins past it
-      must drop the wait: the fork already put the pool behind everything the
-      capture stream had done, and waiting on an event no operation in the
-      capture records is what invalidates one. -/
-  eown : Array Nat
-  nev : Nat
-
-def vDag : VDag := Id.run do
+/-- **The tape dealt onto `VNSTRM` streams.** An operation continues its
+    latest predecessor's stream when that stream is otherwise idle, which costs
+    no event at all; failing that it goes to the least loaded stream that is
+    not already occupied at this depth. -/
+def vStrm : Array Nat := Id.run do
   let n := VNUNIT
   let mut strm : Array Nat := Array.replicate n 0
   let mut lastOn : Array Int := Array.replicate VNSTRM (-1)
@@ -2148,6 +2030,35 @@ def vDag : VDag := Id.run do
     lastOn := lastOn.set! s (Int.ofNat i)
     lastLv := lastLv.set! s (vLevel.getD i 0)
     load := load.set! s (load.getD s 0 + 1)
+  pure strm
+
+/-- **A captured range's events**: for each operation of the range, the
+    event it records (when some later operation of the range on another stream
+    needs it) and the events it waits on before launching, and how many events
+    that is.
+
+    A predecessor left on another stream needs one edge, unless the two streams
+    have already been synchronised at or past that point, since ordering after
+    a later operation orders after every earlier one on the same stream.
+
+    Computed over the range alone. A predecessor outside it either ran before
+    the capture began, which the fork orders the whole pool after, or is not
+    in this graph at all; and an ordering a predecessor inside the range has
+    only through an operation outside it is not one this graph has, so it is
+    never counted as already implied. -/
+structure VDag where
+  erec : Array (Option Nat)
+  ewait : Array (List Nat)
+  nev : Nat
+
+/-- Whether operation `i` is one a capture of `[lo, hi)` issues. -/
+def vInRange (lo hi i : Nat) : Bool :=
+  let u := vUnitArr.getD i []
+  lo ≤ vUnitLo u && vUnitHi u < hi
+
+def vDagIn (lo hi : Nat) : VDag := Id.run do
+  let n := VNUNIT
+  let strm := vStrm
   -- **What each stream is already ordered after**, as one index per stream: a
   -- vector clock.  Waiting for an operation orders you after everything that
   -- operation was itself ordered after, so an edge is emitted only when the
@@ -2156,13 +2067,13 @@ def vDag : VDag := Id.run do
   let mut snap : Array (Array Int) := Array.replicate n #[]
   let mut erec : Array (Option Nat) := Array.replicate n none
   let mut ewait : Array (List Nat) := Array.replicate n []
-  let mut eown : Array Nat := #[]
   let mut nev := 0
   for i in [0:n] do
+   if vInRange lo hi i then
     let si := strm.getD i 0
     -- Latest predecessor first: ordering after it orders after every earlier
     -- one on that same stream, so the earlier ones then need no edge.
-    for p in ((vPreds.getD i []).toArray.qsort (fun a b => a > b)).toList do
+    for p in (((vPreds.getD i []).filter (vInRange lo hi)).toArray.qsort (fun a b => a > b)).toList do
       let sp := strm.getD p 0
       if sp != si && Int.ofNat p > (clock.getD si #[]).getD sp (-1) then
         let mut e := nev
@@ -2170,7 +2081,6 @@ def vDag : VDag := Id.run do
         | some j => e := j
         | none =>
           erec := erec.set! p (some nev)
-          eown := eown.push p
           nev := nev + 1
         ewait := ewait.set! i (e :: ewait.getD i [])
         let sp' := snap.getD p #[]
@@ -2180,99 +2090,79 @@ def vDag : VDag := Id.run do
         clock := clock.set! si ci
     clock := clock.set! si ((clock.getD si #[]).set! si (Int.ofNat i))
     snap := snap.set! i (clock.getD si #[])
-  pure { strm, erec, ewait, eown, nev }
+  pure { erec, ewait, nev }
 
+/-- The forward's schedule and the step's. -/
+def vDagFwd : VDag := vDagIn 0 VFWD_N
+def vDagStep : VDag := vDagIn VFWD_N VSTEP_N
+
+/-- **How many conflicting pairs of a range's operations its capture leaves
+    unordered**: the operations issued in launch order, each on its stream,
+    waiting on the events the range's schedule gives it and recording the one
+    it publishes, with a vector clock per stream; a read or write of a buffer
+    whose last writer, or a write of one whose readers since, the operation's
+    stream is not ordered after counts once.
+
+    This is the ordering the graph has, not the one the dependence graph
+    intends: `vDepsCheck` asks whether `vPredsRaw` orders each conflict, and
+    this asks whether the streams and events a capture of `[lo, hi)` records
+    do. -/
+def vDagUnordered (lo hi : Nat) : Nat := Id.run do
+  let d := vDagIn lo hi
+  let mut clk : Array (Array Nat) := Array.replicate VNSTRM (Array.replicate VNSTRM 0)
+  let mut ev : Array (Array Nat) := Array.replicate (d.nev + 1) #[]
+  let mut lastW : Array (Option (Nat × Nat)) := Array.replicate VNBUF none
+  let mut readers : Array (List (Nat × Nat)) := Array.replicate VNBUF []
+  let mut bad := 0
+  for i in [0:VNUNIT] do
+    if vInRange lo hi i then
+      let s := vStrm.getD i 0
+      let u := vUnitArr.getD i []
+      for e in d.ewait.getD i [] do
+        let c := ev.getD e #[]
+        clk := clk.set! s ((List.range VNSTRM).toArray.map fun x =>
+          max ((clk.getD s #[]).getD x 0) (c.getD x 0))
+      clk := clk.set! s ((clk.getD s #[]).set! s ((clk.getD s #[]).getD s 0 + 1))
+      let me := (s, (clk.getD s #[]).getD s 0)
+      let ordered := fun (a : Nat × Nat) => a.1 == s || decide (a.2 ≤ (clk.getD s #[]).getD a.1 0)
+      for b in (vUnitReads u ++ vUnitWrites u).eraseDups do
+        match lastW.getD b none with
+        | some w => if !ordered w then bad := bad + 1
+        | none => pure ()
+      for b in vUnitWrites u do
+        for r in readers.getD b [] do
+          if r != me && !ordered r then bad := bad + 1
+      for b in vUnitReads u do readers := readers.set! b (me :: readers.getD b [])
+      for b in vUnitWrites u do
+        lastW := lastW.set! b (some me)
+        readers := readers.set! b []
+      match d.erec.getD i none with
+      | some e => ev := ev.set! e (clk.getD s #[])
+      | none => pure ()
+  pure bad
+
+/-- **Every capture orders every conflicting pair it records.** Build-enforced:
+    a schedule that drops an ordering a capture needs fails the build, rather
+    than racing on the card and showing up as a wrong number some runs. -/
+theorem vit_captures_ordered : vDagUnordered 0 VFWD_N = 0 ∧ vDagUnordered VFWD_N VSTEP_N = 0 := by
+  native_decide
+
+/-- Where the host finds how many bytes of inputs it packs. -/
 def VHOST_LEN_OFF : Nat := 0x0080
-/-- The stream a capture runs on, and the graph each capture leaves. -/
-def VSTREAM_OFF : Nat := 0x0090
-def VGRAPH_OFF : Nat := 0x0094
-def VGRAPH_STEP_OFF : Nat := 0x0098
 
-/-- The pooled streams, one `u32` each. -/
-def VPOOL_OFF : Nat := 0x00A0
-def vPoolOff (s : Nat) : Nat := VPOOL_OFF + 4 * s
-
-/-- The forward and the backward-with-updates, each captured as the graph their
-    dependences allow rather than as the chain their listing is.
-
-    Derived from where the pool ends, because a fixed address here is one the
-    pool grows into: at sixteen streams the pool reaches `0xE0`, and a graph
-    handle written at `0xB8` overwrites a stream.  It aliased quietly for a
-    while — a graph id and a stream id are both small integers, so the launches
-    still went somewhere — which is exactly why it is derived now. -/
-def VGRAPH_DFWD_OFF : Nat := VPOOL_OFF + 4 * VNSTRM
-def VGRAPH_DSTEP_OFF : Nat := VGRAPH_DFWD_OFF + 4
-/-- Graph slots for the two single-class captures that split the step's time. -/
-def VGRAPH_BLAS_OFF : Nat := VGRAPH_DSTEP_OFF + 4
-def VGRAPH_ROW_OFF : Nat := VGRAPH_BLAS_OFF + 4
-
+/-- The kernels' PTX, each slot packed to its text and aligned to 256 bytes. -/
 def VPTX_OFF : Nat := 0x0100
 def vSlotOff (i : Nat) : Nat := VPTX_OFF + (vSlotSizes.take i).foldl (· + ·) 0
-def VBIND_OFF : Nat := VPTX_OFF + VPTX_BYTES
-def vBindOff (i : Nat) : Nat := VBIND_OFF + 4 * i
-/-- The pointer arrays' buffer ids, one slot each, three per batched launch. -/
-def VPARR_OFF : Nat := VBIND_OFF + 4 * VNBUF
-def vParrOff (i : Nat) : Nat := VPARR_OFF + 4 * i
-def VLOCAL_OFF : Nat := VPARR_OFF + 4 * VNPARR
+
+/-- The padding mask, `SK` floats, shipped in the artifact itself, after the
+    kernels' text. -/
+def VMASK_OFF : Nat := VPTX_OFF + VPTX_BYTES
+
 /-- Events: one to fork the pool and one per stream to join it, then one for
     each operation the schedule has to publish to another stream. -/
-def VNEVENT : Nat := 2 * VNSTRM + vDag.nev
+def VNEVENT : Nat := 2 * VNSTRM + max vDagFwd.nev vDagStep.nev
 /-- Where the schedule's own events start. -/
 def vDagEvent (e : Nat) : Nat := 2 * VNSTRM + e
-/-- Slots in the per-launch buffer table: as many as the widest group binds.
-    A single operation needs at most five; a fused group needs more. -/
-def VLOCAL_SLOTS : Nat :=
-  ((List.range VNUNIT).filter (fun k => ((vUnitOps (vUnitArr.getD k [])).head?
-      >>= vGemmOf).isNone)).foldl
-    (fun m k => max m (vUnitBufs (vUnitArr.getD k [])).length) 8
-def VEVENT_OFF : Nat := VLOCAL_OFF + 4 * VLOCAL_SLOTS
-def vEventOff (e : Nat) : Nat := VEVENT_OFF + 4 * e
-/-- The padding mask, `SK` floats, shipped in the artifact itself.
-
-    It goes before the gradient map, not after: the map's own contract is that
-    it is the *last* region, and a host finds it by counting back from the end
-    of memory. -/
-def VMASK_OFF : Nat := VEVENT_OFF + 4 * VNEVENT
-
-/-- Where each input's gradient landed, as one `u32` per input, so a host reads
-    the derivation's own allocation instead of guessing at it.  It is the last
-    region, which is the whole of how a host finds it: `4 * VBASE` bytes ending
-    `0x100` before the end of memory. -/
-def VGMAP_OFF : Nat := VMASK_OFF + 4 * SK
-def VMEM_SIZE : Nat := VGMAP_OFF + 4 * VBASE + 0x100
-
-/-- **Every byte of shared memory this model names.**
-
-    The offsets above are assigned by hand and derived from one another, and a
-    collision between two of them is invisible everywhere else: both writes
-    succeed and the later one wins.  That has already happened here once — a
-    graph handle placed at a fixed address that the stream pool grew into, and
-    since a graph id and a stream id are both small integers, the launches
-    still went somewhere.  Deriving the offset fixed that instance; stating the
-    map is what makes the next one a build error. -/
-def vMemMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda",     AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"host_len",     VHOST_LEN_OFF, 8⟩,
-   ⟨"stream",       VSTREAM_OFF, 4⟩,
-   ⟨"graph",        VGRAPH_OFF, 4⟩,
-   ⟨"graph_step",   VGRAPH_STEP_OFF, 4⟩,
-   ⟨"pool",         VPOOL_OFF, 4 * VNSTRM⟩,
-   ⟨"graph_dfwd",   VGRAPH_DFWD_OFF, 4⟩,
-   ⟨"graph_dstep",  VGRAPH_DSTEP_OFF, 4⟩,
-   ⟨"graph_blas",   VGRAPH_BLAS_OFF, 4⟩,
-   ⟨"graph_row",    VGRAPH_ROW_OFF, 4⟩,
-   ⟨"ptx",          VPTX_OFF, VPTX_BYTES⟩,
-   ⟨"bind",         VBIND_OFF, 4 * VNBUF⟩,
-   ⟨"parr",         VPARR_OFF, 4 * VNPARR⟩,
-   ⟨"local",        VLOCAL_OFF, 4 * VLOCAL_SLOTS⟩,
-   ⟨"event",        VEVENT_OFF, 4 * VNEVENT⟩,
-   ⟨"mask",         VMASK_OFF, 4 * SK⟩,
-   ⟨"gmap",         VGMAP_OFF, 4 * VBASE⟩]
-
-
-#eval LayoutScan.check "Vit.Model" [``vHostIn, ``vMemMap]
-theorem vMemMap_ok :
-    vMemMap.okB = true ∧ vMemMap.withinB VMEM_SIZE = true := by native_decide
 
 def vSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]

@@ -5,9 +5,8 @@
 #   tools/check.sh          everything, including the GPU tests
 #   tools/check.sh --fast   skips the tests that need a device or the weights
 #
-# The GPU half is the strongest evidence here — the Qwen2 golden tests run the
-# real 2.5 GB weights end to end — and it is the half no hosted runner can
-# reach, which is why this is a local script rather than a workflow.
+# The GPU half runs the programs on a device, which no hosted runner has, so
+# this is a local script rather than a workflow.
 
 set -euo pipefail
 
@@ -40,7 +39,7 @@ export LEAN_NUM_THREADS="${LEAN_NUM_THREADS:-3}"
 #
 # `applications/gpt-oss/*` pin 9.48 GiB of host memory and most of the card, and
 # they take an exclusive lock on this file for exactly that reason. This script
-# needs a CUDA device for the Qwen2 golden tests, so it takes the same lock
+# needs a CUDA device for its GPU tests, so it takes the same lock
 # rather than starting and failing on CUDA_ERROR_OUT_OF_MEMORY several minutes
 # in -- which is what happened, and what the message below is for.
 ENGINE_LOCK=/tmp/gpt-oss-engine.lock
@@ -49,7 +48,7 @@ if command -v flock >/dev/null 2>&1; then
   if ! flock -n 9; then
     held=$(awk '{print $1, $2}' "$ENGINE_LOCK" 2>/dev/null || echo "?")
     echo "a gpt-oss driver is running ($held) and holds the GPU."
-    echo "check.sh needs a device for the golden tests. Wait for it, or stop it."
+    echo "check.sh needs a device for its GPU tests. Wait for it, or stop it."
     exit 1
   fi
 fi

@@ -3,8 +3,12 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.Link
 meta import AlgorithmLib.Surface.Link
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -21,17 +25,8 @@ structure Fields where
   ptx : Fld (.bytes 512)
   arrayScalePtx : Fld (.bytes 1536)
   arrayAddPtx : Fld (.bytes 1536)
-  bindDesc : Fld (.bytes 16)
-  zeroBuf : Fld .i32
-  litBuf : Fld .i32
-  accBuf : Fld .i32
-  outBuf : Fld .i32
-  tmpArrayBufA : Fld .i32
-  tmpArrayBufB : Fld .i32
-  tmpArrayBufOut : Fld .i32
-  tmpArrayParamBuf : Fld .i32
+  drv : Fld (.bytes 1024)
   varPresent : Fld (.bytes 26)
-  varBufIds : Fld (.bytes 104)
   input : Fld (.bytes 256)
   scratch : Fld (.bytes 512)
   output : Fld (.bytes 512)
@@ -53,17 +48,8 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let ptx ← field (.bytes 512)
   let arrayScalePtx ← field (.bytes 1536)
   let arrayAddPtx ← field (.bytes 1536)
-  let bindDesc ← field (.bytes 16)
-  let zeroBuf ← field .i32
-  let litBuf ← field .i32
-  let accBuf ← field .i32
-  let outBuf ← field .i32
-  let tmpArrayBufA ← field .i32
-  let tmpArrayBufB ← field .i32
-  let tmpArrayBufOut ← field .i32
-  let tmpArrayParamBuf ← field .i32
+  let drv ← field (.bytes 1024)
   let varPresent ← field (.bytes 26)
-  let varBufIds ← field (.bytes 104)
   let input ← field (.bytes 256)
   let scratch ← field (.bytes 512)
   let output ← field (.bytes 512)
@@ -79,7 +65,7 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let secondVal ← field .i64
   let result ← field .i64
   let outputLen ← field .i64
-  pure { reserved, ptx, arrayScalePtx, arrayAddPtx, bindDesc, zeroBuf, litBuf, accBuf, outBuf, tmpArrayBufA, tmpArrayBufB, tmpArrayBufOut, tmpArrayParamBuf, varPresent, varBufIds, input, scratch, output, varKind, varTextLens, varTexts, arrayLhsData, arrayRhsData, arrayOutData, arrayParamData, inputLen, firstVal, secondVal, result, outputLen }
+  pure { reserved, ptx, arrayScalePtx, arrayAddPtx, drv, varPresent, input, scratch, output, varKind, varTextLens, varTexts, arrayLhsData, arrayRhsData, arrayOutData, arrayParamData, inputLen, firstVal, secondVal, result, outputLen }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
@@ -266,21 +252,50 @@ def emitIsVarChar (ch : V .i64) : Prog V L (V .i8) := do
 def storeVarPresent (ptr idx value : V .i64) : Prog V L Unit :=
   storeByteAt ptr f.varPresent.offset idx value
 
-def loadVarBufId (ptr idx : V .i64) : Prog V L (V .i64) := do
-  let four ← iconst64 4
-  let base ← iconst64 f.varBufIds.offset
-  let byteOff ← imul idx four
-  let rel ← iadd base byteOff
-  let addr ← iadd ptr rel
-  uload32_64 addr
+/-- **The program's device side in the driver's standard layout**, its state
+    in `drv`: allocations 0 to 7 the scalars zero, literal, accumulator and
+    output and the array scratch A, B, output and parameter; allocation 8 the
+    26 variables' arrays, 2048 bytes each; and the three kernels, each in its
+    own module. -/
+def app : Drv.App :=
+  { bufs := [8, 8, 8, 8, 2048, 2048, 2048, 16, 26 * 2048],
+    kernels := [⟨f.ptx.offset, 512, [0, 1, 2], (1, 1, 1), (1, 1, 1)⟩,
+                ⟨f.arrayScalePtx.offset, 1536, [4, 7, 6], (1, 1, 1), (1, 1, 1)⟩,
+                ⟨f.arrayAddPtx.offset, 1536, [4, 5, 7, 6], (1, 1, 1), (1, 1, 1)⟩],
+    memSize := layoutMeta.totalSize, org := f.drv.offset }
 
-def storeVarBufId (ptr idx : V .i64) (bufId32 : V .i32) : Prog V L Unit := do
-  let four ← iconst64 4
-  let base ← iconst64 f.varBufIds.offset
-  let byteOff ← imul idx four
-  let rel ← iadd base byteOff
-  let addr ← iadd ptr rel
-  store bufId32 addr
+def ZERO_BUF : Nat := 0
+def ACC_BUF : Nat := 2
+def ARR_A : Nat := 4
+def ARR_B : Nat := 5
+def ARR_OUT : Nat := 6
+def ARR_PARAM : Nat := 7
+def VARS : Nat := 8
+
+/-- The device pointer allocation `i` starts at. -/
+def bufPtr (ptr : V .i64) (i : Nat) : Prog V L (V .i64) := do load64 (← iaddImm ptr (app.bufSlot i))
+
+/-- The device pointer variable `idx`'s array starts at. -/
+def varPtr (ptr idx : V .i64) : Prog V L (V .i64) := do
+  iadd (← bufPtr ptr VARS) (← imul idx (← iconst64 2048))
+
+/-- Copy `size` bytes from offset `off` of this program's memory to `dst`. -/
+def upload (ptr dst off size : V .i64) : Prog V L Unit := do
+  let _ ← ext (.cuda .memcpyHtoD) %[dst, ← iadd ptr off, size]
+
+/-- Copy `size` bytes from `src` to offset `off` of this program's memory. -/
+def download (ptr src off size : V .i64) : Prog V L Unit := do
+  let _ ← ext (.cuda .memcpyDtoH) %[← iadd ptr off, src, size]
+
+/-- Launch kernel `j` handed the pointers `ptrs`, `gx` blocks wide where
+    given. -/
+def launchWith (ptr : V .i64) (j : Nat) (ptrs : List (V .i64)) (gx : Option (V .i32) := none) :
+    Prog V L Unit := do
+  let off := app.blockOff (app.blockOf j)
+  Drv.bindVals ptr off (off + 128) ptrs
+  match gx with
+  | some g => app.runX ptr j g
+  | none => app.run ptr j
 
 def emitSkipWs (ptr pos len : V .i64) : Prog V L (V .i64) := do
   let one ← iconst64 1
@@ -426,82 +441,35 @@ def emitFormatSignedAt (ptr value startPos : V .i64) : Prog V L (V .i64) := do
           return %[← iadd ci one, ← iadd outPos one]))
   return r.head
 
-/-! ### The kernels, as records the launch sites read
+/-- Scalar add: `out = lhs + rhs`, one thread. -/
+def emitCudaLaunchAdd (ptr lhsBuf rhsBuf outBuf : V .i64) : Prog V L Unit :=
+  launchWith ptr 0 [lhsBuf, rhsBuf, outBuf]
 
-    Each of the three writes its bind table and launches beside it, so both
-    halves take the buffer count from one `params` list.  The two array
-    kernels cover a length the generator does not know, so their block count
-    is passed at the launch rather than declared. -/
+/-- Scale each of `count` elements of an array by a scalar parameter, a block
+    per element; nothing for none. -/
+def emitCudaLaunchArrayScale (ptr inBuf paramBuf outBuf count : V .i64) : Prog V L Unit := do
+  Prog.when .ne count (← iconst64 0) do
+    launchWith ptr 1 [inBuf, paramBuf, outBuf] (some (← ireduce32 count))
 
-/-- Scalar add: two operands and a result, one thread. -/
-def addK : AlgorithmLib.Kernel := {
-  name   := "add"
-  params := [{ shape := [.sta 1], ro := true,  name := "lhs" },
-             { shape := [.sta 1], ro := true,  name := "rhs" },
-             { shape := [.sta 1], ro := false, name := "out" }]
-  geom   := AlgorithmLib.Kernel.Geom.static 1 1 1 1 1 1
-  ptxOff := f.ptx.offset
-}
+/-- Add two arrays of `count` elements, a block per element; nothing for
+    none. -/
+def emitCudaLaunchArrayAdd (ptr lhsBuf rhsBuf paramBuf outBuf count : V .i64) : Prog V L Unit := do
+  Prog.when .ne count (← iconst64 0) do
+    launchWith ptr 2 [lhsBuf, rhsBuf, paramBuf, outBuf] (some (← ireduce32 count))
 
-/-- Scale each element of an array by a scalar parameter. -/
-def arrayScaleK : AlgorithmLib.Kernel := {
-  name   := "array_scale"
-  params := [{ shape := [.dyn],  ro := true,  name := "in" },
-             { shape := [.sta 1], ro := true,  name := "param" },
-             { shape := [.dyn],  ro := false, name := "out" }]
-  geom   := AlgorithmLib.Kernel.Geom.perLaunch 1 1 1
-  ptxOff := f.arrayScalePtx.offset
-}
-
-/-- Add two arrays, scaling the sum by a scalar parameter. -/
-def arrayAddK : AlgorithmLib.Kernel := {
-  name   := "array_add"
-  params := [{ shape := [.dyn],  ro := true,  name := "lhs" },
-             { shape := [.dyn],  ro := true,  name := "rhs" },
-             { shape := [.sta 1], ro := true,  name := "param" },
-             { shape := [.dyn],  ro := false, name := "out" }]
-  geom   := AlgorithmLib.Kernel.Geom.perLaunch 1 1 1
-  ptxOff := f.arrayAddPtx.offset
-}
-
-def emitCudaLaunchAdd (ptr : V .i64) (lhsBuf rhsBuf outBuf : V .i32) : Prog V L Unit :=
-  kernelLaunchAt addK ptr f.bindDesc.offset [lhsBuf, rhsBuf, outBuf]
-
-def emitCudaLaunchArrayScale (ptr : V .i64) (inBuf paramBuf outBuf : V .i32)
-    (count : V .i64) : Prog V L Unit := do
-  kernelLaunchAtN arrayScaleK ptr f.bindDesc.offset
-    [inBuf, paramBuf, outBuf] (← ireduce32 count)
-
-def emitCudaLaunchArrayAdd (ptr : V .i64) (lhsBuf rhsBuf paramBuf outBuf : V .i32)
-    (count : V .i64) : Prog V L Unit := do
-  kernelLaunchAtN arrayAddK ptr f.bindDesc.offset
-    [lhsBuf, rhsBuf, paramBuf, outBuf] (← ireduce32 count)
-
-def emitUploadLiteralToBuf (ptr : V .i64) (bufId : V .i32) (value : V .i64) :
+def emitUploadLiteralToBuf (ptr : V .i64) (buf : V .i64) (value : V .i64) :
     Prog V L Unit := do
   fldStore ptr f.firstVal value
-  let size8 ← iconst64 8
-  let valOff ← fldOffset f.firstVal
-  let _ ← cudaUpload ptr bufId valOff size8
-  pure ()
+  upload ptr buf (← fldOffset f.firstVal) (← iconst64 8)
 
 def emitAccFromLiteral (ptr value : V .i64) : Prog V L Unit := do
-  let bufAcc64 ← fldLoad ptr f.accBuf
-  let bufAcc ← ireduce32 bufAcc64
-  emitUploadLiteralToBuf ptr bufAcc value
+  emitUploadLiteralToBuf ptr (← bufPtr ptr ACC_BUF) value
 
 def emitAccFromVar (ptr varIdx : V .i64) : Prog V L Unit := do
-  let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
-  let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
-  let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
-  emitCudaLaunchAdd ptr zeroBuf varBuf accBuf
+  emitCudaLaunchAdd ptr (← bufPtr ptr ZERO_BUF) (← varPtr ptr varIdx) (← bufPtr ptr ACC_BUF)
 
 def emitDownloadAccToResult (ptr : V .i64) : Prog V L (V .i64) := do
-  let accBuf64 ← fldLoad ptr f.accBuf
-  let accBuf ← ireduce32 accBuf64
-  let size8 ← iconst64 8
-  let outOff ← fldOffset f.result
-  let _ ← cudaDownload ptr accBuf outOff size8
+  download ptr (← bufPtr ptr ACC_BUF) (← fldOffset f.result) (← iconst64 8)
   fldLoad ptr f.result
 
 def emitScalarTermValue (ptr start len : V .i64) : Prog V L (V .i64 × V .i64) := do
@@ -874,16 +842,12 @@ def emitUploadInputArrayToVarBuffer (ptr varIdx start len : V .i64) : Prog V L U
   let _count ← emitParseInputArrayNumbersToData ptr start len f.arrayLhsData.offset
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayLhsData
-  let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
-  let _ ← cudaUpload ptr varBuf dataOff bytes
-  pure ()
+  upload ptr (← varPtr ptr varIdx) dataOff bytes
 
 def emitUploadOutDataToVarBuffer (ptr varIdx : V .i64) : Prog V L Unit := do
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayOutData
-  let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
-  let _ ← cudaUpload ptr varBuf dataOff bytes
-  pure ()
+  upload ptr (← varPtr ptr varIdx) dataOff bytes
 
 def emitScaleInputArrayToOutput (ptr arrStart len scalar : V .i64) : Prog V L (V .i64) := do
   let count ← emitParseInputArrayNumbersToData ptr arrStart len f.arrayLhsData.offset
@@ -892,14 +856,14 @@ def emitScaleInputArrayToOutput (ptr arrStart len scalar : V .i64) : Prog V L (V
   let lhsOff ← fldOffset f.arrayLhsData
   let paramOff ← fldOffset f.arrayParamData
   let outOff ← fldOffset f.arrayOutData
-  let lhsBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufA)
-  let paramBuf ← ireduce32 (← fldLoad ptr f.tmpArrayParamBuf)
-  let outBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufOut)
+  let lhsBuf ← bufPtr ptr ARR_A
+  let paramBuf ← bufPtr ptr ARR_PARAM
+  let outBuf ← bufPtr ptr ARR_OUT
   let paramBytes ← iconst64 16
-  let _ ← cudaUpload ptr lhsBuf lhsOff bytes
-  let _ ← cudaUpload ptr paramBuf paramOff paramBytes
+  upload ptr lhsBuf lhsOff bytes
+  upload ptr paramBuf paramOff paramBytes
   emitCudaLaunchArrayScale ptr lhsBuf paramBuf outBuf count
-  let _ ← cudaDownload ptr outBuf outOff bytes
+  download ptr outBuf outOff bytes
   emitFormatInputArrayShapeFromOutData ptr arrStart len count
 
 def emitAddInputArraysToOutput (ptr lhsStart rhsStart len : V .i64) : Prog V L (V .i64) := do
@@ -916,16 +880,16 @@ def emitAddInputArraysToOutput (ptr lhsStart rhsStart len : V .i64) : Prog V L (
       let rhsOff ← fldOffset f.arrayRhsData
       let paramOff ← fldOffset f.arrayParamData
       let outOff ← fldOffset f.arrayOutData
-      let lhsBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufA)
-      let rhsBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufB)
-      let paramBuf ← ireduce32 (← fldLoad ptr f.tmpArrayParamBuf)
-      let outBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufOut)
+      let lhsBuf ← bufPtr ptr ARR_A
+      let rhsBuf ← bufPtr ptr ARR_B
+      let paramBuf ← bufPtr ptr ARR_PARAM
+      let outBuf ← bufPtr ptr ARR_OUT
       let paramBytes ← iconst64 16
-      let _ ← cudaUpload ptr lhsBuf lhsOff bytes
-      let _ ← cudaUpload ptr rhsBuf rhsOff bytes
-      let _ ← cudaUpload ptr paramBuf paramOff paramBytes
+      upload ptr lhsBuf lhsOff bytes
+      upload ptr rhsBuf rhsOff bytes
+      upload ptr paramBuf paramOff paramBytes
       emitCudaLaunchArrayAdd ptr lhsBuf rhsBuf paramBuf outBuf lhsCount
-      let _ ← cudaDownload ptr outBuf outOff bytes
+      download ptr outBuf outOff bytes
       let outLen ← emitFormatInputArrayShapeFromOutData ptr lhsStart len lhsCount
       pure %[outLen])
       (pure %[zero])
@@ -1182,9 +1146,9 @@ def emitAssignLine (ptr varIdx eqPos len : V .i64) : Prog V L (V .i64 × V .i64)
   let out ← ifte .ne (r.head) zero (pure %[zero, zero])
     (do
       let scalarValue ← emitParseScalarExpr ptr exprPos0 len
-      let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
-      let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
-      let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
+      let accBuf ← bufPtr ptr ACC_BUF
+      let zeroBuf ← bufPtr ptr ZERO_BUF
+      let varBuf ← varPtr ptr varIdx
       emitAccFromLiteral ptr scalarValue
       emitCudaLaunchAdd ptr zeroBuf accBuf varBuf
       storeVarKind ptr varIdx zero
@@ -1245,37 +1209,16 @@ def clifCode : Prog V L Unit :=
   let inputOff ← fldOffset f.input
   let inputMax ← iconst64 256
   let outOff ← fldOffset f.output
-  let size8 ← iconst64 8
-  let arrayBytes ← iconst64 2048
-  let paramBytes ← iconst64 16
   let zero ← iconst64 0
   let one ← iconst64 1
 
-  cudaInit ptr
-  let zeroBuf ← cudaCreateBuffer ptr size8
-  let litBuf ← cudaCreateBuffer ptr size8
-  let accBuf ← cudaCreateBuffer ptr size8
-  let outBuf ← cudaCreateBuffer ptr size8
-  let tmpArrayBufA ← cudaCreateBuffer ptr arrayBytes
-  let tmpArrayBufB ← cudaCreateBuffer ptr arrayBytes
-  let tmpArrayBufOut ← cudaCreateBuffer ptr arrayBytes
-  let tmpArrayParamBuf ← cudaCreateBuffer ptr paramBytes
-  fldStore ptr f.zeroBuf (← sextend64 zeroBuf)
-  fldStore ptr f.litBuf (← sextend64 litBuf)
-  fldStore ptr f.accBuf (← sextend64 accBuf)
-  fldStore ptr f.outBuf (← sextend64 outBuf)
-  fldStore ptr f.tmpArrayBufA (← sextend64 tmpArrayBufA)
-  fldStore ptr f.tmpArrayBufB (← sextend64 tmpArrayBufB)
-  fldStore ptr f.tmpArrayBufOut (← sextend64 tmpArrayBufOut)
-  fldStore ptr f.tmpArrayParamBuf (← sextend64 tmpArrayParamBuf)
+  app.setup ptr
 
-  -- One device buffer per variable, made once.
+  -- Every variable starts absent.
   let twentySix ← iconst64 26
   let _ ← wloop1 zero
     (head := fun vi => return (contIfULt vi twentySix, %[], ()))
     (body := fun vi _ => do
-      let vbuf ← cudaCreateBuffer ptr arrayBytes
-      storeVarBufId ptr vi vbuf
       storeVarPresent ptr vi zero
       storeVarKind ptr vi zero
       storeVarTextLen ptr vi zero
@@ -1312,17 +1255,14 @@ def clifCode : Prog V L Unit :=
           pure %[])
       return %[])
 
-  cudaCleanup ptr
+  for i in List.range app.bufs.length do
+    Drv.free ptr (app.bufSlot i)
 
 def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 clifCode)]
 
 def payloads : List UInt8 :=
-  mkPayload layoutMeta.totalSize [
-    f.ptx.init (stringToBytes scalarAddPtx),
-    f.arrayScalePtx.init (stringToBytes arrayScalePtxSource),
-    f.arrayAddPtx.init (stringToBytes arrayAddPtxSource)
-  ]
+  app.initialMemory [scalarAddPtx, arrayScalePtxSource, arrayAddPtxSource]
 
 def cliConfig (clif : List FuncData) : Artifact := {
   functions := clif,

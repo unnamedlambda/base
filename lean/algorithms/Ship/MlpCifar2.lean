@@ -1,16 +1,20 @@
 import AlgorithmLib.Check.Entry
+import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
 import Warp.MlpCifar
+import AlgorithmLib.ML.Launch.AppTrace
 
 /-!
 # The CIFAR-10 MLP neither misuses a call nor faults, part 2
 
-`main` makes the thirteen buffers, storing each one's id in the binding
-table, and uploads both weight matrices from the caller's data; every other
-entry starts from what it leaves: a live context, the ids where it stored them,
-each buffer's size (`devBuf`), and the ten kernels' text in their slots. An
-upload asks for the bytes it reads from the caller's data, a fetch for those
-it writes to the caller's output.
+`main` brings the CUDA driver up, makes the thirteen allocations, loads the
+ten kernels, writes their parameters, makes cuBLAS's handle and uploads both
+weight matrices from the caller's data, in the driver's standard layout
+(`Drv.App`); every other entry starts from what it leaves (`Drv.App.runTS`):
+the context current, every allocation live with its pointer in its slot,
+every function looked up and its parameters written, the cuBLAS handle on
+the default stream. An upload asks for the bytes it reads from the caller's
+data, a fetch for those it writes to the caller's output.
 
 Not faulting means every load and store finds the bytes it reaches,
 and every operation answers.
@@ -24,27 +28,7 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 namespace MlpCifarSafe2
 
 abbrev Run (d o : Nat) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena MlpCifar.MEM_SIZE, .room .data d, .room .out o,
-   .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx,
-   .cell (regionBase .arena + UInt64.ofNat (MlpCifar.bindOff 0)) 4294967296,
-   .cell (regionBase .arena + UInt64.ofNat (MlpCifar.bindOff 2)) 12884901890,
-   .cell (regionBase .arena + UInt64.ofNat (MlpCifar.bindOff 4)) 21474836484,
-   .cell (regionBase .arena + UInt64.ofNat (MlpCifar.bindOff 6)) 30064771078,
-   .cell (regionBase .arena + UInt64.ofNat (MlpCifar.bindOff 8)) 38654705672,
-   .cell (regionBase .arena + UInt64.ofNat (MlpCifar.bindOff 10)) 47244640266,
-   .cell (regionBase .arena + UInt64.ofNat (MlpCifar.bindOff 12)) 12,
-   .devBuf 0 98304, .devBuf 1 3145728, .devBuf 2 32768, .devBuf 3 128, .devBuf 4 1024, .devBuf 5 8192, .devBuf 6 8192, .devBuf 7 1024, .devBuf 8 1024, .devBuf 9 32768, .devBuf 10 8192, .devBuf 11 8192, .devBuf 12 3145728,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 0)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 1)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 2)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 3)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 4)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 5)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 6)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 7)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 8)) MlpCifar.SLOT,
-   .cstrIn (regionBase .arena + UInt64.ofNat (MlpCifar.slotOff 9)) MlpCifar.SLOT]
+  (MlpCifar.app.runTS ++ [.room .data d, .room .out o])
 
 ship_entry fetchZ1 : MlpCifar.fetchCode MlpCifar.z1B 8192 under ((Run 0 8192))
 
@@ -64,7 +48,49 @@ ship_entry runFwd : MlpCifar.runSeq MlpCifar.fwdSteps under ((Run 0 0))
 
 ship_entry runBwd : MlpCifar.runSeq MlpCifar.bwdSteps under ((Run 0 0))
 
-ship_entry runSoftmax : MlpCifar.launchSlot 3 MlpCifar.B under ((Run 0 0))
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+/-- Every run of the shipped forward pass that ends launches the forward
+    kernels in order on the default stream, then waits. -/
+theorem runFwd_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.fwdSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    (MlpCifar.app.runCalls MlpCifar.fwdSteps).Covers w obs := by
+  check_calls
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+/-- Every run of the shipped backward pass that ends launches the backward
+    kernels in order on the default stream, then waits. -/
+theorem runBwd_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.bwdSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    (MlpCifar.app.runCalls MlpCifar.bwdSteps).Covers w obs := by
+  check_calls
+
+set_option maxRecDepth 100000 in
+/-- **The launches every run of the shipped forward pass makes are the proven
+    forward pipeline.** -/
+theorem runFwd_realises (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.fwdSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    ∃ cs, Check.callsOf obs = (Check.callsOf w.obs).reverse ++ cs ∧
+      ML.pipelineOf? MlpCifar.mlpTable none (ML.appLaunchesOf MlpCifar.app cs) = some MlpCifar.fwdPipeline := by
+  obtain ⟨cs, e, hc⟩ := runFwd_calls cfg dataLen outLen w h hr
+  exact ⟨cs, e, by rw [ML.launchesOf_runCalls (by decide) hc]; exact MlpCifar.fwd_realises⟩
+
+set_option maxRecDepth 100000 in
+/-- **The launches every run of the shipped backward pass makes are the proven
+    backward pipeline.** -/
+theorem runBwd_realises (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : Run 0 0 w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (MlpCifar.runSeq MlpCifar.bwdSteps : Prog Slot Lvl Unit)) = .ok obs w') :
+    ∃ cs, Check.callsOf obs = (Check.callsOf w.obs).reverse ++ cs ∧
+      ML.pipelineOf? MlpCifar.mlpTable none (ML.appLaunchesOf MlpCifar.app cs) = some MlpCifar.bwdPipeline := by
+  obtain ⟨cs, e, hc⟩ := runBwd_calls cfg dataLen outLen w h hr
+  exact ⟨cs, e, by rw [ML.launchesOf_runCalls (by decide) hc]; exact MlpCifar.bwd_realises⟩
+
+ship_entry runSoftmax : MlpCifar.launchSlot 3 under ((Run 0 0))
 
 ship_entry uploadBias : MlpCifar.uploadCode MlpCifar.biasB (MlpCifar.C * 4) under ((Run 128 0))
 
@@ -90,3 +116,6 @@ end MlpCifarSafe2
 #print axioms MlpCifarSafe2.fetchDlog_no_misuse
 #print axioms MlpCifarSafe2.runFwdBlas_no_misuse
 #print axioms MlpCifarSafe2.runBwdBlas_no_misuse
+
+#print axioms MlpCifarSafe2.runFwd_realises
+#print axioms MlpCifarSafe2.runBwd_realises

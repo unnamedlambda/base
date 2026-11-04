@@ -162,27 +162,47 @@ def Dev.streamParty? (d : Dev) (h : UInt64) : Option Nat :=
 /-- A driver call's result code, the device as it leaves it. -/
 def cuRes (d : Dev) (code : Int) : Option (Option V × Dev) := some (some (ofInt .i32 code), d)
 
-/-- The byte sizes of an entry point's parameters, read from its PTX
-    declaration: `.param .u64 p0, .param .u32 p1, …`. -/
+/-- What follows the first occurrence of `pat` in `cs`, scanning from the
+    front: a scan that stops at the first match, so finding a declaration
+    near the start of a module reads only that far. -/
+def afterFirst (pat : List Char) : List Char → Option (List Char)
+  | [] => if pat.isEmpty then some [] else none
+  | c :: cs => if pat.isPrefixOf (c :: cs) then some ((c :: cs).drop pat.length) else afterFirst pat cs
+
+/-- `cs` cut at each `sep`. -/
+def splitChar (sep : Char) : List Char → List (List Char)
+  | [] => [[]]
+  | c :: cs =>
+      if c == sep then [] :: splitChar sep cs
+      else match splitChar sep cs with
+        | w :: ws => (c :: w) :: ws
+        | [] => [[c]]
+
+/-- The words of `cs`, between spaces, tabs and line ends. -/
+def wordsOf (cs : List Char) : List (List Char) :=
+  (splitChar ' ' (cs.map fun c => if c == '\n' || c == '\t' || c == '\r' then ' ' else c)).filter (· ≠ [])
+
+/-- The bytes a parameter of PTX type `ty` takes. -/
+def ptxTypeSize (ty : List Char) : Option Nat :=
+  if [".u64", ".s64", ".b64", ".f64"].any (·.toList == ty) then some 8
+  else if [".u32", ".s32", ".b32", ".f32"].any (·.toList == ty) then some 4
+  else if [".u16", ".s16", ".b16"].any (·.toList == ty) then some 2
+  else if [".u8", ".s8", ".b8"].any (·.toList == ty) then some 1
+  else none
+
+/-- The byte sizes of an entry point's parameters, read from the first
+    declaration of `.entry entry(` in a module's PTX, up to the next `)`:
+    `.param .u64 p0, .param .u32 p1, …`. -/
 def ptxParamSizes (ptx entry : String) : Option (List Nat) := do
-  let decl := (ptx.splitOn (".entry " ++ entry ++ "(")).drop 1
-  let rest ← decl.head?
-  let params ← (rest.splitOn ")").head?
-  let items := (params.splitOn ",").map String.trim |>.filter (· ≠ "")
-  items.mapM fun item =>
-    let ws := (item.splitOn " ").filter (· ≠ "")
-    match ws with
-    | ".param" :: ty :: _ =>
-        if ty == ".u64" || ty == ".s64" || ty == ".b64" || ty == ".f64" then some 8
-        else if ty == ".u32" || ty == ".s32" || ty == ".b32" || ty == ".f32" then some 4
-        else if ty == ".u16" || ty == ".s16" || ty == ".b16" then some 2
-        else if ty == ".u8" || ty == ".s8" || ty == ".b8" then some 1
-        else none
+  let rest ← afterFirst (".entry " ++ entry ++ "(").toList ptx.toList
+  let items := (splitChar ',' (rest.takeWhile (· != ')'))).map wordsOf |>.filter (· ≠ [])
+  items.mapM fun ws => match ws with
+    | p :: ty :: _ => if p == ".param".toList then ptxTypeSize ty else none
     | _ => none
 
 /-- Whether a module's PTX declares an entry point of that name. -/
 def ptxHasEntry (ptx entry : String) : Bool :=
-  (ptx.splitOn (".entry " ++ entry ++ "(")).length > 1
+  (afterFirst (".entry " ++ entry ++ "(").toList ptx.toList).isSome
 
 /-- The parameter values `kernelParams` points at: one pointer per parameter,
     each to a value of the size the entry declares. -/
@@ -190,6 +210,15 @@ def kernelArgs (m : Mem) (params : UInt64) (sizes : List Nat) : Option (List UIn
   sizes.zipIdx.mapM fun (sz, i) => do
     let at_ ← m.load (params + UInt64.ofNat (8 * i)) 8
     m.load at_ sz
+
+/-- The parameter values a launch of function handle `hf` reads through
+    `params`, as it is made: one per parameter the function's entry point
+    declares. -/
+def launchWords (d : Dev) (m : Mem) (hf params : UInt64) : Option (List UInt64) := do
+  let fi ← handleOf kFunc hf
+  let (mi, entry) ← d.funcs[fi]?
+  let ptx ← (d.modules[mi]?).join
+  kernelArgs m params (← ptxParamSizes ptx entry)
 
 /-- Every party the device has a clock for, waited for by the host. -/
 def Race.syncAll (r : Race) : Race :=
@@ -260,7 +289,7 @@ def cudaStep (f : CudaFn) (bits : List UInt64) (w : World) : Option (Option V ×
         let n := d.bufs.size
         let m ← w.mem.store pdptr 8 (devPtr n)
         some (some (ofInt .i32 cuSuccess),
-              { w with mem := m, dev := { d with bufs := d.bufs.push (some (w.devFill n size.toNat)) } })
+              { w with mem := m, dev := { d with bufs := d.bufs.push (some (exactly (w.devFill n size.toNat) size.toNat)) } })
     | _ => none
   | .memFree => match bits with
     | [p] =>
@@ -538,6 +567,17 @@ def cudaStep (f : CudaFn) (bits : List UInt64) (w : World) : Option (Option V ×
         let i := d.execs.size
         let m ← w.mem.store pexec 8 (drvHandle kExec i)
         some (some (ofInt .i32 cuSuccess), { w with mem := m, dev := { d with execs := d.execs.push (some ops) } })
+    | _ => none
+  | .graphUpload => match bits with
+    | [hexec, hstream] =>
+      -- Uploading only readies a graph's work for a later launch: nothing it
+      -- does is observable.
+      if !d.live then none
+      else do
+        let ei ← handleOf kExec hexec
+        let _ ← (d.execs[ei]?).join
+        let _ ← d.streamParty? hstream
+        some (some (ofInt .i32 cuSuccess), w)
     | _ => none
   | .graphLaunch => match bits with
     | [hexec, hstream] =>

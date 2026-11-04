@@ -105,8 +105,18 @@ def slotsOf (n : Nat) (c : Code) : Nat := slotsGo fuel n c
 def bindAt (Γ : Env) (n : Nat) (vs : List V) : Env :=
   (Γ.take n ++ Array.replicate (n - Γ.size) default) ++ vs.toArray
 
+/-- What a call is observed with besides its arguments: a kernel launch
+    through the driver, with the parameter values it reads as it is made. -/
+def callWords (w : World) : Callee → List V → List V
+  | .ext (.cuda .launchKernel), [hf, _, _, _, _, _, _, _, _, pr, _] =>
+      match asBits hf, asBits pr with
+      | some f, some p => ((launchWords w.dev w.mem f p).getD []).map (.sc .i64)
+      | _, _ => []
+  | _, _ => []
+
+/-- A call, observed with its arguments and what `callWords` adds. -/
 def obsCall (w : World) (c : Callee) (args : List V) : World :=
-  { w with obs := .call c args :: w.obs }
+  { w with obs := .call c (args ++ callWords w c args) :: w.obs }
 
 def obsStore (w : World) (a : UInt64) (n : Nat) (v : UInt64) : World :=
   { w with obs := .store a n v :: w.obs }

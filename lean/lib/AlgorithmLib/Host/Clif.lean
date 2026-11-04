@@ -83,15 +83,15 @@ inductive SymVal where
       Buffer handles are not constants: a generator writes `slotWq.load ptr`, so
       the argument naming *which matrix* a vendor call multiplies reaches the
       call as a loaded value.  Without this case it is `unknown`, and two calls
-      of the same shape — Qwen2's `Wq`, `Wk` and `Wv` are all 896×896 — are
+      of the same shape — a layer's query, key and value projections — are
       indistinguishable in the trace.  Carrying the slot the value came from is
       what makes each call site identifiable.
 
-      The **base** rides along as well.  Qwen2's per-layer weights are reached
-      through `slotBaseA = ptr + (LAYER_BUFS_BASE + layerIdx·STRIDE)`, whose
-      layer index is a runtime load — so the base is unresolved and the weight
-      handle reads as offset `0` *of that base*, while the hidden state reads as
-      offset `72` of the descriptor pointer.  Recording only the offset makes
+      The **base** rides along as well.  Per-layer weights reached through
+      `base = ptr + (LAYER_BUFS_BASE + layerIdx·STRIDE)`, whose layer index is a
+      runtime load, leave the base unresolved: the weight handle reads as offset
+      `0` *of that base*, while a handle off the descriptor pointer reads as an
+      offset of that pointer.  Recording only the offset makes
       those two the same descriptor, which would let a bind-array check pass
       against entirely different buffers.  `descOf` still discards the base, so
       `ArgDesc` and every vendor-call record are unchanged.
@@ -109,11 +109,11 @@ inductive SymVal where
 
       `const` covers compile-time arithmetic and `offset` covers a pointer plus
       a displacement; between them they miss the case a data-dependent kernel
-      actually needs — a quantity *derived* from a runtime input.  Qwen2's
-      softmax reads four meta slots holding `seq`, `seq/32`, `(seq/32)*32` and
-      `seq%32`, and `seq` is a load, so before this every one of them was
-      `unknown` and "the host publishes the loop bounds the kernel assumes" was
-      not a statement this model could make.
+      actually needs — a quantity *derived* from a runtime input.  A softmax
+      over a run-time length reads slots holding `seq`, `seq/32`, `(seq/32)*32`
+      and `seq%32`, and `seq` is a load, so without this every one of them is
+      `unknown` and "the host publishes the loop bounds the kernel assumes" is
+      not a statement this model can make.
 
       Deliberately a *small* algebra (`DExp`): every constructor is a claim
       that Cranelift's instruction of the same name means that operation, so
@@ -583,8 +583,7 @@ def fnNameOf : Callee → Option String
     nothing else — but `cl_cublas_sgemv` writes its output buffer, and
     `cl_cuda_graph_launch` replays a whole captured graph.  A sequence built
     from launch records alone would therefore claim a memory transformation
-    that *omits* those writes.  For Qwen2 that omission is 99.9% of the
-    arithmetic.
+    that *omits* those writes — for a decoder, nearly all of its arithmetic.
 
     Naming them here turns the omission into a refusal: `Inst.TameB` rejects
     any fragment containing one, so a driver that calls cuBLAS cannot be given
@@ -605,9 +604,7 @@ def deviceWriterNames : List String :=
     "cl_cuda_graph_launch",
     -- host→device writes
     "cl_cuda_upload_ptr", "cl_cuda_upload_ptr_offset",
-    "cl_cuda_upload_ptr_async", "cl_cuda_upload_ptr_offset_async",
-    -- the wgpu path's equivalents
-    "cl_gpu_dispatch", "cl_gpu_upload" ]
+    "cl_cuda_upload_ptr_async", "cl_cuda_upload_ptr_offset_async" ]
 
 /-- Names that launch a kernel.  Listed rather than pattern-matched on a prefix
     so that adding a launch variant to `FFI.lean` and forgetting it here is a
@@ -714,7 +711,7 @@ theorem scanBlockTR_go_eq :
     the entry block, which is the one this fold starts at from `Env.empty`.
     Past a back-edge they need not coincide, and the freshness `Fresh` asks for
     is what fails first — a re-entered block rebinds ids the value count is
-    already past. Consumers recover repetition separately, through `loopsOf`. -/
+    already past. -/
 def launchesOf (s : FuncData) : List LaunchRec :=
   (s.blocks.foldl (fun (acc : Env × List LaunchRec) b =>
       let r := scanBlock acc.1 b.insts
@@ -771,121 +768,6 @@ def isDeviceWriterB : Inst → Bool
 -- ---------------------------------------------------------------------------
 -- Counted loops, recovered
 -- ---------------------------------------------------------------------------
-
-/-! `IR.forLoop` emits a fixed four-part shape: the current block jumps to a
-    header with a zero counter; the header compares the counter against a bound
-    and branches to the body or the exit; the body runs, increments by one, and
-    jumps back.
-
-    Recovering that shape is what lets a *static* scan say how many times a body
-    runs — which is the one thing `launchesOf` could not do, and the reason a
-    layer's kernels appear once in the instruction stream instead of
-    twenty-four times.  Everything here is decidable, so it is checked against
-    the emitted blocks rather than read off the generator's source. -/
-
-/-- **A counted loop, as recovered from three emitted blocks.**  `bodyBlk` is
-    where the body's instructions live, so a caller can scan them. -/
-structure LoopRec where
-  hdrBlk  : Nat
-  bodyBlk : Nat
-  exitBlk : Nat
-  /-- The bound, when the model resolved it to a compile-time constant. -/
-  trip    : Nat
-  deriving Repr, DecidableEq, BEq
-
-/-- The header's two instructions, and the bound they compare against, resolved
-    in the environment reaching this block. -/
-def loopHdrOf? (e : Env) (b : BlockData) : Option (Nat × Nat × Nat) :=
-  match b.params, b.insts with
-  | [(p, _)], [Inst.icmp c .ult i lim, Inst.brif c' bdy [j] ex []] =>
-      if c.id = c'.id ∧ i.id = p.id ∧ j.id = p.id then
-        match e lim with
-        | .const k => some (bdy.id, ex.id, k.toNat)
-        | _        => none
-      else none
-  | _, _ => none
-
-/-- The body must end by incrementing its parameter and jumping back — which is
-    what makes the count a *trip* count rather than a guess. -/
-def loopBodyOkB (hdr : Nat) (b : BlockData) : Bool :=
-  match b.params, b.insts.reverse with
-  | [(p, _)], (Inst.jump t [inc]) :: (Inst.iadd d q o) :: rest =>
-      t.id == hdr && d.id == inc.id && q.id == p.id
-        && (rest.reverse.any (fun i => match i with
-              | Inst.iconst dd _ 1 => dd.id == o.id
-              | _ => false)
-            || (b.insts.any (fun i => match i with
-                  | Inst.iconst dd _ 1 => dd.id == o.id
-                  | _ => false)))
-  | _, _ => false
-
-/-- **The accumulator-carrying header.**  `forLoopAcc` threads a carry alongside
-    the induction variable, so its header takes two parameters and its `brif`
-    passes the carry to both successors.  `loopHdrOf?` requires exactly one
-    parameter, which is why every `forLoopAcc` in the codebase was invisible to
-    the loop scan — including the one that performs LZ4's twenty launches.
-
-    Same shape otherwise: the bound must resolve to a compile-time constant, so
-    the trip count is read out of the program rather than assumed. -/
-def loopHdrAccOf? (e : Env) (b : BlockData) : Option (Nat × Nat × Nat) :=
-  match b.params, b.insts with
-  | [(p, _), (a, _)], [Inst.icmp c .ult i lim, Inst.brif c' bdy [j, a1] ex [a2]] =>
-      if c.id = c'.id ∧ i.id = p.id ∧ j.id = p.id ∧ a1.id = a.id ∧ a2.id = a.id then
-        match e lim with
-        | .const k => some (bdy.id, ex.id, k.toNat)
-        | _        => none
-      else none
-  | _, _ => none
-
-/-- `loopBodyOkB` for the accumulator form: the body ends by incrementing its
-    induction parameter and jumping back with the new carry. -/
-def loopBodyAccOkB (hdr : Nat) (b : BlockData) : Bool :=
-  match b.params, b.insts.reverse with
-  | [(p, _), _], (Inst.jump t [inc, _]) :: (Inst.iadd d q o) :: _ =>
-      t.id == hdr && d.id == inc.id && q.id == p.id
-        && b.insts.any (fun i => match i with
-              | Inst.iconst dd _ 1 => dd.id == o.id
-              | _ => false)
-  | _, _ => false
-
-/-- **The counted loops a built function contains**, in block order.
-
-    The environment each header is resolved in is `evalPure` over every block
-    before it, which is exactly the environment `launchesOf` threads — so the
-    bound is resolved the same way a launch's PTX slot is. -/
-def loopsOf (s : FuncData) : List LoopRec :=
-  (s.blocks.foldl (fun (acc : Env × List LoopRec) b =>
-      let e := acc.1
-      let acc2 :=
-        match loopHdrOf? e b with
-        | some (bdy, ex, k) =>
-            if s.blocks.any (fun c => c.ref.id == bdy && loopBodyOkB b.ref.id c)
-            then acc.2 ++ [⟨b.ref.id, bdy, ex, k⟩] else acc.2
-        | none =>
-            match loopHdrAccOf? e b with
-            | some (bdy, ex, k) =>
-                if s.blocks.any (fun c => c.ref.id == bdy && loopBodyAccOkB b.ref.id c)
-                then acc.2 ++ [⟨b.ref.id, bdy, ex, k⟩] else acc.2
-            | none => acc.2
-      (evalPure e b.insts, acc2)) (Env.empty, [])).2
-
-/-- The instructions of a named block, if the function has one. -/
-def blockInsts? (s : FuncData) (n : Nat) : Option (List Inst) :=
-  (s.blocks.find? (fun b => b.ref.id == n)).map BlockData.insts
-
-/-- The calls a straight line performs, in order — what a loop body dispatches
-    to. An import is its symbol name and a call to another function of the
-    program is its `u0:N`, the name that function has in CLIF. -/
-def callsIn (is : List Inst) : List String :=
-  is.filterMap (fun i => match i with
-    | .call _ (.ffi f)   _ => some f.cname
-    | .call _ (.local k) _ => some s!"u0:{k}"
-    | .call _ .native _    => some "native"
-    | _                    => none)
-
-/-- …over a whole function. -/
-def callsOf (s : FuncData) : List String :=
-  s.blocks.flatMap (fun b => callsIn b.insts)
 
 /-- **A fragment that is what it claims to be**: it launches nothing, it writes
     no device memory behind the model's back, and it does not rebind `ptr`.
@@ -1161,14 +1043,14 @@ theorem bevalPure_mem_noStores : ∀ (is : List Inst) (b : BEnv),
 
     Deliberately *not* `ArgDesc`.  A handle's identity is the address it was
     loaded from, and that address is a base and an offset; `ArgDesc.slot` keeps
-    only the offset, which is fine for a vendor call (every one of Qwen2's
-    argument handles comes off the descriptor pointer) and wrong here.
+    only the offset, which is fine for a vendor call whose handles all come off
+    the descriptor pointer and wrong here.
 
     `near` is a load from the same base as the bind array — the descriptor
-    pointer — so `near 72` is the hidden state and nothing else can be.  `far`
-    is a load from a base the scan did not resolve, carrying that base's SSA
-    id: Qwen2's per-layer weights sit at `slotBaseA + k` where `slotBaseA`
-    depends on a runtime layer index, so they are `far b k`.  Two `far` handles
+    pointer — so `near 72` is one buffer and nothing else can be.  `far` is a
+    load from a base the scan did not resolve, carrying that base's SSA id:
+    per-layer weights at `base + k`, where `base` depends on a runtime layer
+    index, are `far b k`.  Two `far` handles
     are the same buffer exactly when both components agree — which is why the
     id is kept rather than collapsed to "unresolved". -/
 inductive BufDesc where
@@ -1236,10 +1118,9 @@ def positionalLaunchNames : List String :=
     A launch fills a pointer array, a vendor call is handed its buffers
     directly, and the two need the same treatment: a handle's identity is a
     base and an offset.  `LaunchRec.args` already carried the vendor arguments
-    as `ArgDesc`, which keeps only the offset — so Qwen2's `Wq`, at offset `4`
-    of the per-layer base, was recorded identically to whatever might sit at
-    offset `4` of the descriptor pointer.  That the two ranges happen not to
-    overlap in this program is not something any theorem said.
+    as `ArgDesc`, which keeps only the offset — so a weight at offset `4` of a
+    per-layer base is recorded identically to whatever sits at offset `4` of the
+    descriptor pointer.
 
     `LaunchRec` is left alone (the abstract host model in `HostIR` declares its
     calls in those terms); this is the base-aware view, recovered alongside. -/

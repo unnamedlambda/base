@@ -71,8 +71,6 @@ def main():
     print(f"{'launches':>13} {'cum us':>9} {'bucket us':>10} {'us/launch':>10}")
     prev_k, prev_t = 0, 0.0
     for name, k in LADDER:
-        if name not in ex:
-            continue
         t = timed(base, name)
         dk, dt = k - prev_k, t - prev_t
         print(f"{prev_k:5d}..{k:<6d} {t:9.1f} {dt:10.1f} {dt / dk:10.2f}")

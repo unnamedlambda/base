@@ -71,25 +71,9 @@ name = "hprog_absent_corpus"
 path = "tests/hprog_absent_corpus.rs"
 
 [[test]]
-name = "hprog_cuda_corpus"
-path = "tests/hprog_cuda_corpus.rs"
-
-[[test]]
 name = "hprog_driver_corpus"
 path = "tests/hprog_driver_corpus.rs"
 
 [[test]]
-name = "hprog_gpu_corpus"
-path = "tests/hprog_gpu_corpus.rs"
-
-[[test]]
-name = "hprog_stream_corpus"
-path = "tests/hprog_stream_corpus.rs"
-
-[[test]]
 name = "hprog_wgpu_corpus"
 path = "tests/hprog_wgpu_corpus.rs"
-
-[[test]]
-name = "hprog_window_corpus"
-path = "tests/hprog_window_corpus.rs"

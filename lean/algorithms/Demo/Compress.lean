@@ -5,6 +5,8 @@ public import AlgorithmLib.Surface.FFI
 meta import AlgorithmLib.Surface.FFI
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Wg
+meta import AlgorithmLib.Surface.Wg
 public import AlgorithmLib.Vocab.WGSL
 meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
@@ -45,8 +47,7 @@ structure LZ4Params (blockSize : Nat) where
 
 def maxInputSize : Nat := 4 * 1024 * 1024
 
--- Fixed layout offsets
-def bindDesc_off       : Nat := 0x100
+-- Fixed layout offsets: wgpu's state (`app`) from 0, the shader from 0x200
 def shader_off         : Nat := 0x200
 def shaderRegionSize   : Nat := 16384
 def inputFilename_off  : Nat := shader_off + shaderRegionSize   -- 0x4200
@@ -242,16 +243,28 @@ def compressionShader (bs : Nat) : String :=
 -- fn u0:0: noop (required by CraneliftUnit)
 -- fn u0:1: orchestrator
 --   1. readFile (input file → shared memory, returns byte count)
---   2. cl_gpu_init
---   3. cl_gpu_create_buffer ×3 (input, output, metadata)
---   4. cl_gpu_upload (input data to GPU)
---   5. cl_gpu_create_pipeline (3 bindings)
---   6. cl_gpu_dispatch (numBlocks, 1, 1)
---   7. cl_gpu_download ×2 (output, metadata)
---   8. cl_gpu_cleanup
---   9. replaceFileAt, then writeFileAt per block (compressed output — concatenated
+--   2. wgpu brought up: the three buffers and the pipeline (`Wg.App.setup`)
+--   3. the input uploaded, one dispatch over the blocks, the output and its
+--      metadata downloaded, and everything released
+--   4. replaceFileAt, then writeFileAt per block (compressed output — concatenated
 --      blocks with size header)
 -- ---------------------------------------------------------------------------
+
+/-- The input (up to four bytes past the largest a read takes, as the
+    upload rounds up), the blocks it compresses to and their sizes, and the
+    one pipeline over all three, called through wgpu directly; `shLen` is the
+    shader's length in bytes, `(compressionShader bs).utf8ByteSize`. -/
+def app (bs shLen : Nat) : Wg.App :=
+  { bufs := [maxInputSize + 4, outputBufSize bs, metaSize bs],
+    pipes := [{ shaderOff := shader_off, shaderLen := shLen,
+                binds := [(0, true), (1, false), (2, false)] }],
+    memSize := blockMeta_off bs + metaSize bs }
+
+/-- The shipped shader's length, at the block size it ships with. -/
+def shaderLen16384 : Nat := utf8Len% (compressionShader 16384)
+
+/-- wgpu's state fits below the shader. -/
+theorem app_fits : (app 16384 shaderLen16384).stateEnd ≤ shader_off := by decide
 
 open AlgorithmLib.Prog in
 /-- The body, for any block size.
@@ -260,7 +273,7 @@ open AlgorithmLib.Prog in
     error --- and nothing about that costs it anything now: the term is
     ordinary Lean, and `compileProg` checks the body it emits at the size that
     ships. -/
-def code (bs : Nat) : Prog V L Unit :=
+def code (bs shLen : Nat) : Prog V L Unit :=
   let obSz  := outputBufSize bs
   let mSz   := metaSize bs
   let mOff  := blockMeta_off bs
@@ -286,15 +299,8 @@ def code (bs : Nat) : Prog V L Unit :=
       let numBlocks   ← udiv sum blkSzV
       let numBlocks32 ← ireduce32 numBlocks
 
-      -- Step 4: GPU init
-      gpuInit ptr
-
-      -- Step 5: Create 3 buffers
-      let buf0      ← gpuCreateBuffer ptr alignedSz
-      let outBufSzV ← iconst64 obSz
-      let buf1      ← gpuCreateBuffer ptr outBufSzV
-      let metaSzV   ← iconst64 mSz
-      let buf2      ← gpuCreateBuffer ptr metaSzV
+      -- Step 4: wgpu, its buffers and the pipeline
+      (app bs shLen).setup ptr
 
       -- Step 6: Write input size into metadata region
       let inputSz32 ← ireduce32 bytesRead
@@ -303,26 +309,20 @@ def code (bs : Nat) : Prog V L Unit :=
       storeUnaligned inputSz32 metaAddr
 
       -- Step 7: Upload input data and metadata
-      let _ ← gpuUpload ptr buf0 inData alignedSz
-      let _ ← gpuUpload ptr buf2 metaOffV metaSzV
-
-      -- Step 8: Create pipeline (3 bindings)
-      let shOffV  ← iconst64 shader_off
-      let bdOffV  ← iconst64 bindDesc_off
-      let three32 ← iconst32 3
-      let pipeId  ← gpuCreatePipeline ptr shOffV bdOffV three32
+      (app bs shLen).upload ptr 0 (← iadd ptr inData) alignedSz
+      (app bs shLen).upload ptr 2 metaAddr (← iconst64 mSz)
 
       -- Step 9: Dispatch — numBlocks workgroups
       let one32 ← iconst32 1
-      let _ ← gpuDispatch ptr pipeId numBlocks32 one32 one32
+      (app bs shLen).dispatch ptr 0 numBlocks32 one32 one32
 
       -- Step 10: Download output and metadata
       let outDataV ← iconst64 outputData_off
-      let _ ← gpuDownload ptr buf1 outDataV outBufSzV
-      let _ ← gpuDownload ptr buf2 metaOffV metaSzV
+      (app bs shLen).download ptr 1 (← iadd ptr outDataV) (← iconst64 obSz)
+      (app bs shLen).download ptr 2 metaAddr (← iconst64 mSz)
 
-      -- Step 11: GPU cleanup
-      gpuCleanup ptr
+      -- Step 11: release what wgpu made
+      (app bs shLen).cleanup ptr
 
       -- Step 12: Write standard LZ4 frame format
       -- Reuse inputData_off area as scratch
@@ -393,14 +393,8 @@ def code (bs : Nat) : Prog V L Unit :=
 -- ---------------------------------------------------------------------------
 
 def buildPayload (bs : Nat) : List UInt8 :=
-  let reserved       := zeros 0x40
-  let hdrPad         := zeros (bindDesc_off - 0x40)
-  -- 3 binding descriptors: [buf_id (i32), read_only (i32)] × 3
-  let bindDesc :=
-    uint32ToBytes 0 ++ uint32ToBytes 1 ++   -- buf0: input, read_only=true
-    uint32ToBytes 1 ++ uint32ToBytes 0 ++   -- buf1: output, read_only=false
-    uint32ToBytes 2 ++ uint32ToBytes 0       -- buf2: metadata, read_only=false
-  let bindPad        := zeros (shader_off - bindDesc_off - 24)
+  let a := app bs (compressionShader bs).utf8ByteSize
+  let wgState        := zeros a.NAME ++ "main".toUTF8.toList ++ zeros (shader_off - a.NAME - 4)
   let shaderBytes    := padTo (stringToBytes (compressionShader bs)) shaderRegionSize
   -- Input filename left as zeros (main.rs writes the path at runtime)
   let inputFnameBytes  := zeros filenameRegionSize
@@ -408,8 +402,7 @@ def buildPayload (bs : Nat) : List UInt8 :=
   let flagBytes      := uint64ToBytes 0
   let flagPad        := zeros (clifIr_off - flag_off - 8)
   let clifPad        := zeros clifIrRegionSize
-  reserved ++ hdrPad ++
-  bindDesc ++ bindPad ++
+  wgState ++
   shaderBytes ++ inputFnameBytes ++ outputFnameBytes ++
   flagBytes ++ flagPad ++ clifPad
 
@@ -422,7 +415,7 @@ def buildPayload (bs : Nat) : List UInt8 :=
 def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Except String (Artifact × UInt32) := do
   let payload := buildPayload bs
   let cfg : Artifact := {
-    functions := ← Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code bs))],
+    functions := ← Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code bs (compressionShader bs).utf8ByteSize))],
     required_memory   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }

@@ -45,7 +45,7 @@ structure BlockRef where
 /-- Comparison condition codes -/
 inductive ICmpCond where
   | eq | ne | uge | ugt | ule | ult | slt | sle | sgt | sge
-  deriving Repr, BEq
+  deriving Repr, BEq, DecidableEq
 
 /-- Float comparison conditions -/
 inductive FloatCC where
@@ -160,7 +160,7 @@ inductive CudaFn where
   | eventCreate | eventRecord | streamWaitEvent | eventSynchronize | eventDestroy
   | eventElapsedTime
   | memAllocHost | memFreeHost | memcpyHtoDAsync | memcpyDtoHAsync
-  | beginCapture | endCapture | graphInstantiate | graphLaunch | graphExecDestroy | graphDestroy
+  | beginCapture | endCapture | graphInstantiate | graphUpload | graphLaunch | graphExecDestroy | graphDestroy
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- Every driver function, in declaration order. -/
@@ -171,7 +171,7 @@ def CudaFn.all : List CudaFn :=
    .streamCreate, .streamSynchronize, .streamDestroy,
    .eventCreate, .eventRecord, .streamWaitEvent, .eventSynchronize, .eventDestroy,
    .eventElapsedTime, .memAllocHost, .memFreeHost, .memcpyHtoDAsync, .memcpyDtoHAsync,
-   .beginCapture, .endCapture, .graphInstantiate, .graphLaunch, .graphExecDestroy, .graphDestroy]
+   .beginCapture, .endCapture, .graphInstantiate, .graphUpload, .graphLaunch, .graphExecDestroy, .graphDestroy]
 
 theorem CudaFn.mem_all (f : CudaFn) : f ∈ CudaFn.all := by cases f <;> simp [CudaFn.all]
 
@@ -370,7 +370,8 @@ def Ext.symbol : Ext → String
     | .memAllocHost => "cuMemAllocHost_v2" | .memFreeHost => "cuMemFreeHost"
     | .memcpyHtoDAsync => "cuMemcpyHtoDAsync_v2" | .memcpyDtoHAsync => "cuMemcpyDtoHAsync_v2"
     | .beginCapture => "cuStreamBeginCapture_v2" | .endCapture => "cuStreamEndCapture"
-    | .graphInstantiate => "cuGraphInstantiateWithFlags" | .graphLaunch => "cuGraphLaunch"
+    | .graphInstantiate => "cuGraphInstantiateWithFlags" | .graphUpload => "cuGraphUpload"
+    | .graphLaunch => "cuGraphLaunch"
     | .graphExecDestroy => "cuGraphExecDestroy" | .graphDestroy => "cuGraphDestroy"
   | .cublas f => match f with
     | .create => "cublasCreate_v2" | .destroy => "cublasDestroy_v2"
@@ -468,7 +469,7 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
     | .memAllocHost => [.i64, .i64] | .memFreeHost => [.i64]
     | .memcpyHtoDAsync | .memcpyDtoHAsync => [.i64, .i64, .i64, .i64]
     | .beginCapture => [.i64, .i32] | .endCapture => [.i64, .i64]
-    | .graphInstantiate => [.i64, .i64, .i64] | .graphLaunch => [.i64, .i64]
+    | .graphInstantiate => [.i64, .i64, .i64] | .graphUpload | .graphLaunch => [.i64, .i64]
     | .graphExecDestroy | .graphDestroy => [.i64],
     some .i32)
   -- `cublasOperation_t`, `cudaDataType`, `cublasComputeType_t`,
@@ -599,47 +600,18 @@ structure LoadOp where
 
 /-- One runtime entry point. -/
 inductive Ffi where
-  | gpuInit | gpuCreateBuffer | gpuCreatePipeline | gpuUpload | gpuDownload
-  | gpuDispatch | gpuCleanup | gpuUploadPtr | gpuDownloadPtr
-  | windowInit | windowOpen | windowPoll | windowPresentGpuBuffer | windowCleanup
   | lmdbInit | lmdbOpen | lmdbBeginWriteTxn | lmdbPut | lmdbCommitWriteTxn
   | lmdbCursorScan | lmdbCleanup
   | htCreate | htLookup | htInsert | htIncrement | htCount | htGetEntry
   | htCleanup | htInit
   | sinf | cosf | powf
   | threadInit | threadSpawn | threadJoin | threadCleanup
-  | cudaInit | cudaCreateBuffer | cudaUpload | cudaUploadOffset | cudaUploadAsync
-  | cudaUploadOffsetAsync | cudaDownload | cudaDownloadOffset | cudaDownloadAsync
-  | cudaFreeBuffer | cudaStreamCreate | cudaStreamSync | cudaStreamDestroy
-  | cudaEventCreate | cudaEventRecord | cudaStreamWaitEvent | cudaEventElapsedMsBits
-  | cudaEventDestroy | cudaGraphBeginCapture | cudaGraphEndCapture | cudaGraphUpload
-  | cudaGraphLaunch | cudaGraphDestroy | cudaPinnedAlloc | cudaPinnedPtr
-  | cudaPinnedFree | cudaLaunch | cudaLaunchNamed | cudaLaunchOnStream
-  | cudaLaunchNamedOnStream | cudaSync | cudaCleanup
-  | cublasSgemv | cublasSgemvOnStream | cublasSgemm | cublasSgemmOnStream
-  | cublasPtrArray | cublasSgemmBatchedOnStream
-  | cudaPinnedPtrAt | cudaMemInfoFree | cudaMemInfoTotal | cublasGemmExBf16
-  | cublasGemmStridedBatchedExBf16
   deriving Repr, DecidableEq, Inhabited, Lean.ToExpr
 
 namespace Ffi
 
 /-- The C symbol the JIT resolves. -/
 def cname : Ffi → String
-  | .gpuInit => "cl_gpu_init"
-  | .gpuCreateBuffer => "cl_gpu_create_buffer"
-  | .gpuCreatePipeline => "cl_gpu_create_pipeline"
-  | .gpuUpload => "cl_gpu_upload"
-  | .gpuDownload => "cl_gpu_download"
-  | .gpuDispatch => "cl_gpu_dispatch"
-  | .gpuCleanup => "cl_gpu_cleanup"
-  | .gpuUploadPtr => "cl_gpu_upload_ptr"
-  | .gpuDownloadPtr => "cl_gpu_download_ptr"
-  | .windowInit => "cl_window_init"
-  | .windowOpen => "cl_window_open"
-  | .windowPoll => "cl_window_poll"
-  | .windowPresentGpuBuffer => "cl_window_present_gpu_buffer"
-  | .windowCleanup => "cl_window_cleanup"
   | .lmdbInit => "cl_lmdb_init"
   | .lmdbOpen => "cl_lmdb_open"
   | .lmdbBeginWriteTxn => "cl_lmdb_begin_write_txn"
@@ -662,66 +634,9 @@ def cname : Ffi → String
   | .threadSpawn => "cl_thread_spawn"
   | .threadJoin => "cl_thread_join"
   | .threadCleanup => "cl_thread_cleanup"
-  | .cudaInit => "cl_cuda_init"
-  | .cudaCreateBuffer => "cl_cuda_create_buffer"
-  | .cudaUpload => "cl_cuda_upload_ptr"
-  | .cudaUploadOffset => "cl_cuda_upload_ptr_offset"
-  | .cudaUploadAsync => "cl_cuda_upload_ptr_async"
-  | .cudaUploadOffsetAsync => "cl_cuda_upload_ptr_offset_async"
-  | .cudaDownload => "cl_cuda_download_ptr"
-  | .cudaDownloadOffset => "cl_cuda_download_ptr_offset"
-  | .cudaDownloadAsync => "cl_cuda_download_ptr_async"
-  | .cudaFreeBuffer => "cl_cuda_free_buffer"
-  | .cudaStreamCreate => "cl_cuda_stream_create"
-  | .cudaStreamSync => "cl_cuda_stream_sync"
-  | .cudaStreamDestroy => "cl_cuda_stream_destroy"
-  | .cudaEventCreate => "cl_cuda_event_create"
-  | .cudaEventRecord => "cl_cuda_event_record"
-  | .cudaStreamWaitEvent => "cl_cuda_stream_wait_event"
-  | .cudaEventElapsedMsBits => "cl_cuda_event_elapsed_ms_bits"
-  | .cudaEventDestroy => "cl_cuda_event_destroy"
-  | .cudaGraphBeginCapture => "cl_cuda_graph_begin_capture"
-  | .cudaGraphEndCapture => "cl_cuda_graph_end_capture"
-  | .cudaGraphUpload => "cl_cuda_graph_upload"
-  | .cudaGraphLaunch => "cl_cuda_graph_launch"
-  | .cudaGraphDestroy => "cl_cuda_graph_destroy"
-  | .cudaPinnedAlloc => "cl_cuda_pinned_alloc"
-  | .cudaPinnedPtr => "cl_cuda_pinned_ptr"
-  | .cudaPinnedFree => "cl_cuda_pinned_free"
-  | .cudaLaunch => "cl_cuda_launch"
-  | .cudaLaunchNamed => "cl_cuda_launch_named"
-  | .cudaLaunchOnStream => "cl_cuda_launch_on_stream"
-  | .cudaLaunchNamedOnStream => "cl_cuda_launch_named_on_stream"
-  | .cudaSync => "cl_cuda_sync"
-  | .cudaCleanup => "cl_cuda_cleanup"
-  | .cublasSgemv => "cl_cublas_sgemv"
-  | .cublasSgemvOnStream => "cl_cublas_sgemv_on_stream"
-  | .cublasSgemm => "cl_cublas_sgemm_strided_batched"
-  | .cublasSgemmOnStream => "cl_cublas_sgemm_strided_batched_on_stream"
-  | .cublasPtrArray => "cl_cublas_ptr_array"
-  | .cublasSgemmBatchedOnStream => "cl_cublas_sgemm_batched_on_stream"
-  | .cudaPinnedPtrAt => "cl_cuda_pinned_ptr_at"
-  | .cudaMemInfoFree => "cl_cuda_mem_info_free"
-  | .cudaMemInfoTotal => "cl_cuda_mem_info_total"
-  | .cublasGemmExBf16 => "cl_cublas_gemm_ex_bf16"
-  | .cublasGemmStridedBatchedExBf16 => "cl_cublas_gemm_strided_batched_ex_bf16"
 
 /-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
 def sig : Ffi → List ClifTy × Option ClifTy
-  | .gpuInit => ([.i64], none)
-  | .gpuCreateBuffer => ([.i64, .i64], some .i32)
-  | .gpuCreatePipeline => ([.i64, .i64, .i64, .i32], some .i32)
-  | .gpuUpload => ([.i64, .i32, .i64, .i64], some .i32)
-  | .gpuDownload => ([.i64, .i32, .i64, .i64], some .i32)
-  | .gpuDispatch => ([.i64, .i32, .i32, .i32, .i32], some .i32)
-  | .gpuCleanup => ([.i64], none)
-  | .gpuUploadPtr => ([.i64, .i32, .i64, .i64], some .i32)
-  | .gpuDownloadPtr => ([.i64, .i32, .i64, .i64, .i64], some .i32)
-  | .windowInit => ([.i64], none)
-  | .windowOpen => ([.i64, .i64, .i64, .i64, .i64, .i64, .i64], some .i32)
-  | .windowPoll => ([.i64, .i64, .i32], some .i32)
-  | .windowPresentGpuBuffer => ([.i64, .i64, .i32], some .i32)
-  | .windowCleanup => ([.i64], none)
   | .lmdbInit => ([.i64], none)
   | .lmdbOpen => ([.i64, .i64, .i32], some .i32)
   | .lmdbBeginWriteTxn => ([.i64, .i32], some .i32)
@@ -744,87 +659,6 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .threadSpawn => ([.i64, .i64, .i64], some .i64)
   | .threadJoin => ([.i64, .i64], some .i64)
   | .threadCleanup => ([.i64], none)
-  | .cudaInit => ([.i64], none)
-  | .cudaCreateBuffer => ([.i64, .i64], some .i32)
-  | .cudaUpload => ([.i64, .i32, .i64, .i64], some .i32)
-  | .cudaUploadOffset => ([.i64, .i32, .i64, .i64, .i64], some .i32)
-  | .cudaUploadAsync => ([.i64, .i32, .i64, .i64, .i32], some .i32)
-  | .cudaUploadOffsetAsync => ([.i64, .i32, .i64, .i64, .i64, .i32], some .i32)
-  | .cudaDownload => ([.i64, .i32, .i64, .i64], some .i32)
-  | .cudaDownloadOffset => ([.i64, .i32, .i64, .i64, .i64], some .i32)
-  | .cudaDownloadAsync => ([.i64, .i32, .i64, .i64, .i32], some .i32)
-  | .cudaFreeBuffer => ([.i64, .i32], some .i32)
-  | .cudaStreamCreate => ([.i64], some .i32)
-  | .cudaStreamSync => ([.i64, .i32], some .i32)
-  | .cudaStreamDestroy => ([.i64, .i32], some .i32)
-  | .cudaEventCreate => ([.i64], some .i32)
-  | .cudaEventRecord => ([.i64, .i32, .i32], some .i32)
-  | .cudaStreamWaitEvent => ([.i64, .i32, .i32], some .i32)
-  | .cudaEventElapsedMsBits => ([.i64, .i32, .i32], some .i32)
-  | .cudaEventDestroy => ([.i64, .i32], some .i32)
-  | .cudaGraphBeginCapture => ([.i64, .i32], some .i32)
-  | .cudaGraphEndCapture => ([.i64, .i32], some .i32)
-  | .cudaGraphUpload => ([.i64, .i32, .i32], some .i32)
-  | .cudaGraphLaunch => ([.i64, .i32, .i32], some .i32)
-  | .cudaGraphDestroy => ([.i64, .i32], some .i32)
-  | .cudaPinnedAlloc => ([.i64, .i64], some .i32)
-  | .cudaPinnedPtr => ([.i64, .i32], some .i64)
-  | .cudaPinnedFree => ([.i64, .i32], some .i32)
-  | .cudaLaunch => ([.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
-  | .cudaLaunchNamed =>
-      ([.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
-  | .cudaLaunchOnStream =>
-      ([.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
-  | .cudaLaunchNamedOnStream =>
-      ([.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
-  | .cudaSync => ([.i64], some .i32)
-  | .cudaCleanup => ([.i64], none)
-  | .cublasSgemv => ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
-  | .cublasSgemvOnStream =>
-      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
-  -- The three `.i64`s after the batch count are element offsets into the A, B
-  -- and C operands; a zero trailing `ld_*` asks for the default leading
-  -- dimension. An offset moves the pointer and leaves the matrix the call
-  -- contracts alone, so one buffer can hold several operands without touching
-  -- what `Law.cublasIsMatvec` says a contraction computes.
-  | .cublasSgemm =>
-      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32,
-        .i32, .i64, .i32, .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
-  | .cublasSgemmOnStream =>
-      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32,
-        .i32, .i64, .i32, .i32, .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
-  | .cublasPtrArray => ([.i64, .i32, .i32, .i32, .i64], some .i32)
-  | .cublasSgemmBatchedOnStream =>
-      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32,
-        .i32], some .i32)
-  -- `(ctx, pinned_id, off, len)`: the pinned pool's host address at `off`, or
-  -- `-1` when `off + len` runs past the allocation. The bound is the point --
-  -- `cudaUploadOffsetAsync` checks the device range it writes but takes its
-  -- source as a bare address, so an unchecked offset into a multi-gigabyte pool
-  -- uploads whatever the process has there and calls it a weight.
-  | .cudaPinnedPtrAt => ([.i64, .i32, .i64, .i64], some .i64)
-  -- Free and total device memory. What a card has left after weights, caches
-  -- and the driver's own reservations is not a number that can be written down
-  -- ahead of the machine, so the sizes that depend on it are read here.
-  | .cudaMemInfoFree => ([.i64], some .i64)
-  | .cudaMemInfoTotal => ([.i64], some .i64)
-  -- `cublasGemmEx` over bf16 operands with an f32 accumulator and result.
-  -- Same argument shape as `.cublasSgemm` minus the batching: transposes, the
-  -- three dimensions, alpha/A/B, beta/C, then the three element offsets and the
-  -- three leading dimensions. BOTH inputs are bf16 -- cuBLAS rejects a mixed
-  -- (bf16, f32) pair -- so `off_a` and `off_b` count 2-byte elements while
-  -- `off_c` counts 4-byte ones.
-  | .cublasGemmExBf16 =>
-      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32,
-        .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
-  -- `.cublasSgemmBatchedOnStream`'s shape with `.cublasGemmExBf16`'s element
-  -- types: transposes, dimensions, then (alpha, A, strideA), (B, strideB),
-  -- (beta, C, strideC), the batch count, and the offsets and leading
-  -- dimensions. Strides and offsets count elements, and an element is two
-  -- bytes on both inputs and four on the result.
-  | .cublasGemmStridedBatchedExBf16 =>
-      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64,
-        .i32, .i32, .i64, .i32, .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
   -- ffi/native.rs: machine code the program carries as data. `load` takes the
   -- bytes' address and length and answers where they now run (0 if they could
   -- not be placed); `arch` and `cpuHas` (a NUL-terminated feature name) decide
@@ -857,27 +691,12 @@ def result (f : Ffi) : Option ClifTy := f.sig.2
 
 /-- Every entry point, in the order that fixes the ids. -/
 def all : List Ffi :=
-  [.gpuInit, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuDownload,
-   .gpuDispatch, .gpuCleanup, .gpuUploadPtr, .gpuDownloadPtr,
-   .windowInit, .windowOpen, .windowPoll, .windowPresentGpuBuffer, .windowCleanup,
-   .lmdbInit, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn,
+  [.lmdbInit, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn,
    .lmdbCursorScan, .lmdbCleanup,
    .htCreate, .htLookup, .htInsert, .htIncrement, .htCount, .htGetEntry,
    .htCleanup, .htInit,
    .sinf, .cosf, .powf,
-   .threadInit, .threadSpawn, .threadJoin, .threadCleanup,
-   .cudaInit, .cudaCreateBuffer, .cudaUpload, .cudaUploadOffset, .cudaUploadAsync,
-   .cudaUploadOffsetAsync, .cudaDownload, .cudaDownloadOffset, .cudaDownloadAsync,
-   .cudaFreeBuffer, .cudaStreamCreate, .cudaStreamSync, .cudaStreamDestroy,
-   .cudaEventCreate, .cudaEventRecord, .cudaStreamWaitEvent, .cudaEventElapsedMsBits,
-   .cudaEventDestroy, .cudaGraphBeginCapture, .cudaGraphEndCapture, .cudaGraphUpload,
-   .cudaGraphLaunch, .cudaGraphDestroy, .cudaPinnedAlloc, .cudaPinnedPtr,
-   .cudaPinnedFree, .cudaLaunch, .cudaLaunchNamed, .cudaLaunchOnStream,
-   .cudaLaunchNamedOnStream, .cudaSync, .cudaCleanup,
-   .cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmOnStream,
-   .cublasPtrArray, .cublasSgemmBatchedOnStream,
-   .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16,
-   .cublasGemmStridedBatchedExBf16]
+   .threadInit, .threadSpawn, .threadJoin, .threadCleanup]
 
 /-- The registry of entry points: `all` misses none and repeats none, so the
     ids below are a numbering of `Ffi` and not merely of a list beside it. -/

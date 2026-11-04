@@ -152,11 +152,6 @@ def wlCall (f : WindowFn) (bits : List UInt64) (w : World) : Option (Option V ×
           | none => w.mem })
     | _, _ => e
 
-theorem exactly_size (b : ByteArray) (n : Nat) : (exactly b n).size = n := by
-  rw [exactly, ByteArray.size_append, ByteArray.size_extract]
-  have : (ByteArray.mk (Array.replicate (n - b.size) 0)).size = n - b.size := Array.size_replicate ..
-  rw [this]; omega
-
 theorem wlPump_mem (w : World) : w.wlPump.mem = w.mem := by
   unfold World.wlPump; split
   · rfl

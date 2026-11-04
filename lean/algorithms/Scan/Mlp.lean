@@ -3,9 +3,9 @@ import Warp.MlpCifar
 /-!
   # What the CIFAR classifier's claims rest on — computed, not documented
 
-  The third scanner, for the same reason there are two already: each generator
-  defines its own `main`, so `Qwen2Algorithm`, `BackwardWideAlgorithm` and
-  `MlpCifarAlgorithm` cannot share a module.  The machinery is `ScanCore`, the
+  A scanner of its own, for the same reason the others are: each generator
+  defines its own `main`, so `BackwardWideAlgorithm` and `MlpCifarAlgorithm`
+  cannot share a module.  The machinery is `ScanCore`, the
   surface `MlSurface`.
 
   What makes this one worth having separately is that it covers a *whole
@@ -62,9 +62,9 @@ def roots : List Name :=
   , `MlpCifar.fwdPipeline_runs
   , `MlpCifar.bwdPipeline_runs
   , `MlpCifar.stages_are_launches
-    -- the emitted CLIF performs those launches, and they are that pipeline
-  , `MlpCifar.fwd_ops_are
-  , `MlpCifar.bwd_ops_are
+    -- the shipped bodies' launches are that pipeline
+  , `MlpCifar.fwd_realises
+  , `MlpCifar.bwd_realises
   , `MlpCifar.fwd_host_computes
   , `MlpCifar.bwd_host_computes
     -- a training run, not just a training step
@@ -76,8 +76,8 @@ def roots : List Name :=
   , `MlpCifar.blas_law_bill
   , `MlpCifar.proven_law_bill
   , `MlpCifar.blas_plans_run
-  , `MlpCifar.fwd_blas_ops_are
-  , `MlpCifar.bwd_blas_ops_are
+  , `MlpCifar.fwd_blas_realises
+  , `MlpCifar.bwd_blas_realises
   , `MlpCifar.blas_host_computes
     -- the backend is a lowering choice, and it cannot change the answer
   , `MlpCifar.builds_agree
@@ -198,9 +198,7 @@ def roots : List Name :=
   , `MlpCifar.qwen_capture_records_the_run
   , `MlpCifar.qwen_replay_denote
   , `MlpCifar.qwen_replay_realises
-  , `MlpCifar.qwen_replay_ops_are
   , `MlpCifar.qwen_run_realises
-  , `MlpCifar.qwen_run_ops_are
   , `MlpCifar.asserted_schedule_is_the_model
   , `MlpCifar.firstToBlas_sound
   , `MlpCifar.mlp_geometry
@@ -214,20 +212,10 @@ end MlpScan
 
 /-- Claims that rest on the compiler, via `native_decide`. -/
 def nativeRoster : List Name :=
-  [ `MlpCifar.fwd_ops_are
-   , `MlpCifar.bwd_ops_are
-   , `MlpCifar.fwd_host_computes
-   , `MlpCifar.bwd_host_computes
-   , `MlpCifar.fwd_blas_ops_are
-   , `MlpCifar.bwd_blas_ops_are
-   , `MlpCifar.blas_host_computes
-   , `MlpCifar.qwen_ro_policies_differ
+  [ `MlpCifar.qwen_ro_policies_differ
    , `MlpCifar.moe_ptx_fits
    , `MlpCifar.qwen_ptx_fits
-   , `MlpCifar.mlpPtx_fits
-   , `MlpCifar.qwen_capture_records_the_run
-   , `MlpCifar.qwen_replay_ops_are
-   , `MlpCifar.qwen_run_ops_are ]
+   , `MlpCifar.mlpPtx_fits ]
 
 open TrustScan MlpScan in
 #eval runScan "mlp-cifar" roots nativeRoster

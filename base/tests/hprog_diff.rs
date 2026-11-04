@@ -1,5 +1,6 @@
 //! Each `HProg` pilot's artifact against its original generator's: the
-//! rewrite preserves behaviour. Not part of the trusted base.
+//! rewrite preserves behaviour; and RMSNorm's artifact against the definition.
+//! Not part of the trusted base.
 
 use base_types::Artifact;
 
@@ -116,7 +117,7 @@ fn nested_loops_and_branch_compute() {
 }
 
 // ---------------------------------------------------------------------------
-// Pilot 3: RMSNorm's host side — four functions, i32/i64 callees, a branch
+// RMSNorm's artifact against the definition
 // ---------------------------------------------------------------------------
 
 /// `load`, then `prep`, then `infer` — the stage order the app drives.
@@ -140,32 +141,22 @@ fn run_rmsnorm(a: &Artifact, weights: &[f32], x: &[f32]) -> Option<Vec<f32>> {
 }
 
 #[test]
-fn rmsnorm_matches_generator() {
+fn rmsnorm_matches_definition() {
     let n = 512;
     let weights: Vec<f32> = (0..n).map(|i| 1.0 + (i as f32) * 0.001).collect();
     let x: Vec<f32> = (0..n).map(|i| ((i % 17) as f32) - 8.0).collect();
 
-    // Both artifacts drive the same device; without one, neither runs and there
-    // is nothing to compare.
-    let Some(gen) = run_rmsnorm(&artifact("cuda_rmsnorm"), &weights, &x) else {
+    let Some(got) = run_rmsnorm(&artifact("cuda_rmsnorm"), &weights, &x) else {
         eprintln!("skipping: no CUDA device");
         return;
     };
-    let hp = run_rmsnorm(&artifact("cuda_rmsnorm_hprog"), &weights, &x)
-        .expect("term artifact runs wherever the generator's does");
+    assert_eq!(got.len(), n, "a full vector");
 
-    assert_eq!(gen.len(), n, "generator produced a full vector");
-    assert_eq!(
-        gen.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-        hp.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-        "term and generator drive the kernel to the same result"
-    );
-
-    // The host code under test is the launch sequence, but a wrong launch would
-    // still produce *some* numbers, so check them against the definition.
+    // A wrong launch would still produce *some* numbers, so check them against
+    // the definition.
     let ms: f32 = x.iter().map(|v| v * v).sum::<f32>() / n as f32;
     let scale = 1.0 / (ms + 1e-5).sqrt();
-    for (i, got) in hp.iter().enumerate() {
+    for (i, got) in got.iter().enumerate() {
         let want = x[i] * scale * weights[i];
         assert!(
             (got - want).abs() < 1e-3,

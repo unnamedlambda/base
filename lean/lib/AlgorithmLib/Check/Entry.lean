@@ -61,8 +61,8 @@ theorem AS.ofList_fits (l : List AV) (S : TState) (Γ : Env) (w : World) :
 theorem AS.ofList_par_at (l : List AV) (S : TState) (Γ : Env) (w : World) :
     (AS.ofList l S).par.At vals Γ w := by
   unfold AS.ofList; rw [AS.pushAll_par]
-  exact ⟨rfl, fun _ e => by simp at e, fun _ e => by simp [Par.facts, bufFacts] at e, fun _ e => by simp at e,
-    fun _ e => by simp at e⟩
+  exact ⟨rfl, fun _ e => by simp at e, fun _ e => by simp [Par.facts, bufFacts, allocFacts] at e, fun _ e => by simp at e,
+    fun _ e => by simp at e, fun _ e => by simp at e⟩
 
 theorem AS.ofList_get (l : List AV) (S : TState) (i : Nat) : (AS.ofList l S).get i = l.getD i .any := by
   unfold AS.ofList; rw [AS.pushAll_get]; simp
@@ -111,17 +111,19 @@ theorem holds_pick {L : TState} {w : World} (h : L.holds w) (idx : List Nat) :
 /-- **The checker's state at entry describes the call**: `S` the facts picked
     out of the typestate, the lengths bounded where it says so, and the
     parameters' record holding at `vals`, its cells and buffers picked out of
-    the typestate and its obligations shown. -/
+    the typestate, the lengths among its slots where the typestate names
+    them by variables, and its obligations shown. -/
 theorem entryOf_holds {L S : TState} {dLen oLen : Bool} {P : Par} {dataLen outLen : UInt64} {w : World}
     (h : L.holds w) (idx : List Nat) (hS : idx.filterMap (L[·]?) = S)
     (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L)
-    (pidx : List Nat) (hP : pidx.filterMap (L[·]?) = P.facts vals) (hc : P.collect = false) (hs : P.slots = [])
-    (hx : P.ctxs = []) (hob : ∀ o ∈ P.obls, o.Holds vals) :
+    (pidx : List Nat) (hP : pidx.filterMap (L[·]?) = P.facts vals) (hc : P.collect = false)
+    (hs : ∀ s ∈ P.slots, (runArgs dataLen outLen).toArray[s.1]? = some (.sc s.2.1 (s.2.2.eval vals)))
+    (hx : P.ctxs = []) (hq : P.conds = []) (hob : ∀ o ∈ P.obls, o.Holds vals) :
     (entryOf S dLen oLen P).Holds vals (runArgs dataLen outLen).toArray w := by
   unfold entryOf
   refine AS.Holds.withPar ⟨⟨by rw [AS.ofList_len]; rfl, AS.ofList_fits _ _ _ _, AS.ofList_par_at _ _ _ _⟩,
     fun i hi => ?_, by rw [AS.ofList_facts, ← hS]; exact holds_pick h idx⟩
-    ⟨hc, by simp [hs], by rw [← hP]; exact holds_pick h pidx, hob, by simp [hx]⟩
+    ⟨hc, hs, by rw [← hP]; exact holds_pick h pidx, hob, by simp [hx], by simp [hq]⟩
   rw [AS.ofList_len] at hi
   rw [AS.ofList_get]
   simp only [List.length_cons, List.length_nil] at hi
@@ -159,10 +161,12 @@ theorem argBits_known : ∀ (bits : List UInt64) (Γ : Env) (w : World),
 /-- **An obligation the checker's own decision shows**: where `preB` decides
     the call, handed the arguments' bits, in the obligation's typestate at the
     parameters' values. -/
-theorem Obl.holds_of_preB {o : Obl}
-    (h : preB o.f ((o.args.map (PArg.bits vals)).map fun x => .known (.sc .i64 x))
-      (o.facts ++ bufFacts o.bufs vals) = true) : o.Holds vals :=
-  fun w hw => preB_sound hw (argBits_known _ ∅ w) h fun _ _ e => by cases e
+theorem Obl.holds_of_preB {o : Obl} {f : Ffi} (hc : o.c = .ffi f)
+    (h : preB f ((o.args.map (PArg.bits vals)).map fun x => .known (.sc .i64 x))
+      (o.facts ++ bufFacts o.bufs vals) = true) : o.Holds vals := by
+  unfold Obl.Holds
+  rw [hc]
+  exact fun _ w hw => preB_sound hw (argBits_known _ ∅ w) h fun _ _ e => by cases e
 
 /-- **A body the checker accepts never misuses a call and never faults**, run
     from any arguments and world its state describes. -/
@@ -255,7 +259,7 @@ def acceptsTo (cert : Cert) (A : AS) (c : Code) (S' : TState) (P' : Par) : Bool 
   | .ok o => o.brk.isEmpty && o.cont.isEmpty &&
       (match o.ok with
        | some Af => S'.all (Af.facts.contains ·) && P'.cells.all (Af.par.cells.contains ·) &&
-           P'.bufs.all (Af.par.bufs.contains ·)
+           P'.bufs.all (Af.par.bufs.contains ·) && P'.allocs.all (Af.par.allocs.contains ·)
        | none => true)
   | .error _ => false
 
@@ -264,6 +268,22 @@ def acceptsTo (cert : Cert) (A : AS) (c : Code) (S' : TState) (P' : Par) : Bool 
 theorem roomArg_kept {r : Region} {x : UInt64} {w w' : World} (h : (Fact.roomArg r x).holds w)
     (hr : r ≠ .pinned) (hk : Contracts.KeepsRooms w w') : (Fact.roomArg r x).holds w' :=
   ⟨by rw [hk r hr]; exact h.1, h.2⟩
+
+/-- Whether no length a typestate states is the pinned region's. -/
+def roomsUnpinned (L : TState) : Bool :=
+  L.all fun | .roomArg r _ => r != .pinned | _ => true
+
+/-- A post that is the pre states its lengths where the pre does. -/
+theorem rooms_same {L : TState} (h : roomsUnpinned L = true) :
+    ∀ x ∈ L, isRoomArg x = true → x ∈ L ∧ ∀ r v, x = .roomArg r v → r ≠ .pinned := by
+  intro x hx _
+  refine ⟨hx, ?_⟩
+  rintro r v rfl
+  have := List.all_eq_true.mp h _ hx
+  intro e
+  subst e
+  have h2 : (Region.pinned != Region.pinned) = true := this
+  exact absurd h2 (by decide)
 
 /-- A typestate after a body: its lengths those the caller passed, its other
     facts picked out of `S'` and `T`. -/
@@ -303,13 +323,16 @@ theorem check_triple {cfg : Cfg} {cert : Cert} [Linked cert.lib cfg] {A : AS} {c
     · rintro Γ w' ⟨⟨Af, hAf, hAh⟩, -, hk⟩
       rw [hAf] at hf
       simp only [Bool.and_eq_true, List.all_eq_true] at hf
-      obtain ⟨⟨hfs, hfc⟩, hfb⟩ := hf
+      obtain ⟨⟨⟨hfs, hfc⟩, hfb⟩, hfa⟩ := hf
       refine hpost w' hk.rooms (fun x hx => hAh.2.2 x (by simpa using hfs x hx)) fun x hx => ?_
       have hP := hAh.1.2.2.2.2.1
-      simp only [Par.facts, bufFacts, List.mem_append, List.mem_map] at hx
-      rcases hx with ⟨p, hp, rfl⟩ | ⟨p, hp, rfl⟩
-      · exact hP _ (List.mem_append_left _ (List.mem_map_of_mem (List.contains_iff_mem.mp (hfc p hp))))
-      · exact hP _ (List.mem_append_right _ (List.mem_map_of_mem (List.contains_iff_mem.mp (hfb p hp))))
+      simp only [Par.facts, bufFacts, allocFacts, List.mem_append, List.mem_map] at hx
+      rcases hx with (⟨p, hp, rfl⟩ | ⟨p, hp, rfl⟩) | ⟨p, hp, rfl⟩
+      · exact hP _ (List.mem_append_left _ (List.mem_append_left _
+          (List.mem_map_of_mem (List.contains_iff_mem.mp (hfc p hp)))))
+      · exact hP _ (List.mem_append_left _ (List.mem_append_right _
+          (List.mem_map_of_mem (List.contains_iff_mem.mp (hfb p hp)))))
+      · exact hP _ (List.mem_append_right _ (List.mem_map_of_mem (List.contains_iff_mem.mp (hfa p hp))))
     · rintro d Γ vs w' ⟨⟨A, args, hm, -⟩, -⟩
       rw [hb] at hm; cases hm
     · rintro d vs w' ⟨⟨A, args, Γ, hm, -⟩, -⟩
@@ -334,6 +357,14 @@ meta partial def toPExpr (vs : Array Expr) (e : Expr) : MetaM (PExpr × Array Ex
     let c ← unsafe evalExpr UInt64 (mkConst ``UInt64) e
     return (.lit c, vs)
   let e' ← whnfR e
+  if e'.isAppOfArity ``HAdd.hAdd 6 then
+    let (a, vs) ← toPExpr vs (e'.getArg! 4)
+    let (b, vs) ← toPExpr vs (e'.getArg! 5)
+    return (.add a b, vs)
+  if e'.isAppOfArity ``HSub.hSub 6 then
+    let (a, vs) ← toPExpr vs (e'.getArg! 4)
+    let (b, vs) ← toPExpr vs (e'.getArg! 5)
+    return (.sub a b, vs)
   if e'.isAppOfArity ``HMul.hMul 6 then
     let (a, vs) ← toPExpr vs (e'.getArg! 4)
     let (b, vs) ← toPExpr vs (e'.getArg! 5)
@@ -347,8 +378,10 @@ meta partial def toPExpr (vs : Array Expr) (e : Expr) : MetaM (PExpr × Array Ex
 open Lean Meta in
 /-- A typestate read for the checker: the closed facts and where each sits,
     whether it gives the data's and the output's lengths, the cells and
-    buffers the variables `vs` fix and where each sits, and the variables met. -/
-meta def readTypestate (L : Expr) (vs0 : Array Expr) :
+    buffers the variables `vs` fix and where each sits, and the variables met.
+    Read at `entry`, a length it names by a variable is a parameter its slot
+    holds. -/
+meta def readTypestate (L : Expr) (vs0 : Array Expr) (entry : Bool := true) :
     MetaM (List Expr × List Nat × Bool × Bool × Par × List Nat × List Expr × Array Expr) := do
   let mut keep : Array Expr := #[]
   let mut idx : Array Nat := #[]
@@ -356,14 +389,24 @@ meta def readTypestate (L : Expr) (vs0 : Array Expr) :
   let mut oLen := false
   let mut cells : Array ((UInt64 × Nat) × Nat) := #[]
   let mut bufs : Array ((UInt64 × PExpr) × Nat) := #[]
+  let mut allocs : Array ((Nat × PExpr) × Nat) := #[]
+  let mut lens : Array (R × ClifTy × PExpr) := #[]
   let mut vs := vs0
   let mut i := 0
   for f in ← listElems L do
     let f ← instantiateMVars f
     if f.isAppOfArity ``Fact.roomArg 2 then
       let r ← whnf (f.getArg! 0)
+      let slot? : Option Nat :=
+        if r.isConstOf ``Region.data then some 1 else if r.isConstOf ``Region.out then some 3 else none
       if r.isConstOf ``Region.data then dLen := true
       else if r.isConstOf ``Region.out then oLen := true
+      -- a length the typestate names by a variable is a parameter, read from its slot
+      if let some slot := slot? then
+        if entry && (f.getArg! 1).isFVar then
+          let (p, vs') ← toPExpr vs (f.getArg! 1)
+          vs := vs'
+          lens := lens.push (slot, .i64, p)
     else if !f.hasFVar then
       keep := keep.push f
       idx := idx.push i
@@ -378,11 +421,18 @@ meta def readTypestate (L : Expr) (vs0 : Array Expr) :
       let (e, vs') ← toPExpr vs (f.getArg! 1)
       vs := vs'
       bufs := bufs.push ((b, e), i)
+    else if f.isAppOfArity ``Fact.alloc 2 && !(f.getArg! 0).hasFVar &&
+        (f.getArg! 1).isAppOfArity ``UInt64.toNat 1 then
+      let a ← unsafe evalExpr Nat (mkConst ``Nat) (f.getArg! 0)
+      let (e, vs') ← toPExpr vs ((f.getArg! 1).getArg! 0)
+      vs := vs'
+      allocs := allocs.push ((a, e), i)
     else throwError "the typestate fact {f} names a variable the checker cannot place"
     i := i + 1
-  let P : Par := { cells := (cells.map (·.1)).toList, bufs := (bufs.map (·.1)).toList }
-  return (keep.toList, idx.toList, dLen, oLen, P, (cells.map (·.2) ++ bufs.map (·.2)).toList,
-    (cells.map (·.2) ++ bufs.map (·.2)).toList.map (mkNatLit ·), vs)
+  let P : Par := { cells := (cells.map (·.1)).toList, bufs := (bufs.map (·.1)).toList,
+                   allocs := (allocs.map (·.1)).toList, slots := lens.toList }
+  let pidx := (cells.map (·.2) ++ bufs.map (·.2) ++ allocs.map (·.2)).toList
+  return (keep.toList, idx.toList, dLen, oLen, P, pidx, pidx.map (mkNatLit ·), vs)
 
 open Lean Meta Elab Tactic in
 /-- Run the checker natively: the obligations the parameters leave, gathered,
@@ -390,7 +440,7 @@ open Lean Meta Elab Tactic in
 meta def runChecker (who : String) (fo : Bool) (S : Expr) (dLen oLen : Bool) (P : Par) (code : Expr)
     (lib : Bool := false) : MetaM (Par × Cert) := do
   let mkA (P : Par) := mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P)
-  let P ← if P.cells.isEmpty && P.bufs.isEmpty then pure P else
+  let P ← if P.cells.isEmpty && P.bufs.isEmpty && P.allocs.isEmpty && P.slots.isEmpty then pure P else
     match ← unsafe evalExpr (Except String (List Obl))
         (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkApp (mkConst ``List [0]) (mkConst ``Obl)))
         (mkApp4 (mkConst ``oblsOf) (toExpr fo) (mkA P) code (toExpr lib)) with
@@ -440,7 +490,7 @@ meta def entryProof (h S : Expr) (idx : List Nat) (dLen oLen : Bool) (P : Par) (
     let holes ← (List.range P.obls.length).mapM fun _ => `(?_)
     `(obls_of ⟨$(holes.toArray),*, trivial⟩)
   `((entryOf_holds (vals := $sv) (S := $sS) (dLen := $sd) (oLen := $so) (P := $sP) $sh $si (by rfl)
-      (by simp) (by simp) $sp (by rfl) rfl rfl rfl $hob))
+      (by simp) (by simp) $sp (by rfl) rfl (by simp [runArgs, PExpr.eval]) rfl rfl $hob))
 
 open Lean Meta Elab Tactic in
 /-- Prove `run cfg args w c ≠ .misuse m` (and `≠ .fault m`) from the
@@ -450,7 +500,9 @@ open Lean Meta Elab Tactic in
     the calls whose preconditions they decide are left as goals. Where
     `Linked true cfg` is in scope, calls into the libraries are read by the
     libraries' statements. -/
-elab "check_body" : tactic => do
+meta def checkBodyCore (compiled : Bool) : TacticM Unit := do
+  let dec ← if compiled then `(Lean.Parser.Tactic.tacticSeq| native_decide)
+    else `(Lean.Parser.Tactic.tacticSeq| decide +kernel)
   let g ← getMainGoal
   g.withContext do
     let (h, L) ← findTypestate "check_body"
@@ -479,7 +531,7 @@ elab "check_body" : tactic => do
       let sA ← Term.exprToSyntax A
       let sh ← Term.exprToSyntax h
       let sc ← Term.exprToSyntax code
-      evalTactic (← `(tactic| have hacc : accepts $sCert $sA $sc = true := by decide +kernel))
+      evalTactic (← `(tactic| have hacc : accepts $sCert $sA $sc = true := by $dec))
       if fo then evalTactic (← `(tactic| exact check_safe (vals := []) hacc (entryKnown_holds $sh) _))
       else evalTactic (← `(tactic| exact check_run (vals := []) hacc rfl (entryKnown_holds $sh) _))
       return
@@ -489,10 +541,19 @@ elab "check_body" : tactic => do
     let sCert ← Term.exprToSyntax (toExpr cert)
     let sA ← Term.exprToSyntax (mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P))
     let sc ← Term.exprToSyntax code
-    evalTactic (← `(tactic| have hacc : accepts $sCert $sA $sc = true := by decide +kernel))
+    evalTactic (← `(tactic| have hacc : accepts $sCert $sA $sc = true := by $dec))
     let hA ← entryProof h S idx dLen oLen P pidx vs
     if fo then evalTactic (← `(tactic| refine check_safe hacc $hA _))
     else evalTactic (← `(tactic| refine check_run hacc rfl $hA _))
+
+open Lean Meta Elab Tactic in
+elab "check_body" : tactic => checkBodyCore false
+
+open Lean Meta Elab Tactic in
+/-- `check_body`, the checker's acceptance decided by compiled evaluation
+    rather than by the kernel: for a body too long for the kernel to
+    evaluate. The proof then also rests on the compiler (`Lean.ofReduceBool`). -/
+elab "check_body" &" native" : tactic => checkBodyCore true
 
 open Lean Meta Elab Tactic in
 /-- Prove `Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) c
@@ -516,7 +577,7 @@ elab "check_reach" : tactic => do
       let L' := b.getArg! 0
       if xs.any (fun x => L'.containsFVar x.fvarId!) then throwError "check_reach: the typestate reads the state"
       return L'
-    let (keep', _, _, _, P', pidx', _, vs') ← readTypestate L' vs
+    let (keep', _, _, _, P', pidx', _, vs') ← readTypestate L' vs (entry := false)
     if vs'.size != vs.size then throwError "check_reach: the post names a variable the entry does not"
     if code.hasFVar then throwError "check_reach: the body names a variable"
     let S ← mkListLit (mkConst ``Fact) keep
@@ -556,14 +617,17 @@ elab "check_reach" : tactic => do
     let sv ← Term.exprToSyntax (← mkListLit (mkConst ``UInt64) vs.toList)
     evalTactic (← `(tactic| refine check_triple (vals := $sv) hacc rfl $hA ?hpost))
     evalTactic (← `(tactic| case hpost =>
-      exact fun w' hk hS' hT => post_of $sh hk hS' hT $splan (by rfl) (by simp [isRoomArg])))
+      exact fun w' hk hS' hT => post_of $sh hk hS' hT $splan (by rfl)
+        (by first | (simp [isRoomArg]; done) | exact rooms_same (by rfl))))
 
 open Lean Meta Elab Tactic in
 /-- Prove `Tr.Covers t w obs` from the hypotheses that the world `w` satisfies
     a typestate and that a body run from `runArgs` and `w` ended observing
     `obs`, by the checker: `t` is the pattern it gives the body's calls. A
     refusal names the pattern the checker finds. -/
-elab "check_calls" : tactic => do
+meta def checkCallsCore (compiled : Bool) : TacticM Unit := do
+  let dec ← if compiled then `(Lean.Parser.Tactic.tacticSeq| native_decide)
+    else `(Lean.Parser.Tactic.tacticSeq| decide +kernel)
   let g ← getMainGoal
   g.withContext do
     let (h, L) ← findTypestate "check_calls"
@@ -596,9 +660,18 @@ elab "check_calls" : tactic => do
     let sc ← Term.exprToSyntax code
     let sT ← Term.exprToSyntax goalT
     let shr ← Term.exprToSyntax hr
-    evalTactic (← `(tactic| have hacc : traceOf $sCert $sA $sc = some $sT := by decide +kernel))
+    evalTactic (← `(tactic| have hacc : traceOf $sCert $sA $sc = some $sT := by $dec))
     let hA ← entryProof h S idx dLen oLen P pidx vs
     evalTactic (← `(tactic| refine check_calls_of hacc $hA $shr))
+
+open Lean Meta Elab Tactic in
+elab "check_calls" : tactic => checkCallsCore false
+
+open Lean Meta Elab Tactic in
+/-- `check_calls`, the trace decided by compiled evaluation rather than by
+    the kernel: for a body too long for the kernel to evaluate. The proof then
+    also rests on the compiler (`Lean.ofReduceBool`). -/
+elab "check_calls" &" native" : tactic => checkCallsCore true
 
 open Lean Meta Elab Tactic in
 /-- Prove `run cfg args w c ≠ .misuse m ∧ run cfg args w c ≠ .fault m` for a

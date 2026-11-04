@@ -10,8 +10,6 @@ public import AlgorithmLib.Host.Frames
 meta import AlgorithmLib.Host.Frames
 public import Bench.ClampSum
 meta import Bench.ClampSum
-public import Bench.CudaRmsNormPersist
-meta import Bench.CudaRmsNormPersist
 public import Bench.Histogram1
 meta import Bench.Histogram1
 import all Init.Data.Repr
@@ -19,15 +17,13 @@ import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 /-!
-# Three generators written as `HProg` terms
+# Two generators written as `HProg` terms
 
 One per shape the library has to carry:
 
 * `hist1` — loops, an FFI read and write, byte and word memory traffic.
 * `clampSum` — `f32x4` and `f64` carried through loop parameters, so every
   annotation the term holds is a type the checker had to agree with.
-* `rmsNorm` — a four-function program with `i32`/`i64` callee signatures and a
-  branch, written against the same `declareCudaFFI` the original uses.
 
 Each is checked by `decide` (scoping and types) and `rfl` (the FFI calls it
 performs, in order), and each emits an artifact alongside the generator it
@@ -223,106 +219,6 @@ def program : Except String (List FuncData) :=
 end ClampSum
 
 -- ---------------------------------------------------------------------------
--- Pilot 3: RMSNorm's host side — four functions, `i32` callees, a branch
--- ---------------------------------------------------------------------------
-
-namespace RmsNorm
-
-open CudaRmsNormPersist (PTX_SOURCE_OFF BIND_DESC_OFF MEM_SIZE N_OFF BUF0_OFF BUF1_OFF)
-
-/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
-def CTX_OFF : Int := 0x10
-
-/-- Initialize CUDA, allocate the two device buffers, upload `N` and the
-    weights. -/
-def loadCode : Prog V L Unit := do
-  let dataPtr ← dataPtr
-  ffiVoid .cudaInit %[← absAddr (← basePtr) CTX_OFF]
-  let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
-  let dataLen ← dataLen
-  -- the element count only when the caller handed over its 8 bytes
-  Prog.when .ule (← iconst64 8) dataLen do
-    let n ← load64 dataPtr
-    store n (← absAddr (← basePtr) N_OFF)
-    let nBytes ← ishl n (← iconst64 2)
-    let buf0Sz ← iadd (← iadd nBytes nBytes) (← iconst64 8)
-    let buf1Sz ← ishl n (← iconst64 2)
-    let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, buf0Sz]
-    let buf1 ← ffi .cudaCreateBuffer %[ctxPtr, buf1Sz]
-    store buf0 (← absAddr (← basePtr) BUF0_OFF)
-    store buf1 (← absAddr (← basePtr) BUF1_OFF)
-    let _ ← ffi .cudaUploadOffset
-      %[ctxPtr, buf0, ← iconst64 0, ← absAddr (← basePtr) N_OFF, ← iconst64 8]
-    -- the weights where the data holds them: an input shorter than its header
-    -- says uploads none
-    let hdr ← iconst64 8
-    let _ ← ifte .uge dataLen hdr
-      (thn := do
-        let _ ← ifte .ule nBytes (← isub dataLen hdr)
-          (thn := do
-            let _ ← ffi .cudaUploadOffset
-              %[ctxPtr, buf0, ← iadd nBytes (← iconst64 8), ← iadd dataPtr (← iconst64 8), nBytes]
-            pure %[])
-          (els := pure %[])
-        pure %[])
-      (els := pure %[])
-    return ()
-
-/-- Upload the input vector ahead of a launch. -/
-def prepCode : Prog V L Unit := do
-  let dataPtr ← dataPtr
-  let n ← load64 (← absAddr (← basePtr) N_OFF)
-  let buf0 ← load32 (← absAddr (← basePtr) BUF0_OFF)
-  let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
-  let nBytes ← ishl n (← iconst64 2)
-  -- the input where the data holds it: shorter data uploads nothing
-  let _ ← ifte .ule nBytes (← dataLen)
-    (thn := do
-      let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
-      pure %[])
-    (els := pure %[])
-  return ()
-
-/-- Launch, synchronize, and download only when the caller asked for output. -/
-def inferCode : Prog V L Unit := do
-  let outPtr ← outPtr
-  let outLen ← outLen
-  let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
-  let nBufs ← iconst32 2
-  let one32 ← iconst32 1
-  let blk256 ← iconst32 256
-  let _ ← ffi .cudaLaunch
-    %[ctxPtr, ← absAddr (← basePtr) PTX_SOURCE_OFF, nBufs,
-     ← absAddr (← basePtr) BIND_DESC_OFF,
-     one32, one32, one32, blk256, one32, one32]
-  let _ ← ffi .cudaSync %[ctxPtr]
-  let zeroI ← iconst64 0
-  when .ne outLen zeroI do
-    let buf1 ← load32 (← absAddr (← basePtr) BUF1_OFF)
-    let _ ← ffi .cudaDownload %[ctxPtr, buf1, outPtr, outLen]
-    return ()
-
-/-- Loading allocates both buffers before either upload. -/
-theorem load_calls :
-    Prog.callNames loadCode =
-      [IR.Ffi.cudaInit, IR.Ffi.cudaCreateBuffer, IR.Ffi.cudaCreateBuffer,
-       IR.Ffi.cudaUploadOffset, IR.Ffi.cudaUploadOffset].map (·.cname) := rfl
-
-/-- Inference launches, synchronizes, and downloads at most once. -/
-theorem infer_calls :
-    Prog.callNames inferCode =
-      [IR.Ffi.cudaLaunch, IR.Ffi.cudaSync, IR.Ffi.cudaDownload].map (·.cname) := rfl
-
-def program : Except String (List FuncData) :=
-  Prog.program
-    [.ok noopFunction,
-     Prog.entry "main" (Prog.compileProg 1 loadCode),
-     Prog.entry "prep" (Prog.compileProg 2 prepCode),
-     Prog.entry "infer" (Prog.compileProg 3 inferCode)]
-
-end RmsNorm
-
--- ---------------------------------------------------------------------------
 -- Nesting, and terms with an open parameter
 -- ---------------------------------------------------------------------------
 
@@ -505,7 +401,6 @@ def Host.Pilots.main (args : List String) : IO Unit := do
   let dir ← requireOutputDir args
   let histProg ← Prog.orDie HProgPilots.Hist.program
   let clampProg ← Prog.orDie HProgPilots.ClampSum.program
-  let rmsProg ← Prog.orDie HProgPilots.RmsNorm.program
   let nestedProg ← Prog.orDie HProgPilots.Nested.program
   let hist1 ← Prog.orDie HistogramBench1.clifIR
   let clampSum ← Prog.orDie ClampSumBench.clifIR
@@ -518,11 +413,6 @@ def Host.Pilots.main (args : List String) : IO Unit := do
         functions := clampProg,
         required_memory := ClampSumBench.MEM_SIZE
       },
-      artifactEntry "cuda_rmsnorm_hprog" {
-        functions := rmsProg,
-        required_memory := CudaRmsNormPersist.MEM_SIZE,
-        initial_memory := CudaRmsNormPersist.buildInitialMemory
-      },
       artifactEntry "nested_hprog" {
         functions := nestedProg,
         required_memory := 0x100000
@@ -530,7 +420,6 @@ def Host.Pilots.main (args : List String) : IO Unit := do
   -- Each pilot reports the FFI it actually assumes, derived from its own term.
   for (nm, p) in [("hist1", HProgPilots.Hist.code),
                   ("clamp_sum", HProgPilots.ClampSum.code),
-                  ("rmsnorm.infer", HProgPilots.RmsNorm.inferCode),
                   ("nested", HProgPilots.Nested.code)] do
     let (c, _, _) := Prog.run p
     if !footprintComplete c then

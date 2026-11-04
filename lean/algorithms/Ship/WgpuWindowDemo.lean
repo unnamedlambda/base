@@ -1,16 +1,15 @@
 import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
+import AlgorithmLib.Check.WgState
 import Demo.WindowDemo
 
 /-!
 # WindowDemo's tests neither misuse a call nor fault
 
 Each entry point, proven by the condition generator from the typestate it
-starts in, for any lengths of data and output the caller hands over. A program
-starts from its initial memory: the shader text it hands `gpuCreatePipeline`
-is a NUL-terminated string inside the field the layout gives it (`cstrIn`),
-which the calls before the pipeline leave alone. Buffer sizes need no facts:
-an upload or download of the wrong size answers `-1`.
+starts in, for any lengths of data and output the caller hands over. The
+render test calls wgpu directly and starts from what `Wg.App.loadTS` states
+of wgpu and of its memory; the logic tests call nothing.
 
 Not faulting means every load and store finds the bytes it reaches, and every
 operation answers, where the caller's data and output hold the lengths it
@@ -27,17 +26,16 @@ namespace WgpuSafe
 
 -- WindowDemo: the headless tests
 
-abbrev WindowDemoTest : World → Prop := Contracts.TState.holds
-  [.part .gpuAdapter true, .part .frozen false, .part .gpu false, .room .arena 930008, .cstrIn (regionBase .arena + 80) 4096]
-
-/-- `WindowDemoTest`, with the caller's data and output holding the lengths it passes. -/
+/-- What the logic tests start from: memory, with the caller's data and
+    output holding the lengths it passes. -/
 abbrev WindowDemoTestIO (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.roomArg .data dl, .roomArg .out ol, .part .gpuAdapter true, .part .frozen false, .part .gpu false, .room .arena 930008, .cstrIn (regionBase .arena + 80) 4096]
+  [.roomArg .data dl, .roomArg .out ol, .part .frozen false, .room .arena WindowDemo.layoutMeta.totalSize]
 
-theorem WindowDemo_layout : WindowDemo.layoutMeta.totalSize = 930008 ∧ WindowDemo.f.shader.offset = 80 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+/-- What the render test starts from: wgpu untouched, in its terms. -/
+abbrev WindowDemoRenderIO (dl ol : UInt64) : World → Prop := Contracts.TState.holds
+  ([.roomArg .data dl, .roomArg .out ol] ++ WindowDemo.app.loadTS)
 
-ship_entry WindowDemo_renderPixel : WindowDemo.testRenderPixel under WindowDemoTestIO dataLen outLen
+ship_entry WindowDemo_renderPixel : WindowDemo.testRenderPixel under WindowDemoRenderIO dataLen outLen
 
 ship_entry WindowDemo_quitOnClose : WindowDemo.testQuitOnClose under WindowDemoTestIO dataLen outLen
 
@@ -46,8 +44,6 @@ ship_entry WindowDemo_moveRight : WindowDemo.testMoveRight under WindowDemoTestI
 ship_entry WindowDemo_moveLeft : WindowDemo.testMoveLeft under WindowDemoTestIO dataLen outLen
 
 ship_entry WindowDemo_moveUpClamp : WindowDemo.testMoveUpClamp under WindowDemoTestIO dataLen outLen
-
--- WindowDemo: the game, on a display or on none
 
 end WgpuSafe
 

@@ -4,7 +4,7 @@
 numpy + py_base only — torch must not share the process.
 
 `run` issues every launch from the host; `replay` issues one
-`cl_cuda_graph_launch` of the sequence `capture` recorded.  They are the same
+`cuGraphLaunch` of the sequence `capture` recorded.  They are the same
 sequence, so the outputs are compared bit for bit rather than to a tolerance:
 a replay that differs at all is a replay of something else.
 """

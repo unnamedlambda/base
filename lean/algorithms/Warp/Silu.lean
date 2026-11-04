@@ -1,4 +1,6 @@
 module
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
 public import Lean
 public import AlgorithmLib.Surface.Link
 meta import AlgorithmLib.Surface.Link
@@ -9,8 +11,10 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.ML.Machine.Geometry
 meta import AlgorithmLib.ML.Machine.Geometry
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Host.Driver
+meta import AlgorithmLib.Host.Driver
 public import AlgorithmLib.ML.Model.Frontend
 meta import AlgorithmLib.ML.Model.Frontend
 import all Init.Data.Repr
@@ -102,12 +106,10 @@ theorem lkernel_stores (cta : Nat) (ir : Nat → Lane → Nat) (im : Buf → Nat
   mapLoopEW_stores spec (fun _ => 0) 1 lbase (by decide) E cta
     (fun _ => (by decide : (0 : Buf) ≠ 1)) ir im st j0 l0 hj0
 
-def PTX_OFF : Nat := 0x0100
-def PTX_L_OFF : Nat := 0x1400
-def BIND_OFF : Nat := 0x3400
-def IN_ID : Nat := 0x0040
-def OUT_ID : Nat := 0x0044
-def MEM_SIZE : Nat := 0x3500
+/-- Where the two kernels' PTX lies in the arena, past the driver's state. -/
+def PTX_OFF : Nat := 0x0400
+def PTX_L_OFF : Nat := 0x1700
+def MEM_SIZE : Nat := 0x3700
 
 /-- **What the one-element-per-lane kernel stores.**
 
@@ -140,18 +142,19 @@ theorem silu_loop_ptx_exact (cta : Nat) (m : MState) :
     (expandEW_idxFree lkernel (by decide))
     (expandEW_flat lkernel (by decide)) m
 
-/-- **The whole map, not the interesting part of it.**
+/-- **The program, in the driver's standard layout**: the input and the
+    output allocation, and the two kernels, both handed them in that order. -/
+def app : Drv.App :=
+  { bufs := [N * 4, N * 4],
+    kernels := [⟨PTX_OFF, PTX_L_OFF - PTX_OFF, [0, 1], (GRID, 1, 1), (32, 1, 1)⟩,
+                ⟨PTX_L_OFF, MEM_SIZE - PTX_L_OFF, [0, 1], (LGRID, 1, 1), (32, 1, 1)⟩],
+    memSize := MEM_SIZE }
 
-    The context slots and the buffer-id words are live offsets this file
-    writes; a map that omits them cannot see a collision involving them, and
-    the check reads as if it had. -/
+/-- **The whole map, not the interesting part of it.** -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"in_id",      IN_ID, 4⟩,
-   ⟨"out_id",     OUT_ID, 4⟩,
-   ⟨"ptx",        PTX_OFF, PTX_L_OFF - PTX_OFF⟩,
-   ⟨"ptxLoop",    PTX_L_OFF, BIND_OFF - PTX_L_OFF⟩,
-   ⟨"bind",       BIND_OFF, 8⟩]
+  [⟨"driver",  0, app.stateEnd⟩,
+   ⟨"ptx",     PTX_OFF, PTX_L_OFF - PTX_OFF⟩,
+   ⟨"ptxLoop", PTX_L_OFF, MEM_SIZE - PTX_L_OFF⟩]
 
 
 #eval LayoutScan.check "Warp.Silu" [``memMap]
@@ -160,66 +163,36 @@ theorem siluMap_ok :
 
 theorem siluPtx_fits :
     (ptx.toUTF8.toList.length + 1 ≤ PTX_L_OFF - PTX_OFF)
-      ∧ (ptxLoop.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_L_OFF) := by native_decide
+      ∧ (ptxLoop.toUTF8.toList.length + 1 ≤ MEM_SIZE - PTX_L_OFF) := by native_decide
+
+/-- The signature the entry points' typestates state of both kernels: `main`
+    takes two pointers. -/
+theorem silu_sigs :
+    HProg.Sem.ptxParamSizes ptx "main" = some [8, 8] ∧ HProg.Sem.ptxParamSizes ptxLoop "main" = some [8, 8] := by native_decide
 
 open AlgorithmLib.Prog
 
 
-/-- **The two kernels, as records the launch sites read.**
-
-    Both consume the same pair of buffers and so share one bind table; they
-    differ in which PTX they run and over how many blocks.  The table is
-    written in `load` and the launches are issued from two other entry points,
-    so the arity each declares comes from `params` here rather than from a
-    number written beside each launch. -/
-def siluK : AlgorithmLib.Kernel := {
-  name   := "main"
-  params := [{ shape := [.sta N], ro := true,  name := "inBuf" },
-             { shape := [.sta N], ro := false, name := "outBuf" }]
-  geom   := AlgorithmLib.Kernel.Geom.static GRID 1 1 32 1 1
-  ptxOff := PTX_OFF
-  ptxText := some ptx
-}
-
-/-- The same buffers, `E` elements per lane. -/
-def siluLoopK : AlgorithmLib.Kernel := {
-  siluK with
-  geom   := AlgorithmLib.Kernel.Geom.static LGRID 1 1 32 1 1
-  ptxOff := PTX_L_OFF
-  ptxText := some ptxLoop
-}
-
 def loadFnCode : Prog V L Unit := do
-  let ptr ← basePtr
+  let base ← basePtr
   let dataPtr ← dataPtr
-  cudaInit ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  let nBytes ← iconst64 (N * 4)
-  let inId ← cudaCreateBuffer ptr nBytes
-  store inId (← absAddr ptr IN_ID)
-  let outId ← cudaCreateBuffer ptr nBytes
-  store outId (← absAddr ptr OUT_ID)
-  let _ ← ffi .cudaUpload %[ctxPtr, inId, dataPtr, nBytes]
-  kernelBindAt siluK ptr BIND_OFF [inId, outId]
+  app.setup base
+  app.upload base 0 dataPtr (N * 4)
 
 def runFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch siluK ptr BIND_OFF
-  let _ ← cudaSync ptr
+  let base ← basePtr
+  app.run base 0
+  Drv.sync
 
 /-- The same work, `E` elements per lane: `LGRID` blocks instead of `GRID`. -/
 def runLoopFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  kernelRelaunch siluLoopK ptr BIND_OFF
-  let _ ← cudaSync ptr
+  let base ← basePtr
+  app.run base 1
+  Drv.sync
 
 def fetchFnCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← outPtr
-  let outId ← load32 (← absAddr ptr OUT_ID)
-  let nBytes ← iconst64 (N * 4)
-  let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, nBytes]
+  let base ← basePtr
+  app.download base (← outPtr) 1 (N * 4)
 
 
 def clifIR : Except String (List FuncData) :=
@@ -230,11 +203,7 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "fetch" (Prog.compileProg 3 fetchFnCode),
      Prog.entry "runLoop" (Prog.compileProg 4 runLoopFnCode)]
 
-def initialMemory : List UInt8 :=
-  let p := AlgorithmLib.Kernel.ptxBytes siluK
-  let q := AlgorithmLib.Kernel.ptxBytes siluLoopK
-  zeros PTX_OFF ++ p ++ zeros (PTX_L_OFF - PTX_OFF - p.length)
-    ++ q ++ zeros (MEM_SIZE - PTX_L_OFF - q.length)
+def initialMemory : List UInt8 := app.initialMemory [ptx, ptxLoop]
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[ artifactEntry "silu_warp" { functions := clif, required_memory := MEM_SIZE, initial_memory := initialMemory } ]

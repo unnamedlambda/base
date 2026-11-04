@@ -203,9 +203,9 @@ def roots : List Name :=
   , `Lz4NonVacuity.warp64_entry_ok
   , `Lz4NonVacuity.warp32_blocks_ty_ok
   , `Lz4NonVacuity.warp64_blocks_ty_ok
-    -- the emitted HOST program: both kernel parameters are bound to one buffer
+    -- the emitted HOST program: both kernel parameters name one allocation
     -- (the calls it makes are `Lz4CompSafe.warp15_calls`, in `Ship.Lz4Comp`)
-  , `Lz4Host.bind_table_same_buffer
+  , `Lz4Host.params_same_buffer
     -- where the kernel can touch global memory at all, enumerated from the
     -- shipped program, so `KernelConfined` is a located obligation
   , `Lz4Sites.reads_at_site
@@ -285,7 +285,6 @@ def roots : List Name :=
   , `Lz4NonVacuity.layoutOK_of_alloc
   , `Lz4NonVacuity.layoutOK_of_alloc_witness
     -- the payload image and the offsets derived from it cannot disagree
-  , `Lz4Ship.payload_length
   , `Lz4Ship.payload_fits
     -- the model's block dimension is the one the launch passes
   , `AlgorithmLib.LZ4Simt.initRegs_ntid

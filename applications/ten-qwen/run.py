@@ -23,7 +23,6 @@ import py_base
 DM, NH, HD, SQ, DFF = 512, 8, 64, 128, 1408
 EPS = np.float32(0.000001)
 QHOST_LEN_OFF = 0x0080
-QPTX_OFF = 0x0100
 
 
 def rms_norm(g, x):

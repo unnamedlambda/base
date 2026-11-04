@@ -1,12 +1,12 @@
 module
 public import Lean
 public import Std
-public import Scan.Layout
-meta import Scan.Layout
 public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -18,45 +18,45 @@ open AlgorithmLib.PTX
 
 namespace CudaSoftmaxPersist
 
-/-
-  Multi-block persistent softmax.
+/-!
+Multi-block persistent softmax over `n` floats.
 
-  Buffers (created in load, by index):
-    0  x        — input floats (n f32)
-    1  y        — output floats (n f32)
-    2  meta     — [n: u32, num_blocks: u32] (8 bytes, written once in load)
-    3  partials — [max0, sum0, max1, sum1, ...] (num_blocks * 8 bytes)
-    4  params   — [global_max: f32, global_inv_sum: f32] (8 bytes, written by global_reduce)
+Allocations, made by `main` in this order:
+  0  x        — input floats (n f32)
+  1  y        — output floats (n f32)
+  2  meta     — [n: u32, num_blocks: u32]
+  3  partials — [max0, sum0, max1, sum1, ...] (num_blocks · 8 bytes)
+  4  params   — [global_max: f32, global_inv_sum: f32], written by global_reduce
 
-  Algorithms:
-    u0:1  load      — init CUDA, alloc 5 bufs, write meta, store n/num_blocks in sm
-    u0:2  prep      — upload x to buf0
-    u0:3  core      — launch 3 kernels, no sync/download
-    u0:4  finalize  — cl_cuda_sync, optional download y
+Entry points:
+- `main`, data `[n: u64]`: brings the driver up and, for `0 < n < 2^30`,
+  keeps `n` and `num_blocks = ⌈n / 256⌉`, makes the allocations, hands them
+  to the kernels and uploads `meta`.
+- `prep`, data `[x: n f32]`: uploads `x`, where it fits.
+- `infer`: `core` then `finalize`; `stack`: `core` 64 times, then `finalize`.
+  `core` runs one kernel for `n ≤ 2048` and three otherwise; `finalize`
+  waits, then downloads as many bytes of `y` as the output asks for, where
+  they fit.
 
-  Shared memory layout:
-    0x00-0x37  reserved header (context slots, then unused)
-    0x38-0x3F  n (i64)
-    0x40-0x47  num_blocks (i64)
-    0x48-0x4F  packed meta [n:u32][num_blocks:u32] staging area
+Four PTX entry points in one module:
+  small_softmax — one block, for a short row
+  block_reduce  — num_blocks blocks: each block's (local_max, local_sum)
+  global_reduce — one block: (global_max, global_inv_sum) into params
+  normalize     — num_blocks blocks: y[i] = ex2((x[i]-global_max)·log2e) · global_inv_sum
 
-  Three PTX entry points in one module (called via cl_cuda_launch_named):
-    block_reduce  — gridDim=num_blocks: each block computes (local_max, local_sum) via online softmax
-    global_reduce — gridDim=1: combines partials into (global_max, global_inv_sum) in params buf
-    normalize     — gridDim=num_blocks: y[i] = ex2((x[i]-global_max)*log2e) * global_inv_sum
+The program calls the CUDA driver directly, in `Drv.App`'s layout; every
+allocation but `meta` and `params` is sized at run time.
 -/
 
--- initial_memory offsets
-def NAME_BLOCK_REDUCE  : Nat := 0x0100  -- "block_reduce\0"
-def NAME_GLOBAL_REDUCE : Nat := 0x0110  -- "global_reduce\0"
-def NAME_NORMALIZE     : Nat := 0x0120  -- "normalize\0"
-def NAME_SMALL_SOFTMAX : Nat := 0x0130  -- "small_softmax\0"
-def PTX_SOURCE_OFF     : Nat := 0x0200
-def BIND_K1_OFF        : Nat := 0x4700  -- [0,2,3]  x, meta, partials
-def BIND_K2_OFF        : Nat := 0x4710  -- [2,3,4]  meta, partials, params
-def BIND_K3_OFF        : Nat := 0x4720  -- [0,2,4,1] x, meta, params, y
-def BIND_SMALL_OFF     : Nat := 0x4730  -- [0,2,1] x, meta, y
-def MEM_SIZE           : Nat := 0x4740
+/-- Where `main` keeps `n`, `num_blocks` and the packed `meta` it uploads;
+    where the driver's state starts; where the PTX lies and how many bytes
+    are kept for it. -/
+def N_OFF : Nat := 0x38
+def NB_OFF : Nat := 0x40
+def META_OFF : Nat := 0x48
+def ORG : Nat := 0x100
+def PTX_OFF : Nat := 0x800
+def PTX_LEN : Nat := 0x4800
 
 /-
   PTX: three kernels share one module. smem[0..31] = 8 warp maxes,
@@ -190,108 +190,78 @@ def ptxSource : String := buildModule 64
 -- Load: init CUDA, alloc 5 bufs, pack/upload meta, store n/num_blocks
 open AlgorithmLib.Prog
 
-
-/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
-def CTX_OFF : Nat := 0x10
+/-- **The program in the driver's standard layout**: five allocations, made
+    by `main`, and the four kernels of one module. -/
+def app : Drv.App :=
+  { bufs := [0, 0, 0, 0, 0],
+    kernels := [⟨PTX_OFF, PTX_LEN, [0, 2, 1], (1, 1, 1), (256, 1, 1)⟩,
+                ⟨PTX_OFF, PTX_LEN, [0, 2, 3], (1, 1, 1), (256, 1, 1)⟩,
+                ⟨PTX_OFF, PTX_LEN, [2, 3, 4], (1, 1, 1), (256, 1, 1)⟩,
+                ⟨PTX_OFF, PTX_LEN, [0, 2, 4, 1], (1, 1, 1), (256, 1, 1)⟩],
+    memSize := PTX_OFF + PTX_LEN, org := ORG,
+    entries := ["small_softmax", "block_reduce", "global_reduce", "normalize"] }
 
 def loadCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
+  let a := app
+  let base ← basePtr
+  let dp ← dataPtr
+  a.setup base
+  Prog.when .ule (← iconst64 8) (← dataLen) do
+    let n ← load64 dp
+    Prog.when .ne n (← iconst64 0) do
+    Prog.when .ult n (← iconst64 (2 ^ 30)) do
+      let nb ← ushrImm (← iaddImm n 255) 8
+      storeI64 n (← iaddImm base N_OFF)
+      storeI64 nb (← iaddImm base NB_OFF)
+      let xBytes ← imul n (← iconst64 4)
+      let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 0), xBytes]
+      let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 1), xBytes]
+      let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 2), ← iconst64 8]
+      let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 3), ← imul nb (← iconst64 8)]
+      let _ ← ext (.cuda .memAlloc) %[← iaddImm base (a.bufSlot 4), ← iconst64 8]
+      for j in List.range a.kernels.length do
+        a.rebind base j
+      storeI64 (← bor n (← ishlImm nb 32)) (← iaddImm base META_OFF)
+      let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (a.bufSlot 2)), ← iaddImm base META_OFF,
+        ← iconst64 8]
 
-  cudaInit ptr CTX_OFF
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-
-  let dataLen ← dataLen
-  -- the element count only when the caller handed over its 8 bytes
-  Prog.when .ule (← iconst64 8) dataLen do
-    let n         ← load64 dataPtr
-    let numBlocks ← ushrImm (← iaddImm n 255) 8   -- (n + 255) >> 8
-    store n         (← absAddr ptr 0x38)
-    store numBlocks (← absAddr ptr 0x40)
-
-    let xBytes       ← ishlImm n 2          -- n*4
-    let partialsBytes← ishlImm numBlocks 3  -- num_blocks*8
-    let eight        ← iconst64 8
-
-    -- buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
-    let _ ← ffi .cudaCreateBuffer %[ctxPtr, xBytes]
-    let _ ← ffi .cudaCreateBuffer %[ctxPtr, xBytes]
-    let metaBuf ← ffi .cudaCreateBuffer %[ctxPtr, eight]
-    let _ ← ffi .cudaCreateBuffer %[ctxPtr, partialsBytes]
-    let _ ← ffi .cudaCreateBuffer %[ctxPtr, eight]
-
-    -- Pack [n:u32, num_blocks:u32] as i64 LE into staging slot at 0x48
-    let n32   ← ireduce32 n
-    let nb32  ← ireduce32 numBlocks
-    let n64   ← uextend64 n32
-    let nb64  ← uextend64 nb32
-    let packed← bor n64 (← ishlImm nb64 32)
-    let metaSlot ← absAddr ptr 0x48
-    store packed metaSlot
-
-    -- Upload packed meta to buf2
-    let _ ← ffi .cudaUpload %[ctxPtr, metaBuf, metaSlot, eight]
-
-/-- Prep: upload x from data_ptr to buf0. -/
+/-- Upload `x`, where it fits. -/
 def prepCode : Prog V L Unit := do
-  let ptr ← basePtr
-  let dataPtr ← dataPtr
-  let dataLen ← dataLen
-  let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
-  let xBuf    ← iconst32 0
-  let _ ← ffi .cudaUpload %[ctxPtr, xBuf, dataPtr, dataLen]
+  let base ← basePtr
+  let dl ← dataLen
+  let n ← load64 (← iaddImm base N_OFF)
+  Prog.when .ule dl (← imul n (← iconst64 4)) do
+    let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm base (app.bufSlot 0)), ← dataPtr, dl]
 
-/-- Core: one kernel for a short row, three for a long one.
-
-    Both arms end the function, and a term has one exit, so they join on it.
-    The join block holds only the `ret`. -/
+/-- One kernel for a short row, three for a long one. -/
 def coreCode : Prog V L Unit := do
-  let ptr    := (← basePtr)
-  let n      ← load64 (← absAddr ptr 0x38)
-  let numBlocks ← load64 (← absAddr ptr 0x40)
-  let nb32   ← ireduce32 numBlocks
-  let one32  ← iconst32 1
-  let three32← iconst32 3
-  let four32 ← iconst32 4
-  let blk256 ← iconst32 256
+  let a := app
+  let base ← basePtr
+  let n ← load64 (← iaddImm base N_OFF)
+  let nb ← load64 (← iaddImm base NB_OFF)
+  Prog.when .ne nb (← iconst64 0) do
+  Prog.when .ult nb (← iconst64 (2 ^ 31)) do
+    let nb32 ← ireduce32 nb
+    let _ ← ifte .ule n (← iconst64 2048)
+      (thn := do a.run base 0; pure %[])
+      (els := do
+        a.runX base 1 nb32
+        a.run base 2
+        a.runX base 3 nb32
+        pure %[])
+    pure ()
 
-  let _ ← ifte .ule n (← iconst64 2048)
-    (thn := do
-      -- Small path: single kernel
-      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
-                 (← iconst64 NAME_SMALL_SOFTMAX)
-                 three32 (← iconst64 BIND_SMALL_OFF) one32 one32 one32 blk256 one32 one32
-      pure %[])
-    (els := do
-      -- Large path: block_reduce → global_reduce → normalize
-      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
-                 (← iconst64 NAME_BLOCK_REDUCE)
-                 three32 (← iconst64 BIND_K1_OFF) nb32 one32 one32 blk256 one32 one32
-      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
-                 (← iconst64 NAME_GLOBAL_REDUCE)
-                 three32 (← iconst64 BIND_K2_OFF) one32 one32 one32 blk256 one32 one32
-      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
-                 (← iconst64 NAME_NORMALIZE)
-                 four32 (← iconst64 BIND_K3_OFF) nb32 one32 one32 blk256 one32 one32
-      pure %[])
-  return ()
-
-/-- Finalize: sync, then download `y` only if the caller asked for output. -/
+/-- Wait; then download as many bytes of `y` as the caller's output asks
+    for, where it asks for some and they fit. -/
 def finalizeCode : Prog V L Unit := do
-  let ptr    := (← basePtr)
-  let outPtr ← outPtr
-  let outLen ← outLen
-  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
-
-  let _ ← cudaSync ptr CTX_OFF
-  let _ ← ifte .eq outLen (← iconst64 0)
-    (thn := pure %[])
-    (els := do
-      let yBuf ← iconst32 1
-      let _ ← ffi .cudaDownload %[ctxPtr, yBuf, outPtr, outLen]
-      pure %[])
-  return ()
-
+  let base ← basePtr
+  let n ← load64 (← iaddImm base N_OFF)
+  Drv.sync
+  let ol ← outLen
+  Prog.when .ne ol (← iconst64 0) do
+  Prog.when .ult n (← iconst64 (2 ^ 30)) do
+    Prog.when .ule ol (← imul n (← iconst64 4)) do
+      let _ ← ext (.cuda .memcpyDtoH) %[← outPtr, ← load64 (← iaddImm base (app.bufSlot 1)), ol]
 
 /-- Stack depth baked into the `stack` entry's wrapper. -/
 def STACK_DEPTH : Nat := 64
@@ -306,90 +276,10 @@ def clifIR : Except String (List FuncData) :=
      Prog.entry "infer" (Prog.compileProg 5 (Prog.sequenceWrapper [3, 4])),
      Prog.entry "stack" (Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4])))]
 
--- initial_memory: names, PTX source, bind descriptors
-def nameBlockReduce  : List UInt8 := "block_reduce".toUTF8.toList ++ [0]
-def nameGlobalReduce : List UInt8 := "global_reduce".toUTF8.toList ++ [0]
-def nameNormalize    : List UInt8 := "normalize".toUTF8.toList ++ [0]
-def nameSmallSoftmax : List UInt8 := "small_softmax".toUTF8.toList ++ [0]
-def ptxBytes         : List UInt8 := ptxSource.toUTF8.toList ++ [0]
-
--- bind descriptors: buf IDs as i32 (4 bytes each, little-endian)
-def i32LE (n : UInt32) : List UInt8 :=
-  [n &&& 0xff, (n >>> 8) &&& 0xff, (n >>> 16) &&& 0xff, (n >>> 24) &&& 0xff].map (·.toUInt8)
-
-def bindK1 : List UInt8 := i32LE 0 ++ i32LE 2 ++ i32LE 3  -- x, meta, partials
-def bindK2 : List UInt8 := i32LE 2 ++ i32LE 3 ++ i32LE 4  -- meta, partials, params
-def bindK3 : List UInt8 := i32LE 0 ++ i32LE 2 ++ i32LE 4 ++ i32LE 1  -- x, meta, params, y
-def bindSmall : List UInt8 := i32LE 0 ++ i32LE 2 ++ i32LE 1  -- x, meta, y
-
-/-- Every byte of shared memory this program names.
-
-    The offsets are assigned by hand, and a collision between two of them is
-    invisible at every other layer: both stores succeed and the second wins.
-    `0x00`-`0x18` are the context slots the FFI's init calls fill, so naming
-    those is what stops an offset being placed where one of those calls will
-    overwrite it.
-
-    A bind table is as wide as the arity its launch declares, not as wide as the
-    gap to the next one. -/
-def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_ht",            ContextSlots.ht, 8⟩,
-   ⟨"ctx_wgpu",          ContextSlots.wgpu, 8⟩,
-   ⟨"ctx_cuda",          CTX_OFF, 8⟩,
-   ⟨"name_block_reduce",  NAME_BLOCK_REDUCE, NAME_GLOBAL_REDUCE - NAME_BLOCK_REDUCE⟩,
-   ⟨"name_global_reduce", NAME_GLOBAL_REDUCE, NAME_NORMALIZE - NAME_GLOBAL_REDUCE⟩,
-   ⟨"name_normalize",     NAME_NORMALIZE, NAME_SMALL_SOFTMAX - NAME_NORMALIZE⟩,
-   ⟨"name_small_softmax", NAME_SMALL_SOFTMAX, PTX_SOURCE_OFF - NAME_SMALL_SOFTMAX⟩,
-   ⟨"ptx",               PTX_SOURCE_OFF, BIND_K1_OFF - PTX_SOURCE_OFF⟩,
-   ⟨"bind_k1",           BIND_K1_OFF, 12⟩,
-   ⟨"bind_k2",           BIND_K2_OFF, 12⟩,
-   ⟨"bind_k3",           BIND_K3_OFF, 16⟩,
-   ⟨"bind_small",        BIND_SMALL_OFF, 12⟩]
-
-
-#eval LayoutScan.check "Bench.CudaSoftmaxPersist" [``memMap]
-theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
-
-theorem memMap_within :
-    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
-
-/-- **Every kernel name, the PTX, and each bind table fit their slots.**
-
-    `buildInitialMemory` pads with `zeros (next - this - length)`, on `Nat`: a
-    text longer than its slot pads by zero rather than by a negative amount, so
-    the overrun is written over whatever follows and every offset after it
-    shifts. A kernel name that spills is the sharp case here -- the launch then
-    asks the driver for a symbol that reads into the next name. -/
-theorem regions_fit :
-    nameBlockReduce.length ≤ NAME_GLOBAL_REDUCE - NAME_BLOCK_REDUCE
-      ∧ nameGlobalReduce.length ≤ NAME_NORMALIZE - NAME_GLOBAL_REDUCE
-      ∧ nameNormalize.length ≤ NAME_SMALL_SOFTMAX - NAME_NORMALIZE
-      ∧ nameSmallSoftmax.length ≤ PTX_SOURCE_OFF - NAME_SMALL_SOFTMAX
-      ∧ ptxBytes.length ≤ BIND_K1_OFF - PTX_SOURCE_OFF
-      ∧ bindK1.length ≤ BIND_K2_OFF - BIND_K1_OFF
-      ∧ bindK2.length ≤ BIND_K3_OFF - BIND_K2_OFF
-      ∧ bindK3.length ≤ BIND_SMALL_OFF - BIND_K3_OFF
-      ∧ bindSmall.length ≤ MEM_SIZE - BIND_SMALL_OFF := by native_decide
-
-def buildInitialMemory : List UInt8 :=
-  let names :=
-    zeros (NAME_BLOCK_REDUCE) ++
-    nameBlockReduce  ++ zeros (NAME_GLOBAL_REDUCE - NAME_BLOCK_REDUCE  - nameBlockReduce.length) ++
-    nameGlobalReduce ++ zeros (NAME_NORMALIZE     - NAME_GLOBAL_REDUCE - nameGlobalReduce.length) ++
-    nameNormalize    ++ zeros (NAME_SMALL_SOFTMAX - NAME_NORMALIZE     - nameNormalize.length) ++
-    nameSmallSoftmax ++ zeros (PTX_SOURCE_OFF      - NAME_SMALL_SOFTMAX - nameSmallSoftmax.length)
-  let ptx  := ptxBytes ++ zeros (BIND_K1_OFF - PTX_SOURCE_OFF - ptxBytes.length)
-  let bind :=
-    bindK1 ++ zeros (BIND_K2_OFF - BIND_K1_OFF - bindK1.length) ++
-    bindK2 ++ zeros (BIND_K3_OFF - BIND_K2_OFF - bindK2.length) ++
-    bindK3 ++ zeros (BIND_SMALL_OFF - BIND_K3_OFF - bindK3.length) ++
-    bindSmall ++ zeros (MEM_SIZE - BIND_SMALL_OFF - bindSmall.length)
-  names ++ ptx ++ bind
-
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
-  required_memory := MEM_SIZE,
-  initial_memory := buildInitialMemory
+  required_memory := app.memSize,
+  initial_memory := app.initialMemory (List.replicate 4 ptxSource)
 }
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=

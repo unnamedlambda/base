@@ -7,6 +7,10 @@ public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Drv
+meta import AlgorithmLib.Surface.Drv
+public import AlgorithmLib.Host.Driver
+meta import AlgorithmLib.Host.Driver
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -180,32 +184,38 @@ def DATA_OFF : Nat := 0x3000
 -- Payload: PTX source, bind desc, params, output filename, random A & B data
 -- ---------------------------------------------------------------------------
 
+/-- Where the driver's state starts (`Drv.App`). -/
+def ORG : Nat := 0x2300
+
+/-- The signature the program's typestate states of its kernel: `main` takes
+    four pointers. -/
+theorem matmul_sig : AlgorithmLib.HProg.Sem.ptxParamSizes ptxSource "main" = some [8, 8, 8, 8] := by native_decide
+
+/-- **The program in the driver's standard layout**: `A`, `B`, `C` and the
+    dimensions as four allocations, and one kernel over them, a 16×16 block
+    per 16×16 tile of `C`. -/
+def app (m k n : Nat) : Drv.App :=
+  { bufs := [m * k * 4, k * n * 4, m * n * 4, 16],
+    kernels := [⟨PTX_OFF, PTX_REGION, [0, 1, 2, 3], ((n + 15) / 16, (m + 15) / 16, 1), (16, 16, 1)⟩],
+    memSize := DATA_OFF + (m * k + k * n + m * n) * 4, org := ORG }
+
 def buildPayload (m k n : Nat) : List UInt8 :=
-  let reserved := zeros PTX_OFF
-  let ptxBytes := padTo (stringToBytes ptxSource) PTX_REGION
-  -- bind desc: 4 buffer IDs [0=A, 1=B, 2=C, 3=params]
-  let bindDesc :=
-    uint32ToBytes 0 ++ uint32ToBytes 1 ++
-    uint32ToBytes 2 ++ uint32ToBytes 3
   -- params [M, K, N, pad]
   let params :=
     uint32ToBytes (UInt32.ofNat m) ++
     uint32ToBytes (UInt32.ofNat k) ++
     uint32ToBytes (UInt32.ofNat n) ++
     uint32ToBytes 0
-  let outFn := padTo (stringToBytes "matmul_output.bin") OUTPUT_FN_REGION
-  let preData := reserved ++ ptxBytes ++ bindDesc ++ params ++ outFn
-  let prePad := zeros (DATA_OFF - preData.length)
   -- Random matrices: distinct seeds so A ≠ B
-  let aData := genMatrixBytes (m * k) 0xC0FFEE01
-  let bData := genMatrixBytes (k * n) 0xDEADBEEF
-  -- C output region (written by CLIF after GPU download)
-  let cData := zeros (m * n * 4)
-  preData ++ prePad ++ aData ++ bData ++ cData
+  (app m k n).initialMemory [ptxSource]
+    [(PARAMS_OFF, params), (OUTPUT_FN_OFF, stringToBytes "matmul_output.bin"),
+     (DATA_OFF, genMatrixBytes (m * k) 0xC0FFEE01),
+     (DATA_OFF + m * k * 4, genMatrixBytes (k * n) 0xDEADBEEF)]
 
 -- ---------------------------------------------------------------------------
--- CLIF orchestrator: init CUDA, create 4 buffers, upload, launch, download,
--- cleanup, write output file. No timestep loop — one kernel, one result.
+-- CLIF orchestrator: bring the driver up, make the four allocations, upload,
+-- launch, download, free, write the output file. No timestep loop — one
+-- kernel, one result.
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.Prog
@@ -218,53 +228,22 @@ def code (m k n : Nat) : Prog V L Unit :=
   let aOff := DATA_OFF
   let bOff := aOff + aBytes
   let cOff := bOff + bBytes
+  let a := app m k n
   do
-    let ptr ← basePtr
-    let c0 ← iconst64 0
-
-    -- CUDA init
-    cudaInit ptr
-
-    -- Create 4 buffers
-    let aSz ← iconst64 aBytes
-    let bSz ← iconst64 bBytes
-    let cSz ← iconst64 cBytes
-    let pSz ← iconst64 16
-    let bufA ← cudaCreateBuffer ptr aSz
-    let bufB ← cudaCreateBuffer ptr bSz
-    let bufC ← cudaCreateBuffer ptr cSz
-    let bufP ← cudaCreateBuffer ptr pSz
-    let _ := bufA; let _ := bufB; let _ := bufC; let _ := bufP
-
-    -- Upload A, B, params
-    let aOffV ← iconst64 aOff
-    let bOffV ← iconst64 bOff
-    let pOffV ← iconst64 PARAMS_OFF
-    let _ ← cudaUpload ptr bufA aOffV aSz
-    let _ ← cudaUpload ptr bufB bOffV bSz
-    let _ ← cudaUpload ptr bufP pOffV pSz
-
-    -- Launch: grid = (ceil(N/16), ceil(M/16), 1), block = (16, 16, 1)
-    let gridX := (n + 15) / 16
-    let gridY := (m + 15) / 16
-    let ptxOff ← iconst64 PTX_OFF
-    let nBufs ← iconst32 4
-    let bindOff ← iconst64 BIND_OFF
-    let gx ← iconst32 gridX
-    let gy ← iconst32 gridY
-    let one32 ← iconst32 1
-    let blk16 ← iconst32 16
-    let _ ← cudaLaunch ptr ptxOff nBufs bindOff gx gy one32 blk16 blk16 one32
-
-    -- Download C
-    let cOffV ← iconst64 cOff
-    let _ ← cudaDownload ptr bufC cOffV cSz
-
-    cudaCleanup ptr
+    let base ← basePtr
+    a.setup base
+    a.upload base 0 (← iaddImm base aOff) aBytes
+    a.upload base 1 (← iaddImm base bOff) bBytes
+    a.upload base 3 (← iaddImm base PARAMS_OFF) 16
+    a.run base 0
+    let cOffV ← iaddImm base cOff
+    a.download base cOffV 2 cBytes
+    for i in List.range 4 do
+      Drv.free base (a.bufSlot i)
 
     -- Write output file: bytes [cOff .. cOff + cBytes)
     let fnOffV ← iconst64 OUTPUT_FN_OFF
-    let _ ← replaceFileAt ptr fnOffV (← iconst64 OUTPUT_FN_REGION) cOffV cSz
+    let _ ← replaceFileAt base fnOffV (← iconst64 OUTPUT_FN_REGION) (← iconst64 cOff) (← iconst64 cBytes)
 
 
 def clifIrSource (m k n : Nat) : Except String (List FuncData) :=

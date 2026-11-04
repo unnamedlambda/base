@@ -17,13 +17,12 @@ once: `Honest w.kernel l M`, every output the device gives for launch `l` is one
 the modeled machine relates to its input by `M`. That is the GPU-side trusted
 reading, as `callBits` is the host-side one.
 
-`launch_triple` is the host rule, and `launchNamed_triple`, `launchOnStream_triple`
-and `launchNamedOnStream_triple` the same for the other launch entry points, all
-through `launchOn_honest`. From a world where `cudaLaunch` answers, with
-its kernel text and bindings known, every bound buffer live and bound once, and
-the device honest about the launch it makes, the call answers and the bound
-buffers after it stand in `M` to what they held before. A kernel theorem about
-`M` then says what they hold (`Lz4.HostLaunch` for the shipped LZ4 kernel).
+The host rule for a launch made directly is `DrvLaunch.drvLaunch_triple`,
+through `launchStep_honest`: from a world where `cuLaunchKernel` answers, every
+bound allocation live and ready, and the device honest about the launch it
+makes, the call answers and the bound allocations after it stand in `M` to
+what they held before. A kernel theorem about `M` then says what they hold
+(`Lz4.HostLaunch` for the shipped LZ4 kernel).
 -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
@@ -88,128 +87,5 @@ theorem launchStep_honest {k : Launch → List ByteArray → List ByteArray} {l 
   simp only [launchStep, hkept, Bool.false_eq_true, if_false]
   rw [writeAll_zip_map ns _ m hnd hlen]
   exact hM _
-
-/-- **A launch on any stream performs what the machine says**: where the launch
-    of kernel text `kernel` at `entry` answers `0`, the buffers it binds stand in
-    `M` to what they held, for a device honest about it. -/
-theorem launchOn_honest {w : World} {p : Nat} {kernel entry : String} {nBufs bindPtr : UInt64}
-    {dims : List UInt64} {ids : List Int} {r : Option V} {d : Dev} (M : List ByteArray → List ByteArray → Prop)
-    (hk : KeepsSize w.kernel) (hcap : w.dev.capture = none)
-    (hids : readIds w.mem bindPtr (asI32 nBufs).toNat = some ids)
-    (hlive : ids.any (fun id => (w.dev.get? id).isNone) = false) (hnd : (ids.map Int.toNat).Nodup)
-    (hM : Honest w.kernel ⟨kernel, entry, ids.map Int.toNat, dims, []⟩ M)
-    (h : cudaLaunchOn w p kernel entry nBufs bindPtr dims = some (r, d)) :
-    M ((ids.map Int.toNat).map (devMem w.dev)) ((ids.map Int.toNat).map (devMem d)) := by
-  simp only [cudaLaunchOn, bind, Option.bind, hids, hlive, Bool.false_eq_true, if_false] at h
-  split at h
-  · cases h
-  · rename_i d0 hd0
-    change some (some (ofInt .i32 0), d0) = some (r, d) at h
-    injection h with h1
-    injection h1 with h2 h3
-    subst h3
-    rw [devOp_launch_mem hcap hd0]
-    exact launchStep_honest hk hM hnd _
-
-/-- **The launch triple.** From a world where `cudaLaunch` answers, with the
-    kernel text and bindings it reads known, every bound buffer live and bound
-    once, and the device honest about the launch it makes, the call answers,
-    and the bound buffers after it stand in `M` to what they held before. -/
-theorem launch_triple {w : World} {ctx kptr nBufs bindPtr gx gy gz bx by_ bz : UInt64} {text : String}
-    {ids : List Int} (M : List ByteArray → List ByteArray → Prop)
-    (hc : CtxOk w ctx) (hctx : ctx ≠ 0) (hk : KeepsSize w.kernel) (hcap : w.dev.capture = none)
-    (hb : BindsReady w defaultParty nBufs bindPtr)
-    (hdims : launchDimsBad nBufs [gx, gy, gz, bx, by_, bz] = false)
-    (htext : readCStrAt w.mem kptr = some text) (hids : readIds w.mem bindPtr (asI32 nBufs).toNat = some ids)
-    (hlive : ids.any (fun id => (w.dev.get? id).isNone) = false) (hnd : (ids.map Int.toNat).Nodup)
-    (hM : Honest w.kernel ⟨text, "main", ids.map Int.toNat, [gx, gy, gz, bx, by_, bz], []⟩ M) :
-    ∃ r w', callBits .cudaLaunch [ctx, kptr, nBufs, bindPtr, gx, gy, gz, bx, by_, bz] w = some (r, w') ∧
-      M ((ids.map Int.toNat).map (devMem w.dev)) ((ids.map Int.toNat).map (devMem w'.dev)) := by
-  obtain ⟨⟨r, w'⟩, h⟩ := Option.isSome_iff_exists.mp
-    (launch_safe (gx := gx) (gy := gy) (gz := gz) (bx := bx) (by_ := by_) (bz := bz) hc hk hcap
-      (by rw [htext]; rfl) hb)
-  refine ⟨r, w', h, ?_⟩
-  unfold ffiCudaLaunch at h
-  have hne : (ctx != 0) = true := by simpa using hctx
-  have hco := cudaCtxOk_of hc
-  obtain ⟨d, hkd, rfl⟩ := devOnly_eq h
-  clear h
-  simp only [*, Bool.false_eq_true, if_false, Bool.not_true, bind, Option.bind] at hkd
-  exact launchOn_honest M hk hcap hids hlive hnd hM hkd
-
-/-- The same for a launch at an entry point named in memory. -/
-theorem launchNamed_triple {w : World} {ctx kptr namePtr nBufs bindPtr gx gy gz bx by_ bz : UInt64}
-    {text entry : String} {ids : List Int} (M : List ByteArray → List ByteArray → Prop)
-    (hc : CtxOk w ctx) (hctx : ctx ≠ 0) (hk : KeepsSize w.kernel) (hcap : w.dev.capture = none)
-    (hb : BindsReady w defaultParty nBufs bindPtr)
-    (hdims : launchDimsBad nBufs [gx, gy, gz, bx, by_, bz] = false)
-    (htext : readCStrAt w.mem kptr = some text) (hentry : readCStrAt w.mem namePtr = some entry)
-    (hids : readIds w.mem bindPtr (asI32 nBufs).toNat = some ids)
-    (hlive : ids.any (fun id => (w.dev.get? id).isNone) = false) (hnd : (ids.map Int.toNat).Nodup)
-    (hM : Honest w.kernel ⟨text, entry, ids.map Int.toNat, [gx, gy, gz, bx, by_, bz], []⟩ M) :
-    ∃ r w', callBits .cudaLaunchNamed [ctx, kptr, namePtr, nBufs, bindPtr, gx, gy, gz, bx, by_, bz] w
-        = some (r, w') ∧
-      M ((ids.map Int.toNat).map (devMem w.dev)) ((ids.map Int.toNat).map (devMem w'.dev)) := by
-  obtain ⟨⟨r, w'⟩, h⟩ := Option.isSome_iff_exists.mp
-    (launchNamed_safe (gx := gx) (gy := gy) (gz := gz) (bx := bx) (by_ := by_) (bz := bz) hc hk hcap
-      (by rw [htext]; rfl) (by rw [hentry]; rfl) hb)
-  refine ⟨r, w', h, ?_⟩
-  unfold ffiCudaLaunchNamed at h
-  have hne : (ctx != 0) = true := by simpa using hctx
-  have hco := cudaCtxOk_of hc
-  obtain ⟨d, hkd, rfl⟩ := devOnly_eq h
-  clear h
-  simp only [*, Bool.false_eq_true, if_false, Bool.not_true, bind, Option.bind] at hkd
-  exact launchOn_honest M hk hcap hids hlive hnd hM hkd
-
-/-- The same for a launch on a stream `sid` names. -/
-theorem launchOnStream_triple {w : World} {ctx kptr nBufs bindPtr gx gy gz bx by_ bz sid : UInt64}
-    {text : String} {ids : List Int} {p : Nat} (M : List ByteArray → List ByteArray → Prop)
-    (hc : CtxOk w ctx) (hctx : ctx ≠ 0) (hk : KeepsSize w.kernel) (hcap : w.dev.capture = none)
-    (hp : w.dev.party? (asI32 sid) = some p) (hb : BindsReady w p nBufs bindPtr)
-    (hdims : launchDimsBad nBufs [gx, gy, gz, bx, by_, bz] = false)
-    (htext : readCStrAt w.mem kptr = some text) (hids : readIds w.mem bindPtr (asI32 nBufs).toNat = some ids)
-    (hlive : ids.any (fun id => (w.dev.get? id).isNone) = false) (hnd : (ids.map Int.toNat).Nodup)
-    (hM : Honest w.kernel ⟨text, "main", ids.map Int.toNat, [gx, gy, gz, bx, by_, bz], []⟩ M) :
-    ∃ r w', callBits .cudaLaunchOnStream [ctx, kptr, nBufs, bindPtr, gx, gy, gz, bx, by_, bz, sid] w
-        = some (r, w') ∧
-      M ((ids.map Int.toNat).map (devMem w.dev)) ((ids.map Int.toNat).map (devMem w'.dev)) := by
-  obtain ⟨⟨r, w'⟩, h⟩ := Option.isSome_iff_exists.mp
-    (launchOnStream_safe (gx := gx) (gy := gy) (gz := gz) (bx := bx) (by_ := by_) (bz := bz) hc hk hcap
-      (by rw [htext]; rfl) (fun q hq => by rw [hp] at hq; cases hq; exact hb))
-  refine ⟨r, w', h, ?_⟩
-  unfold ffiCudaLaunchOnStream at h
-  have hne : (ctx != 0) = true := by simpa using hctx
-  have hco := cudaCtxOk_of hc
-  obtain ⟨d, hkd, rfl⟩ := devOnly_eq h
-  clear h
-  simp only [*, Bool.false_eq_true, if_false, Bool.not_true, bind, Option.bind] at hkd
-  exact launchOn_honest M hk hcap hids hlive hnd hM hkd
-
-/-- The same for a named entry point on a stream. -/
-theorem launchNamedOnStream_triple {w : World}
-    {ctx kptr namePtr nBufs bindPtr gx gy gz bx by_ bz sid : UInt64}
-    {text entry : String} {ids : List Int} {p : Nat} (M : List ByteArray → List ByteArray → Prop)
-    (hc : CtxOk w ctx) (hctx : ctx ≠ 0) (hk : KeepsSize w.kernel) (hcap : w.dev.capture = none)
-    (hp : w.dev.party? (asI32 sid) = some p) (hb : BindsReady w p nBufs bindPtr)
-    (hdims : launchDimsBad nBufs [gx, gy, gz, bx, by_, bz] = false)
-    (htext : readCStrAt w.mem kptr = some text) (hentry : readCStrAt w.mem namePtr = some entry)
-    (hids : readIds w.mem bindPtr (asI32 nBufs).toNat = some ids)
-    (hlive : ids.any (fun id => (w.dev.get? id).isNone) = false) (hnd : (ids.map Int.toNat).Nodup)
-    (hM : Honest w.kernel ⟨text, entry, ids.map Int.toNat, [gx, gy, gz, bx, by_, bz], []⟩ M) :
-    ∃ r w', callBits .cudaLaunchNamedOnStream
-        [ctx, kptr, namePtr, nBufs, bindPtr, gx, gy, gz, bx, by_, bz, sid] w = some (r, w') ∧
-      M ((ids.map Int.toNat).map (devMem w.dev)) ((ids.map Int.toNat).map (devMem w'.dev)) := by
-  obtain ⟨⟨r, w'⟩, h⟩ := Option.isSome_iff_exists.mp
-    (launchNamedOnStream_safe (gx := gx) (gy := gy) (gz := gz) (bx := bx) (by_ := by_) (bz := bz) hc hk hcap
-      (by rw [htext]; rfl) (by rw [hentry]; rfl) (fun q hq => by rw [hp] at hq; cases hq; exact hb))
-  refine ⟨r, w', h, ?_⟩
-  unfold ffiCudaLaunchNamedOnStream at h
-  have hne : (ctx != 0) = true := by simpa using hctx
-  have hco := cudaCtxOk_of hc
-  obtain ⟨d, hkd, rfl⟩ := devOnly_eq h
-  clear h
-  simp only [*, Bool.false_eq_true, if_false, Bool.not_true, bind, Option.bind] at hkd
-  exact launchOn_honest M hk hcap hids hlive hnd hM hkd
 
 end AlgorithmLib.HProg.Contracts

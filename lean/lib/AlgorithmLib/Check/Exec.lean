@@ -1,5 +1,6 @@
 module
 public import AlgorithmLib.Check.Trace
+public import AlgorithmLib.Check.VendorRule
 import all Init.Data.Repr
 @[expose] public section
 
@@ -85,8 +86,11 @@ def meetReady (S : TState) (x : Fact) : Bool :=
   | .readyAll p => !S.contains x && readyIn S p
   | _ => false
 
-/-- Facts holding wherever either typestate does. -/
-def factsMeet (S S' : TState) : TState := S.filterMap (meetFact S') ++ S'.filter (meetReady S)
+/-- Facts holding wherever either typestate does: the one typestate where
+    the two are the same, as they are where a branch or a trip round a loop
+    changes none. -/
+def factsMeet (S S' : TState) : TState :=
+  if S = S' then S else S.filterMap (meetFact S') ++ S'.filter (meetReady S)
 
 /-- The bound of `τ`'s with the same multiple and terms as `p`. -/
 def Sym.like (τ : Sym) (p : Nat × Lin) : Option (Nat × Lin) :=
@@ -283,13 +287,27 @@ def learn (A : AS) (rel : ICmpCond) (x y : R) : AS :=
   | .ne => nonZero (nonZero A x y) y x
   | _ => A
 
-/-- What a branch learns from the flag it reads being `b`: `none` where the
-    flag cannot be `b`. -/
+/-- An argument as the parameters' record reads it: a number computed from
+    them, or bits known. -/
+def parArg (A : AS) (r : R) : Option PArg :=
+  match A.par.slotOf r with
+  | some (_, e) => some (.sym e)
+  | none => (A.get r).bits.map .known
+
+/-- Relation `rel` between `x` and `y` as one between numbers computed from
+    the parameters, where at least one is. -/
+def condOf (A : AS) (rel : ICmpCond) (x y : R) : Option PCond :=
+  match parArg A x, parArg A y with
+  | some a, some b => if a.isSym || b.isSym then some ⟨rel, a.expr, b.expr⟩ else none
+  | _, _ => none
+
+/-- What a branch learns from the flag it reads being `b`, of the slots and
+    of the parameters: `none` where the flag cannot be `b`. -/
 def refine (A : AS) (flag : R) (b : Bool) : Option AS :=
   match A.get flag with
   | .known (.sc _ f) => if (f != 0) == b then some A else none
   | .cmp c x y => match holdsRel A c x y b with
-    | some rel => some (learn A rel x y)
+    | some rel => some ((learn A rel x y).addCond (condOf A rel x y))
     | none => some A
   | _ => some A
 
@@ -312,6 +330,7 @@ def rangeKeeps (lo hi : Nat) : Fact → Bool
   | .cell c _ => cellOk c && (hi ≤ c.toNat || c.toNat + 8 ≤ lo)
   | .cstr _ => false
   | .cstrIn c k => hi ≤ c.toNat || c.toNat + k ≤ lo
+  | .text c _ k _ | .wgText c k _ => hi ≤ c.toNat || c.toNat + k ≤ lo
   | .htAt c _ _ => decide (hi < (regionBase .pinned).toNat) && cellOk c && (hi ≤ c.toNat || c.toNat + 8 ≤ lo)
   | _ => true
 
@@ -334,8 +353,9 @@ def absStore (A : AS) (v a : R) (n : Nat) : Except String AS :=
   | none => .error s!"store of a value of unknown type (slot {v})"
   | some n =>
       match A.get a, storeSpan A.facts (A.get a) n, (A.get v).scTy with
-      | .known (.sc _ x), some (lo, hi), some _ =>
-          .ok (A.withFactsK (afterStore (some x) (A.get v).bits n A.facts) (rangeKeeps lo hi))
+      | .known (.sc _ x), some (lo, hi), some ty =>
+          .ok ((A.withFactsK (afterStore (some x) (A.get v).bits n A.facts) (rangeKeeps lo hi)).parCtx v
+            (if n == 8 && ty == .i64 && cellOk x then some x else none))
       | _, some (lo, hi), some _ => .ok (A.withFactsK (A.facts.filter (rangeKeeps lo hi)) (rangeKeeps lo hi))
       | _, some _, none => .ok (A.withFactsK (A.facts.filter (!·.isCell)) (!·.isCell))
       | ga, none, _ => .error s!"store of {n} bytes to {repr ga} the typestate gives no room for"
@@ -384,6 +404,16 @@ def AS.pushOp (A : AS) (o : Op) (av : AV) : AS :=
     | some k => D.tightenHi r p.1 k
     | none => D) C
 
+/-- A 64-bit number as the parameters' record reads it: computed from them,
+    or known. -/
+def parI64 (A : AS) (r : R) : Option PExpr :=
+  match A.par.slotOf r with
+  | some (.i64, e) => some e
+  | some _ => none
+  | none => match A.get r with
+    | .known (.sc .i64 c) => some (.lit c)
+    | _ => none
+
 /-- The number an operation computes from the parameters, where it computes
     one: a read of a cell holding a parameter, the low half of such a number,
     such a number times a known one. -/
@@ -400,18 +430,52 @@ def parOp (A : AS) : Op → Option (ClifTy × PExpr)
       match A.par.slotOf a, A.get b with
       | some (.i64, e), .known (.sc .i64 c) => some (.i64, .mul e (.lit c))
       | _, _ => none
+  | .iadd a b =>
+      match parI64 A a, parI64 A b with
+      | some x, some y =>
+          if (A.par.slotOf a).isSome || (A.par.slotOf b).isSome then some (.i64, .add x y) else none
+      | _, _ => none
+  | .isub a b =>
+      match parI64 A a, parI64 A b with
+      | some x, some y =>
+          if (A.par.slotOf a).isSome || (A.par.slotOf b).isSome then some (.i64, .sub x y) else none
+      | _, _ => none
   | _ => none
 
-/-- An argument as the parameters' record reads it: a number computed from
-    them, or bits known. -/
-def parArg (A : AS) (r : R) : Option PArg :=
-  match A.par.slotOf r with
-  | some (_, e) => some (.sym e)
-  | none => (A.get r).bits.map .known
-
 /-- The obligation a call of `f` handed `pas` leaves, in the state's facts and
-    buffers. -/
-def oblOf (A : AS) (f : Ffi) (pas : List PArg) : Obl := ⟨f, pas, A.facts, A.par.bufs⟩
+    buffers, where the parameters stand in the relations the record knows. -/
+def oblOf (A : AS) (f : Ffi) (pas : List PArg) : Obl := ⟨.ffi f, pas, A.facts, A.par.bufs, A.par.allocs, A.par.conds⟩
+
+/-- The obligation a vendor call handed `pas` leaves: that its arguments'
+    values are ones it accepts, given the allocations the parameters size and
+    the relations they stand in. -/
+def eOblOf (A : AS) (e : Ext) (pas : List PArg) : Obl := ⟨.ext e, pas, A.facts, [], A.par.allocs, A.par.conds⟩
+
+/-- The allocation a call makes of a size the parameters give: `cuMemAlloc`
+    handed a number the record computes makes allocation `k`, `k` the count
+    of them before it. -/
+def sizedAlloc (A : AS) (e : Ext) (args : List R) : List (Nat × PExpr) :=
+  match e, args with
+  | .cuda .memAlloc, [_, sz] =>
+      match nbufsOf A.facts, A.par.slotOf sz with
+      | some k, some (.i64, x) => [(k, x)]
+      | _, _ => []
+  | _, _ => []
+
+/-- The state after a vendor call handed `args` its row leaves `S` of: of
+    what the record says of the world, the allocations it sizes and the one
+    the call makes of a size they give, where the call keeps every allocation
+    and kernels keep the sizes of the buffers they write; and the cells it
+    names, where the call writes no host memory and leaves memory unfrozen. -/
+def AS.afterVendor (A0 : AS) (e : Ext) (args : List R) (S : TState) : AS :=
+  let A := A0.forgetKinds e.kills
+  if e.keepsAllocs && A.facts.contains .oracles then
+    let keep := writesNone e && S.contains (.part .frozen false)
+    (A.withFacts S).withPar { A.par.clearWorld with
+      allocs := sizedAlloc A e args ++ A.par.allocs,
+      cells := if keep then A.par.cells.filter (cellOk ·.1) else [],
+      ctxs := if keep then A.par.ctxs.filter (cellOk ·.2) else [] }
+  else A.withFacts S
 
 /-- How a foreign call's precondition is shown, and the record after: decided
     by the facts; or an obligation on the parameters the record holds, or, in
@@ -444,22 +508,19 @@ def AS.ffiCall (A : AS) (f : Ffi) (args : List R) : Except String AS :=
     | none => .error s!"call {f.cname}: precondition not decided (args {repr as})"
   else .error s!"call {f.cname}: precondition not decided (args {repr as})"
 
-/-- What a foreign call answers: the index `devAnswer` gives, or any number of
-    its result type. -/
-def ffiAnswer (S : TState) (f : Ffi) (as : List AV) : AV :=
-  match devAnswer f as S with
-  | some n => .known (ofInt .i32 n)
-  | none => .sc (f.result.getD .i64)
+/-- What a foreign call answers: any number of its result type. -/
+def ffiAnswer (S : TState) (f : Ffi) (as : List AV) : AV := .sc (f.result.getD .i64)
 
 /-- What a library call answers: for `calloc` asked for a known number of
     bytes, null or a heap block of that many; for whether a library is there,
-    a flag; for an engine function, a number of the type it returns; for
-    another open, null or a handle held; any value otherwise. -/
+    a flag; for an engine or window function, a number of the type it
+    returns; for an open, null or a handle held; any value otherwise. -/
 def extAnswer (e : Ext) (as : List AV) : AV :=
   match e, as.mapM AV.bits with
   | .c .calloc, some [n, sz] => .blk (n.toNat * sz.toNat) false
   | .present _, _ => .sc .i32
   | .base f, _ => .sc ((Ext.base f).sig.2.getD .i64)
+  | .window f, _ => if f = .open then .hand .window false else .sc ((Ext.window f).sig.2.getD .i64)
   | _, _ =>
       match e.opens with
       | some k => .hand k false
@@ -564,6 +625,45 @@ def AS.libCall (A : AS) (f : Ffi) (args : List R) : Except String (AS × AV) :=
     | none => .error s!"call {f.cname}: precondition not decided (args {repr (args.map A.get)})"
   else .error s!"call {f.cname}: a worker may be running, or a copy in flight"
 
+/-- What the state knows of a value, as a record's place: its bits, or the
+    numbers they lie between where those say more than its type does. -/
+def AV.pat (a : AV) : ArgPat :=
+  match a.bits with
+  | some b => .is b
+  | none => match a.num with
+    | some n => if n.lo = 0 ∧ 2 ^ n.t.width - 1 ≤ n.hi then .any else .within n.lo n.hi
+    | none => .any
+
+/-- What the state knows of the eight bytes at `q`: a cell it names, or a cell
+    a slot is known to hold the value of. -/
+def cellPat (A : AS) (q : UInt64) : ArgPat :=
+  match cellOf A.facts q with
+  | some v => .is v
+  | none => match A.par.ctxs.find? (·.2 == q) with
+    | some (r, _) => (A.get r).pat
+    | none => .any
+
+/-- The parameter values a kernel launch reads, as the state records them:
+    one per parameter of the function it names, each what the state knows of
+    the eight bytes the pointer to it points at, where it knows that pointer,
+    and none at all where the state does not name the function or show every
+    parameter readable. A call that is not a launch reads none. -/
+def wordsOf (A : AS) : Callee → List R → Option (List ArgPat)
+  | .ext (.cuda .launchKernel), [hf, _, _, _, _, _, _, _, _, pr, _] =>
+      match (A.get hf).bits.bind (handleOf kFunc), (A.get pr).bits with
+      | some fi, some P =>
+          match fnOf A.facts fi with
+          | some sizes =>
+              if argsReadable A.facts P sizes then
+                some (sizes.zipIdx.map fun (sz, i) =>
+                  match cellOf A.facts (P + UInt64.ofNat (8 * i)) with
+                  | some q => if sz == 8 then cellPat A q else .any
+                  | none => .any)
+              else none
+          | none => none
+      | _, _ => none
+  | _, _ => some []
+
 /-- **The call rule.** The state after a call the checker accepts, its answer
     not yet appended, and what it answers: an entry point of the engine by
     `AS.ffiCall`; one a library implements by `AS.libCall`, where `lb` says
@@ -581,7 +681,24 @@ def AS.callee (A : AS) (lb : Bool) (c : Callee) (args : List R) : Except String 
       | .error e => .error e
   | .ext e =>
       let as := args.map A.get
-      if e.aside && as.all (·.scTy.isSome) && preExt A.facts (relRb A args) e as then
+      if e.vendor then
+        if A.facts.contains (.part .frozen false) && A.facts.contains (.part .idle true) &&
+            as.all (·.scTy.isSome) then
+          match vendorRow A.facts e as with
+          | some (S, av) =>
+              if vendorVal A.facts e (as.map (·.bits)) || vendorValR A.facts e (as.map AV.rng) then
+                .ok (A.afterVendor e args S, av)
+              else match args.mapM (parArg A) with
+                | some pas =>
+                    if A.par.obls.contains (eOblOf A e pas) then .ok (A.afterVendor e args S, av)
+                    else if A.par.collect then
+                      .ok ((A.afterVendor e args S).withPar
+                        { (A.afterVendor e args S).par with obls := A.par.obls ++ [eOblOf A e pas] }, av)
+                    else .error s!"call {repr e}: what it needs of its arguments' values not decided (args {repr as})"
+                | none => .error s!"call {repr e}: what it needs of its arguments' values not decided (args {repr as})"
+          | none => .error s!"call {repr e}: precondition not decided (args {repr as})"
+        else .error s!"call {repr e}: a worker may be running, or a copy in flight"
+      else if e.aside && as.all (·.scTy.isSome) && preExt A.facts (relRb A args) e as then
         .ok ((A.forgetExt e).withFacts (A.facts.filter (extKeepsA e as)), extAnswer e as)
       else .error s!"call {repr e}: precondition not decided (args {repr as})"
   | c => .error s!"call of {repr c} not handled"
@@ -651,14 +768,15 @@ def absStmtsH (fo lb : Bool) (hist : List (Nat × Stmt)) (A : AS) : List Stmt �
       | .ok A' => absStmtsH fo lb (((A.len, s) :: hist).take 8) A' ss
       | .error e => .error (e ++ "\n  at: " ++ stmtStr A.len s ++ "\n  after: " ++
           toString (hist.reverse.map fun (n, s) => stmtStr n s) ++ "\n  slots:\n" ++
-          slotsStr A (stmtRegs s ++ (hist.map fun (_, s) => stmtRegs s).flatten))
+          slotsStr A (stmtRegs s ++ (hist.map fun (_, s) => stmtRegs s).flatten) ++
+          "\n  facts but cells:\n    " ++ toString ((A.facts.filter (!·.isCell)).map fun x => repr x))
 
 def absStmts (fo lb : Bool) (A : AS) (ss : List Stmt) : Except String AS := absStmtsH fo lb [] A ss
 
 /-- The call a statement makes, as the state it runs from records it: each
     argument's bits where the state knows them. -/
 def recOf (A : AS) : Stmt → List CallRec
-  | .call c args | .callVoid c args => [⟨c, args.map fun r => (A.get r).bits⟩]
+  | .call c args | .callVoid c args => [⟨c, args.map (fun r => (A.get r).pat) ++ ((wordsOf A c args).getD [])⟩]
   | _ => []
 
 /-- The calls a straight run makes, in order, each recorded from the state its
@@ -738,6 +856,9 @@ structure Carry where
   /-- Slots from before the loop that hold, all the way round, what a cell of
       memory holds: `(r, a)`, slot `r` and the cell at `a`. -/
   ctxs : List (R × UInt64) := []
+  /-- Slots from before the loop that hold, all the way round, a live handle:
+      `(r, k)`, slot `r` and the handle's kind. -/
+  hands : List (R × Contracts.Held) := []
 
 /-- Equality of slot trees, by an equality of what they hold. -/
 def Slots.beqBy {α : Type} (f : α → α → Bool) : Slots α → Slots α → Bool
@@ -788,15 +909,34 @@ structure AOut where
 
 def AOut.none : AOut := ⟨Option.none, [], [], {}, .never, Option.none⟩
 
+/-- Whether slot `r` is described as a live handle of kind `k`. -/
+def AS.holdsAt (A : AS) (r : R) (k : Contracts.Held) : Bool :=
+  match A.get r with
+  | .hand k' true => decide (k' = k)
+  | _ => false
+
+/-- The slots described as live handles, with their kinds. -/
+def AS.handsHeld (A : AS) : List (R × Contracts.Held) :=
+  (List.range A.len).filterMap fun r =>
+    match A.get r with
+    | .hand k true => some (r, k)
+    | _ => none
+
+/-- The state describing each slot of `hs` as a live handle of its kind. -/
+def AS.withHands (A : AS) (hs : List (R × Contracts.Held)) : AS :=
+  hs.foldl (fun A h => A.setAV h.1 (.hand h.2 true)) A
+
 def Carry.join (a b : Carry) : Carry :=
   ⟨List.zipWith AV.join a.vals b.vals, factsMeet a.facts b.facts, List.zipWith Sym.join a.syms b.syms,
     a.inits, if a.inits = b.inits then List.zipWith (fun x y => if x = y then x else none) a.ivs b.ivs else [],
-    a.steps, a.ctxs.filter b.ctxs.contains⟩
+    a.steps, a.ctxs.filter b.ctxs.contains, a.hands.filter b.hands.contains⟩
 
 def Carry.beq (a b : Carry) : Bool :=
   a.vals.length == b.vals.length && (List.zipWith AV.beq a.vals b.vals).all id &&
-    a.facts.all (b.facts.contains ·) && b.facts.all (a.facts.contains ·) && decide (a.syms = b.syms) &&
-    decide (a.inits = b.inits) && decide (a.ivs = b.ivs) && decide (a.ctxs = b.ctxs)
+    (decide (a.facts = b.facts) || a.facts.all (b.facts.contains ·) && b.facts.all (a.facts.contains ·)) &&
+    decide (a.syms = b.syms) &&
+    decide (a.inits = b.inits) && decide (a.ivs = b.ivs) && decide (a.ctxs = b.ctxs) &&
+    decide (a.hands = b.hands)
 
 /-- A description still changing, widened: a range growing first to the
     largest number its type reads as not negative, then to its type's, and a
@@ -814,7 +954,7 @@ def AV.widen (old new : AV) : AV :=
   | _, n => n
 
 def Carry.widen (old new : Carry) : Carry :=
-  ⟨List.zipWith AV.widen old.vals new.vals, new.facts, new.syms, new.inits, new.ivs, new.steps, new.ctxs⟩
+  ⟨List.zipWith AV.widen old.vals new.vals, new.facts, new.syms, new.inits, new.ivs, new.steps, new.ctxs, new.hands⟩
 
 def depthDown (xs : List (Nat × AS × List R)) : List (Nat × AS × List R) :=
   xs.filterMap fun (d, A, args) => match d with | 0 => none | d + 1 => some (d, A, args)
@@ -871,7 +1011,7 @@ def ivKeep (A : AS) (n0 : Nat) (c : Carry) (args : List R) : List (Option (Nat �
     from `c`. -/
 def backCarry (A : AS) (Y : List R) (c : Carry) (n0 : Nat) (args : List R) : Carry :=
   ⟨(args.map A.get).map AV.portable, A.facts, args.map (closeSym A Y), c.inits, ivKeep A n0 c args,
-    stepsOf A n0 args, A.par.ctxs.filter (·.1 < n0)⟩
+    stepsOf A n0 args, A.par.ctxs.filter (·.1 < n0), c.hands.filter fun h => decide (h.1 < n0) && A.holdsAt h.1 h.2⟩
 
 /-- What a value leaving a loop is exactly, in the slots from before it. -/
 def closeDfn (A : AS) (n0 : Nat) (a : R) : Option Lin :=
@@ -1206,11 +1346,11 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
       let ab := slotsOf (preEnd + k) body
       let Y := loopCands n0 (pre ++ body)
       let tripOf := fun (ct : Cert) (c : Carry) =>
-        match execC ct (0 :: path) 0 (((A.forgetHands.withFacts c.facts).withCtxs c.ctxs).bindAt n0 c.vals (c.headSyms n0)) pre with
+        match execC ct (0 :: path) 0 ((((A.forgetHands.withFacts c.facts).withCtxs c.ctxs).withHands c.hands).bindAt n0 c.vals (c.headSyms n0)) pre with
         | .error e => .error e
         | .ok op => loopTrip l n0 k preEnd ab Y c op fun Ab => execC ct (1 :: path) 0 Ab body
       let c0 : Carry := ⟨((l.init.map A.get).map AV.portable).map (AV.enrich A.facts), A.facts,
-        l.init.map (closeSym A Y), l.init, certIvs cert path, [], A.par.ctxs.filter (·.1 < n0)⟩
+        l.init.map (closeSym A Y), l.init, certIvs cert path, [], A.par.ctxs.filter (·.1 < n0), A.handsHeld⟩
       if l.init.length = k then
         match runLoopIv cert path (tripOf cert) (tripOf { cert with fo := true, guess := true }) c0 with
         | .error e => .error e
@@ -1226,11 +1366,11 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
         | none => .ok ⟨dSkip A l ab Y, [], [], {}, .lit [], Option.none⟩
         | some Ae =>
             let tripOf := fun (ct : Cert) (c : Carry) =>
-              match execC ct (0 :: path) 0 (((Ae.forgetHands.withFacts c.facts).withCtxs c.ctxs).bindAt n0 c.vals (c.headSyms n0)) body with
+              match execC ct (0 :: path) 0 ((((Ae.forgetHands.withFacts c.facts).withCtxs c.ctxs).withHands c.hands).bindAt n0 c.vals (c.headSyms n0)) body with
               | .error e => .error e
               | .ok ob => .ok (dloopTrip l n0 ab Y c ob)
             match runLoopIv cert path (tripOf cert) (tripOf { cert with fo := true, guess := true }) ⟨((l.init.map Ae.get).map AV.portable).map (AV.enrich Ae.facts), Ae.facts,
-                l.init.map (closeSym Ae Y), l.init, certIvs cert path, [], Ae.par.ctxs.filter (·.1 < n0)⟩ with
+                l.init.map (closeSym Ae Y), l.init, certIvs cert path, [], Ae.par.ctxs.filter (·.1 < n0), Ae.handsHeld⟩ with
             | .error e => .error e
             | .ok o =>
                 match joinOpt o.ok (dSkip A l ab Y) with

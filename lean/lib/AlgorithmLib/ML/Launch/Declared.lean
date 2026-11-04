@@ -15,10 +15,10 @@ namespace AlgorithmLib.ML
 -- ---------------------------------------------------------------------------
 
 /-!
-  A pipeline of `StageSpec`s can only describe what has been proven.  The
-  shipped inference model is not like that and is not going to be: about 99.9%
-  of Qwen2's arithmetic goes through `cl_cublas_sgemv`, whose fold order NVIDIA
-  does not specify, so there is no exact-`Float32` statement to make about it.
+  A pipeline of `StageSpec`s can only describe what has been proven.  A model
+  whose matmuls go through `cublasSgemv` is not like that and is not going
+  to be: NVIDIA does not specify its fold order, so there is no
+  exact-`Float32` statement to make about it.
 
   Refusing to model it would be dishonest in the other direction — the composite
   would then describe a program nobody runs.  What follows lets a declared step
@@ -48,7 +48,7 @@ structure DeclaredStep where
   step  : (Buf → Nat → Float32) → Buf → Nat → Float32
   frame : ∀ (m : Buf → Nat → Float32) (b : Buf), b ∉ outs → step m b = m b
 
-/-- The primitive's symbol, e.g. `cl_cublas_sgemv`. -/
+/-- The primitive's symbol, e.g. `cublasSgemv`. -/
 def DeclaredStep.name (d : DeclaredStep) : String := d.kernel.symbol
 
 /-- Why it is not proven — derived from the kernel, so it reaches any report
@@ -176,7 +176,7 @@ def Plan.run (R : Realisation) (P : Plan) (st : WSt) : WSt :=
 /-- **The single assumption the declared steps carry.**
 
     One named hypothesis for the whole plan, discharged per primitive by its FFI
-    contract.  For `cl_cublas_sgemv` that contract is `Law.cublasIsMatvec`,
+    contract.  For `cublasSgemv` that contract is `Law.cublasIsMatvec`,
     stated at ℝ because its `Float32` fold order is unspecified. -/
 def Honours (R : Realisation) : Prop := ∀ d st, (R d st).mem = d.step st.mem
 

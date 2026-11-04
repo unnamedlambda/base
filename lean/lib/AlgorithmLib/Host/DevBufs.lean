@@ -153,6 +153,57 @@ theorem devOp_bufs {i : Int} {n : Nat} {d d' : Dev} {w : World} {p : Nat} {op : 
     · exact run_ok h
   · exact run_ok h
 
+/-- What a device operation leaves alone: the graphs and instantiated
+    graphs. -/
+def KeepsGraphs (d d' : Dev) : Prop := d'.graphs = d.graphs ∧ d'.execs = d.execs
+
+theorem foldl_keepsGraphs {α : Type} (f : Dev → α → Dev) (hf : ∀ d x, KeepsGraphs d (f d x)) :
+    ∀ (l : List α) (d : Dev), KeepsGraphs d (l.foldl f d)
+  | [], _ => ⟨rfl, rfl⟩
+  | x :: l, d =>
+      have ⟨a, b⟩ := foldl_keepsGraphs f hf l (f d x)
+      have ⟨c, e⟩ := hf d x
+      ⟨a.trans c, b.trans e⟩
+
+theorem runLaunch_keepsGraphs {d d' : Dev} {k : Launch → List ByteArray → List ByteArray} {l : Launch}
+    {ids : List Nat} (h : d.runLaunch k l ids = some d') : KeepsGraphs d d' := by
+  unfold Dev.runLaunch at h
+  obtain ⟨ins, -, h⟩ := Option.bind_eq_some_iff.mp h
+  dsimp only at h
+  split at h
+  · cases h
+  simp only [Option.some.injEq] at h
+  subst h
+  exact foldl_keepsGraphs (fun d (x : Nat × ByteArray) => d.put x.1 (some x.2)) (fun _ _ => ⟨rfl, rfl⟩) _ _
+
+theorem devOp_keepsGraphs {d d' : Dev} {w : World} {p : Nat} {op : DevOp} {rs ws : List Nat}
+    (h : d.devOp w p op rs ws = some d') : KeepsGraphs d d' := by
+  unfold Dev.devOp at h
+  have run_ok : ∀ {d'}, Dev.devOp.run d w p op rs ws = some d' → KeepsGraphs d d' := by
+    intro d' h
+    unfold Dev.devOp.run at h
+    obtain ⟨r, -, h⟩ := Option.bind_eq_some_iff.mp h
+    split at h
+    · have hk := runLaunch_keepsGraphs h
+      exact hk
+    · unfold Dev.runVendor at h
+      obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+      obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+      dsimp only at h
+      split at h
+      · cases h
+      simp only [Option.some.injEq] at h
+      subst h
+      exact ⟨rfl, rfl⟩
+  split at h
+  · split at h
+    · obtain ⟨r, -, h⟩ := Option.bind_eq_some_iff.mp h
+      simp only [Option.some.injEq] at h
+      subst h
+      exact ⟨rfl, rfl⟩
+    · exact run_ok h
+  · exact run_ok h
+
 theorem devOnly_bufs {i : Int} {n : Nat} {w : World} {k : Option (Option V × Dev)} {r : Option V} {w' : World}
     (h : devOnly w k = some (r, w')) (hk : ∀ r d, k = some (r, d) → BufIs i n d) : BufIs i n w'.dev := by
   unfold devOnly at h
@@ -184,17 +235,6 @@ theorem overwrite_size {b src : ByteArray} {off : Nat} (h : off + src.size ≤ b
   simp only [overwrite, ByteArray.size_append, ByteArray.size_extract]
   omega
 
-theorem cudaLaunchOn_bufs {i₀ : Int} {n₀ : Nat} {w : World} {kernel entry : String} {nBufs bindPtr : UInt64}
-    {dims : List UInt64} {r : Option V} {d : Dev}
-    (hk : cudaLaunchOn w defaultParty kernel entry nBufs bindPtr dims = some (r, d)) (ht : BufIs i₀ n₀ w.dev) :
-    BufIs i₀ n₀ d := by
-  unfold cudaLaunchOn at hk
-  obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-  split at hk
-  · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · obtain ⟨d', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-    simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_bufs hop ht
-
 theorem sgemvOn_bufs {i₀ : Int} {n₀ : Nat} {w : World} {trans m n alpha a x beta y : UInt64} {r : Option V}
     {d : Dev} (hk : sgemvOn w defaultParty trans m n alpha a x beta y = some (r, d)) (ht : BufIs i₀ n₀ w.dev) :
     BufIs i₀ n₀ d := by
@@ -220,61 +260,6 @@ theorem sgemmOn_bufs {i₀ : Int} {n₀ : Nat} {w : World}
       simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_bufs hop ht
   · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
 
-theorem bufs_cudaUpload {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaUpload bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaUpload at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · split at hk
-          · simp only [devFail, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-          · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-            obtain ⟨d', hsw, hk⟩ := Option.bind_eq_some_iff.mp hk
-            simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-            rename_i hc _ _ _ _ b hget hfit bytes hbytes _ _
-            simp only [Bool.or_eq_true, decide_eq_true_eq, not_or] at hc
-            have hid := Int.toNat_of_nonneg (Int.not_lt.mp hc.1.1)
-            have hbs := AlgorithmLib.HProg.Sem.copyOut_size hbytes
-            have hb := hfit
-            simp only [bne_iff_ne, ne_eq, Decidable.not_not] at hb
-            exact syncWrite_bufs hsw (fun x hx => by rw [hid, hget] at hx; cases hx; omega)
-              (by rw [hid, hget]; rfl) ht
-  · cases hk
-
-theorem bufs_cudaUploadOffset {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaUploadOffset bits w = some (r, w')) (ht : BufIs i₀ n₀ w.dev) : BufIs i₀ n₀ w'.dev := by
-  unfold ffiCudaUploadOffset at h
-  refine devOnly_bufs h ?_
-  intro r d hk
-  split at hk
-  · split at hk
-    · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-    · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-      split at hk
-      · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-      · split at hk
-        · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-        · split at hk
-          · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-          · obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-            obtain ⟨d', hsw, hk⟩ := Option.bind_eq_some_iff.mp hk
-            simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk
-            rename_i hc _ _ _ _ b hget hfit bytes hbytes _ _
-            simp only [Bool.or_eq_true, decide_eq_true_eq, not_or] at hc
-            have hid := Int.toNat_of_nonneg (Int.not_lt.mp hc.1.1.1)
-            have hbs := AlgorithmLib.HProg.Sem.copyOut_size hbytes
-            exact syncWrite_bufs hsw (fun x hx => by
-                rw [hid, hget] at hx; cases hx; rw [overwrite_size (by omega)])
-              (by rw [hid, hget]; rfl) ht
-  · cases hk
-
 theorem memInfoOf_bufs {i₀ : Int} {n₀ : Nat} {w : World} {ctx : UInt64} {pick : UInt64 × UInt64 → UInt64}
     {r : Option V} {d : Dev} (hk : memInfoOf w ctx pick = some (r, d)) (ht : BufIs i₀ n₀ w.dev) :
     BufIs i₀ n₀ d := by
@@ -289,31 +274,10 @@ macro "bufs_close" : tactic => `(tactic| (
     | refine devOp_bufs (by assumption) ?_
     | refine syncRead_bufs (by assumption) ?_
     | refine memInfoOf_bufs (by assumption) ?_
-    | refine cudaLaunchOn_bufs (by assumption) ?_
     | refine sgemvOn_bufs (by assumption) ?_
     | refine sgemmOn_bufs (by assumption) ?_
     | refine BufIs.put_none ?_ _
     | refine BufIs.push ?_ _
     | refine BufIs.joinInto ?_ _ _)))
-
-/-- The calls that keep every buffer made at its size: all that issue work on
-    the default stream, and those that make, wait on and drop streams,
-    page-locked memory and graphs. -/
-def bufKeepers : List IR.Ffi :=
-  [.cudaCreateBuffer, .cudaUpload, .cudaUploadOffset, .cudaDownload, .cudaDownloadOffset, .cudaFreeBuffer, .cudaSync, .cudaLaunch, .cudaLaunchNamed, .cublasSgemv, .cublasSgemm, .cublasGemmExBf16, .cublasGemmStridedBatchedExBf16, .cudaPinnedAlloc, .cudaPinnedFree, .cudaPinnedPtr, .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cudaStreamCreate, .cudaStreamSync, .cudaStreamDestroy, .cudaEventElapsedMsBits, .cudaGraphDestroy, .cudaGraphUpload]
-
-set_option maxHeartbeats 4000000 in
-/-- **A call that keeps buffers keeps each one's size.** -/
-theorem callBits_bufs (f : IR.Ffi) (hf : f ∈ bufKeepers) {i₀ : Int} {n₀ : Nat} {bits : List UInt64} {w : World}
-    {r : Option V} {w' : World} (h : callBits f bits w = some (r, w')) (hd : BufIs i₀ n₀ w.dev) :
-    BufIs i₀ n₀ w'.dev := by
-  cases f <;> first
-    | exact absurd hf (by decide)
-    | exact bufs_cudaUpload h hd
-    | exact bufs_cudaUploadOffset h hd
-    | (dsimp only [callBits] at h; unfold_head h
-       first
-         | (refine devOnly_bufs h ?_; intro r d hk; dev_walk hk <;> bufs_close)
-         | (dev_walk h <;> bufs_close))
 
 end AlgorithmLib.Device

@@ -3,6 +3,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Wg
+meta import AlgorithmLib.Surface.Wg
 public import AlgorithmLib.Vocab.WGSL
 meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
@@ -118,8 +120,7 @@ def mandelbrotShader : String :=
 -- ---------------------------------------------------------------------------
 
 structure Fields where
-  reserved   : Fld (.bytes 64)
-  bindDesc   : Fld (.bytes 8)
+  wg         : Fld (.bytes 512)
   shader     : Fld (.bytes 8192)
   filename   : Fld (.bytes 256)
   flag       : Fld (.bytes 64)
@@ -128,17 +129,14 @@ structure Fields where
   pixels     : Fld (.bytes pixelBytes)
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
-  let reserved  ← field (.bytes 64)       -- [0x00, 0x40)  GPU ctx ptr
-  skip 192                                 -- pad to 0x100
-  let bindDesc  ← field (.bytes 8)        -- [buf_id=0 (i32), read_only=0 (i32)]
-  skip 248                                 -- pad to 0x200
-  let shader    ← field (.bytes 8192)     -- WGSL shader (null-terminated)
+  let wg        ← field (.bytes 512)      -- [0x000, 0x200)  wgpu's state (`app`)
+  let shader    ← field (.bytes 8192)     -- WGSL shader
   let filename  ← field (.bytes 256)      -- output filename
   let flag      ← field (.bytes 64)       -- sync flag
   let clifIr    ← field (.bytes 4096)     -- CLIF IR region
   let bmpHeader ← field (.bytes 54)       -- BMP file header
   let pixels    ← field (.bytes pixelBytes)
-  pure { reserved, bindDesc, shader, filename, flag, clifIr, bmpHeader, pixels }
+  pure { wg, shader, filename, flag, clifIr, bmpHeader, pixels }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
@@ -153,21 +151,19 @@ def wgY : Nat := imageHeight / 16   -- 256
 open AlgorithmLib.Prog
 
 
+/-- The image's one buffer and the one pipeline that fills it, called through
+    wgpu directly. -/
+def app : Wg.App :=
+  { bufs := [pixelBytes],
+    pipes := [{ shaderOff := f.shader.offset, shaderLen := utf8Len% mandelbrotShader, binds := [(0, false)] }],
+    memSize := layoutMeta.totalSize, org := f.wg.offset }
+
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  gpuInit ptr
-  let dataSz ← iconst64 pixelBytes
-  let bufId  ← gpuCreateBuffer ptr dataSz
-  let shOff  ← fldOffset f.shader
-  let bdOff  ← fldOffset f.bindDesc
-  let one32  ← iconst32 1
-  let pipeId ← gpuCreatePipeline ptr shOff bdOff one32
-  let wgx    ← iconst32 wgX
-  let wgy    ← iconst32 wgY
-  let _      ← gpuDispatch ptr pipeId wgx wgy one32
-  let pxOff  ← fldOffset f.pixels
-  let _      ← gpuDownload ptr bufId pxOff dataSz
-  gpuCleanup ptr
+  app.setup ptr
+  app.dispatch ptr 0 (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+  app.download ptr 0 (← iaddImm ptr f.pixels.offset) (← iconst64 pixelBytes)
+  app.cleanup ptr
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← fldWriteFile0 ptr f.filename f.bmpHeader total
 
@@ -180,7 +176,7 @@ def clifIrSource : Except String (List FuncData) :=
 
 def payloads : List UInt8 :=
   mkPayload (f.bmpHeader.offset + 54) [
-    f.bindDesc.init (uint32ToBytes 0 ++ uint32ToBytes 0),
+    f.wg.init (List.replicate 0x20 0 ++ "main".toUTF8.toList),
     f.shader.init (stringToBytes mandelbrotShader),
     f.filename.init (stringToBytes "mandelbrot.bmp"),
     f.bmpHeader.init bmpHeader

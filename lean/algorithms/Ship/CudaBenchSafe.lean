@@ -1,7 +1,8 @@
 import AlgorithmLib.Check.Entry
+import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Check.Seq
 import AlgorithmLib.Proof.Calls
-import Host.StaticChecks
+import AlgorithmLib.Check.Entry
 import Bench.CudaSoftmaxPersist
 import Bench.CudaGemvPersist
 import Bench.CudaRmsNormPersist
@@ -10,20 +11,15 @@ import Bench.CudaDecodeAttention
 /-!
 # The CUDA benchmarks neither misuse a call nor fault
 
-Each entry point of each persistent CUDA benchmark, proven by the condition
-generator for any lengths of data and output the caller hands over. The sizes
-these programs work with are read from their input, so the proofs follow them
-as terms: `roomArg` says the data and output regions hold the lengths the
-caller passed, and each branch that compares a size to them carries what it
-found into the arm it takes. `main` starts from memory alone; the others start
-from what `main` leaves: a live context whose cell holds it, every device
-access the default stream's, and each kernel's text in the arena.
-
-The cuBLAS entries, gemv's `infer` and decode-attention's `core`, start
-from what `main` leaves when it makes its buffers: the dimensions it recorded,
-within the bounds it checks before making any, each buffer's id where it
-stored it, and each buffer's size (`devBuf`), which every later call keeps.
-Each product then fits its buffers.
+Each entry point of each persistent CUDA benchmark, proven by the checker for
+any lengths of data and output the caller hands over. Each calls the CUDA
+driver (and cuBLAS) directly, in `Drv.App`'s layout: `main` starts from them
+loaded and untouched (`loadTS`), the others from what `main` leaves for the
+sizes it read (`runTSWith`). Where a call's sizes are known only at those
+values, what it needs of them is shown here, given the size checks the
+program makes before the call. Softmax's and decode attention's `core` and
+`finalize` are proven as triples, so the `infer` and `stack` wrappers that
+call them are proven through those.
 
 Not faulting means every load and store finds the bytes it reaches,
 and every operation answers.
@@ -36,203 +32,319 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace CudaBenchSafe
 
--- CudaSoftmaxPersist
+-- CudaSoftmaxPersist: `main` from the driver loaded and untouched; the others
+-- from what it leaves for `n` and its `nb` blocks
 
 abbrev CudaSoftmaxPersistLoad (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena CudaSoftmaxPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol, .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.PTX_SOURCE_OFF) (CudaSoftmaxPersist.BIND_K1_OFF - CudaSoftmaxPersist.PTX_SOURCE_OFF), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_BLOCK_REDUCE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_GLOBAL_REDUCE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_NORMALIZE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_SMALL_SOFTMAX) (16)]
+  (CudaSoftmaxPersist.app.loadTS ++ [.oracles, .roomArg .data dl, .roomArg .out ol])
 
-abbrev CudaSoftmaxPersistRun (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena CudaSoftmaxPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
-   .cell (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.CTX_OFF) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.PTX_SOURCE_OFF) (CudaSoftmaxPersist.BIND_K1_OFF - CudaSoftmaxPersist.PTX_SOURCE_OFF), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_BLOCK_REDUCE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_GLOBAL_REDUCE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_NORMALIZE) (16), .cstrIn (regionBase .arena + UInt64.ofNat CudaSoftmaxPersist.NAME_SMALL_SOFTMAX) (16)]
+abbrev CudaSoftmaxPersistRun (dl ol n nb : UInt64) : World → Prop := Contracts.TState.holds
+  (CudaSoftmaxPersist.app.runTSWith [(n * 4).toNat, (n * 4).toNat, 8, (nb * 8).toNat, 8] ++
+    [.cell (Drv.App.at_ CudaSoftmaxPersist.N_OFF) n, .cell (Drv.App.at_ CudaSoftmaxPersist.NB_OFF) nb,
+     .roomArg .data dl, .roomArg .out ol])
 
 ship_entry CudaSoftmaxPersist_load : CudaSoftmaxPersist.loadCode under CudaSoftmaxPersistLoad dataLen outLen
 
-ship_entry CudaSoftmaxPersist_prep : CudaSoftmaxPersist.prepCode under CudaSoftmaxPersistRun dataLen outLen
-
-theorem CudaSoftmaxPersist_core_fine : Fine (emitGo (fnBody ptrParams (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+theorem CudaSoftmaxPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen n nb : UInt64) (w : World)
+    (h : CudaSoftmaxPersistRun dataLen outLen n nb w) (msg : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
+  check_body
+  -- `x`'s bytes, no more than `4 n`, are its allocation's
+  have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+  intro hc
+  simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+  simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+    Check.PExpr.eval, Check.PArg.bits, hp, hc]
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem CudaSoftmaxPersist_core_triple (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w) :
+theorem CudaSoftmaxPersist_core_triple (cfg : Cfg) (dataLen outLen n nb : UInt64) (w : World)
+    (h : CudaSoftmaxPersistRun dataLen outLen n nb w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit))
-      { ok := fun _ w' => CudaSoftmaxPersistRun dataLen outLen w', faultOk := false } := by
+      { ok := fun _ w' => CudaSoftmaxPersistRun dataLen outLen n nb w', faultOk := false } := by
   check_reach
+  -- the long row's two launches `nb` blocks wide: no dimension empty
+  all_goals
+    intro hc
+    simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+    have hw : nb &&& 4294967295 = nb := by
+      apply UInt64.toNat_inj.mp
+      simp only [UInt64.toNat_and]
+      rw [show (4294967295 : UInt64).toNat = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
+      omega
+    simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.dimOk, Check.PExpr.eval, Check.PArg.bits, hw]
+    intro x hx
+    match x, hx with
+    | 0, _ =>
+        have h0 : nb ≠ 0 := fun e => hc.2.2 (by simp [e])
+        simpa [hw] using h0
+    | 1, _ | 2, _ | 3, _ | 4, _ | 5, _ => rfl
 
-theorem CudaSoftmaxPersist_core_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
+theorem CudaSoftmaxPersist_core_no_misuse (cfg : Cfg) (dataLen outLen n nb : UInt64) (w : World)
+    (h : CudaSoftmaxPersistRun dataLen outLen n nb w) (m : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.coreCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  Hoare.run_sound (CudaSoftmaxPersist_core_triple cfg dataLen outLen w h) rfl m
-
-theorem CudaSoftmaxPersist_finalize_fine : Fine (emitGo (fnBody ptrParams (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+  Hoare.run_sound (CudaSoftmaxPersist_core_triple cfg dataLen outLen n nb w h) rfl m
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem CudaSoftmaxPersist_finalize_triple (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w) :
+theorem CudaSoftmaxPersist_finalize_triple (cfg : Cfg) (dataLen outLen n nb : UInt64) (w : World)
+    (h : CudaSoftmaxPersistRun dataLen outLen n nb w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit))
       { ok := fun _ w' => Contracts.TState.holds [] w', faultOk := false } := by
   check_reach
+  -- no more than `y`'s bytes
+  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  intro hc
+  simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+  simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+    Check.PExpr.eval, Check.PArg.bits, hp, hc]
 
-theorem CudaSoftmaxPersist_finalize_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaSoftmaxPersistRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
+theorem CudaSoftmaxPersist_finalize_no_misuse (cfg : Cfg) (dataLen outLen n nb : UInt64) (w : World)
+    (h : CudaSoftmaxPersistRun dataLen outLen n nb w) (m : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaSoftmaxPersist.finalizeCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  Hoare.run_sound (CudaSoftmaxPersist_finalize_triple cfg dataLen outLen w h) rfl m
+  Hoare.run_sound (CudaSoftmaxPersist_finalize_triple cfg dataLen outLen n nb w h) rfl m
 
--- CudaGemvPersist
+-- CudaGemvPersist: `main` from the driver and cuBLAS loaded and untouched;
+-- `prep` and `infer` from what it leaves for `m` and `n`
 
 abbrev CudaGemvPersistLoad (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena CudaGemvPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol]
+  (CudaGemvPersist.app.loadTS ++ [.oracles, .roomArg .data dl, .roomArg .out ol])
 
-abbrev CudaGemvPersistRun (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena CudaGemvPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
-   .cell (regionBase .arena + UInt64.ofNat CudaGemvPersist.CTX_OFF) cudaCtx]
-
-theorem CudaGemvPersist_load_fine : Fine (emitGo (fnBody ptrParams (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+abbrev CudaGemvPersistRun (dl ol m n : UInt64) : World → Prop := Contracts.TState.holds
+  (CudaGemvPersist.app.runTSWith [(m * n * 4).toNat, (n * 4).toNat, (m * 4).toNat] ++
+    [.cell (Drv.App.at_ CudaGemvPersist.M_OFF) m, .cell (Drv.App.at_ CudaGemvPersist.N_OFF) n,
+     .roomArg .data dl, .roomArg .out ol])
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem CudaGemvPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaGemvPersistLoad dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault m := by
+theorem CudaGemvPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
+    (h : CudaGemvPersistLoad dataLen outLen w) (msg : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
-
-ship_entry CudaGemvPersist_prep : CudaGemvPersist.prepCode under CudaGemvPersistRun dataLen outLen
-
-abbrev CudaGemvPersistInfer (dl ol m n : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena CudaGemvPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
-   .cell (regionBase .arena + UInt64.ofNat CudaGemvPersist.CTX_OFF) cudaCtx,
-   .cell (regionBase .arena + UInt64.ofNat CudaGemvPersist.M_OFF) m,
-   .cell (regionBase .arena + UInt64.ofNat CudaGemvPersist.N_OFF) n,
-   .devBuf 0 ((m * n) <<< 2), .devBuf 1 (n <<< 2), .devBuf 2 (m <<< 2)]
-
-theorem CudaGemvPersist_infer_fine : Fine (emitGo (fnBody ptrParams (CudaGemvPersist.inferCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+  -- `A`'s bytes are its allocation's
+  have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+  intro _
+  simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+    Check.PExpr.eval, Check.PArg.bits, hp]
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem CudaGemvPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen m n : UInt64)
-    (hm : 0 < m.toNat ∧ m.toNat < 2 ^ 31) (hn : 0 < n.toNat ∧ n.toNat < 2 ^ 31) (w : World)
-    (h : CudaGemvPersistInfer dataLen outLen m n w) (msg : String) :
+theorem CudaGemvPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen m n : UInt64) (w : World)
+    (h : CudaGemvPersistRun dataLen outLen m n w) (msg : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
+  check_body
+  -- `x`'s bytes, no more than `4 n`, are its allocation's
+  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  intro hc
+  simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+  simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+    Check.PExpr.eval, Check.PArg.bits, hp, hc]
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+theorem CudaGemvPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen m n : UInt64) (w : World)
+    (h : CudaGemvPersistRun dataLen outLen m n w) (msg : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.inferCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
   check_body
-  -- the one call the sizes decide: sgemv over the m-by-n matrix the buffers hold
-  refine Check.Obl.holds_of_preB ?_
-  dsimp only [Check.preB, Check.preCublasSgemv, List.map, Check.PArg.bits, Check.PExpr.eval, Check.AV.bits,
-    Check.bufFacts, List.cons_append, List.nil_append, List.getD_cons_zero, List.getD_cons_succ, Check.cudaB,
-    Check.ctxB, Check.devBufOf, List.findSome?_cons]
-  simp
-  have e1 : asI32 (m &&& 4294967295) = m.toNat := Contracts.asI32_low hm.2
-  have e2 : asI32 (n &&& 4294967295) = n.toNat := Contracts.asI32_low hn.2
-  have hmn : m.toNat * n.toNat < 2 ^ 62 := Nat.lt_of_lt_of_le (Nat.mul_lt_mul'' hm.2 hn.2) (by decide)
-  refine ⟨rfl, ?_⟩
-  simp only [e1, e2, Int.toNat_natCast, Nat.shiftLeft_eq, show asI32 1 ≠ 0 by decide, if_false,
-    Nat.mul_comm n.toNat m.toNat]
-  generalize m.toNat * n.toNat = p at *
-  omega
+  -- the product: `A`, `x` and `y` packed at the starts of their allocations
+  · intro hc
+    simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+    have em : asI32 (m &&& 4294967295) = m.toNat := Contracts.asI32_low hc.2.2.1
+    have en : asI32 (n &&& 4294967295) = n.toNat := Contracts.asI32_low hc.1
+    have e1 : asI32 1 = 1 := by decide
+    have h0 : devPtrOf 4503599627370496 = some (0, 0) := by decide
+    have h1 : devPtrOf 4503668346847232 = some (1, 0) := by decide
+    have h2 : devPtrOf 4503737066323968 = some (2, 0) := by decide
+    have hmn : m.toNat * n.toNat < 2 ^ 62 :=
+      Nat.lt_of_lt_of_le (Nat.mul_lt_mul'' hc.2.2.1 hc.1) (by decide)
+    simp [Check.vendorVal, Check.blasVal, Check.getAll, Check.argAt, Check.sgemvVal, Check.operandOf,
+      Check.allocFor, Check.allocFacts, Check.PExpr.eval, Check.PArg.bits, h0, h1, h2, em, en, e1,
+      sgemvLens, sgemvInvalid, sgemvUnstated, opOk, UInt64.toNat_mul]
+    have a0 : 4 * (n.toNat * m.toNat) ≤ m.toNat * n.toNat * 4 % 18446744073709551616 := by
+      rw [Nat.mul_comm n.toNat]; generalize m.toNat * n.toNat = p at *; omega
+    have a1 : 4 * n.toNat ≤ n.toNat * 4 % 18446744073709551616 := by omega
+    have a2 : 4 * m.toNat ≤ m.toNat * 4 % 18446744073709551616 := by omega
+    simp only [a0, a1, a2, if_true]
+    simp
+    omega
+  -- the download: no more than `y`'s bytes
+  · have hp : devPtrOf 4503737066323968 = some (2, 0) := by decide
+    intro hc
+    simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+    simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+      Check.PExpr.eval, Check.PArg.bits, hp, hc]
 
 -- CudaRmsNormPersist
 
 abbrev CudaRmsNormPersistLoad (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena CudaRmsNormPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol, .cstrIn (regionBase .arena + UInt64.ofNat CudaRmsNormPersist.PTX_SOURCE_OFF) (CudaRmsNormPersist.BIND_DESC_OFF - CudaRmsNormPersist.PTX_SOURCE_OFF)]
+  (CudaRmsNormPersist.app.loadTS ++ [.oracles, .roomArg .data dl, .roomArg .out ol])
 
-abbrev CudaRmsNormPersistRun (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena CudaRmsNormPersist.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
-   .cell (regionBase .arena + UInt64.ofNat CudaRmsNormPersist.CTX_OFF) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaRmsNormPersist.PTX_SOURCE_OFF) (CudaRmsNormPersist.BIND_DESC_OFF - CudaRmsNormPersist.PTX_SOURCE_OFF)]
-
-ship_entry CudaRmsNormPersist_load : CudaRmsNormPersist.loadCode under CudaRmsNormPersistLoad dataLen outLen
-
-ship_entry CudaRmsNormPersist_prep : CudaRmsNormPersist.prepCode under CudaRmsNormPersistRun dataLen outLen
-
-ship_entry CudaRmsNormPersist_infer : CudaRmsNormPersist.inferCode under CudaRmsNormPersistRun dataLen outLen
-
--- CudaDecodeAttention
-
-abbrev CudaDecodeAttentionLoad (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena CudaDecodeAttention.MEM_SIZE, .roomArg .data dl, .roomArg .out ol, .cstrIn (regionBase .arena + UInt64.ofNat CudaDecodeAttention.PTX_SOURCE_OFF) (CudaDecodeAttention.BIND_DESC_OFF - CudaDecodeAttention.PTX_SOURCE_OFF)]
-
-abbrev CudaDecodeAttentionRun (dl ol : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena CudaDecodeAttention.MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
-   .cell (regionBase .arena + UInt64.ofNat CudaDecodeAttention.CTX_OFF) cudaCtx, .cstrIn (regionBase .arena + UInt64.ofNat CudaDecodeAttention.PTX_SOURCE_OFF) (CudaDecodeAttention.BIND_DESC_OFF - CudaDecodeAttention.PTX_SOURCE_OFF)]
-
-ship_entry CudaDecodeAttention_load : CudaDecodeAttention.loadCode under CudaDecodeAttentionLoad dataLen outLen
-
-ship_entry CudaDecodeAttention_prep : CudaDecodeAttention.prepCode under CudaDecodeAttentionRun dataLen outLen
-
-theorem CudaDecodeAttention_finalize_fine : Fine (emitGo (fnBody ptrParams (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+abbrev CudaRmsNormPersistRun (dl ol n : UInt64) : World → Prop := Contracts.TState.holds
+  (CudaRmsNormPersist.app.runTSWith [(n * 8 + 8).toNat, (n * 4).toNat] ++
+    [.cell (Drv.App.at_ CudaRmsNormPersist.N_OFF) n, .roomArg .data dl, .roomArg .out ol])
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem CudaDecodeAttention_finalize_triple (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionRun dataLen outLen w) :
+theorem CudaRmsNormPersist_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
+    (h : CudaRmsNormPersistLoad dataLen outLen w) (msg : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.loadCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
+  check_body
+  -- `N` at the start of allocation 0
+  · have hp : devPtrOf 4503599627370496 = some (0, 0) := by decide
+    intro hc
+    simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+    simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+      Check.PExpr.eval, Check.PArg.bits, hp, UInt64.toNat_add, UInt64.toNat_sub]
+    omega
+  -- the weights after `N` and `x`
+  · intro hc
+    simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+    have hp : devPtrOf (4503599627370496 + dataLen) = some (0, dataLen.toNat) := by
+      unfold devPtrOf
+      have : (4503599627370496 + dataLen).toNat = 4503599627370496 + dataLen.toNat := by
+        simp [UInt64.toNat_add]; omega
+      simp [this]
+      omega
+    simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+      Check.PExpr.eval, Check.PArg.bits, hp, UInt64.toNat_add, UInt64.toNat_sub]
+    omega
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+theorem CudaRmsNormPersist_prep_no_misuse (cfg : Cfg) (dataLen outLen n : UInt64) (w : World)
+    (h : CudaRmsNormPersistRun dataLen outLen n w) (msg : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.prepCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
+  check_body
+  -- `x` after `N`
+  have hp : devPtrOf 4503599627370504 = some (0, 8) := by decide
+  intro hc
+  simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+  simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+    Check.PExpr.eval, Check.PArg.bits, hp, UInt64.toNat_add, UInt64.toNat_mul]
+  omega
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+theorem CudaRmsNormPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen n : UInt64) (w : World)
+    (h : CudaRmsNormPersistRun dataLen outLen n w) (msg : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaRmsNormPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
+  check_body
+  -- no more than `y`'s bytes
+  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  intro hc
+  simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+  simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+    Check.PExpr.eval, Check.PArg.bits, hp, hc]
+
+-- CudaDecodeAttention: `main` from the driver and cuBLAS loaded and
+-- untouched; the others from what it leaves for `s` tokens
+
+abbrev CudaDecodeAttentionLoad (dl ol : UInt64) : World → Prop := Contracts.TState.holds
+  (CudaDecodeAttention.app.loadTS ++ [.oracles, .roomArg .data dl, .roomArg .out ol])
+
+open CudaDecodeAttention in
+abbrev CudaDecodeAttentionRun (dl ol s : UInt64) : World → Prop := Contracts.TState.holds
+  (app.runTSWith [D_MODEL_BYTES, (s * 7168).toNat, (s * 56).toNat, (s * 56).toNat, D_MODEL_BYTES, 8] ++
+    [.cell (Drv.App.at_ SEQ_LEN_OFF) s, .roomArg .data dl, .roomArg .out ol])
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+theorem CudaDecodeAttention_load_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
+    (h : CudaDecodeAttentionLoad dataLen outLen w) (msg : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.loadCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
+  check_body
+  -- K and V, the data after `seq_len`, are their allocation's
+  have hp : devPtrOf 4503668346847232 = some (1, 0) := by decide
+  intro _
+  simp [Check.vendorVal, Check.cudaVal, Check.argAt, Check.allocFor, Check.allocFacts,
+    Check.PExpr.eval, Check.PArg.bits, hp]
+
+ship_entry CudaDecodeAttention_prep : CudaDecodeAttention.prepCode under CudaDecodeAttentionRun dataLen outLen s
+
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+theorem CudaDecodeAttention_finalize_triple (cfg : Cfg) (dataLen outLen s : UInt64) (w : World)
+    (h : CudaDecodeAttentionRun dataLen outLen s w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit))
       { ok := fun _ w' => Contracts.TState.holds [] w', faultOk := false } := by
   check_reach
 
-theorem CudaDecodeAttention_finalize_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : CudaDecodeAttentionRun dataLen outLen w)
-    (m : String) : Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
+theorem CudaDecodeAttention_finalize_no_misuse (cfg : Cfg) (dataLen outLen s : UInt64) (w : World)
+    (h : CudaDecodeAttentionRun dataLen outLen s w) (m : String) :
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.finalizeCode : Prog Slot Lvl Unit)) ≠ .fault m :=
-  Hoare.run_sound (CudaDecodeAttention_finalize_triple cfg dataLen outLen w h) rfl m
-
-open CudaDecodeAttention in
-abbrev CudaDecodeAttentionCore (dl ol s : UInt64) : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena MEM_SIZE, .roomArg .data dl, .roomArg .out ol,
-   .cell (regionBase .arena + UInt64.ofNat CTX_OFF) cudaCtx,
-   .cstrIn (regionBase .arena + UInt64.ofNat PTX_SOURCE_OFF) (BIND_DESC_OFF - PTX_SOURCE_OFF),
-   -- buffer ids, two to a cell: q 0 and K 1, V 2 and scores 3, probs 4 and out 5, meta 6
-   .cell (regionBase .arena + UInt64.ofNat BUF_Q_OFF) 4294967296,
-   .cell (regionBase .arena + UInt64.ofNat BUF_V_OFF) 12884901890,
-   .cell (regionBase .arena + UInt64.ofNat BUF_PROBS_OFF) 21474836484,
-   .cell (regionBase .arena + UInt64.ofNat BUF_META_OFF) 6,
-   .cell (regionBase .arena + UInt64.ofNat SEQ_LEN_OFF) s,
-   .devBuf 0 3584, .devBuf 1 (s * 3584), .devBuf 2 (s * 3584), .devBuf 3 ((s * 14) <<< 2),
-   .devBuf 4 ((s * 14) <<< 2), .devBuf 5 3584, .devBuf 6 8]
-
-theorem CudaDecodeAttention_core_fine : Fine (emitGo (fnBody ptrParams (CudaDecodeAttention.coreCode : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
+  Hoare.run_sound (CudaDecodeAttention_finalize_triple cfg dataLen outLen s w h) rfl m
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 4000000 in
-theorem CudaDecodeAttention_core_triple (cfg : Cfg) (dataLen outLen s : UInt64)
-    (hs : 0 < s.toNat ∧ s.toNat ≤ CudaDecodeAttention.MAX_SEQ) (w : World)
-    (h : CudaDecodeAttentionCore dataLen outLen s w) :
+theorem CudaDecodeAttention_core_triple (cfg : Cfg) (dataLen outLen s : UInt64) (w : World)
+    (h : CudaDecodeAttentionRun dataLen outLen s w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaDecodeAttention.coreCode : Prog Slot Lvl Unit))
-      { ok := fun _ w' => CudaDecodeAttentionCore dataLen outLen s w', faultOk := false } := by
+      { ok := fun _ w' => CudaDecodeAttentionRun dataLen outLen s w', faultOk := false } := by
   check_reach
-  -- the two calls the sequence length decides: the batched sgemms over the
-  -- `s`-row K and V buffers
+  -- the two products, 14 heads each, every operand inside its allocation
   all_goals
-    refine Check.Obl.holds_of_preB ?_
-    dsimp only [Check.preB, Check.preCublasSgemm, List.map, Check.PArg.bits, Check.PExpr.eval, Check.AV.bits,
-      Check.bufFacts, List.cons_append, List.nil_append, List.getD_cons_zero, List.getD_cons_succ, Check.cudaB,
-      Check.ctxB, Check.devBufOf, List.findSome?_cons, Check.allBits, Check.gemmStridedFitsN]
-    simp
-  all_goals
-    have hs' : s.toNat ≤ 2048 := hs.2
-    have e1 : asI32 (s &&& 4294967295) = s.toNat := Contracts.asI32_low (by omega)
-    have e2 : asI64 s = s.toNat := Contracts.asI64_low (by omega)
-    have e3 : asI64 (s * 64) = (s * 64).toNat := Contracts.asI64_low (by rw [UInt64.toNat_mul]; simp; omega)
-    refine ⟨rfl, ?_⟩
-    simp only [e1, e2, e3, show asI32 1 = 1 by decide, show asI32 0 = 0 by decide, show asI32 64 = 64 by decide,
-      show asI32 14 = 14 by decide, show asI64 0 = 0 by decide, show asI64 64 = 64 by decide, colMajorSpan]
+    intro hc
+    simp [Check.PCond.Holds, Check.RelHolds, Check.PExpr.eval] at hc
+    have hs : s.toNat < 2049 := by omega
     have hs0 : s.toNat ≠ 0 := by omega
-    simp [UInt64.toNat_mul, Nat.shiftLeft_eq, hs0]
+    have e32 : asI32 (s &&& 4294967295) = s.toNat := Contracts.asI32_low (by omega)
+    have m64 : (s * 64).toNat = s.toNat * 64 := by simp [UInt64.toNat_mul]; omega
+    have m3584 : (s * 3584).toNat = s.toNat * 3584 := by simp [UInt64.toNat_mul]; omega
+    have m7168 : (s * 7168).toNat = s.toNat * 7168 := by simp [UInt64.toNat_mul]; omega
+    have m56 : (s * 56).toNat = s.toNat * 56 := by simp [UInt64.toNat_mul]; omega
+    have f64 : asI64 (s * 64) = ((s.toNat * 64 : Nat) : Int) := by
+      unfold asI64; rw [Check.signed_small rfl (by rw [m64]; show _ < 2 ^ 63; omega), m64]
+    have f1 : asI64 s = (s.toNat : Int) := by
+      unfold asI64; rw [Check.signed_small rfl (by show _ < 2 ^ 63; omega)]
+    have hV : devPtrOf (4503668346847232 + s * 3584) = some (1, s.toNat * 3584) := by
+      unfold devPtrOf
+      have : (4503668346847232 + s * 3584).toNat = 4503668346847232 + s.toNat * 3584 := by
+        simp [UInt64.toNat_add, UInt64.toNat_mul]; omega
+      simp [this]
+      omega
+    have h0 : devPtrOf 4503599627370496 = some (0, 0) := by decide
+    have h1 : devPtrOf 4503668346847232 = some (1, 0) := by decide
+    have h2 : devPtrOf 4503737066323968 = some (2, 0) := by decide
+    have h3 : devPtrOf 4503805785800704 = some (3, 0) := by decide
+    have h4 : devPtrOf 4503874505277440 = some (4, 0) := by decide
+    have c0 : asI32 0 = 0 := by decide
+    have c1 : asI32 1 = 1 := by decide
+    have c14 : asI32 14 = 14 := by decide
+    have c64 : asI32 64 = 64 := by decide
+    have d64 : asI64 64 = 64 := by decide
+    simp [Check.vendorVal, Check.blasVal, Check.getAll, Check.argAt, Check.gemmVal, Check.operandOf,
+      Check.allocFor, Check.allocFacts, Check.PExpr.eval, Check.PArg.bits, gemmSpans, gemmDims, batchSpan,
+      colMajorSpan, gemmInvalid, gemmUnstated, opOk, e32, f64, f1, m7168, m56, hV, h0, h1, h2, h3, h4,
+      c0, c1, c14, c64, d64]
+    have ti : ((s.toNat : Int) * 64).toNat = s.toNat * 64 := by omega
+    simp only [ti, hs0, if_false]
+    have k1 : 4 * (13 * (s.toNat * 64) + (64 * (s.toNat - 1) + 64)) ≤ s.toNat * 7168 := by omega
+    have k2 : 4 * (13 * s.toNat + s.toNat) ≤ s.toNat * 56 := by omega
+    have k3 : s.toNat * 3584 + 4 * (13 * (s.toNat * 64) + (64 * (s.toNat - 1) + 64)) ≤ s.toNat * 7168 := by
+      omega
+    have k4 : s.toNat * 3584 % 4 = 0 := by omega
+    simp only [k1, k2, k3, k4, and_self, if_true]
+    simp
     omega
 
-theorem CudaDecodeAttention_core_no_misuse (cfg : Cfg) (dataLen outLen s : UInt64)
-    (hs : 0 < s.toNat ∧ s.toNat ≤ CudaDecodeAttention.MAX_SEQ) (w : World)
-    (h : CudaDecodeAttentionCore dataLen outLen s w) (msg : String) :
+theorem CudaDecodeAttention_core_no_misuse (cfg : Cfg) (dataLen outLen s : UInt64) (w : World)
+    (h : CudaDecodeAttentionRun dataLen outLen s w) (msg : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.coreCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaDecodeAttention.coreCode : Prog Slot Lvl Unit)) ≠ .fault msg :=
-  Hoare.run_sound (CudaDecodeAttention_core_triple cfg dataLen outLen s hs w h) rfl msg
+  Hoare.run_sound (CudaDecodeAttention_core_triple cfg dataLen outLen s w h) rfl msg
 
 -- The infer and stack wrappers of softmax and decode-attention
 
@@ -267,24 +379,24 @@ theorem softmax_stack_fine : Fine (emitGo (fnBody ptrParams (Prog.sequenceWrappe
 /-- The softmax program's own calls, at any depth, on what an entry is handed:
     core leaves what it starts from, and finalize, the last call, needs to
     leave nothing. -/
-theorem softmax_summaries (env : FnEnv) (steps k : Nat) (dataLen outLen : UInt64) :
+theorem softmax_summaries (env : FnEnv) (steps k : Nat) (dataLen outLen n nb : UInt64) :
     Summary (termLocals softmaxFns env steps k) 3 (runArgs dataLen outLen)
-      (CudaSoftmaxPersistRun dataLen outLen) (CudaSoftmaxPersistRun dataLen outLen) ∧
+      (CudaSoftmaxPersistRun dataLen outLen n nb) (CudaSoftmaxPersistRun dataLen outLen n nb) ∧
     Summary (termLocals softmaxFns env steps k) 4 (runArgs dataLen outLen)
-      (CudaSoftmaxPersistRun dataLen outLen) (Contracts.TState.holds []) :=
-  ⟨summary_all rfl (fun _ w h => CudaSoftmaxPersist_core_triple _ dataLen outLen w h) k,
-   summary_all rfl (fun _ w h => CudaSoftmaxPersist_finalize_triple _ dataLen outLen w h) k⟩
+      (CudaSoftmaxPersistRun dataLen outLen n nb) (Contracts.TState.holds []) :=
+  ⟨summary_all rfl (fun _ w h => CudaSoftmaxPersist_core_triple _ dataLen outLen n nb w h) k,
+   summary_all rfl (fun _ w h => CudaSoftmaxPersist_finalize_triple _ dataLen outLen n nb w h) k⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
-theorem CudaSoftmaxPersist_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataLen outLen : UInt64) (w : World)
-    (h : CudaSoftmaxPersistRun dataLen outLen w) (m : String) :
+theorem CudaSoftmaxPersist_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataLen outLen n nb : UInt64) (w : World)
+    (h : CudaSoftmaxPersistRun dataLen outLen n nb w) (m : String) :
     Sem.run { env, steps, locals := termLocals softmaxFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run { env, steps, locals := termLocals softmaxFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ≠ .fault m :=
-  have h3 := (softmax_summaries env steps k dataLen outLen).1
-  have h4 := (softmax_summaries env steps k dataLen outLen).2
+  have h3 := (softmax_summaries env steps k dataLen outLen n nb).1
+  have h4 := (softmax_summaries env steps k dataLen outLen n nb).2
   by
     rw [show (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) =
       [.straight (.op .memory :: Check.seqCalls [3, 4])] from rfl]
@@ -292,14 +404,14 @@ theorem CudaSoftmaxPersist_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataLe
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
-theorem CudaSoftmaxPersist_stack_no_misuse (env : FnEnv) (steps k : Nat) (dataLen outLen : UInt64) (w : World)
-    (h : CudaSoftmaxPersistRun dataLen outLen w) (m : String) :
+theorem CudaSoftmaxPersist_stack_no_misuse (env : FnEnv) (steps k : Nat) (dataLen outLen n nb : UInt64) (w : World)
+    (h : CudaSoftmaxPersistRun dataLen outLen n nb w) (m : String) :
     Sem.run { env, steps, locals := termLocals softmaxFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run { env, steps, locals := termLocals softmaxFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  have h3 := (softmax_summaries env steps k dataLen outLen).1
-  have h4 := (softmax_summaries env steps k dataLen outLen).2
+  have h3 := (softmax_summaries env steps k dataLen outLen n nb).1
+  have h4 := (softmax_summaries env steps k dataLen outLen n nb).2
   by
     rw [show (emit (Prog.sequenceWrapper (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) =
       [.straight (.op .memory :: Check.seqCalls (List.replicate CudaSoftmaxPersist.STACK_DEPTH 3 ++ [4]))] from rfl]
@@ -315,56 +427,57 @@ theorem decode_stack_fine : Fine (emitGo (fnBody ptrParams (Prog.sequenceWrapper
 /-- The decode-attention program's own calls, at any depth, on what an entry
     is handed: core keeps the buffers and sequence length it starts from, and
     finalize, the last call, needs to leave nothing. -/
-theorem decode_summaries (env : FnEnv) (steps k : Nat) (dataLen outLen s : UInt64)
-    (hs : 0 < s.toNat ∧ s.toNat ≤ CudaDecodeAttention.MAX_SEQ) :
+theorem decode_summaries (env : FnEnv) (steps k : Nat) (dataLen outLen s : UInt64) :
     Summary (termLocals decodeFns env steps k) 3 (runArgs dataLen outLen)
-      (CudaDecodeAttentionCore dataLen outLen s) (CudaDecodeAttentionCore dataLen outLen s) ∧
+      (CudaDecodeAttentionRun dataLen outLen s) (CudaDecodeAttentionRun dataLen outLen s) ∧
     Summary (termLocals decodeFns env steps k) 4 (runArgs dataLen outLen)
-      (CudaDecodeAttentionRun dataLen outLen) (Contracts.TState.holds []) :=
-  ⟨summary_all rfl (fun _ w h => CudaDecodeAttention_core_triple _ dataLen outLen s hs w h) k,
-   summary_all rfl (fun _ w h => CudaDecodeAttention_finalize_triple _ dataLen outLen w h) k⟩
+      (CudaDecodeAttentionRun dataLen outLen s) (Contracts.TState.holds []) :=
+  ⟨summary_all rfl (fun _ w h => CudaDecodeAttention_core_triple _ dataLen outLen s w h) k,
+   summary_all rfl (fun _ w h => CudaDecodeAttention_finalize_triple _ dataLen outLen s w h) k⟩
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem CudaDecodeAttention_infer_no_misuse (env : FnEnv) (steps k : Nat) (dataLen outLen s : UInt64)
-    (hs : 0 < s.toNat ∧ s.toNat ≤ CudaDecodeAttention.MAX_SEQ) (w : World)
-    (h : CudaDecodeAttentionCore dataLen outLen s w) (m : String) :
+    (w : World) (h : CudaDecodeAttentionRun dataLen outLen s w) (m : String) :
     Sem.run { env, steps, locals := termLocals decodeFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run { env, steps, locals := termLocals decodeFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) ≠ .fault m :=
-  have h3 := (decode_summaries env steps k dataLen outLen s hs).1
-  have h4 := (decode_summaries env steps k dataLen outLen s hs).2
+  have h3 := (decode_summaries env steps k dataLen outLen s).1
+  have h4 := (decode_summaries env steps k dataLen outLen s).2
   by
     rw [show (emit (Prog.sequenceWrapper [3, 4] : Prog Slot Lvl Unit)) =
       [.straight (.op .memory :: Check.seqCalls [3, 4])] from rfl]
-    exact Check.seqCalls_run (cs := [3, 4]) ⟨_, h3, _, (Check.summary_weaken h4 (by
-      intro f hf
-      simp only [List.mem_cons, List.not_mem_nil, or_false] at hf ⊢
-      rcases hf with h | h | h | h | h | h | h | h | h | h <;> simp [h])), trivial⟩ h m
+    exact Check.seqCalls_run (cs := [3, 4]) ⟨_, h3, _, h4, trivial⟩ h m
 
 set_option maxRecDepth 200000 in
 set_option maxHeartbeats 1000000 in
 theorem CudaDecodeAttention_stack_no_misuse (env : FnEnv) (steps k : Nat) (dataLen outLen s : UInt64)
-    (hs : 0 < s.toNat ∧ s.toNat ≤ CudaDecodeAttention.MAX_SEQ) (w : World)
-    (h : CudaDecodeAttentionCore dataLen outLen s w) (m : String) :
+    (w : World) (h : CudaDecodeAttentionRun dataLen outLen s w) (m : String) :
     Sem.run { env, steps, locals := termLocals decodeFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) ≠ .misuse m ∧
     Sem.run { env, steps, locals := termLocals decodeFns env steps k } (runArgs dataLen outLen) w
       (emit (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) ≠ .fault m :=
-  have h3 := (decode_summaries env steps k dataLen outLen s hs).1
-  have h4 := (decode_summaries env steps k dataLen outLen s hs).2
+  have h3 := (decode_summaries env steps k dataLen outLen s).1
+  have h4 := (decode_summaries env steps k dataLen outLen s).2
   by
     rw [show (emit (Prog.sequenceWrapper (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]) : Prog Slot Lvl Unit)) =
       [.straight (.op .memory :: Check.seqCalls (List.replicate CudaDecodeAttention.STACK_DEPTH 3 ++ [4]))] from rfl]
-    exact Check.seqCalls_run (Check.sumChain_repeat h3 (rest := [4]) ⟨_, (Check.summary_weaken h4 (by
-      intro f hf
-      simp only [List.mem_cons, List.not_mem_nil, or_false] at hf ⊢
-      rcases hf with h | h | h | h | h | h | h | h | h | h <;> simp [h])), trivial⟩ _) h m
+    exact Check.seqCalls_run (Check.sumChain_repeat h3 (rest := [4]) ⟨_, h4, trivial⟩ _) h m
 
 end CudaBenchSafe
 
+#print axioms CudaBenchSafe.CudaSoftmaxPersist_load_no_misuse
+#print axioms CudaBenchSafe.CudaSoftmaxPersist_prep_no_misuse
 #print axioms CudaBenchSafe.CudaSoftmaxPersist_infer_no_misuse
 #print axioms CudaBenchSafe.CudaSoftmaxPersist_stack_no_misuse
+#print axioms CudaBenchSafe.CudaDecodeAttention_load_no_misuse
+#print axioms CudaBenchSafe.CudaDecodeAttention_prep_no_misuse
 #print axioms CudaBenchSafe.CudaDecodeAttention_infer_no_misuse
 #print axioms CudaBenchSafe.CudaDecodeAttention_stack_no_misuse
+#print axioms CudaBenchSafe.CudaRmsNormPersist_load_no_misuse
+#print axioms CudaBenchSafe.CudaRmsNormPersist_prep_no_misuse
+#print axioms CudaBenchSafe.CudaRmsNormPersist_infer_no_misuse
+#print axioms CudaBenchSafe.CudaGemvPersist_load_no_misuse
+#print axioms CudaBenchSafe.CudaGemvPersist_prep_no_misuse
+#print axioms CudaBenchSafe.CudaGemvPersist_infer_no_misuse

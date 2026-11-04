@@ -25,7 +25,9 @@ LIB_BELOW = {
     "Host": {"Core", "Vocab"},
     "Surface": {"Core", "Vocab", "Host.Term"},
     "LZ4": {"Core", "Vocab"},
-    "ML": {"Core", "Vocab", "Host", "Surface"},
+    # ML reads the launches a checked program makes (`ML.Launch.AppTrace`), so
+    # it sits above the checker.
+    "ML": {"Core", "Vocab", "Host", "Surface", "Check"},
     # What is proved about programs the surface builds: combinator lemmas and
     # their instances.
     "Proof": {"Core", "Vocab", "Host", "Surface"},
@@ -50,10 +52,10 @@ PROOFS = {f"AlgorithmLib.Host.{m}" for m in
 GENERATOR_EXCEPTIONS = {
     # `ML.HostBridge` states host-to-kernel facts over `HostIR`, and these
     # generators prove them beside the emission.
-    "Warp.BackwardWide", "Warp.MlpCifar", "Qwen2.Algorithm", "Qwen2.OnDisk",
+    "Warp.BackwardWide", "Warp.MlpCifar",
     "GptOss.Decode", "GptOss.Algorithm",
     # The conformance corpora and the pilots are checked against the semantics.
-    "Host.Pilots", "Host.Corpus", "Host.CudaCorpus", "Host.GpuCorpus", "Host.StreamCorpus", "Host.LmdbCorpus", "Host.WindowCorpus", "Host.NativeCorpus", "Host.LocalCorpus", "Host.ThreadCorpus", "Host.DriverCorpus", "Host.CpuCorpus", "Host.SerialCorpus", "Host.UsbCorpus", "Host.WgpuCorpus",
+    "Host.Pilots", "Host.Corpus", "Host.LmdbCorpus", "Host.NativeCorpus", "Host.LocalCorpus", "Host.ThreadCorpus", "Host.DriverCorpus", "Host.CpuCorpus", "Host.SerialCorpus", "Host.UsbCorpus", "Host.WgpuCorpus",
 }
 
 IMPORT = re.compile(r"^\s*(?:public\s+)?(?:meta\s+)?import\s+(?:all\s+)?(\S+)", re.M)

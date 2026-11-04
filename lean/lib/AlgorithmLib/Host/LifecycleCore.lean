@@ -170,11 +170,6 @@ theorem devOnly_eq {w : World} {k : Option (Option V × Dev)} {r : Option V} {w'
   obtain ⟨rfl, rfl⟩ := he
   exact ⟨d, hkd, rfl⟩
 
-theorem pump_life (w : World) : w.pump.mem = w.mem ∧ w.pump.dev = w.dev ∧ w.pump.win.live = w.win.live ∧
-    w.pump.lmdb = w.lmdb ∧ w.pump.gpu = w.gpu ∧ w.pump.thread = w.thread ∧ w.pump.display = w.display ∧
-    w.pump.cudaDevice = w.cudaDevice ∧ w.pump.gpuAdapter = w.gpuAdapter := by
-  unfold World.pump; split <;> exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
-
 theorem foldlM_ops_live (w : World) : ∀ (ops : List DevOp) (d d' : Dev),
     ops.foldlM (fun d op => match op with
       | .launch l ids => d.runLaunch w.kernel l ids
@@ -199,27 +194,6 @@ theorem graphOps_life {w : World} {ops : Array DevOp} {d d' : Dev}
   rw [← Array.foldlM_toList] at h
   exact foldlM_ops_live w _ d d' h
 
-theorem runOne_live {sh : Dispatch → List ByteArray → List ByteArray} {g g' : Wgpu} {d : Nat × List UInt64}
-    (h : g.runOne sh d = some g') : g'.live = g.live := by
-  unfold Wgpu.runOne at h
-  split at h
-  · cases h; rfl
-  · split at h <;> (cases h; rfl)
-
-theorem runAll_live {sh : Dispatch → List ByteArray → List ByteArray} :
-    ∀ (ds : List (Nat × List UInt64)) (g g' : Wgpu), ds.foldlM (Wgpu.runOne sh) g = some g' → g'.live = g.live
-  | [], g, g', h => by simp at h; subst h; rfl
-  | d :: ds, g, g', h => by
-      simp only [List.foldlM_cons] at h
-      obtain ⟨g1, h1, h2⟩ := Option.bind_eq_some_iff.mp h
-      exact (runAll_live ds g1 g' h2).trans (runOne_live h1)
-
-theorem flush_live {sh : Dispatch → List ByteArray → List ByteArray} {g g' : Wgpu}
-    (h : Wgpu.flush sh g = some g') : g'.live = g.live := by
-  unfold Wgpu.flush at h
-  obtain ⟨g1, h1, h⟩ := Option.bind_eq_some_iff.mp h
-  cases h; exact runAll_live _ g g1 h1
-
 theorem fold_life {α : Type} {g : Dev → α → Option Dev}
     (hg : ∀ d x d', g d x = some d' → d'.live = d.live ∧ d'.capture.isSome = d.capture.isSome) :
     ∀ (xs : List α) (d d' : Dev), xs.foldlM g d = some d' →
@@ -236,7 +210,7 @@ theorem fold_life {α : Type} {g : Dev → α → Option Dev}
     CUDA context is live and capturing, whether memory is frozen for a worker,
     and whether the LMDB, window, wgpu and thread contexts are live. -/
 inductive Part where
-  | cuda | capturing | frozen | lmdb | win | gpu | thread
+  | cuda | capturing | frozen | lmdb | thread
   /-- The LMDB context has no environment open. -/
   | lmdbEmpty
   /-- There is a display to open windows on: an oracle no call changes. -/
@@ -247,6 +221,9 @@ inductive Part where
   | gpuAdapter
   /-- No asynchronous copy is in flight over page-locked memory. -/
   | idle
+  /-- Library `l` loaded: an oracle no call changes, and what a theorem states
+      of the platform it needs. -/
+  | has (l : Lib)
   deriving DecidableEq, Repr
 
 def Part.get : Part → World → Bool
@@ -254,19 +231,21 @@ def Part.get : Part → World → Bool
   | .capturing, w => w.dev.capture.isSome
   | .frozen, w => w.mem.frozen
   | .lmdb, w => w.lmdb.live
-  | .win, w => w.win.live
-  | .gpu, w => w.gpu.live
   | .thread, w => w.thread.live
   | .lmdbEmpty, w => w.lmdb.envs.isEmpty
   | .display, w => w.display
   | .cudaDevice, w => w.cudaDevice
   | .gpuAdapter, w => w.gpuAdapter
   | .idle, w => w.mem.busy.isEmpty
+  | .has l, w => w.has l
 
 /-- **The kinds of handle a library hands a program**, which a typestate
     may say it holds: an open window, serial port or USB device. -/
 inductive Held where
   | window | port | usbDevice | usbInterface | heap
+  /-- The one live wgpu object of a kind made afresh each time round a loop
+      (`WgState.isOne`), or any value once the device is lost. -/
+  | wg (k : IR.WgObj)
   deriving DecidableEq, Repr
 
 /-- Whether `a` is a handle of kind `k` the program holds open; for the heap,
@@ -277,17 +256,16 @@ def Held.live : Held → World → UInt64 → Bool
   | .usbDevice, w, a => (w.usbDev? a).isSome
   | .usbInterface, w, a => (w.usbIface? a).isSome
   | .heap, w, a => (w.heapAt? a).isSome
+  | .wg k, w, a => w.wg.lost || match wgIndex a with
+    | some i => w.wg.isOne k i
+    | none => false
 
 /-- **The parts each entry point may move.** Bringing a context up or down,
     beginning or ending a capture, and joining or dropping a worker; every other
     call keeps every part (`callBits_parts`). -/
 def movesLife : IR.Ffi → List Part
-  | .cudaInit | .cudaCleanup => [.cuda, .capturing]
-  | .cudaGraphBeginCapture | .cudaGraphEndCapture => [.capturing]
   | .lmdbInit | .lmdbCleanup => [.lmdb, .lmdbEmpty]
   | .lmdbOpen | .lmdbBeginWriteTxn | .lmdbPut | .lmdbCommitWriteTxn | .lmdbCursorScan => [.lmdbEmpty]
-  | .windowInit | .windowCleanup => [.win]
-  | .gpuInit | .gpuCleanup => [.gpu]
   | .threadInit => [.thread]
   | .threadCleanup => [.thread, .frozen]
   | .threadJoin => [.frozen]
@@ -305,11 +283,8 @@ def KeepsParts (f : IR.Ffi) (w w' : World) : Prop := ∀ p, p ∉ moves f → p.
 macro "walk" h:ident : tactic => `(tactic| (
   try simp only [bind, Option.bind, cudaFail, cudaI64, lmdbI32, gpuUploadAt] at $h:ident
   try unfold memInfoOf at $h:ident
-  try unfold cudaLaunchOn at $h:ident
   try unfold sgemvOn at $h:ident
   try unfold sgemmOn at $h:ident
-  try unfold ffiCudaUploadAsyncAt at $h:ident
-  try unfold ffiCudaDownloadAsyncAt at $h:ident
   try unfold asyncCopy at $h:ident
   try simp only [bind, Option.bind] at $h:ident
   repeat' (first
@@ -328,15 +303,13 @@ macro "part_close" : tactic => `(tactic| (
   all_goals first
     | rfl
     | (exfalso; exact hp (by decide))
-    | grind [Part.get, devFail, devOk, devI64, Dev.endCapture, Mem.retire, Mem.forParty, put_live,
+    | (simp only [Part.get, World.has]; done)
+    | grind [Part.get, World.has, devFail, devOk, devI64, Dev.endCapture, Mem.retire, Mem.forParty, put_live,
         putAll_live, → runLaunch_live, → runVendor_live, → devOp_live, → devOp_capturing, → syncWrite_eq,
-        → syncRead_eq, → runLaunch_meta, → runVendor_meta, → flush_live, → store_frozen, → copyIn_frozen,
-        pump_life]))
+        → syncRead_eq, → runLaunch_meta, → runVendor_meta, → store_frozen, → copyIn_frozen]))
 
 /-- Close one answer of a contract: the kernel and cuBLAS oracles as they were. -/
-macro "oracle_close" : tactic => `(tactic| first
-  | exact ⟨rfl, rfl⟩
-  | (unfold World.pump; split <;> exact ⟨rfl, rfl⟩))
+macro "oracle_close" : tactic => `(tactic| exact ⟨rfl, rfl⟩)
 
 -- ---------------------------------------------------------------------------
 -- What the calls leave of memory's layout
@@ -391,9 +364,8 @@ macro "room_close" : tactic => `(tactic| (
   all_goals first
     | rfl
     | exact absurd rfl hr
-    | (simp only [*, retire_sizes, forParty_sizes, sizes_with_frozen, sizes_with_live, sizes_with_busy,
-        (pump_life _).1]; done)
-    | grind [pump_life]))
+    | (simp only [*, retire_sizes, forParty_sizes, sizes_with_frozen, sizes_with_live, sizes_with_busy]; done)
+    | grind))
 
 /-- What an asynchronous copy answers: the device and memory its continuation
     makes, with the copy recorded among memory's in-flight copies. -/
@@ -409,33 +381,6 @@ theorem asyncCopy_eq {w : World} {p : Nat} {a : UInt64} {n : Nat} {wr : Bool} {r
     simp only [Option.some.injEq, Prod.mk.injEq] at h
     exact ⟨race, d, m, _, hk, h.2.symm⟩
 
-set_option maxHeartbeats 1000000 in
-theorem rooms_cudaDownloadAsync {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaDownloadAsync bits w = some (r, w')) : KeepsRooms w w' := by
-  change ffiCudaDownloadAsync bits w = some (r, w') at h
-  unfold ffiCudaDownloadAsync ffiCudaDownloadAsyncAt at h
-  split at h
-  · simp only [cudaFail] at h
-    split at h
-    · injection h with h1; injection h1 with h2 h3; subst h3; intro _ _; rfl
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · injection h with h1; injection h1 with h2 h3; subst h3; intro _ _; rfl
-      · split at h
-        · injection h with h1; injection h1 with h2 h3; subst h3; intro _ _; rfl
-        · split at h
-          · injection h with h1; injection h1 with h2 h3; subst h3; intro _ _; rfl
-          · split at h
-            · injection h with h1; injection h1 with h2 h3; subst h3; intro _ _; rfl
-            · obtain ⟨race, d, m, B, hk, rfl⟩ := asyncCopy_eq h
-              obtain ⟨m0, hm0, hk⟩ := Option.bind_eq_some_iff.mp hk
-              simp only [Option.some.injEq, Prod.mk.injEq] at hk
-              obtain ⟨-, rfl⟩ := hk
-              intro reg _
-              show ({ m0 with busy := B } : Mem).sizes reg = w.mem.sizes reg
-              rw [sizes_with_busy, copyIn_sizes_eq hm0, forParty_sizes]
-  · cases h
-
 /-- A step that leaves page-locked memory the size it was. -/
 def KeepsPinned (w w' : World) : Prop := w'.mem.sizes .pinned = w.mem.sizes .pinned
 
@@ -445,35 +390,8 @@ macro "pinned_close" : tactic => `(tactic| (
   sizes_facts
   first
     | rfl
-    | (simp only [*, retire_sizes, forParty_sizes, sizes_with_frozen, sizes_with_live, sizes_with_busy,
-        (pump_life _).1]; done)
-    | grind [pump_life]))
-
-set_option maxHeartbeats 1000000 in
-theorem pinned_cudaDownloadAsync {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaDownloadAsync bits w = some (r, w')) : KeepsPinned w w' := by
-  change ffiCudaDownloadAsync bits w = some (r, w') at h
-  unfold ffiCudaDownloadAsync ffiCudaDownloadAsyncAt at h
-  split at h
-  · simp only [cudaFail] at h
-    split at h
-    · injection h with h1; injection h1 with h2 h3; subst h3; rfl
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · injection h with h1; injection h1 with h2 h3; subst h3; rfl
-      · split at h
-        · injection h with h1; injection h1 with h2 h3; subst h3; rfl
-        · split at h
-          · injection h with h1; injection h1 with h2 h3; subst h3; rfl
-          · split at h
-            · injection h with h1; injection h1 with h2 h3; subst h3; rfl
-            · obtain ⟨race, d, m, B, hk, rfl⟩ := asyncCopy_eq h
-              obtain ⟨m0, hm0, hk⟩ := Option.bind_eq_some_iff.mp hk
-              simp only [Option.some.injEq, Prod.mk.injEq] at hk
-              obtain ⟨-, rfl⟩ := hk
-              show ({ m0 with busy := B } : Mem).sizes .pinned = w.mem.sizes .pinned
-              rw [sizes_with_busy, copyIn_sizes_eq hm0, forParty_sizes]
-  · cases h
+    | (simp only [*, retire_sizes, forParty_sizes, sizes_with_frozen, sizes_with_live, sizes_with_busy]; done)
+    | grind))
 
 /-- **What a call to `f` keeps of the world**, and what it answers: the
     observations made so far, the parts it does not move, the kernel and cuBLAS
@@ -485,7 +403,7 @@ structure Keeps (f : IR.Ffi) (r : Option V) (w w' : World) : Prop where
   parts : KeepsParts f w w'
   oracles : w'.kernel = w.kernel ∧ w'.vendor = w.vendor
   rooms : KeepsRooms w w'
-  pinned : f ≠ .cudaPinnedAlloc → KeepsPinned w w'
+  pinned : KeepsPinned w w'
   scalar : ∀ v, r = some v → ∃ x, v = .sc (f.result.getD .i64) x
 
 /-- Close the answer at one answer of a contract: a scalar of the result type. -/
@@ -494,9 +412,7 @@ macro "scalar_close" : tactic => `(tactic| (
   cases hv <;> exact ⟨_, rfl⟩))
 
 /-- Close one answer of a contract: the observations as they were. -/
-macro "obs_close" : tactic => `(tactic| first
-  | rfl
-  | (unfold World.pump; split <;> rfl))
+macro "obs_close" : tactic => `(tactic| rfl)
 
 /-- Close `Keeps` at one answer of a contract. -/
 macro "keeps_close" : tactic => `(tactic| (
@@ -505,9 +421,7 @@ macro "keeps_close" : tactic => `(tactic| (
   · part_close
   · oracle_close
   · room_close
-  · first
-      | (intro hf; exact absurd rfl hf)
-      | (intro _; pinned_close)
+  · pinned_close
   · scalar_close))
 
 /-- One entry's `Keeps`: its contract followed to every answer. -/
@@ -519,18 +433,6 @@ macro "keeps_entry " h:ident : tactic => `(tactic| (
        first
          | (obtain ⟨d, hk, rfl⟩ := devOnly_eq $h; clear $h; walk hk; all_goals keeps_close)
          | (walk $h; all_goals keeps_close))))
-
-set_option maxHeartbeats 4000000 in
-theorem keeps_cudaDownloadAsync {bits : List UInt64} {w : World} {r : Option V} {w' : World}
-    (h : callBits .cudaDownloadAsync bits w = some (r, w')) : Keeps .cudaDownloadAsync r w w' := by
-  refine ⟨?_, ?_, ?_, rooms_cudaDownloadAsync h, fun _ => pinned_cudaDownloadAsync h, ?_⟩
-  all_goals
-    change ffiCudaDownloadAsync bits w = some (r, w') at h
-    unfold ffiCudaDownloadAsync at h
-  · walk h; all_goals obs_close
-  · walk h; all_goals part_close
-  · walk h; all_goals oracle_close
-  · walk h; all_goals scalar_close
 
 open Lean Elab Command in
 /-- `keeps_<entry>` for every entry point that has none, and `callBits_keeps`
@@ -554,7 +456,6 @@ elab "derive_keeps" : command => do
     theorem $(mkIdent `callBits_keeps) (f : IR.Ffi) {bits : List UInt64} {w : World} {r : Option V} {w' : World}
         (h : callBits f bits w = some (r, w')) : Keeps f r w w' :=
       match f, h with $alts:matchAlt*))
-
 
 open Lean Elab Command in
 /-- `keeps_<entry>` for every entry point whose name starts with `pfx` and has

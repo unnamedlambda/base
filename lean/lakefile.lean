@@ -33,17 +33,12 @@ lean_lib Host where
 lean_lib Warp where
   globs := #[.submodules `Warp]
 
--- Qwen2 inference: spec, proven kernels, plan, host, and the top claim.
-@[default_target]
-lean_lib Qwen2 where
-  globs := #[.submodules `Qwen2]
-
 -- gpt-oss-20b: kernels, attention, the decode artifact.
 @[default_target]
 lean_lib GptOss where
   globs := #[.submodules `GptOss]
 
--- The tokenizer and pre-tokenizer shared by Qwen2 and gpt-oss.
+-- The tokenizer and pre-tokenizer gpt-oss uses.
 @[default_target]
 lean_lib Tokenizer where
   globs := #[.submodules `Tokenizer]
@@ -67,8 +62,8 @@ lean_lib Ship where
   roots := #[`Ship.NoMisuse, `Ship.CudaSafe, `Ship.CudaBackwardSafe, `Ship.CudaBenchSafe,
     `Ship.WgpuDraw, `Ship.WgpuFallingSand, `Ship.WgpuWindowDemo, `Ship.WgpuWindowDemoMain, `Ship.WgpuRaymarch, `Ship.WgpuRaymarchMain, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CudaApps, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.CudaPipeline, `Ship.Lz4Comp, `Ship.MlpCifar1, `Ship.MlpCifar2, `Ship.VitSafe,
     `Ship.GemvWarpQwen, `Ship.GemvWarpMid, `Ship.GemvWarpMid2, `Ship.GemvWarpWide,
-    `Ship.FallingSandStart, `Ship.FallingSandDisplay, `Ship.FallingSandHeadless, `Ship.FallingSandMain,
-    `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Libs, `Ship.HtSpec, `Ship.HtRuns, `Ship.HtLinked, `Ship.CudaSpec, `Ship.HtCheck]
+    `Ship.FallingSandMain,
+    `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls, `Ship.Libs, `Ship.HtSpec, `Ship.HtRuns, `Ship.HtLinked, `Ship.HtCheck]
   moreLeanArgs := #["--tstack=262144", "-M", "3500"]
 
 -- The trust, ship and layout scans. Plain files: they read proof terms.
@@ -128,8 +123,6 @@ lean_exe genlz4compalgorithm where
   root := `Main.Lz4.Comp
 lean_exe genvitship where
   root := `Main.Vit.Ship
-lean_exe genqwen2algorithm where
-  root := `Main.Qwen2.Algorithm
 lean_exe genraytracealgorithm where
   root := `Main.Demo.Raytrace
 lean_exe genmatmulalgorithm where
@@ -142,8 +135,6 @@ lean_exe genpythonbenchmarks where
   root := `Main.Bench.Python
 lean_exe genraymarchdemoalgorithm where
   root := `Main.Demo.RaymarchDemo
-lean_exe genqwen2ondiskalgorithm where
-  root := `Main.Qwen2.OnDisk
 lean_exe genwarpsumsqalgorithm where
   root := `Main.Warp.SumSq
 lean_exe gensatalgorithm where
@@ -162,8 +153,6 @@ lean_exe gengptossdecode where
   root := `Main.GptOss.Decode
 lean_exe gengptossalgorithm where
   root := `Main.GptOss.Algorithm
-lean_exe genhprogcudacorpus where
-  root := `Main.Host.CudaCorpus
 lean_exe genhprogdrivercorpus where
   root := `Main.Host.DriverCorpus
 lean_exe genhprogserialcorpus where
@@ -174,14 +163,8 @@ lean_exe genhprogcpucorpus where
   root := `Main.Host.CpuCorpus
 lean_exe genhprogwgpucorpus where
   root := `Main.Host.WgpuCorpus
-lean_exe genhprogpucorpus where
-  root := `Main.Host.GpuCorpus
-lean_exe genhprogstreamcorpus where
-  root := `Main.Host.StreamCorpus
 lean_exe genhproglmdbcorpus where
   root := `Main.Host.LmdbCorpus
-lean_exe genhprogwindowcorpus where
-  root := `Main.Host.WindowCorpus
 lean_exe genhprognativecorpus where
   root := `Main.Host.NativeCorpus
 lean_exe genhproglocalcorpus where

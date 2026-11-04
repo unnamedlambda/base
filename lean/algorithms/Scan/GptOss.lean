@@ -43,8 +43,8 @@ namespace GptOssScan
 
     It was empty when this file was written, which was before the artifact
     existed. What has arrived since is the whole attention half: every kernel
-    it launches is an `EWStmt`, so each carries the same execution theorem the
-    Qwen2 decode kernels carry — the emitted PTX runs the statement, from raw
+    it launches is an `EWStmt`, so each carries the execution theorem every
+    such kernel carries — the emitted PTX runs the statement, from raw
     launch, including the ones whose addresses depend on memory (the rotation's
     table index, the cache's slot, the softmax's trip counts).
 
@@ -144,10 +144,8 @@ def openObligations : List String :=
      arithmetic in the launch arguments between them.",
     "AttnKernelValues: what the attention kernels compute, as opposed to that \
      the emitted PTX runs their statements. RMSNorm, the elementwise add and \
-     the rotation have value and store-address theorems in Qwen2Proven at that \
-     model's geometry; they are not re-instantiated here, and re-instantiating \
-     them is a proof-script edit rather than a proof. The cache store is the \
-     exception and is already a root.",
+     the rotation have no value theorems at this geometry. The cache store is \
+     the exception and is already a root.",
     "PrefillGatherMaskValue: the routed-token gather and the additive causal \
      and window masks the chunked prefill uses.",
     -- ── the seams outward: host memory, host policy, the checkpoint ──
@@ -164,8 +162,8 @@ def openObligations : List String :=
      than false — the same standing the shipped sparse-dispatch demo has. \
      Closes with the first two entries.",
     "EmbedHostGather: in *these* artifacts the embedding row is read on the \
-     host, widened, and uploaded, so what lands is `uploadedValue` on the \
-     declared trust surface rather than a gather this development proves. It \
+     host, widened, and uploaded, so what lands is what the driver's copy \
+     lands rather than a gather this development proves. It \
      is a property of the per-piece programs and not of the model: the \
      whole-model artifact reads the row itself and widens it on the device \
      (`GptOssDecodeScan.WidenIsLossless`), bit-identically to this.",

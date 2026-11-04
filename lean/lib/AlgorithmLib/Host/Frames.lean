@@ -68,37 +68,6 @@ def frame : IR.Ffi → Frame
   -- own: the engine writes nothing for them.
   | .htInit | .htCleanup | .htCreate | .htCount | .htInsert | .htIncrement | .htLookup | .htGetEntry => .none
 
-  -- cuda.rs — uploads and launches move data the other way or stay on the
-  -- device; only the downloads write host memory.
-  | .cudaInit | .cudaCleanup => ctxSlot
-  | .cudaDownload | .cudaDownloadAsync => .at 2 3
-  | .cudaDownloadOffset => .at 3 4
-  | .cudaCreateBuffer | .cudaFreeBuffer
-  | .cudaUpload | .cudaUploadAsync | .cudaUploadOffset | .cudaUploadOffsetAsync
-  | .cudaLaunch | .cudaLaunchNamed | .cudaLaunchOnStream | .cudaLaunchNamedOnStream
-  | .cudaSync
-  | .cudaStreamCreate | .cudaStreamSync | .cudaStreamDestroy | .cudaStreamWaitEvent
-  | .cudaEventCreate | .cudaEventRecord | .cudaEventElapsedMsBits | .cudaEventDestroy
-  | .cudaGraphBeginCapture | .cudaGraphEndCapture | .cudaGraphUpload
-  | .cudaGraphLaunch | .cudaGraphDestroy
-  | .cudaPinnedAlloc | .cudaPinnedPtr | .cudaPinnedFree => .none
-  -- Both return a number about memory rather than writing any: the pinned
-  -- pool's checked address, and what the device has free.
-  | .cudaPinnedPtrAt | .cudaMemInfoFree | .cudaMemInfoTotal => .none
-
-  -- cuda.rs, cuBLAS — the operands and the result are all device buffers.
-  | .cublasSgemv | .cublasSgemvOnStream | .cublasSgemm | .cublasSgemmOnStream
-  | .cublasPtrArray | .cublasSgemmBatchedOnStream
-  | .cublasGemmExBf16 => .none
-  | .cublasGemmStridedBatchedExBf16 => .none
-
-  -- wgpu.rs
-  | .gpuInit | .gpuCleanup => ctxSlot
-  | .gpuDownload => .at 2 3
-  | .gpuDownloadPtr => .at 3 4
-  | .gpuCreateBuffer | .gpuCreatePipeline | .gpuDispatch
-  | .gpuUpload | .gpuUploadPtr => .none
-
   -- lmdb.rs — reads write their result where the caller asked, for as long as
   -- the stored value is.
   | .lmdbInit | .lmdbCleanup => ctxSlot
@@ -110,11 +79,6 @@ def frame : IR.Ffi → Frame
   | .threadInit | .threadCleanup => ctxSlot
   | .threadSpawn => .dataDependent 2
   | .threadJoin => .none
-
-  -- window.rs
-  | .windowInit | .windowCleanup => ctxSlot
-  | .windowPoll => .atRecords 1 2 32
-  | .windowOpen | .windowPresentGpuBuffer => .none
 
 /-- **What a C library function may write**, by its parameters. The copies
     write their destination for their count; the driver writes each object it
@@ -137,7 +101,7 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   | .cuda .moduleUnload | .cuda .launchKernel | .cuda .streamSynchronize
   | .cuda .streamDestroy | .cuda .eventRecord | .cuda .streamWaitEvent
   | .cuda .eventSynchronize | .cuda .eventDestroy | .cuda .memFreeHost
-  | .cuda .memcpyHtoDAsync | .cuda .beginCapture | .cuda .graphLaunch
+  | .cuda .memcpyHtoDAsync | .cuda .beginCapture | .cuda .graphUpload | .cuda .graphLaunch
   | .cuda .graphExecDestroy | .cuda .graphDestroy => .none
   | .cublas .create => .fixed 0 8
   | .cublas _ => .none

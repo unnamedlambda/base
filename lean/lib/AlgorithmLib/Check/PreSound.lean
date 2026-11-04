@@ -87,18 +87,6 @@ theorem readIds_of_fits {p : UInt64} {n : Nat} (hf : Fits w.mem p (4 * n)) : (re
   unfold readIds
   rw [hraw]; rfl
 
-theorem readBinds_of_fits {p : UInt64} {n : Nat} (hf : Fits w.mem p (8 * n)) :
-    (readBinds w.mem p n).isSome = true := by
-  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := hf
-  unfold readBinds
-  refine Contracts.mapM_isSome_of fun i hi => ?_
-  have hi := List.mem_range.mp hi
-  have hd1 := Sem.decodeAddr_add (i := 8 * i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  have hd2 := Sem.decodeAddr_add (i := 8 * i + 4) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  obtain ⟨a, ha⟩ := Option.isSome_iff_exists.mp (Contracts.load_isSome (n := 4) hd1 hp (by omega) hz)
-  obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (Contracts.load_isSome (n := 4) hd2 hp (by omega) hz)
-  rw [ha, hb]; rfl
-
 theorem bindsReady_of_fits {nBufs bindPtr : UInt64} {p : Nat} (hS : S.holds w) (hq : readyIn S p = true)
     (hf : Fits w.mem bindPtr (4 * (asI32 nBufs).toNat)) : BindsReady w p nBufs bindPtr := by
   obtain ⟨ids, hids⟩ := Option.isSome_iff_exists.mp (readIds_of_fits hf)
@@ -119,92 +107,6 @@ section entries
 
 variable {bits : List UInt64}
 
-theorem pre_cudaInit {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits) (h : preB .cudaInit [s] S rb = true) :
-    Contracts.Pre .cudaInit bits w := by
-  dsimp only [preB, preCudaInit] at h
-  argbits hb [hs]
-  exact fits_slot8 (memN_fits' hS hs h) _
-
-theorem pre_cudaCleanup {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
-    (h : preB .cudaCleanup [s] S rb = true) : Contracts.Pre .cudaCleanup bits w := by
-  dsimp only [preB, preCudaCleanup] at h
-  argbits hb [hs]
-  exact fits_slot8 (memN_fits' hS hs h) _
-
-theorem pre_cudaCreateBuffer {c n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, n] bits)
-    (h : preB .cudaCreateBuffer [c, n] S rb = true) : Contracts.Pre .cudaCreateBuffer bits w := by
-  dsimp only [preB, preCudaCreateBuffer] at h
-  argbits hb [hc, hn]
-  exact ctxB_sound hS hc h
-
-theorem pre_cudaSync {c : AV} (hS : S.holds w) (hb : ArgBits Γ w [c] bits)
-    (h : preB .cudaSync [c] S rb = true) : Contracts.Pre .cudaSync bits w := by
-  dsimp only [preB, preCudaSync] at h
-  argbits hb [hc]
-  exact ctxB_sound hS hc h
-
-theorem pre_cudaUpload {c b d n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, b, d, n] bits)
-    (h : preB .cudaUpload [c, b, d, n] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaUpload bits w := by
-  dsimp only [preB, preCudaUpload] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨hc', hm⟩, hq⟩ := h
-  argbits hb [hc, hb', hd, hn]
-  exact ⟨ctxB_sound hS hc hc', fun _ _ _ =>
-    ⟨fits_readable (memBR_fits hS hd hn hm (hrb 2 3)) (Nat.le_refl _), Contracts.ready_of_state hS hq _ _⟩⟩
-
-theorem pre_cudaDownload {c b d n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, b, d, n] bits)
-    (h : preB .cudaDownload [c, b, d, n] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaDownload bits w := by
-  dsimp only [preB, preCudaDownload] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨hc', hm⟩, hq⟩ := h
-  argbits hb [hc, hb', hd, hn]
-  exact ⟨ctxB_sound hS hc hc', fun _ _ _ =>
-    ⟨fits_writable (memBR_fits hS hd hn hm (hrb 2 3)) (Nat.le_refl _), Contracts.ready_of_state hS hq _ _⟩⟩
-
-theorem pre_cudaUploadOffset {c b o d n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, b, o, d, n] bits)
-    (h : preB .cudaUploadOffset [c, b, o, d, n] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaUploadOffset bits w := by
-  dsimp only [preB, preCudaUploadOffset] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨hc', hm⟩, hq⟩ := h
-  argbits hb [hc, hb', ho, hd, hn]
-  exact ⟨ctxB_sound hS hc hc', fun _ _ =>
-    ⟨fits_readable (memBR_fits hS hd hn hm (hrb 3 4)) (Nat.le_refl _), Contracts.ready_of_state hS hq _ _⟩⟩
-
-theorem pre_cudaDownloadOffset {c b o d n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, b, o, d, n] bits)
-    (h : preB .cudaDownloadOffset [c, b, o, d, n] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaDownloadOffset bits w := by
-  dsimp only [preB, preCudaDownloadOffset] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨hc', hm⟩, hq⟩ := h
-  argbits hb [hc, hb', ho, hd, hn]
-  exact ⟨ctxB_sound hS hc hc', fun _ _ =>
-    ⟨fits_writable (memBR_fits hS hd hn hm (hrb 3 4)) (Nat.le_refl _), Contracts.ready_of_state hS hq _ _⟩⟩
-
-theorem pre_cudaLaunch {c kp nb bp gx gy gz bx by_ bz : AV} (hS : S.holds w)
-    (hb : ArgBits Γ w [c, kp, nb, bp, gx, gy, gz, bx, by_, bz] bits)
-    (h : preB .cudaLaunch [c, kp, nb, bp, gx, gy, gz, bx, by_, bz] S rb = true) :
-    Contracts.Pre .cudaLaunch bits w := by
-  dsimp only [preB, preCudaLaunch] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨hc', ho⟩, hcap⟩, hk⟩, hq⟩, hm⟩ := h
-  argbits hb [hc, hkp, hnb, hbp, h5, h6, h7, h8, h9, h10]
-  split at hm
-  · rename_i k hk'
-    have hx := known_bits hnb hk'
-    subst hx
-    exact ⟨ctxB_sound hS hc hc', Contracts.keepsSize_of_state hS ho, Contracts.capture_of_state hS hcap,
-      cstrB_sound hS hkp hk, bindsReady_of_fits hS hq (memN_fits' hS hbp hm)⟩
-  · cases hm
-
-theorem pre_cudaLaunchNamed {c kp np nb bp gx gy gz bx by_ bz : AV} (hS : S.holds w)
-    (hb : ArgBits Γ w [c, kp, np, nb, bp, gx, gy, gz, bx, by_, bz] bits)
-    (h : preB .cudaLaunchNamed [c, kp, np, nb, bp, gx, gy, gz, bx, by_, bz] S rb = true) :
-    Contracts.Pre .cudaLaunchNamed bits w := by
-  dsimp only [preB, preCudaLaunchNamed] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨⟨hc', ho⟩, hcap⟩, hk⟩, hn⟩, hq⟩, hm⟩ := h
-  argbits hb [hc, hkp, hnp, hnb, hbp, h5, h6, h7, h8, h9, h10]
-  split at hm
-  · rename_i k hk'
-    have hx := known_bits hnb hk'
-    subst hx
-    exact ⟨ctxB_sound hS hc hc', Contracts.keepsSize_of_state hS ho, Contracts.capture_of_state hS hcap,
-      cstrB_sound hS hkp hk, cstrB_sound hS hnp hn, bindsReady_of_fits hS hq (memN_fits' hS hbp hm)⟩
-  · cases hm
-
 theorem streamReady_sound {sid : AV} {x : UInt64} (hS : S.holds w) (hd : ∃ t, sid.Desc Γ w (.sc t x))
     (h : streamReady S sid = true) : ∀ p, w.dev.party? (asI32 x) = some p → readyIn S p = true := by
   unfold streamReady at h
@@ -220,142 +122,6 @@ theorem streamReady_sound {sid : AV} {x : UInt64} (hS : S.holds w) (hd : ∃ t, 
     · rename_i hp'
       rw [hp'] at hp; cases hp
   · cases h
-
-theorem pre_cudaLaunchOnStream {c kp nb bp gx gy gz bx by_ bz sid : AV} (hS : S.holds w)
-    (hb : ArgBits Γ w [c, kp, nb, bp, gx, gy, gz, bx, by_, bz, sid] bits)
-    (h : preB .cudaLaunchOnStream [c, kp, nb, bp, gx, gy, gz, bx, by_, bz, sid] S rb = true) :
-    Contracts.Pre .cudaLaunchOnStream bits w := by
-  dsimp only [preB, preCudaLaunchOnStream] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨⟨⟨⟨hc', ho⟩, hcap⟩, hk⟩, hq⟩, hm⟩ := h
-  argbits hb [hc, hkp, hnb, hbp, h5, h6, h7, h8, h9, h10, hsid]
-  split at hm
-  · rename_i k hk'
-    have hx := known_bits hnb hk'
-    subst hx
-    exact ⟨ctxB_sound hS hc hc', Contracts.keepsSize_of_state hS ho, Contracts.capture_of_state hS hcap,
-      cstrB_sound hS hkp hk,
-      fun p hp => bindsReady_of_fits hS (streamReady_sound hS hsid hq p hp) (memN_fits' hS hbp hm)⟩
-  · cases hm
-
-theorem pre_cudaStreamWaitEvent {c s e : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, s, e] bits)
-    (h : preB .cudaStreamWaitEvent [c, s, e] S rb = true) : Contracts.Pre .cudaStreamWaitEvent bits w := by
-  dsimp only [preB, preCudaStreamWaitEvent] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨hc', hcap⟩, he⟩ := h
-  argbits hb [hc, hs, hev]
-  split at he
-  · rename_i eid heid
-    have hx := known_bits hev heid
-    subst hx
-    split at he
-    · rename_i n hn
-      obtain ⟨clk, hclk, -⟩ := (holds_of_mem hS he : (Fact.evAll n).holds w)
-      refine ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, fun c' hc'' => ?_⟩
-      rw [← evId_spec hn, hclk] at hc''
-      simp at hc''
-    · cases he
-  · cases he
-
-theorem pre_gpuInit {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits) (h : preB .gpuInit [s] S rb = true) :
-    Contracts.Pre .gpuInit bits w := by
-  dsimp only [preB, preGpuInit] at h
-  argbits hb [hs]
-  exact fits_slot8 (memN_fits' hS hs h)
-
-theorem pre_gpuCleanup {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
-    (h : preB .gpuCleanup [s] S rb = true) : Contracts.Pre .gpuCleanup bits w := by
-  dsimp only [preB, preGpuCleanup] at h
-  argbits hb [hs]
-  exact fits_slot8 (memN_fits' hS hs h)
-
-theorem pre_gpuCreateBuffer {c n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, n] bits)
-    (h : preB .gpuCreateBuffer [c, n] S rb = true) : Contracts.Pre .gpuCreateBuffer bits w := by
-  dsimp only [preB, preGpuCreateBuffer] at h
-  argbits hb [hc, hn]
-  exact ctxB_sound hS hc h
-
-theorem pre_gpuDispatch {c p x y z : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, p, x, y, z] bits)
-    (h : preB .gpuDispatch [c, p, x, y, z] S rb = true) : Contracts.Pre .gpuDispatch bits w := by
-  dsimp only [preB, preGpuDispatch] at h
-  argbits hb [hc, hp, hx, hy, hz]
-  exact ctxB_sound hS hc h
-
-theorem pre_gpuCreatePipeline {c sp bp n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, sp, bp, n] bits)
-    (h : preB .gpuCreatePipeline [c, sp, bp, n] S rb = true) : Contracts.Pre .gpuCreatePipeline bits w := by
-  dsimp only [preB, preGpuCreatePipeline] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨hc', hs⟩, hm⟩ := h
-  argbits hb [hc, hsp, hbp, hn]
-  split at hm
-  · rename_i k hk'
-    have hx := known_bits hn hk'
-    subst hx
-    exact ⟨ctxB_sound hS hc hc', fun _ _ => ⟨cstrB_sound hS hsp hs, readBinds_of_fits (memN_fits' hS hbp hm)⟩⟩
-  · cases hm
-
-theorem pre_gpuUpload {c b s n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, b, s, n] bits)
-    (h : preB .gpuUpload [c, b, s, n] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .gpuUpload bits w := by
-  dsimp only [preB, preGpuUpload] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨hc', hm⟩ := h
-  argbits hb [hc, hb', hs, hn]
-  exact ⟨ctxB_sound hS hc hc', fun _ _ _ _ _ => fits_readable (memBR_fits hS hs hn hm (hrb 2 3)) (Nat.le_refl _)⟩
-
-theorem pre_gpuDownload {c b d n : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, b, d, n] bits)
-    (h : preB .gpuDownload [c, b, d, n] S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .gpuDownload bits w := by
-  dsimp only [preB, preGpuDownload] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨hc', hm⟩ := h
-  argbits hb [hc, hb', hd, hn]
-  exact ⟨ctxB_sound hS hc hc', fun _ _ _ _ _ _ _ => fits_writable (memBR_fits hS hd hn hm (hrb 2 3)) (Nat.le_refl _)⟩
-
-theorem pre_windowInit {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
-    (h : preB .windowInit [s] S rb = true) : Contracts.Pre .windowInit bits w := by
-  dsimp only [preB, preWindowInit] at h; simp only [Bool.and_eq_true] at h
-  argbits hb [hs]
-  exact ⟨partB_sound hS h.1, fits_slot8 (memN_fits' hS hs h.2)⟩
-
-theorem pre_windowOpen {c ww hh tp tl bp bl : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, ww, hh, tp, tl, bp, bl] bits)
-    (h : preB .windowOpen [c, ww, hh, tp, tl, bp, bl] S rb = true) : Contracts.Pre .windowOpen bits w := by
-  dsimp only [preB, preWindowOpen] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨hc', hm⟩ := h
-  argbits hb [hc, hw, hh', htp, htl, hbp, hbl]
-  split at hm
-  · rename_i a b ha hb'
-    have e1 := known_bits htl ha
-    have e2 := known_bits hbl hb'
-    subst e1 e2
-    simp only [Bool.and_eq_true] at hm
-    exact ⟨ctxB_sound hS hc hc', fun _ =>
-      ⟨fits_readable (memN_fits' hS htp hm.1) (Nat.le_refl _), fits_readable (memN_fits' hS hbp hm.2) (Nat.le_refl _)⟩⟩
-  · cases hm
-
-theorem pre_windowPoll {c ep me : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, ep, me] bits)
-    (h : preB .windowPoll [c, ep, me] S rb = true) : Contracts.Pre .windowPoll bits w := by
-  dsimp only [preB, preWindowPoll] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨hc', hm⟩ := h
-  argbits hb [hc, hep, hme]
-  split at hm
-  · rename_i k hk'
-    have e := known_bits hme hk'
-    subst e
-    refine ⟨ctxB_sound hS hc hc', fun _ => ?_⟩
-    rw [(Contracts.pump_life w).1, winEventBytes_size]
-    exact fits_writable (memN_fits' hS hep hm) (by simp only [List.length_take]; omega)
-  · cases hm
-
-theorem pre_windowPresentGpuBuffer {c g b : AV} (hS : S.holds w) (hb : ArgBits Γ w [c, g, b] bits)
-    (h : preB .windowPresentGpuBuffer [c, g, b] S rb = true) : Contracts.Pre .windowPresentGpuBuffer bits w := by
-  dsimp only [preB, preWindowPresentGpuBuffer] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨hc', hg'⟩ := h
-  argbits hb [hc, hg, hb']
-  refine ⟨ctxB_sound hS hc hc', fun _ => ?_⟩
-  have hgpu := (Contracts.pump_life w).2.2.2.2.1
-  have := ctxB_sound hS hg hg'
-  unfold Contracts.GpuOk; rw [hgpu]; exact this
-
-theorem pre_windowCleanup {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
-    (h : preB .windowCleanup [s] S rb = true) : Contracts.Pre .windowCleanup bits w := by
-  dsimp only [preB, preWindowCleanup] at h; simp only [Bool.and_eq_true] at h
-  argbits hb [hs]
-  have hf := memN_fits' hS hs h.1
-  exact ⟨fits_load8 hf, slotOk_sound hS hs h.2, fits_slot8 hf⟩
 
 theorem pre_lmdbCleanup {s : AV} (hS : S.holds w) (hb : ArgBits Γ w [s] bits)
     (h : preB .lmdbCleanup [s] S rb = true) : Contracts.Pre .lmdbCleanup bits w := by
@@ -423,221 +189,6 @@ theorem pre_lmdbCursorScan {c hd kp kl me rp cap : AV} (hS : S.holds w)
       fun _ hpos => absurd hpos (by omega)⟩
   · cases hm
 
-theorem pre_cublasSgemv {c tr m n al a x be y : AV} (hS : S.holds w)
-    (hb : ArgBits Γ w [c, tr, m, n, al, a, x, be, y] bits)
-    (h : preB .cublasSgemv [c, tr, m, n, al, a, x, be, y] S rb = true) : Contracts.Pre .cublasSgemv bits w := by
-  dsimp only [preB, preCublasSgemv] at h; simp only [Bool.and_eq_true] at h
-  obtain ⟨⟨⟨⟨hc', hcap⟩, ho⟩, hq⟩, hm⟩ := h
-  argbits hb [hc, htr, hm', hn, hal, ha, hx, hbe, hy]
-  split at hm
-  · rename_i tr' m' n' a' x' y' e1 e2 e3 e4 e5 e6
-    have := known_bits htr e1; subst this
-    have := known_bits hm' e2; subst this
-    have := known_bits hn e3; subst this
-    have := known_bits ha e4; subst this
-    have := known_bits hx e5; subst this
-    have := known_bits hy e6; subst this
-    split at hm
-    · rename_i na nx ny f1 f2 f3
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hm
-      obtain ⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩ := hm
-      exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, Contracts.vendorKeeps_of_state hS ho,
-        Contracts.sgemvOk_of_state hS hq (devBufOf_mem f1) (devBufOf_mem f2) (devBufOf_mem f3) h1 h2 h3 h4 h5⟩
-    · cases hm
-  · cases hm
-
-theorem pre_cudaInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaInit as S rb = true) : Contracts.Pre .cudaInit bits w := by
-  dsimp only [preB] at h
-  unfold preCudaInit at h
-  split at h
-  · exact pre_cudaInit (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cudaCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaCleanup as S rb = true) : Contracts.Pre .cudaCleanup bits w := by
-  dsimp only [preB] at h
-  unfold preCudaCleanup at h
-  split at h
-  · exact pre_cudaCleanup (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cudaCreateBuffer' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaCreateBuffer as S rb = true) : Contracts.Pre .cudaCreateBuffer bits w := by
-  dsimp only [preB] at h
-  unfold preCudaCreateBuffer at h
-  split at h
-  · exact pre_cudaCreateBuffer (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cudaSync' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaSync as S rb = true) : Contracts.Pre .cudaSync bits w := by
-  dsimp only [preB] at h
-  unfold preCudaSync at h
-  split at h
-  · exact pre_cudaSync (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cudaUpload' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaUpload as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaUpload bits w := by
-  dsimp only [preB] at h
-  unfold preCudaUpload at h
-  split at h
-  · exact pre_cudaUpload (rb := rb) hS hb h hrb
-  · cases h
-
-theorem pre_cudaDownload' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaDownload as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaDownload bits w := by
-  dsimp only [preB] at h
-  unfold preCudaDownload at h
-  split at h
-  · exact pre_cudaDownload (rb := rb) hS hb h hrb
-  · cases h
-
-theorem pre_cudaUploadOffset' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaUploadOffset as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaUploadOffset bits w := by
-  dsimp only [preB] at h
-  unfold preCudaUploadOffset at h
-  split at h
-  · exact pre_cudaUploadOffset (rb := rb) hS hb h hrb
-  · cases h
-
-theorem pre_cudaDownloadOffset' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaDownloadOffset as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaDownloadOffset bits w := by
-  dsimp only [preB] at h
-  unfold preCudaDownloadOffset at h
-  split at h
-  · exact pre_cudaDownloadOffset (rb := rb) hS hb h hrb
-  · cases h
-
-theorem pre_cudaLaunch' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaLaunch as S rb = true) : Contracts.Pre .cudaLaunch bits w := by
-  dsimp only [preB] at h
-  unfold preCudaLaunch at h
-  split at h
-  · exact pre_cudaLaunch (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cudaLaunchNamed' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaLaunchNamed as S rb = true) : Contracts.Pre .cudaLaunchNamed bits w := by
-  dsimp only [preB] at h
-  unfold preCudaLaunchNamed at h
-  split at h
-  · exact pre_cudaLaunchNamed (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cudaLaunchOnStream' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaLaunchOnStream as S rb = true) : Contracts.Pre .cudaLaunchOnStream bits w := by
-  dsimp only [preB] at h
-  unfold preCudaLaunchOnStream at h
-  split at h
-  · exact pre_cudaLaunchOnStream (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cudaStreamWaitEvent' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaStreamWaitEvent as S rb = true) : Contracts.Pre .cudaStreamWaitEvent bits w := by
-  dsimp only [preB] at h
-  unfold preCudaStreamWaitEvent at h
-  split at h
-  · exact pre_cudaStreamWaitEvent (rb := rb) hS hb h
-  · cases h
-
-theorem pre_gpuInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuInit as S rb = true) : Contracts.Pre .gpuInit bits w := by
-  dsimp only [preB] at h
-  unfold preGpuInit at h
-  split at h
-  · exact pre_gpuInit (rb := rb) hS hb h
-  · cases h
-
-theorem pre_gpuCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuCleanup as S rb = true) : Contracts.Pre .gpuCleanup bits w := by
-  dsimp only [preB] at h
-  unfold preGpuCleanup at h
-  split at h
-  · exact pre_gpuCleanup (rb := rb) hS hb h
-  · cases h
-
-theorem pre_gpuCreateBuffer' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuCreateBuffer as S rb = true) : Contracts.Pre .gpuCreateBuffer bits w := by
-  dsimp only [preB] at h
-  unfold preGpuCreateBuffer at h
-  split at h
-  · exact pre_gpuCreateBuffer (rb := rb) hS hb h
-  · cases h
-
-theorem pre_gpuDispatch' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuDispatch as S rb = true) : Contracts.Pre .gpuDispatch bits w := by
-  dsimp only [preB] at h
-  unfold preGpuDispatch at h
-  split at h
-  · exact pre_gpuDispatch (rb := rb) hS hb h
-  · cases h
-
-theorem pre_gpuCreatePipeline' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuCreatePipeline as S rb = true) : Contracts.Pre .gpuCreatePipeline bits w := by
-  dsimp only [preB] at h
-  unfold preGpuCreatePipeline at h
-  split at h
-  · exact pre_gpuCreatePipeline (rb := rb) hS hb h
-  · cases h
-
-theorem pre_gpuUpload' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuUpload as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .gpuUpload bits w := by
-  dsimp only [preB] at h
-  unfold preGpuUpload at h
-  split at h
-  · exact pre_gpuUpload (rb := rb) hS hb h hrb
-  · cases h
-
-theorem pre_gpuDownload' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuDownload as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .gpuDownload bits w := by
-  dsimp only [preB] at h
-  unfold preGpuDownload at h
-  split at h
-  · exact pre_gpuDownload (rb := rb) hS hb h hrb
-  · cases h
-
-theorem pre_windowInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .windowInit as S rb = true) : Contracts.Pre .windowInit bits w := by
-  dsimp only [preB] at h
-  unfold preWindowInit at h
-  split at h
-  · exact pre_windowInit (rb := rb) hS hb h
-  · cases h
-
-theorem pre_windowOpen' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .windowOpen as S rb = true) : Contracts.Pre .windowOpen bits w := by
-  dsimp only [preB] at h
-  unfold preWindowOpen at h
-  split at h
-  · exact pre_windowOpen (rb := rb) hS hb h
-  · cases h
-
-theorem pre_windowPoll' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .windowPoll as S rb = true) : Contracts.Pre .windowPoll bits w := by
-  dsimp only [preB] at h
-  unfold preWindowPoll at h
-  split at h
-  · exact pre_windowPoll (rb := rb) hS hb h
-  · cases h
-
-theorem pre_windowPresentGpuBuffer' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .windowPresentGpuBuffer as S rb = true) : Contracts.Pre .windowPresentGpuBuffer bits w := by
-  dsimp only [preB] at h
-  unfold preWindowPresentGpuBuffer at h
-  split at h
-  · exact pre_windowPresentGpuBuffer (rb := rb) hS hb h
-  · cases h
-
-theorem pre_windowCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .windowCleanup as S rb = true) : Contracts.Pre .windowCleanup bits w := by
-  dsimp only [preB] at h
-  unfold preWindowCleanup at h
-  split at h
-  · exact pre_windowCleanup (rb := rb) hS hb h
-  · cases h
-
 theorem pre_lmdbCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB .lmdbCleanup as S rb = true) : Contracts.Pre .lmdbCleanup bits w := by
   dsimp only [preB] at h
@@ -692,34 +243,6 @@ theorem pre_lmdbCursorScan' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w a
   unfold preLmdbCursorScan at h
   split at h
   · exact pre_lmdbCursorScan (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cublasSgemv' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cublasSgemv as S rb = true) : Contracts.Pre .cublasSgemv bits w := by
-  dsimp only [preB] at h
-  unfold preCublasSgemv at h
-  split at h
-  · exact pre_cublasSgemv (rb := rb) hS hb h
-  · cases h
-
-theorem pre_cublasSgemm' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cublasSgemm as S rb = true) : Contracts.Pre .cublasSgemm bits w := by
-  dsimp only [preB] at h
-  unfold preCublasSgemm at h
-  split at h
-  · rename_i x0 ta tb m n k x6 a sa b sb x11 cc sc batch oa ob oc la lb lc heq
-    have hbs := allBits_eq hb heq
-    subst hbs
-    obtain ⟨hc, -⟩ := hb
-    simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨hc', hcap⟩, ho⟩, hq⟩, hm⟩ := h
-    split at hm
-    · rename_i na nb nc f1 f2 f3
-      exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, Contracts.vendorKeeps_of_state hS ho,
-        Contracts.gemmOk_of_state hS hq (devBufOf_mem f1) (devBufOf_mem f2) (devBufOf_mem f3)
-          (fun A B C hA hB hC => by
-            unfold sgemmFits; rw [gemmStridedFits_eq, hA, hB, hC]; exact hm)⟩
-    · cases hm
   · cases h
 
 end entries
@@ -884,6 +407,8 @@ theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List U
   -- window: init, pump
   · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
   · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
+  -- window: open
+  · argbits hb [h1, h2, h3]; exact ⟨[], [], rfl, none_, noroom⟩
   -- window: close, pixels
   · argbits hb [h1]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
   · argbits hb [h1]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
@@ -957,69 +482,6 @@ theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List U
       exact ⟨_, _, rfl, ext_hand h1 hp, ext_room hS h3 h⟩
     · cases h
 
-theorem pre_cudaFreeBuffer' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaFreeBuffer as S rb = true) : Contracts.Pre .cudaFreeBuffer bits w := by
-  dsimp only [preB] at h
-  unfold preCudaFreeBuffer at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    argbits hb [hc, hbuf]
-    exact ⟨ctxB_sound hS hc h.1, fun _ => Contracts.ready_of_state hS h.2 _ _⟩
-  · cases h
-
-theorem pre_cublasPtrArray' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cublasPtrArray as S rb = true) : Contracts.Pre .cublasPtrArray bits w := by
-  dsimp only [preB] at h
-  unfold preCublasPtrArray at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    argbits hb [hc, h1, h2, h3, h4]
-    exact ⟨ctxB_sound hS hc h.1, fun _ _ => Contracts.ready_of_state hS h.2 _ _⟩
-  · cases h
-
-theorem pre_cudaPinnedAlloc' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaPinnedAlloc as S rb = true) : Contracts.Pre .cudaPinnedAlloc bits w := by
-  dsimp only [preB] at h
-  unfold preCudaPinnedAlloc at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    obtain ⟨hc', hm⟩ := h
-    argbits hb [hc, hn]
-    split at hm
-    · rename_i k hk
-      have := known_bits hn hk; subst this
-      obtain ⟨x, hx, hd⟩ := List.any_eq_true.mp hm
-      refine ⟨ctxB_sound hS hc hc', ?_⟩
-      cases x <;> simp only [Bool.false_eq_true, decide_eq_true_eq] at hd
-      rename_i u
-      have hu : w.mem.sizes .pinned ≤ u := hS _ hx
-      unfold Contracts.PinnedRoom
-      simp only [Mem.sizes, Mem.region] at hu
-      omega
-    · cases hm
-  · cases h
-
-theorem pre_gpuUploadPtr' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuUploadPtr as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .gpuUploadPtr bits w := by
-  dsimp only [preB] at h
-  unfold preGpuUploadPtr at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    argbits hb [hc, hb', hs, hn]
-    exact ⟨ctxB_sound hS hc h.1, fun _ _ _ _ _ => fits_readable (memBR_fits hS hs hn h.2 (hrb 2 3)) (Nat.le_refl _)⟩
-  · cases h
-
-theorem pre_gpuDownloadPtr' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .gpuDownloadPtr as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .gpuDownloadPtr bits w := by
-  dsimp only [preB] at h
-  unfold preGpuDownloadPtr at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    argbits hb [hc, hb', ho, hd, hn]
-    exact ⟨ctxB_sound hS hc h.1, fun _ _ _ _ _ _ _ _ =>
-      fits_writable (memBR_fits hS hd hn h.2 (hrb 3 4)) (Nat.le_refl _)⟩
-  · cases h
-
 theorem pre_threadInit' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB .threadInit as S rb = true) : Contracts.Pre .threadInit bits w := by
   dsimp only [preB] at h
@@ -1079,152 +541,6 @@ theorem gemmOk_of_ready {p : Nat} {fits : ByteArray → ByteArray → ByteArray 
   ⟨hf A B C (Contracts.devBuf_size hS ha hA) (Contracts.devBuf_size hS hb hB) (Contracts.devBuf_size hS hc hC),
     opReady_of_ready hS hq _ _⟩
 
-theorem pre_cudaLaunchNamedOnStream' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaLaunchNamedOnStream as S rb = true) : Contracts.Pre .cudaLaunchNamedOnStream bits w := by
-  dsimp only [preB] at h
-  unfold preCudaLaunchNamedOnStream at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨⟨⟨hc', ho⟩, hcap⟩, hk⟩, hn⟩, hq⟩, hm⟩ := h
-    argbits hb [hc, hkp, hnp, hnb, hbp, h5, h6, h7, h8, h9, h10, hsid]
-    split at hm
-    · rename_i k hk'
-      have hx := known_bits hnb hk'
-      subst hx
-      exact ⟨ctxB_sound hS hc hc', Contracts.keepsSize_of_state hS ho, Contracts.capture_of_state hS hcap,
-        cstrB_sound hS hkp hk, cstrB_sound hS hnp hn,
-        fun p hp => bindsReady_of_fits hS (streamReady_sound hS hsid hq p hp) (memN_fits' hS hbp hm)⟩
-    · cases hm
-  · cases h
-
-theorem pre_cudaUploadAsync' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaUploadAsync as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre .cudaUploadAsync bits w := by
-  dsimp only [preB] at h
-  unfold preCudaUploadAsync at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨hc', hcap⟩, hm⟩, hq⟩ := h
-    argbits hb [hc, hbuf, hs, hn, hsid]
-    exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, fun p _ hp _ _ =>
-      ⟨fits_readable_mem (fits_forParty p (memBR_fits hS hs hn hm (hrb 2 3))) (Nat.le_refl _),
-        Contracts.ready_of_state hS (streamReady_sound hS hsid hq p hp) _ _⟩⟩
-  · cases h
-
-theorem pre_cudaUploadOffsetAsync' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaUploadOffsetAsync as S rb = true) (hrb : RbSound w bits rb) :
-    Contracts.Pre .cudaUploadOffsetAsync bits w := by
-  dsimp only [preB] at h
-  unfold preCudaUploadOffsetAsync at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨hc', hcap⟩, hm⟩, hq⟩ := h
-    argbits hb [hc, hbuf, ho, hs, hn, hsid]
-    exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, fun p _ hp _ _ =>
-      ⟨fits_readable_mem (fits_forParty p (memBR_fits hS hs hn hm (hrb 3 4))) (Nat.le_refl _),
-        Contracts.ready_of_state hS (streamReady_sound hS hsid hq p hp) _ _⟩⟩
-  · cases h
-
-theorem pre_cudaDownloadAsync' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cudaDownloadAsync as S rb = true) (hrb : RbSound w bits rb) :
-    Contracts.Pre .cudaDownloadAsync bits w := by
-  dsimp only [preB] at h
-  unfold preCudaDownloadAsync at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨hc', hcap⟩, hm⟩, hq⟩ := h
-    argbits hb [hc, hbuf, hd, hn, hsid]
-    exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, fun p _ hp _ _ =>
-      ⟨fits_writable_mem (fits_forParty p (memBR_fits hS hd hn hm (hrb 2 3))) (Nat.le_refl _),
-        Contracts.ready_of_state hS (streamReady_sound hS hsid hq p hp) _ _⟩⟩
-  · cases h
-
-theorem pre_cublasSgemvOnStream' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cublasSgemvOnStream as S rb = true) : Contracts.Pre .cublasSgemvOnStream bits w := by
-  dsimp only [preB] at h
-  unfold preCublasSgemvOnStream at h
-  split at h
-  · simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨hc', hcap⟩, ho⟩, hq⟩, hm⟩ := h
-    argbits hb [hc, htr, hm', hn, hal, ha, hx, hbe, hy, hsid]
-    split at hm
-    · rename_i tr' m' n' a' x' y' e1 e2 e3 e4 e5 e6
-      have := known_bits htr e1; subst this
-      have := known_bits hm' e2; subst this
-      have := known_bits hn e3; subst this
-      have := known_bits ha e4; subst this
-      have := known_bits hx e5; subst this
-      have := known_bits hy e6; subst this
-      split at hm
-      · rename_i na nx ny f1 f2 f3
-        simp only [Bool.and_eq_true, decide_eq_true_eq] at hm
-        obtain ⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩ := hm
-        exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, Contracts.vendorKeeps_of_state hS ho,
-          fun p hp => sgemvOk_of_ready hS (streamReady_sound hS hsid hq p hp) (devBufOf_mem f1) (devBufOf_mem f2)
-            (devBufOf_mem f3) h1 h2 h3 h4 h5⟩
-      · cases hm
-    · cases hm
-  · cases h
-
-theorem pre_cublasSgemmOnStream' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cublasSgemmOnStream as S rb = true) : Contracts.Pre .cublasSgemmOnStream bits w := by
-  dsimp only [preB] at h
-  unfold preCublasSgemmOnStream at h
-  split at h
-  · rename_i c x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11 x12 x13 x14 sid x16 x17 x18 x19 x20 x21
-      x0 ta tb m n k y6 a sa b sb y11 cc sc batch y15 oa ob oc la lb lc heq
-    have hbs := allBits_eq hb heq
-    subst hbs
-    obtain ⟨hc, -, -, -, -, -, -, -, -, -, -, -, -, -, -, hsid, -⟩ := hb
-    simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨hc', hcap⟩, ho⟩, hq⟩, hm⟩ := h
-    split at hm
-    · rename_i na nb nc f1 f2 f3
-      exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, Contracts.vendorKeeps_of_state hS ho,
-        fun p hp => gemmOk_of_ready hS (streamReady_sound hS hsid hq p hp) (devBufOf_mem f1) (devBufOf_mem f2)
-          (devBufOf_mem f3) (fun A B C hA hB hC => by
-            unfold sgemmFits; rw [gemmStridedFits_eq, hA, hB, hC]; exact hm)⟩
-    · cases hm
-  · cases h
-
-theorem pre_cublasGemmStridedBatchedExBf16' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cublasGemmStridedBatchedExBf16 as S rb = true) :
-    Contracts.Pre .cublasGemmStridedBatchedExBf16 bits w := by
-  dsimp only [preB] at h
-  unfold preCublasGemmStridedBatchedExBf16 at h
-  split at h
-  · rename_i heq
-    have hbs := allBits_eq hb heq
-    subst hbs
-    obtain ⟨hc, -⟩ := hb
-    simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨hc', hcap⟩, ho⟩, hq⟩, hm⟩ := h
-    split at hm
-    · rename_i na nb nc f1 f2 f3
-      exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, Contracts.vendorKeeps_of_state hS ho,
-        Contracts.gemmOk_of_state hS hq (devBufOf_mem f1) (devBufOf_mem f2) (devBufOf_mem f3)
-          (fun A B C hA hB hC => by rw [gemmStridedFits_eq, hA, hB, hC]; exact hm)⟩
-    · cases hm
-  · cases h
-
-theorem pre_cublasGemmExBf16' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
-    (h : preB .cublasGemmExBf16 as S rb = true) : Contracts.Pre .cublasGemmExBf16 bits w := by
-  dsimp only [preB] at h
-  unfold preCublasGemmExBf16 at h
-  split at h
-  · rename_i heq
-    have hbs := allBits_eq hb heq
-    subst hbs
-    obtain ⟨hc, -⟩ := hb
-    simp only [Bool.and_eq_true] at h
-    obtain ⟨⟨⟨⟨hc', hcap⟩, ho⟩, hq⟩, hm⟩ := h
-    split at hm
-    · rename_i na nb nc f1 f2 f3
-      exact ⟨ctxB_sound hS hc hc', Contracts.capture_of_state hS hcap, Contracts.vendorKeeps_of_state hS ho,
-        Contracts.gemmOk_of_state hS hq (devBufOf_mem f1) (devBufOf_mem f2) (devBufOf_mem f3)
-          (fun A B C hA hB hC => by rw [gemmBf16Fits_eq, hA, hB, hC]; exact hm)⟩
-    · cases hm
-  · cases h
-
 theorem pre_threadCleanup' {as : List AV} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB .threadCleanup as S rb = true) : Contracts.Pre .threadCleanup bits w := by
   dsimp only [preB] at h
@@ -1273,55 +589,16 @@ theorem preCtxN_sound (hS : S.holds w) {as : List AV} (hb : ArgBits Γ w as bits
 theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB f as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre f bits w := by
   cases f
-  case cudaInit => exact pre_cudaInit' hS hb h
-  case cudaCleanup => exact pre_cudaCleanup' hS hb h
-  case cudaCreateBuffer => exact pre_cudaCreateBuffer' hS hb h
-  case cudaSync => exact pre_cudaSync' hS hb h
-  case cudaUpload => exact pre_cudaUpload' hS hb h hrb
-  case cudaDownload => exact pre_cudaDownload' hS hb h hrb
-  case cudaUploadOffset => exact pre_cudaUploadOffset' hS hb h hrb
-  case cudaDownloadOffset => exact pre_cudaDownloadOffset' hS hb h hrb
-  case cudaLaunch => exact pre_cudaLaunch' hS hb h
-  case cudaLaunchNamed => exact pre_cudaLaunchNamed' hS hb h
-  case cudaLaunchOnStream => exact pre_cudaLaunchOnStream' hS hb h
-  case cudaStreamWaitEvent => exact pre_cudaStreamWaitEvent' hS hb h
-  case gpuInit => exact pre_gpuInit' hS hb h
-  case gpuCleanup => exact pre_gpuCleanup' hS hb h
-  case gpuCreateBuffer => exact pre_gpuCreateBuffer' hS hb h
-  case gpuDispatch => exact pre_gpuDispatch' hS hb h
-  case gpuCreatePipeline => exact pre_gpuCreatePipeline' hS hb h
-  case gpuUpload => exact pre_gpuUpload' hS hb h hrb
-  case gpuDownload => exact pre_gpuDownload' hS hb h hrb
-  case windowInit => exact pre_windowInit' hS hb h
-  case windowOpen => exact pre_windowOpen' hS hb h
-  case windowPoll => exact pre_windowPoll' hS hb h
-  case windowPresentGpuBuffer => exact pre_windowPresentGpuBuffer' hS hb h
-  case windowCleanup => exact pre_windowCleanup' hS hb h
   case lmdbCleanup => exact pre_lmdbCleanup' hS hb h
   case lmdbInit => exact pre_lmdbInit' hS hb h
   case lmdbOpen => exact pre_lmdbOpen' hS hb h
   case lmdbBeginWriteTxn => exact pre_lmdbBeginWriteTxn' hS hb h
   case lmdbCommitWriteTxn => exact pre_lmdbCommitWriteTxn' hS hb h
   case lmdbPut => exact pre_lmdbPut' hS hb h
-  case cublasSgemv => exact pre_cublasSgemv' hS hb h
-  case cublasSgemm => exact pre_cublasSgemm' hS hb h
   case lmdbCursorScan => exact pre_lmdbCursorScan' hS hb h
-  case cudaFreeBuffer => exact pre_cudaFreeBuffer' hS hb h
-  case cublasPtrArray => exact pre_cublasPtrArray' hS hb h
-  case cudaPinnedAlloc => exact pre_cudaPinnedAlloc' hS hb h
-  case gpuUploadPtr => exact pre_gpuUploadPtr' hS hb h hrb
-  case gpuDownloadPtr => exact pre_gpuDownloadPtr' hS hb h hrb
   case threadInit => exact pre_threadInit' hS hb h
   case threadJoin => exact pre_threadJoin' hS hb h
   case threadCleanup => exact pre_threadCleanup' hS hb h
-  case cudaLaunchNamedOnStream => exact pre_cudaLaunchNamedOnStream' hS hb h
-  case cudaUploadAsync => exact pre_cudaUploadAsync' hS hb h hrb
-  case cudaUploadOffsetAsync => exact pre_cudaUploadOffsetAsync' hS hb h hrb
-  case cudaDownloadAsync => exact pre_cudaDownloadAsync' hS hb h hrb
-  case cublasSgemvOnStream => exact pre_cublasSgemvOnStream' hS hb h
-  case cublasSgemmOnStream => exact pre_cublasSgemmOnStream' hS hb h
-  case cublasGemmStridedBatchedExBf16 => exact pre_cublasGemmStridedBatchedExBf16' hS hb h
-  case cublasGemmExBf16 => exact pre_cublasGemmExBf16' hS hb h
   case cosf =>
     have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
     match bits, hl with | [_], _ => trivial
@@ -1331,52 +608,32 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case powf =>
     have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
     match bits, hl with | [_, _], _ => trivial
-  case cudaEventCreate =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [], _ => exact hc
-  case cudaMemInfoFree =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [], _ => exact hc
-  case cudaMemInfoTotal =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [], _ => exact hc
-  case cudaStreamCreate =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [], _ => exact hc
-  case cudaEventDestroy =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_], _ => exact hc
-  case cudaGraphDestroy =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_], _ => exact hc
-  case cudaPinnedFree =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_], _ => exact hc
-  case cudaPinnedPtr =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_], _ => exact hc
-  case cudaGraphUpload =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_, _], _ => exact hc
-  case cudaPinnedPtrAt =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_, _, _], _ => exact hc
-  case cudaGraphBeginCapture =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_], _ => exact ⟨hc, hcap rfl⟩
-  case cudaGraphEndCapture =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with
-    | [_], _ => exact ⟨hc, fun p c _ hcc => by rw [hcap rfl] at hcc; cases hcc⟩
-  case cudaStreamDestroy =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_], _ => exact ⟨hc, hcap rfl⟩
-  case cudaStreamSync =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_], _ => exact ⟨hc, hcap rfl⟩
-  case cudaEventRecord =>
-    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
-    match rest, hl with | [_, _], _ => exact ⟨hc, hcap rfl⟩
   all_goals (dsimp only [preB] at h; cases h)
+
+
+/-- **The C strings a call reads are there**, where the checker accepts it. -/
+theorem preExt_strs (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List UInt64} (hb : ArgBits Γ w as bits)
+    (h : preExt S rb e as = true) : ∀ a ∈ Contracts.extStrs e bits, Contracts.CStr w.mem a := by
+  intro a ha
+  cases e with
+  | window f =>
+      cases f with
+      | «open» =>
+          match as, bits, hb with
+          | [t, _, _], [x, _, _], hb =>
+              simp only [Contracts.extStrs, List.mem_singleton] at ha
+              subst ha
+              simp only [preExt] at h
+              exact cstrB_sound hS hb.1 h
+          | [], _, hb => simp [preExt] at h
+          | [_], _, hb => simp [preExt] at h
+          | [_, _], _, hb => simp [preExt] at h
+          | _ :: _ :: _ :: _ :: _, _, hb => simp [preExt] at h
+          | [_, _, _], [], hb => exact hb.elim
+          | [_, _, _], [_], hb => exact hb.2.elim
+          | [_, _, _], [_, _], hb => exact hb.2.2.elim
+          | [_, _, _], _ :: _ :: _ :: _ :: _, hb => exact hb.2.2.2.elim
+      | _ => simp [Contracts.extStrs] at ha
+  | _ => simp [Contracts.extStrs] at ha
 
 end AlgorithmLib.Check

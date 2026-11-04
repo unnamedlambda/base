@@ -1,21 +1,24 @@
 import AlgorithmLib.Check.Entry
+import AlgorithmLib.Check.DrvState
 import AlgorithmLib.Proof.Typestate
-import Host.StaticChecks
+import AlgorithmLib.Check.Entry
 import Warp.BackwardWide
+import AlgorithmLib.ML.Launch.AppTrace
 
 /-!
 # The wide backward workload neither misuses a call nor faults
 
 Each entry point of the wide backward workload, proven by the condition generator from
 the typestate it starts in, for any lengths of data and output the caller
-hands over. `main` starts from memory alone: it brings the
-context up, makes its buffers, uploads and writes the binding table. `run`
-and `fetch` start from what `main` leaves: a live context whose cell holds it,
-every device access the default stream's (`devSeq`), kernels and cuBLAS that
-keep buffer sizes (`oracles`), and each kernel's text in the arena, within its slot: the binding table the
-entries rewrite lies past every slot, so the texts outlast it. None of
-them needs to know which buffers `main` made: a call handed a buffer that does
-not exist answers `-1`.
+hands over. The program calls the CUDA driver directly, in its standard
+layout (`Drv.App`). `main` starts from the driver loaded and untouched, the
+kernels' PTX in the arena with the signature each declares: it brings the
+context up, makes the fourteen allocations, loads the twelve kernels, writes
+their parameters and uploads the host's arrays. The other entry points start
+from what `main` leaves (`Drv.App.runTS`): the context current, every
+allocation live with its pointer in its slot, every function looked up, every
+kernel's parameters written, every device access the default stream's
+(`devSeq`), and kernels that keep allocation sizes (`oracles`).
 
 Not faulting means every load and store finds the bytes it reaches,
 and every operation answers.
@@ -30,24 +33,10 @@ namespace CudaSafe
 -- BackwardWide
 
 abbrev BackwardWideLoad : World → Prop := Contracts.TState.holds
-  [.part .cudaDevice true, .part .frozen false, .oracles, .room .arena BackwardWide.MEM_SIZE, .room .data (6 * BackwardWide.N * 4 + BackwardWide.N * BackwardWide.N * 4)]
+  (BackwardWide.app.loadTS ++ [.room .data BackwardWide.HOST_BYTES])
 
 abbrev BackwardWideRun : World → Prop := Contracts.TState.holds
-  [.part .frozen false, .part .cuda true, .part .capturing false, .devSeq, .oracles,
-   .room .arena BackwardWide.MEM_SIZE, .room .out (BackwardWide.N * BackwardWide.N * 4),
-   .cell (regionBase .arena + UInt64.ofNat ContextSlots.cuda) cudaCtx,
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_OFF) (BackwardWide.PTX_DW_OFF - BackwardWide.PTX_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_DW_OFF) (BackwardWide.PTX_SB_OFF - BackwardWide.PTX_DW_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_SB_OFF) (BackwardWide.PTX_T_OFF - BackwardWide.PTX_SB_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_T_OFF) (BackwardWide.PTX_Q_OFF - BackwardWide.PTX_T_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_Q_OFF) (BackwardWide.PTX_S_OFF - BackwardWide.PTX_Q_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_S_OFF) (BackwardWide.PTX_DXR_OFF - BackwardWide.PTX_S_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_DXR_OFF) (BackwardWide.PTX_FWD_OFF - BackwardWide.PTX_DXR_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_FWD_OFF) (BackwardWide.PTX_Y_OFF - BackwardWide.PTX_FWD_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_Y_OFF) (BackwardWide.PTX_DY_OFF - BackwardWide.PTX_Y_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_DY_OFF) (BackwardWide.PTX_SGD_OFF - BackwardWide.PTX_DY_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_SGD_OFF) (BackwardWide.PTX_ADJ_OFF - BackwardWide.PTX_SGD_OFF),
-   .cstrIn (regionBase .arena + UInt64.ofNat BackwardWide.PTX_ADJ_OFF) (BackwardWide.BIND_OFF - BackwardWide.PTX_ADJ_OFF)]
+  (BackwardWide.app.runTS ++ [.room .out (BackwardWide.N * BackwardWide.N * 4)])
 
 ship_entry BackwardWide_load : BackwardWide.loadFn under BackwardWideLoad
 
@@ -85,4 +74,29 @@ ship_entry BackwardWide_runAdj : BackwardWide.runAdjFn under BackwardWideRun
 
 ship_entry BackwardWide_runBwdAll : BackwardWide.runBwdAllFn under BackwardWideRun
 
+set_option maxRecDepth 200000 in
+set_option maxHeartbeats 4000000 in
+/-- **Every run of the shipped backward pass that ends launches the backward
+    kernels in pipeline order on the default stream, then waits**: the calls
+    are read off the shipped body by the checker, not assumed. -/
+theorem BackwardWide_runBwdAll_calls (cfg : Cfg) (dataLen outLen : UInt64) (w : World) (h : BackwardWideRun w)
+    {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runBwdAllFn : Prog Slot Lvl Unit)) = .ok obs w') :
+    (BackwardWide.app.runCalls BackwardWide.bwdAllSeq).Covers w obs := by
+  check_calls
+
+/-- **The launches every run of the shipped backward pass makes are the proven
+    three-stage pipeline** (`bwdPipelineFull`), so what such a run computes is
+    that pipeline's denotation (`bwdAll_host_computes`). -/
+theorem BackwardWide_runBwdAll_realises (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
+    (h : BackwardWideRun w) {obs : List Obs} {w' : World}
+    (hr : Sem.run cfg (runArgs dataLen outLen) w (emit (BackwardWide.runBwdAllFn : Prog Slot Lvl Unit)) = .ok obs w') :
+    ∃ cs, Check.callsOf obs = (Check.callsOf w.obs).reverse ++ cs ∧
+      ML.pipelineOf? BackwardWide.bwdAllTable none (ML.appLaunchesOf BackwardWide.app cs) =
+        some BackwardWide.bwdPipelineFull := by
+  obtain ⟨cs, e, hc⟩ := BackwardWide_runBwdAll_calls cfg dataLen outLen w h hr
+  exact ⟨cs, e, by rw [ML.launchesOf_runCalls (by decide) hc]; exact BackwardWide.bwdAll_realises⟩
+
 end CudaSafe
+
+#print axioms CudaSafe.BackwardWide_runBwdAll_realises

@@ -136,15 +136,15 @@ def GemmRuns (w : World) (ea eb ec : Nat)
         ic ≠ ia ∧ ic ≠ ib ∧ (w.mem.load pa 4).isSome = true ∧ (w.mem.load pb 4).isSome = true ∧
         OpReady (w.dev.raceFor p) p [ia, ib, ic] [ic])
 
-/-- The same for an `sgemv`, whose operands start their allocations. -/
+/-- The same for an `sgemv`. -/
 def SgemvRuns (w : World) (h trans m n pa A lda x incx pb y incy : UInt64) : Prop :=
   ∃ p, w.dev.blasParty? h = some p ∧
     (sgemvInvalid trans m n lda incx incy = false →
       sgemvUnstated m n lda incx incy = false ∧
-      ∃ ia ix iy,
-        w.dev.operand? A 4 ((asI32 m).toNat * (asI32 n).toNat) = some (ia, 0) ∧
-        w.dev.operand? x 4 (sgemvLens trans m n).1 = some (ix, 0) ∧
-        w.dev.operand? y 4 (sgemvLens trans m n).2 = some (iy, 0) ∧
+      ∃ ia oa ix ox iy oy,
+        w.dev.operand? A 4 ((asI32 m).toNat * (asI32 n).toNat) = some (ia, oa) ∧
+        w.dev.operand? x 4 (sgemvLens trans m n).1 = some (ix, ox) ∧
+        w.dev.operand? y 4 (sgemvLens trans m n).2 = some (iy, oy) ∧
         iy ≠ ia ∧ iy ≠ ix ∧ (w.mem.load pa 4).isSome = true ∧ (w.mem.load pb 4).isSome = true ∧
         OpReady (w.dev.raceFor p) p [ia, ix, iy] [iy])
 
@@ -319,6 +319,10 @@ def cudaStepPre (f : CudaFn) (bits : List UInt64) : World → Prop :=
   | .graphInstantiate => match bits with
     | [pexec, hgraph, flags] => fun w =>
       w.dev.live = true ∧ flags = 0 ∧ GraphLive w.dev hgraph ∧ Slot8 w.mem pexec
+    | _ => fun _ => False
+  | .graphUpload => match bits with
+    | [hexec, hstream] => fun w =>
+      w.dev.live = true ∧ ExecLive w.dev hexec ∧ (w.dev.streamParty? hstream).isSome
     | _ => fun _ => False
   | .graphLaunch => match bits with
     | [hexec, hstream] => fun w => w.dev.live = true ∧ GraphRunsOn w hexec hstream
@@ -564,7 +568,7 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
   | .wgpu .createInstance => []
   | .wgpu .requestAdapter =>
       [("an instance held", .documented "webgpu.h: a handle names a live object of its type; wgpu.rs takes it as that type"),
-       ("an adapter, or 0 without one", .unmodelled "the world's wgAdapter")]
+       ("an adapter, or 0 without one", .unmodelled "the world's gpuAdapter")]
   | .wgpu .requestDevice =>
       [("an adapter held", .documented "webgpu.h: a handle names a live object of its type; wgpu.rs takes it as that type"),
        ("a device with no scope pushed", .documented "WebGPU: a new device's error scope stack is empty")]
@@ -631,7 +635,7 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
        ("waits for the queue", .observed "WgpuCorpus: bytes read back after a submit")]
   | .wgpu .instanceCreateSurface =>
       [("a window the window library holds open", .documented "wgpu.rs: a surface of the window's handle keeps it alive"),
-       ("a surface", .observed "WindowCorpus, with a display")]
+       ("a surface", .observed "the window demos' smoke tests, with a display")]
   | .wgpu .surfaceConfigure =>
       [("device held, RGBA8 or BGRA8, nonzero size", .documented "WebGPU: surface configuration"),
        ("no texture outstanding", .documented "wgpu: a surface texture must be presented or dropped before reconfiguring")]
@@ -642,7 +646,7 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
       [("the texture its surface holds, used up", .documented "wgpu: SurfaceTexture::present consumes the texture")]
   | .wgpu .textureCreateView => [("a texture held", .documented "wgpu.rs: the texture's default view")]
   | .window .init =>
-      [("a display", .observed "WindowCorpus: without one base_window_init answers false"),
+      [("a display", .documented "window.rs: base_window_init answers false where there is no display"),
        ("one event loop, on the first thread to ask", .documented "window.rs: winit makes one per process")]
   | .window .open =>
       [("title a C string", .documented "window.rs: base_window_open reads title to its NUL"),
@@ -762,6 +766,8 @@ def _root_.AlgorithmLib.IR.Ext.sources : Ext → List (String × Source)
       [("flags zero", .unmodelled "instantiation flags are not modelled"),
        ("graph live", .documented "a destroyed graph is undefined"),
        ("slot writable", .documented "cuGraphInstantiate writes *phGraphExec")]
+  | .cuda .graphUpload =>
+      [("graph and stream live", .documented "destroyed handles are undefined")]
   | .cuda .graphLaunch =>
       [("graph and stream live", .documented "destroyed handles are undefined"),
        ("its nodes run without a race", .documented "CUDA memory model: unordered conflicting accesses are a race")]
@@ -1127,6 +1133,10 @@ theorem cudaStepPre_safe (f : CudaFn) (bits : List UInt64) (w : World) (h : cuda
   · obtain ⟨hl, hf, ⟨i, ops, hi, hg⟩, hs⟩ := h
     obtain ⟨m, hm⟩ := Option.isSome_iff_exists.mp (hs (drvHandle kExec w.dev.execs.size))
     simp [hl, hf, hi, hg, hm]
+  -- graphUpload
+  · obtain ⟨hl, ⟨i, ops, hi, he⟩, hp⟩ := h
+    obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp hp
+    simp [hl, hi, he, hp]
   -- graphLaunch
   · obtain ⟨hl, i, ops, p, hi, he, hp, hrun⟩ := h
     obtain ⟨d', hd'⟩ := Option.isSome_iff_exists.mp hrun
@@ -1196,10 +1206,10 @@ theorem sgemvCall_isSome {w : World} {h trans m n pa A lda x incx pb y incy : UI
   obtain ⟨p, hp, hrun⟩ := hg
   unfold sgemvCall
   cases hi : sgemvInvalid trans m n lda incx incy
-  · obtain ⟨hun, ia, ix, iy, hA, hX, hY, hya, hyx, hpa, hpb, hr⟩ := hrun hi
+  · obtain ⟨hun, ia, oa, ix, ox, iy, oy, hA, hX, hY, hya, hyx, hpa, hpb, hr⟩ := hrun hi
     obtain ⟨al, hal⟩ := Option.isSome_iff_exists.mp hpa
     obtain ⟨be, hbe⟩ := Option.isSome_iff_exists.mp hpb
-    have e1 : ((0 : Nat) != 0 || (0 : Nat) != 0 || (0 : Nat) != 0 || iy == ia || iy == ix) = false := by
+    have e1 : (iy == ia || iy == ix) = false := by
       simp [hya, hyx]
     simp only [hp, hi, hun, hA, hX, hY, e1, hal, hbe, Option.bind_eq_bind, Option.bind_some,
       Bool.false_eq_true, if_false]
@@ -1452,7 +1462,10 @@ theorem ext_pre_safe (e : Ext) (bits : List UInt64) (w : World) (h : ExtPre e bi
     | wgpu f =>
         simp only [Ext.args, bind, Option.bind]
         rw [mapM_asBits_zip _ _ h.1]
-        simp only [wgpuCall, Option.isSome_map]; exact h.2
+        simp only [wgpuCall]
+        split
+        · rfl
+        · simp only [Option.isSome_map]; exact h.2
     | window f =>
         simp only [Ext.args, bind, Option.bind]
         rw [mapM_asBits_zip _ _ h.1]
@@ -1768,6 +1781,13 @@ theorem cudaStep_respects_frame (f : CudaFn) (bits : List UInt64) (w : World) (r
     obtain ⟨ops, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
     one_store hm
+  -- graphUpload
+  · split at h
+    · cases h
+    obtain ⟨ei, -, h⟩ := Option.bind_eq_some_iff.mp h
+    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+    obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
+    same_mem
   -- graphLaunch
   · split at h
     · cases h
@@ -1914,8 +1934,16 @@ theorem wgpuCall_respects_frame (f : WgpuFn) (bits : List UInt64) (w : World) (r
     (w' : World) (h : wgpuCall f bits w = some (r, w')) (a : UInt64)
     (hout : ¬ (Ext.wgpu f).frame.allows bits (r.bind asBits) a) : Unchanged w.mem w'.mem a := by
   simp only [wgpuCall] at h
-  obtain ⟨c, -, h⟩ := Option.map_eq_some_iff.mp h
   apply Unchanged.of_eq
+  split at h
+  · simp only [Option.some.injEq] at h
+    have : w' = (wgLostCall f w).2 := by rw [h]
+    rw [this]
+    unfold wgLostCall
+    split
+    · split <;> rfl
+    · rfl
+  obtain ⟨c, -, h⟩ := Option.map_eq_some_iff.mp h
   split at h
   · simp only [Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
     simp only [Ext.frame, Frame.allows, List.getD, List.getElem?_cons_zero,

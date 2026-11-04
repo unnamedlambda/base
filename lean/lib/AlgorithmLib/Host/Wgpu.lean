@@ -113,12 +113,12 @@ def wgDRelease (o : WgObj) : List UInt64 → Option WgCall
   | [h] => do let (i, _) ← w.wg.get? o h; some (.update [] [i])
   | _ => none
 
-/-- A high-performance adapter where the world has one (`wgAdapter`), and
+/-- A high-performance adapter where the world has one (`gpuAdapter`), and
     `0` where it has none. -/
 def wgDRequestAdapter : List UInt64 → Option WgCall
   | [inst] => do
       let _ ← w.wg.get? .instance inst
-      if w.wgAdapter then some (.make .adapter []) else some .none_
+      if w.gpuAdapter then some (.make .adapter []) else some .none_
   | _ => none
 
 def wgDRequestDevice : List UInt64 → Option WgCall
@@ -148,28 +148,34 @@ def wgDCreateShader : List UInt64 → Option WgCall
       some (.make (.shader text ok) ch)
   | _ => none
 
-/-- `n` entries at `ents`, each a word of `(binding, read-only)` as two
-    `u32`s: storage buffers, seen by compute. -/
+/-- A bind group layout's entry: a word holding `(binding, read-only)` as two
+    `u32`s, the binding low. -/
+def wgBglEntry (m : Mem) (a : UInt64) : Option (Nat × Bool) := do
+  let e ← m.load a 8
+  some (e.toUInt32.toNat, (e >>> 32).toUInt32 != 0)
+
+/-- `n` entries at `ents` (`wgBglEntry`): storage buffers, seen by compute. -/
 def wgDCreateBgl : List UInt64 → Option WgCall
   | [d, ents, n] => do
       let _ ← w.wg.device? d
-      let es ← wgArray ents n 8 fun a => do
-        let b ← w.mem.load a 4
-        let ro ← w.mem.load (a + 4) 4
-        some (b.toNat, ro != 0)
+      let es ← wgArray ents n 8 (wgBglEntry w.mem)
       if (es.map (·.1)).Nodup then some (.make (.bgl (some es)) []) else none
+  | _ => none
+
+/-- A pipeline layout's group: the entries of the layout a word at `a` is a
+    handle to. -/
+def wgGroupAt (s : WgState) (m : Mem) (a : UInt64) : Option (List (Nat × Bool)) := do
+  let h ← m.load a 8
+  let (_, l) ← s.get? .bindGroupLayout h
+  match l with
+  | .bgl (some es) => some es
   | _ => none
 
 /-- `n` group layouts, a handle a word, at `arr`. -/
 def wgDCreatePlayout : List UInt64 → Option WgCall
   | [d, arr, n] => do
       let _ ← w.wg.device? d
-      let gs ← wgArray arr n 8 fun a => do
-        let h ← w.mem.load a 8
-        let (_, l) ← w.wg.get? .bindGroupLayout h
-        match l with
-        | .bgl (some es) => some es
-        | _ => none
+      let gs ← wgArray arr n 8 (wgGroupAt w.wg w.mem)
       some (.make (.playout gs) [])
   | _ => none
 
@@ -526,16 +532,18 @@ def WgState.setAll (s : WgState) (ch : List (Nat × WgData)) : WgState :=
 
 /-- Objects the program no longer holds. -/
 def WgState.freeAll (s : WgState) (is : List Nat) : WgState :=
-  is.foldl (fun s i => { objs := s.objs.modify i fun (_, d) => (false, d) }) s
+  is.foldl (fun s i => { s with objs := s.objs.modify i fun (_, d) => (false, d) }) s
 
 def WgState.bytes (s : WgState) (i : Nat) : ByteArray :=
   match s.data? i with
   | some (.buffer _ bs) => bs
   | _ => ByteArray.empty
 
+/-- New contents for buffer `i`, at the size it was made with: a buffer's
+    size never changes. -/
 def WgState.putBytes (s : WgState) (i : Nat) (bs : ByteArray) : WgState :=
   match s.data? i with
-  | some (.buffer u _) => s.set i (.buffer u bs)
+  | some (.buffer u old) => s.set i (.buffer u (exactly bs old.size))
   | _ => s
 
 /-- The buffers a dispatch binds, in its layout's order: `(buffer, read-only)`. -/
@@ -558,7 +566,7 @@ def runWgCmd (sh : Dispatch → List ByteArray → List ByteArray) (s : WgState)
           let outs := sh ⟨src, bs, xyz⟩ ins
           bs.zipIdx.foldl (fun s ((i, ro), k) =>
             if ro then s
-            else s.putBytes i (exactly (outs.getD k ByteArray.empty) (ins.getD k ByteArray.empty).size)) s
+            else s.putBytes i (outs.getD k ByteArray.empty)) s
       | _ => s
   | .draw v g =>
       match s.data? v, g.bind s.data? with
@@ -574,14 +582,27 @@ def WgState.run (sh : Dispatch → List ByteArray → List ByteArray) (s : WgSta
   | some (.cmdbuf cmds _) => ((cmds.foldl (runWgCmd sh) s).set ci (.cmdbuf cmds true)).freeAll [ci]
   | _ => s
 
+/-- How many objects wgpu's handles name: a call that would make one more
+    loses the device. -/
+def WG_OBJS : Nat := 2 ^ 48 - 1
+
+/-- The device lost, an object that is never live counted: what a call that
+    would make an object past `WG_OBJS`, or any while the device is lost, does. -/
+def WgState.lose (s : WgState) (d : WgData) : UInt64 × WgState :=
+  (wgHandle s.objs.size, { objs := s.objs.push (false, d), lost := true })
+
 /-- **What a decoded call does to wgpu.** It always answers, and it leaves
     program memory alone: the one call that writes it, a buffer read, does so
     in `wgpuCall`, at the address it was handed. -/
 def wgEffect (c : WgCall) (w : World) : Option V × World :=
   match c with
   | .make d ch fr =>
-      let (h, s) := ((w.wg.setAll ch).freeAll fr).push d
-      (some (.sc .i64 h), { w with wg := s })
+      if w.wg.objs.size < WG_OBJS then
+        let (h, s) := ((w.wg.setAll ch).freeAll fr).push d
+        (some (.sc .i64 h), { w with wg := s })
+      else
+        let (h, s) := w.wg.lose d
+        (some (.sc .i64 h), { w with wg := s })
   | .update ch fr => (none, { w with wg := (w.wg.setAll ch).freeAll fr })
   | .submit ci => (none, { w with wg := w.wg.run w.shader ci })
   | .write i off bs => (none, { w with wg := w.wg.putBytes i (overwrite (w.wg.bytes i) off bs) })
@@ -590,8 +611,12 @@ def wgEffect (c : WgCall) (w : World) : Option V × World :=
       (some (ofInt .i32 (if e then -1 else 0)),
         { w with wg := (w.wg.set dev (.device rest)).freeAll [si] })
   | .acquire si =>
-      let (h, s) := w.wg.push (.texture si none)
-      (some (.sc .i64 h), { w with wg := s.set si (.surface true (some w.wg.objs.size)) })
+      if w.wg.objs.size < WG_OBJS then
+        let (h, s) := w.wg.push (.texture si none)
+        (some (.sc .i64 h), { w with wg := s.set si (.surface true (some w.wg.objs.size)) })
+      else
+        let (h, s) := w.wg.lose (.texture si none)
+        (some (.sc .i64 h), { w with wg := s })
   | .present si t =>
       let shown := match w.wg.data? t with
         | some (.texture _ (some bs)) => [bs]
@@ -599,9 +624,20 @@ def wgEffect (c : WgCall) (w : World) : Option V × World :=
       (none, { w with wg := (w.wg.set si (.surface true none)).freeAll [t], shown := w.shown ++ shown })
   | .none_ => (some (.sc .i64 0), w)
 
+/-- What a call does once the device is lost: nothing, but count the object
+    one that makes an object answers a handle to. -/
+def wgLostCall (f : WgpuFn) (w : World) : Option V × World :=
+  match (Ext.wgpu f).sig.2 with
+  | some t =>
+      if t = .i64 then (some (.sc .i64 (w.wg.lose .instance).1), { w with wg := (w.wg.lose .instance).2 })
+      else (some (ofInt t 0), w)
+  | none => (none, w)
+
 /-- **What a wgpu call does**: decoded, then carried out; a buffer read's
-    bytes land where the caller asked. -/
+    bytes land where the caller asked. Once the device is lost, nothing
+    (`wgLostCall`). -/
 def wgpuCall (f : WgpuFn) (bits : List UInt64) (w : World) : Option (Option V × World) :=
+  if w.wg.lost then some (wgLostCall f w) else
   (wgDecode f bits w).map fun c =>
     let e := wgEffect c w
     match f, bits with
@@ -613,6 +649,168 @@ def wgpuCall (f : WgpuFn) (bits : List UInt64) (w : World) : Option (Option V ×
     | _, _ => e
 
 theorem wgEffect_mem (c : WgCall) (w : World) : (wgEffect c w).2.mem = w.mem := by
-  cases c <;> rfl
+  cases c <;> simp only [wgEffect] <;> (try split) <;> rfl
+
+
+-- ---------------------------------------------------------------------------
+-- What a typestate keeps of an object
+-- ---------------------------------------------------------------------------
+
+/-- **What a typestate keeps of a wgpu object**: its kind and what the calls
+    decode against. A buffer's bytes, an encoder's commands, a shader's source
+    and a texture's image are not kept.
+
+    An object made once and kept is named by its index. One made afresh each
+    time round a loop — an encoder, a pass, a command buffer, a surface's
+    texture and its view — is the one live object of its kind
+    (`WgState.isOne`), and names the others of these it rests on as the one
+    of theirs: a pass the one encoder, a view the one texture, a render pass
+    the one view. -/
+inductive WgShape where
+  | instance | adapter
+  | device (scopes : List Bool)
+  | queue
+  | buffer (usage : UInt64) (size : Nat)
+  | shader (valid : Bool)
+  | bgl (entries : Option (List (Nat × Bool)))
+  | playout (groups : List (List (Nat × Bool)))
+  | cpipe (groups : List (List (Nat × Bool))) (valid : Bool)
+  | bgroup (entries : List (Nat × Nat))
+  | encoder (isOpen : Bool)
+  /-- On the one encoder, not ended. -/
+  | cpass (pipe : Option Nat) (bound : List (Nat × Nat))
+  /-- Not submitted. -/
+  | cmdbuf
+  /-- Configured or not; its current texture the one texture, where there is
+      one. -/
+  | surface (configured : Bool)
+  /-- Of surface `surf`. -/
+  | texture (surf : Nat)
+  /-- Of the one texture. -/
+  | view
+  | rpipe (valid : Bool)
+  /-- On the one encoder, drawing to the one view, not ended. -/
+  | rpass (pipe group : Option Nat)
+  | scope (dev level : Nat)
+  deriving Repr, DecidableEq, Lean.ToExpr
+
+/-- The kind of object a shape is of. -/
+def WgShape.kind : WgShape → WgObj
+  | .instance => .instance | .adapter => .adapter | .device _ => .device | .queue => .queue
+  | .buffer .. => .buffer | .shader _ => .shaderModule | .bgl _ => .bindGroupLayout
+  | .playout _ => .pipelineLayout | .cpipe .. => .computePipeline | .bgroup _ => .bindGroup
+  | .encoder _ => .commandEncoder | .cpass .. => .computePass | .cmdbuf => .commandBuffer
+  | .surface _ => .surface | .texture _ => .texture | .view => .textureView
+  | .rpipe _ => .renderPipeline | .rpass .. => .renderPass | .scope .. => .errorScope
+
+/-- The kinds whose live objects a shape names as the one of theirs. -/
+def WgShape.reads : WgShape → List WgObj
+  | .cpass .. => [.commandEncoder]
+  | .surface _ | .view => [.texture]
+  | .rpass .. => [.commandEncoder, .textureView]
+  | _ => []
+
+/-- Whether object `i` is the one live object of kind `k`: it is live and of
+    that kind, and no other live object is. -/
+def WgState.isOne (s : WgState) (k : WgObj) (i : Nat) : Bool :=
+  decide (i < s.objs.size) && (List.range s.objs.size).all fun j =>
+    match s.objs[j]? with
+    | some (true, d) => decide (d.kind = k) == decide (j = i)
+    | _ => j != i
+
+/-- No live object is of kind `k`. -/
+def WgState.NoneOf (s : WgState) (k : WgObj) : Prop :=
+  ∀ (j : Nat) (d : WgData), s.objs[j]? = some (true, d) → d.kind ≠ k
+
+/-- Whether object data `d` has shape `sh`, the objects it rests on read in `s`. -/
+def WgState.Fits (s : WgState) : WgData → WgShape → Prop
+  | .instance, .instance | .adapter, .adapter | .queue, .queue => True
+  | .device sc, .device sc' => sc = sc'
+  | .buffer u bs, .buffer u' n => u = u' ∧ bs.size = n
+  | .shader _ v, .shader v' => v = v'
+  | .bgl e, .bgl e' => e = e'
+  | .playout g, .playout g' => g = g'
+  | .cpipe _ g v, .cpipe g' v' => g = g' ∧ v = v'
+  | .bgroup e, .bgroup e' => e = e'
+  | .encoder _ o, .encoder o' => o = o'
+  | .cpass e q b ended, .cpass q' b' => s.isOne .commandEncoder e = true ∧ q = q' ∧ b = b' ∧ ended = false
+  | .cmdbuf _ used, .cmdbuf => used = false
+  | .surface c cur, .surface c' => c = c' ∧
+      match cur with
+      | none => s.NoneOf .texture
+      | some x => s.isOne .texture x = true
+  | .texture si _, .texture si' => si = si'
+  | .view t, .view => s.isOne .texture t = true
+  | .rpipe v, .rpipe v' => v = v'
+  | .rpass e v q g ended, .rpass q' g' => s.isOne .commandEncoder e = true ∧
+      s.isOne .textureView v = true ∧ q = q' ∧ g = g' ∧ ended = false
+  | .scope d l, .scope d' l' => d = d' ∧ l = l'
+  | _, _ => False
+
+theorem wgIndex_handle {i : Nat} (h : i < 2 ^ 48 - 1) : wgIndex (wgHandle i) = some i := by
+  unfold wgIndex wgHandle
+  generalize hB : (2:Nat) ^ 56 + 10 * 2 ^ 48 = B
+  have hB' : B + 2 ^ 48 < 2 ^ 64 := by rw [← hB]; decide
+  have h11 : (2:Nat) ^ 56 + 11 * 2 ^ 48 = B + 2 ^ 48 := by rw [← hB]
+  rw [h11]
+  have : (UInt64.ofNat (B + i + 1)).toNat = B + i + 1 := by
+    rw [UInt64.toNat_ofNat']; exact Nat.mod_eq_of_lt (by omega)
+  rw [this, if_pos (by omega)]
+  simp only [Option.some.injEq]; omega
+
+theorem wgHandle_of_index {h : UInt64} {i : Nat} (e : wgIndex h = some i) : h = wgHandle i := by
+  unfold wgIndex at e
+  unfold wgHandle
+  generalize hB : (2:Nat) ^ 56 + 10 * 2 ^ 48 = B at e ⊢
+  have hB' : B + 2 ^ 48 < 2 ^ 64 := by rw [← hB]; decide
+  have h11 : (2:Nat) ^ 56 + 11 * 2 ^ 48 = B + 2 ^ 48 := by rw [← hB]
+  rw [h11] at e
+  by_cases hr : B + 1 ≤ h.toNat ∧ h.toNat < B + 2 ^ 48
+  · rw [if_pos hr] at e
+    simp only [Option.some.injEq] at e
+    subst e
+    apply UInt64.toNat_inj.mp
+    rw [UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
+    omega
+  · rw [if_neg hr] at e; cases e
+
+theorem WgState.isOne_spec {s : WgState} {k : WgObj} {i : Nat} :
+    s.isOne k i = true ↔ (∃ d, s.objs[i]? = some (true, d) ∧ d.kind = k) ∧
+      ∀ j d, s.objs[j]? = some (true, d) → d.kind = k → j = i := by
+  unfold WgState.isOne
+  simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, List.mem_range]
+  constructor
+  · rintro ⟨hi, hall⟩
+    refine ⟨?_, fun j d hj hk => ?_⟩
+    · have := hall i hi
+      cases h : s.objs[i]? with
+      | none => rw [Array.getElem?_eq_none_iff] at h; omega
+      | some p =>
+        obtain ⟨l, d⟩ := p
+        rw [h] at this
+        cases l
+        · simp at this
+        · exact ⟨d, rfl, by simpa using this⟩
+    · have hj' : j < s.objs.size := by
+        have := (Array.getElem?_eq_some_iff.mp hj).1; exact this
+      have := hall j hj'
+      rw [hj] at this
+      simpa [hk] using this
+  · rintro ⟨⟨d, hd, hk⟩, hu⟩
+    refine ⟨(Array.getElem?_eq_some_iff.mp hd).1, fun j _ => ?_⟩
+    cases h : s.objs[j]? with
+    | none =>
+        have : j ≠ i := by rintro rfl; rw [hd] at h; cases h
+        simpa using this
+    | some p =>
+      obtain ⟨l, d'⟩ := p
+      cases l
+      · have : j ≠ i := by rintro rfl; rw [hd] at h; cases h
+        simpa using this
+      · by_cases hk' : d'.kind = k
+        · have := hu j d' h hk'
+          subst this; simp [hk']
+        · have : j ≠ i := by rintro rfl; rw [hd] at h; cases h; exact hk' hk
+          simp [hk', this]
 
 end AlgorithmLib.HProg.Sem

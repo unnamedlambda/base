@@ -68,17 +68,6 @@ theorem devOp_seq {d d' : Dev} {w : World} {op : DevOp} {rs ws : List Nat}
     · exact run_ok h
   · exact run_ok h
 
-theorem cudaLaunchOn_seq {w : World} {kernel entry : String} {nBufs bindPtr : UInt64}
-    {dims : List UInt64} {r : Option V} {d : Dev}
-    (hk : cudaLaunchOn w defaultParty kernel entry nBufs bindPtr dims = some (r, d)) (ht : DefaultOnly w.dev.race) :
-    DefaultOnly d.race := by
-  unfold cudaLaunchOn at hk
-  obtain ⟨_, _, hk⟩ := Option.bind_eq_some_iff.mp hk
-  split at hk
-  · simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact ht
-  · obtain ⟨d', hop, hk⟩ := Option.bind_eq_some_iff.mp hk
-    simp only [devFail, devOk, devI64, cudaFail, cudaI64, Option.some.injEq, Prod.mk.injEq] at hk; obtain ⟨-, rfl⟩ := hk; exact devOp_seq hop ht
-
 theorem sgemvOn_seq {w : World} {trans m n alpha a x beta y : UInt64} {r : Option V}
     {d : Dev} (hk : sgemvOn w defaultParty trans m n alpha a x beta y = some (r, d)) (ht : DefaultOnly w.dev.race) :
     DefaultOnly d.race := by
@@ -113,49 +102,10 @@ macro "seq_close" : tactic => `(tactic| (
     | refine syncWrite_seq (by assumption) ?_
     | refine syncRead_seq (by assumption) ?_
     | refine memInfoOf_seq (by assumption) ?_
-    | refine cudaLaunchOn_seq (by assumption) ?_
     | refine sgemvOn_seq (by assumption) ?_
     | refine sgemmOn_seq (by assumption) ?_
     | refine DefaultOnly.sync ?_ _
     | refine DefaultOnly.joinInto ?_ _ _
     | refine DefaultOnly.op ?_ (by assumption))))
-
-/-- A fresh device records no access. -/
-theorem seq_cudaInit {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaInit bits w = some (r, w')) : DefaultOnly w'.dev.race := by
-  unfold ffiCudaInit at h
-  split at h
-  · split at h <;>
-    · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-      exact defaultOnly_empty
-  · cases h
-
-theorem seq_cudaCleanup {bits : List UInt64} {w : World} {r w'}
-    (h : ffiCudaCleanup bits w = some (r, w')) : DefaultOnly w'.dev.race := by
-  unfold ffiCudaCleanup at h
-  split at h
-  · obtain ⟨_, _, h⟩ := Option.bind_eq_some_iff.mp h
-    simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h
-    exact defaultOnly_empty
-  · cases h
-
-/-- The calls that issue work only on the default stream, and those that make,
-    wait on and drop streams and page-locked memory without issuing any. -/
-def seqKeepers : List IR.Ffi :=
-  [.cudaCreateBuffer, .cudaUpload, .cudaUploadOffset, .cudaDownload, .cudaDownloadOffset, .cudaFreeBuffer, .cudaSync, .cudaLaunch, .cudaLaunchNamed, .cublasSgemv, .cublasSgemm, .cublasGemmExBf16, .cublasGemmStridedBatchedExBf16, .cudaPinnedAlloc, .cudaPinnedFree, .cudaPinnedPtr, .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cudaStreamCreate, .cudaStreamSync, .cudaStreamDestroy, .cudaEventElapsedMsBits, .cublasPtrArray, .cudaGraphDestroy, .cudaGraphUpload]
-
-set_option maxHeartbeats 4000000 in
-/-- **A call that issues work only on the default stream keeps every access
-    the default stream's.** -/
-theorem callBits_seq (f : IR.Ffi) (hf : f ∈ seqKeepers) {bits : List UInt64} {w : World} {r : Option V}
-    {w' : World} (h : callBits f bits w = some (r, w')) (hd : DefaultOnly w.dev.race) :
-    DefaultOnly w'.dev.race := by
-  cases f <;> first
-    | exact absurd hf (by decide)
-    | (dsimp only [callBits] at h; unfold_head h
-       first
-         | (refine devOnly_seq h ?_; intro r d hk; dev_walk hk <;> seq_close)
-         | (dev_walk h <;> seq_close))
 
 end AlgorithmLib.Device

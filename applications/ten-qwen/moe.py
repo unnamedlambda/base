@@ -2,9 +2,9 @@
 """Sparse mixture-of-experts, dispatched by rebinding.
 
 Thirty-two experts are resident; the launch sequence has two slots.  The host
-runs the router, reads the row it wrote, ranks it, and writes six integers into
-the bind array — the ids of the chosen experts' weights, into the entries the
-slot kernels read.  No kernel is re-emitted and no weight is copied, which is
+runs the router, reads the row it wrote, ranks it, and hands the choice to
+`bindExperts`, which writes six pointers — to the chosen experts' weights in
+the store — into the slots the slot kernels' parameters are read from.  No kernel is re-emitted and no weight is copied, which is
 what `moe_slots_are_bound` says: the term names `MSLOT0…`, never a buffer in
 the store.
 
@@ -111,7 +111,7 @@ def main():
     per_expert = t_exp / MUSED
     print()
     print(f"router   : {t_route:7.1f} us   ({len(chosen)} of {NE} scored)")
-    print(f"bind     : {t_bind:7.1f} us   ({3 * MUSED} integers, no copy)")
+    print(f"bind     : {t_bind:7.1f} us   ({3 * MUSED} pointers, no copy)")
     print(f"experts  : {t_exp:7.1f} us   ({per_expert:.1f} us per slot)")
     print(f"sparse   : {t_route + t_bind + t_exp:7.1f} us")
     print(f"dense    : {t_route + per_expert * NE:7.1f} us   "

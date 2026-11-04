@@ -1,5 +1,6 @@
 import AlgorithmLib.Check.Entry
 import AlgorithmLib.Proof.Typestate
+import AlgorithmLib.Check.WgState
 import Demo.RaymarchDemo
 
 /-!
@@ -19,36 +20,11 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.Prog AlgorithmLib.HProg Algorithm
 
 namespace WgpuSafe
 
-/-- What the game starts in, but for whether there is a display. -/
-abbrev RaymarchMain : World → Prop := Contracts.TState.holds
-  [.part .gpuAdapter true, .part .frozen false, .part .gpu false, .part .win false, .room .arena 934112,
-   .cstrIn (regionBase .arena + 80) 8192]
+/-- What the game starts in: wgpu untouched, in its terms; with a display or
+    without, which the window library's answer tells the game. -/
+abbrev RaymarchMain : World → Prop := Contracts.TState.holds Raymarch.app.loadTS
 
-abbrev RaymarchMainOn (d : Bool) : World → Prop := Contracts.TState.holds
-  [.part .display d, .part .gpuAdapter true, .part .frozen false, .part .gpu false, .part .win false, .room .arena 934112,
-   .cstrIn (regionBase .arena + 80) 8192]
-
-theorem Raymarch_main_fine :
-    Fine (emitGo (fnBody ptrParams (Raymarch.mainBody : Prog Slot Lvl Unit)) ⟨4, 0, [], [], [], none⟩).2 :=
-  ⟨by decide +kernel, by decide +kernel⟩
-
-ship_entry Raymarch_main_display : Raymarch.mainBody under (RaymarchMainOn true)
-
-ship_entry Raymarch_main_headless : Raymarch.mainBody under (RaymarchMainOn false)
-
-/-- **The game neither misuses a call nor faults**, whether or not there is a display. -/
-theorem Raymarch_main_no_misuse (cfg : Cfg) (dataLen outLen : UInt64) (w : World)
-    (h : RaymarchMain w) (m : String) :
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.mainBody : Prog Slot Lvl Unit)) ≠ .misuse m ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (Raymarch.mainBody : Prog Slot Lvl Unit)) ≠ .fault m := by
-  have h' : RaymarchMainOn w.display w := by
-    intro f hf
-    rcases List.mem_cons.mp hf with rfl | hf
-    · rfl
-    · exact h f hf
-  cases hd : w.display
-  · rw [hd] at h'; exact Raymarch_main_headless_no_misuse cfg dataLen outLen w h' m
-  · rw [hd] at h'; exact Raymarch_main_display_no_misuse cfg dataLen outLen w h' m
+ship_entry Raymarch_main : Raymarch.mainBody under RaymarchMain
 
 end WgpuSafe
 
