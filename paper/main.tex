@@ -239,7 +239,7 @@ buffer, follows.
 \draw[call] (-3.95,0.7) -- node[lbl,below=1pt] {store} (0.85,0.7);
 
 \draw[call] (cpu.south) --
-  node[lbl,right=2pt] {call fn0\\\%cl\_file\_read\_to\_ptr} (nvme.north);
+  node[lbl,right=2pt] {call fn0\\\%base\_fs\_read} (nvme.north);
 
 \draw[call] (cpu.south east) --
   node[lbl,pos=0.55,above right=1pt and 0pt]
@@ -247,7 +247,7 @@ buffer, follows.
   (gpu.north west);
 
 \draw[call] (cpu.north west) to[out=125,in=55]
-  node[lbl,above=0pt] {call fn2\ \ \%cl\_thread\_spawn} (cpu.north east);
+  node[lbl,above=0pt] {call fn2\ \ \%base\_thread\_spawn} (cpu.north east);
 \end{tikzpicture}
 \caption{A system board along with how its capabilities are accessed by CLIF.
 Arithmetic and memory access are instructions such as \texttt{iadd}, loads and
@@ -256,20 +256,19 @@ stores. Everything else is reached by a call to a board primitive.}
 \end{figure}
 
 \begin{codeblock}
-\begin{lstlisting}[style=code,morekeywords={pub,crate,unsafe,extern,fn}]
-pub(crate) unsafe extern "C" fn cl_file_read_to_ptr(
-    path_ptr: *const u8,
-    path_cap: i64,
-    dst_ptr: *mut u8,
-    file_offset: i64,
-    size: i64,
+\begin{lstlisting}[style=code,morekeywords={unsafe,extern,fn}]
+unsafe extern "C" fn base_fs_read(
+    file: *mut File,
+    buf: *mut u8,
+    len: i64,
+    offset: i64,
 ) -> i64 { ... }
 \end{lstlisting}
 \end{codeblock}
 
-It takes a file path and a destination to write the file contents to,
-and returns the count read, or $-1$ to indicate a failure. The pointers are
-plain addresses; for a CLIF program they point into the arena, the only memory
+It takes an open file and a destination to write the file contents to,
+and returns the count read, or $-1$ to indicate a failure. The destination is a
+plain address; for a CLIF program it points into the arena, the only memory
 it has. The call itself is unremarkable: it sits among the arithmetic that
 computed its arguments, and what it returns is a value like any other
 (Figure~\ref{fig:cliftext}).
@@ -278,13 +277,13 @@ computed its arguments, and what it returns is a value like any other
 \centering
 \begin{codeblock}
 \begin{lstlisting}[style=code]
-sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-fn0 = %cl_file_read_to_ptr sig0
+sig0 = (i64, i64, i64, i64) -> i64 system_v
+fn0 = %base_fs_read sig0
 
-v6 = call fn0(v1, v2, v3, v4, v5)
+v5 = call fn0(v1, v2, v3, v4)
 \end{lstlisting}
 \end{codeblock}
-\caption{Cranelift makes a call to \texttt{cl\_file\_read\_to\_ptr} just as it
+\caption{Cranelift makes a call to \texttt{base\_fs\_read} just as it
 would any other function. The CLIF text format is shown for clarity.}
 \label{fig:cliftext}
 \end{figure}
@@ -544,7 +543,7 @@ Copy, 32\,MB & 2288.4 & 1.58 & 1.00 & no non-temporal store \\
 Base with CLIF is level with Rust for the first three workloads. The other two
 see Rust accessing capabilities that CLIF lacks support for: 256-bit vectors for
 the polynomial and non-temporal stores for the copy. To close this gap, Base uses native
-assembly, assembled in Lean and accessed using the \texttt{cl\_native\_load}
+assembly, assembled in Lean and accessed using the \texttt{base\_native\_load}
 primitive.
 
 \subsection{GPU Workloads}
@@ -580,7 +579,7 @@ Decode attention, 128 keys & 66 & 0.24 \\
 While Lean enables mechanical reasoning over the artifact and the code used to
 generate it, the components of the infrastructure that it cannot cover are worth
 considering. The model of CLIF is translated from the documentation and tested
-against Cranelift on a corpus of 1764 cases. The driver and the primitives are
+against Cranelift on a corpus of 1762 cases. The driver and the primitives are
 implemented and tested in Rust or supplied by the vendors, and no Lean proof can reach into these
 implementations; it can only state assumptions about them, which can be reviewed
 by hand.
