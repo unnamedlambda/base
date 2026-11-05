@@ -66,7 +66,7 @@
 \maketitle
 \begin{abstract}
 Base is an interface and system for programming at the scope of an entire board.
-The CPU, GPU, network and file system are all controlled through a single
+The CPU, GPU, display and file system are all controlled through a single
 artifact loaded by a driver. Its compiled entry points can then be called at
 run time, with the driver embedded through its C API and usable from Rust,
 Python, C and Lean. Lean generators for artifacts have theorems which prove, at
@@ -81,7 +81,7 @@ Rust on CPU workloads and PyTorch on GPU workloads.
 Modern computer applications run on many devices at once, each with its own
 control interface. A CPU has an instruction set, which a language like C is
 compiled to directly. A GPU has a driver API, reached through system software
-and usually programmed in a kernel language of its own such as CUDA~\cite{cuda}. Networks
+and usually programmed in a kernel language of its own such as CUDA~\cite{cuda}. Displays
 and file systems are reached by system calls the CPU makes, with values computed
 at run time. Each of these interfaces is precise in isolation, but real
 applications require them to be composed together correctly. The programmer must
@@ -103,64 +103,65 @@ reasoning.
 \label{sec:contents}
 
 An artifact is represented as the Rust struct below and is encoded as the CBOR
-data format~\cite{cbor}. It contains both a program and the memory it starts with.
+data format~\cite{cbor}. It contains functions, the primitives they call, and
+the memory they start with.
 
 \begin{codeblock}
 \begin{lstlisting}[style=code,morekeywords={pub,struct,derive,serde}]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
+    pub primitives: Vec<clif::Primitive>,
     pub functions: Vec<clif::Function>,
-    pub required_memory: u64,
+    pub arena_size: u64,
     pub data: Vec<Segment>,
 }
 \end{lstlisting}
 \end{codeblock}
 
-A user decodes a serialized artifact, loads it, and calls an entry point by
-name.
+A user loads a serialized artifact, looks up an entry point by name, and calls
+it.
 
 \begin{codeblock}
-\begin{lstlisting}[style=code,morekeywords={let,mut}]
-let artifact = Artifact::from_bytes(ARTIFACT_BYTES)?;
-let mut driver = Driver::load(artifact)?;
+\begin{lstlisting}[style=code,morekeywords={let,mut,unsafe}]
+let driver = unsafe { Driver::load(ARTIFACT_BYTES)? };
+let infer = driver.function("infer")?;
 
-let status = driver.execute("infer", input, output)?;
+let status = infer(&input, &mut output);
 \end{lstlisting}
 \end{codeblock}
 
-The program is CLIF, the IR of the Cranelift code generator~\cite{cranelift}.
-During load the driver JIT compiles the artifact's program to machine code and
+The functions are CLIF, the IR of the Cranelift code generator~\cite{cranelift}.
+During load the driver JIT compiles the artifact's functions to machine code and
 initializes a shared arena according to the artifact's specification.
-\texttt{required\_memory} is how much space to reserve for the arena, and the
+\texttt{arena\_size} is how much space to reserve for the arena, and the
 segments of \texttt{data} are laid over it, so an artifact isn't forced to
-specify every initial zero. Calls to \texttt{execute} invoke functions keyed by
-the names the artifact carries, with the caller supplying both the input and
-output pointers. The same arena is shared between calls, so state carries across
+specify every initial zero. A function is looked up by a name the artifact
+carries, and called with the caller supplying both the input and output
+buffers. The same arena is shared between calls, so state carries across
 them: a device handle opened by one entry point is still open for the next.
 
 \subsection{Driver}
 \label{sec:running}
 
-The CLIF program is a list of functions, each carrying an optional name for use
-in \texttt{execute}. A function's blocks, block parameters and instructions are
+Each CLIF function carries an optional name by which a host looks it up. A
+function's blocks, block parameters and instructions are
 encoded as data rather than as raw text. The driver walks that structure through
-Cranelift's instruction builder to produce machine code. Only a subset of CLIF is
-included: eight types, the widest a 128-bit vector, and
-forty-five instruction forms spanning arithmetic, comparison, bit manipulation,
+Cranelift's instruction builder to produce machine code. The generators use a
+subset of CLIF: eight types, the widest a 128-bit vector, and
+eighty-six opcodes spanning arithmetic, comparison, bit manipulation,
 conversion, memory access, calls and structured control flow.
 
-A CLIF program controls one core and the memory it addresses, and reaches for
-\emph{primitives} to access the rest of the board. A primitive is a Rust
-function using the C calling convention, compiled alongside the driver as part
-of the Base crate. When an artifact is loaded, the driver hands Cranelift each
-primitive's address to enable direct calls into these functions.
+CLIF functions control one core and the memory it addresses, and reach for
+\emph{primitives} to access the rest of the board. A primitive is a C
+function compiled ahead of time. When an artifact is loaded, the driver hands
+Cranelift each primitive's address to enable direct calls into these functions.
 
 Device kernels can be embedded into the artifact as source text in its data
-segments. The \texttt{cl\_gpu\_init} primitive leaves a device context at a
-pointer into the arena; \texttt{cl\_gpu\_create\_pipeline} takes kernel source out of the arena
-and gives it to the vendor's compiler; \texttt{cl\_gpu\_dispatch} launches the
-result, and \texttt{cl\_gpu\_download\_ptr} writes what it computed back into
+segments, and are run through the vendor's own API. The
+\texttt{cuModuleLoadData} primitive takes kernel source out of the arena
+and gives it to the vendor's compiler; \texttt{cuLaunchKernel} launches the
+result, and \texttt{cuMemcpyDtoH} writes what it computed back into
 the arena. Figure~\ref{fig:lowering} follows both paths out of the artifact.
 Kernel source and vendor driver use are handled entirely this way; Base has no
 built-in device handling outside what a program reaches through these
@@ -242,7 +243,7 @@ buffer, follows.
 
 \draw[call] (cpu.south east) --
   node[lbl,pos=0.55,above right=1pt and 0pt]
-    {call fn1\\\%cl\_gpu\_dispatch}
+    {call fn1\\\%cuLaunchKernel}
   (gpu.north west);
 
 \draw[call] (cpu.north west) to[out=125,in=55]
@@ -258,6 +259,7 @@ stores. Everything else is reached by a call to a board primitive.}
 \begin{lstlisting}[style=code,morekeywords={pub,crate,unsafe,extern,fn}]
 pub(crate) unsafe extern "C" fn cl_file_read_to_ptr(
     path_ptr: *const u8,
+    path_cap: i64,
     dst_ptr: *mut u8,
     file_offset: i64,
     size: i64,
@@ -265,7 +267,7 @@ pub(crate) unsafe extern "C" fn cl_file_read_to_ptr(
 \end{lstlisting}
 \end{codeblock}
 
-It takes a NUL-terminated path and a destination to write the file contents to,
+It takes a file path and a destination to write the file contents to,
 and returns the count read, or $-1$ to indicate a failure. The pointers are
 plain addresses; for a CLIF program they point into the arena, the only memory
 it has. The call itself is unremarkable: it sits among the arithmetic that
@@ -276,10 +278,10 @@ computed its arguments, and what it returns is a value like any other
 \centering
 \begin{codeblock}
 \begin{lstlisting}[style=code]
-sig0 = (i64, i64, i64, i64) -> i64 system_v
+sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
 fn0 = %cl_file_read_to_ptr sig0
 
-v5 = call fn0(v1, v2, v3, v4)
+v6 = call fn0(v1, v2, v3, v4, v5)
 \end{lstlisting}
 \end{codeblock}
 \caption{Cranelift makes a call to \texttt{cl\_file\_read\_to\_ptr} just as it
@@ -291,32 +293,27 @@ would any other function. The CLIF text format is shown for clarity.}
 
 The entire Base driver is exported as a C API, shown below. This
 enables the driver to be embedded for calling from other languages, as C is the
-common foreign function interface. Python and Lean APIs are built on top of
-this.
+common foreign function interface. C++, Python and Lean APIs are built on top
+of this.
 
 \begin{codeblock}
 \begin{lstlisting}[style=code,morekeywords={pub,unsafe,extern,fn,no_mangle}]
 #[no_mangle]
 pub unsafe extern "C" fn base_driver_load(
-    artifact: *const u8, len: usize) -> *mut Driver { ... }
+    artifact: *const u8, len: usize,
+    err: *mut u8, err_cap: usize) -> *mut Driver { ... }
 
 #[no_mangle]
-pub unsafe extern "C" fn base_driver_execute(
-    driver: *mut Driver,
-    name:   *const u8, name_len:   usize,
-    input:  *const u8, input_len:  usize,
-    output: *mut u8,   output_len: usize,
-    status: *mut i64) -> i32 { ... }
+pub unsafe extern "C" fn base_driver_function(
+    driver: *const Driver,
+    name: *const u8, name_len: usize) -> Option<BaseFunction> { ... }
 
 #[no_mangle]
-pub unsafe extern "C" fn base_driver_memory(
-    driver: *const Driver, len: *mut usize) -> *const u8 { ... }
+pub unsafe extern "C" fn base_driver_arena(
+    driver: *const Driver, len: *mut usize) -> *mut u8 { ... }
 
 #[no_mangle]
 pub unsafe extern "C" fn base_driver_free(driver: *mut Driver) { ... }
-
-#[no_mangle]
-pub unsafe extern "C" fn base_last_error(buf: *mut u8, cap: usize) -> usize { ... }
 \end{lstlisting}
 \end{codeblock}
 
@@ -396,7 +393,12 @@ def scrub (vectors : Nat) (src dst : V .i64) : Prog V L Unit := do
     store (← blend v nul space) (← iadd dst off)
 
 def code : Prog V L Unit := do
-  scrub 256 (← dataPtr) (← outPtr)
+  let src ← dataPtr
+  let dst ← outPtr
+  let need ← iconst64 4096
+  when .ule need (← dataLen) do
+    when .ule need (← outLen) do
+      scrub 256 src dst
 \end{lstlisting}
 \end{codeblock}
 
@@ -473,7 +475,7 @@ theorem blend_leaves_no_nul
     (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
     (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32))) :
     ∃ ys, ys = xs.map (fun x => if x = 0 then 32 else x)
-          ∧ Answers Γ (Prog.emit (discard (blend a b c)) tys) 2 (.vec .i8x16 ys)
+          ∧ Answers Γ (Prog.emitTerm (discard (blend a b c)) tys) 2 (.vec .i8x16 ys)
           ∧ ∀ y ∈ ys, y ≠ 0 :=
   ⟨scrubLanes xs, rfl,
    fun fuel cfg w =>
@@ -484,7 +486,8 @@ theorem blend_leaves_no_nul
 \end{codeblock}
 
 The theorem above does not cover the splats or any behavior of the loop around
-the blend.
+the blend; however, similar theorems could be added to cover this and the
+remaining behavior.
 
 \subsection{Accessing the Board}
 \label{sec:coordinating}
@@ -498,19 +501,10 @@ segments hold the GPU kernel source (the shader) and other values used at run ti
 \begin{lstlisting}[style=code,morekeywords={def,do,let,fun,return}]
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  gpuInit ptr
-  let dataSz ← iconst64 pixelBytes
-  let bufId  ← gpuCreateBuffer ptr dataSz
-  let shOff  ← fldOffset f.shader
-  let bdOff  ← fldOffset f.bindDesc
-  let one32  ← iconst32 1
-  let pipeId ← gpuCreatePipeline ptr shOff bdOff one32
-  let wgx    ← iconst32 wgX
-  let wgy    ← iconst32 wgY
-  let _      ← gpuDispatch ptr pipeId wgx wgy one32
-  let pxOff  ← fldOffset f.pixels
-  let _      ← gpuDownload ptr bufId pxOff dataSz
-  gpuCleanup ptr
+  app.setup ptr
+  app.dispatch ptr 0 (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+  app.download ptr 0 (← iaddImm ptr f.pixels.offset) (← iconst64 pixelBytes)
+  app.cleanup ptr
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← fldWriteFile0 ptr f.filename f.bmpHeader total
 \end{lstlisting}
@@ -535,12 +529,12 @@ using only CLIF, and Base generating native assembly, on an AMD Ryzen 5 5500.}
 \toprule
 Workload & Rust ($\mu$s) & CLIF / Rust & asm / Rust & Cause \\
 \midrule
-Mandelbrot set & 1800.4 & 1.00 & & \\
-Pointer chase & 2295.5 & 1.00 & & \\
-Byte histogram & 320.5 & 1.00 & & \\
+Mandelbrot set & 1800.6 & 1.00 & & \\
+Pointer chase & 2297.9 & 1.00 & & \\
+Byte histogram & 320.0 & 1.00 & & \\
 \midrule
-Polynomial, \texttt{f32} & 6.1 & 2.04 & 1.01 & 128-bit vectors \\
-Copy, 32\,MB & 2296.8 & 1.56 & 1.00 & no non-temporal store \\
+Polynomial, \texttt{f32} & 6.1 & 2.02 & 1.01 & 128-bit vectors \\
+Copy, 32\,MB & 2288.4 & 1.58 & 1.00 & no non-temporal store \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -567,14 +561,14 @@ lower cost of dispatch improve over PyTorch.
 \toprule
 Workload & PyTorch ($\mu$s) & Base / PyTorch \\
 \midrule
-Vector add 50M & 1810 & 0.99 \\
-Scale-and-add 50M & 1860 & 0.97 \\
-Scale-and-add 1M & 90 & 0.52 \\
-GEMV $11008 \times 4096$ & 555 & 0.98 \\
-RMSNorm 4096 & 57 & 0.19 \\
-Softmax 32000 & 30 & 0.37 \\
+Vector add 50M & 1810 & 1.00 \\
+Scale-and-add 50M & 1850 & 0.98 \\
+Scale-and-add 1M & 84 & 0.60 \\
+GEMV $11008 \times 4096$ & 554 & 0.98 \\
+RMSNorm 4096 & 55 & 0.20 \\
+Softmax 32000 & 31 & 0.35 \\
 Decode attention, 2048 keys & 83 & 0.77 \\
-Decode attention, 128 keys & 67 & 0.22 \\
+Decode attention, 128 keys & 66 & 0.24 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -586,8 +580,8 @@ Decode attention, 128 keys & 67 & 0.22 \\
 While Lean enables mechanical reasoning over the artifact and the code used to
 generate it, the components of the infrastructure that it cannot cover are worth
 considering. The model of CLIF is translated from the documentation and tested
-against Cranelift on a corpus of 482 cases. The driver and the primitives are
-implemented and tested in Rust, and no Lean proof can reach into these
+against Cranelift on a corpus of 1764 cases. The driver and the primitives are
+implemented and tested in Rust or supplied by the vendors, and no Lean proof can reach into these
 implementations; it can only state assumptions about them, which can be reviewed
 by hand.
 
@@ -595,14 +589,14 @@ Not every application can accommodate embedding the Base driver along with the
 primitive implementations. Base is portable across x86-64 and ARM and uses no
 features specific to one operating system, but platforms outside these are not a
 fit, nor are applications that cannot accept the driver's cost at load: the most
-expensive artifact in the repository takes 45\,ms to decode and 600\,ms to
+expensive artifact in the repository takes 27\,ms to decode and 140\,ms to
 compile.
 
 % ===========================================================================
 \section{Conclusion}
 Base enables programming at the scope of an entire system board. A single
-interface accepts CPU control via CLIF programs, a shared memory arena, and a
-selection of primitive functions CLIF can call, which cover device, network and
+interface accepts CPU control via CLIF functions, a shared memory arena, and a
+selection of primitive functions CLIF can call, which cover device, display and
 other board behavior.
 The artifact and driver API allow Base to be embedded both in systems code, which
 interacts with existing artifacts, and in proof assistants, which generate
