@@ -1,14 +1,15 @@
 # Base
 
 Base is an interface and system for programming at the scope of an entire
-board. The CPU, GPU, display and file system are all controlled through a single
-artifact loaded by a driver.
+board. The CPU, GPU, display, file system and network are all controlled through
+a single artifact loaded by a driver.
 
 An artifact holds a program and the memory it starts with. The program is CLIF,
 the IR of the Cranelift code generator: it runs on the CPU and calls a fixed set
 of primitives for everything else, such as GPU dispatch, file reads, network
 sends, drawing to a display and threads. The driver compiles the program with
-Cranelift when it loads the artifact, then runs its entry points by name.
+Cranelift when it loads the artifact; each entry point is then a function the
+host looks up by name and calls.
 
 Artifacts are produced by generators. The generators here are written in Lean,
 where theorems prove, at build time, properties of an artifact's run-time
@@ -39,9 +40,15 @@ def scrub (vectors : Nat) (src dst : V .i64) : Prog V L Unit := do
     let v ← loadI8x16 (← iadd src off)
     store (← blend v nul space) (← iadd dst off)
 
--- 256 vectors of 16 bytes, from the caller's input to its output.
+-- 256 vectors of 16 bytes, from the caller's input to its output, when both
+-- hold 4096 bytes.
 def code : Prog V L Unit := do
-  scrub 256 (← dataPtr) (← outPtr)
+  let src ← dataPtr
+  let dst ← outPtr
+  let need ← iconst64 4096
+  when .ule need (← dataLen) do
+    when .ule need (← outLen) do
+      scrub 256 src dst
 ```
 
 ### Running an artifact
@@ -54,7 +61,7 @@ output buffers, as a C host gets a function pointer and Python a callable.
 ```rust
 use base::Driver;
 
-// SAFETY: the artifact is one Lean built and checked.
+// SAFETY: Lean's build checked that every call of this artifact is safe.
 let driver = unsafe { Driver::load(lean_artifacts::BYTE_SCRUB)? };
 
 let input = [0u8; 4096];
