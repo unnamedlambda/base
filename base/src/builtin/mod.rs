@@ -12,9 +12,10 @@ macro_rules! symbols {
 pub(crate) use symbols;
 
 pub(crate) mod cpu;
-pub(crate) mod file;
+pub(crate) mod fs;
 pub(crate) mod libc;
 pub(crate) mod native;
+pub(crate) mod net;
 pub(crate) mod os;
 pub(crate) mod serial;
 pub(crate) mod stdio;
@@ -30,13 +31,9 @@ crate::builtin::symbols!(
     native::cl_native_free,
     native::cl_native_arch,
     native::cl_cpu_has,
-    file::cl_file_read_to_ptr,
-    file::cl_file_write_from_ptr,
-    file::cl_file_create_dir_all,
-    file::cl_file_size,
-    file::cl_file_set_len,
-    stdio::cl_stdin_read_line,
+    stdio::cl_stdin_read,
     stdio::cl_stdout_write,
+    stdio::cl_stderr_write,
     os::cl_mem_lock,
     os::cl_mem_unlock,
     os::cl_mem_advise_huge,
@@ -44,6 +41,8 @@ crate::builtin::symbols!(
     sync::cl_mem_wait,
     sync::cl_mem_wake,
     sync::cl_clock_now,
+    sync::cl_clock_wall,
+    sync::cl_random,
     thread::cl_thread_spawn,
     thread::cl_thread_join,
 );

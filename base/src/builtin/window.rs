@@ -213,15 +213,11 @@ unsafe extern "C" fn base_window_pump() {
     with_loop(pump);
 }
 
-/// What has arrived pumped, and `win`'s next event written at `out` as a
-/// record: `true`, or `false` with nothing written when there is none.
+/// `win`'s next event already pumped, written at `out` as a record: `true`,
+/// or `false` with nothing written when there is none.
 unsafe extern "C" fn base_window_poll(win: *mut Win, out: *mut Record) -> bool {
     let id = (*win).window.id();
-    let next = with_loop(|l| {
-        pump(l);
-        l.pending.get_mut(&id).and_then(VecDeque::pop_front)
-    })
-    .flatten();
+    let next = with_loop(|l| l.pending.get_mut(&id).and_then(VecDeque::pop_front)).flatten();
     match next {
         Some(r) => {
             std::ptr::write_unaligned(out, r);

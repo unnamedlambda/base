@@ -8,6 +8,8 @@ public import AlgorithmLib.Surface.Layout
 meta import AlgorithmLib.Surface.Layout
 public import AlgorithmLib.Surface.Prog
 meta import AlgorithmLib.Surface.Prog
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -40,9 +42,6 @@ def MEM_SIZE        : Nat := DATA_OFF + MAX_DATA_BYTES
 open AlgorithmLib.Prog
 
 
-abbrev fnRead : Ext := .base .fileReadToPtr
-abbrev fnEmpty : Ext := .base .fileSetLen
-abbrev fnWrite : Ext := .base .fileWriteFromPtr
 
 def code : Prog V L Unit := do
   let ptr ← basePtr
@@ -73,59 +72,60 @@ def code : Prog V L Unit := do
       return %[← iaddImm di 1])
   istore8 zero (← iadd (← iaddImm ptr OUTPUT_PATH_OFF) outEnd.head)
 
-  -- at most the data region
-  let fileSize ← ext fnRead
-    %[← iaddImm ptr INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← iaddImm ptr DATA_OFF, zero, ← iconst64 MAX_DATA_BYTES]
-  let n        ← ushrImm fileSize 2    -- n = bytes / 4
-  let histPtr  ← iaddImm ptr HIST_OFF
-  let histEnd  ← iadd histPtr (← iconst64 HIST_BYTES)
+  -- the input opened, or nothing done
+  let f ← ext (.fs .open) %[← iaddImm ptr INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← iconst32 fsModeRead]
+  when .ne f zero do
+    -- at most the data region
+    let fileSize ← ext (.fs .read) %[f, ← iaddImm ptr DATA_OFF, ← iconst64 MAX_DATA_BYTES, zero]
+    ext (.fs .close) %[f]
+    let n        ← ushrImm fileSize 2    -- n = bytes / 4
+    let histPtr  ← iaddImm ptr HIST_OFF
+    let histEnd  ← iadd histPtr (← iconst64 HIST_BYTES)
 
-  -- Zero the histogram, eight words a trip. The region is a fixed size, so the
-  -- loop always runs and needs no guard.
-  let _ ← dwloop %[histPtr] .ult histEnd (contOnTrue := true) []
-    (body := fun c => do
-      let hp := c.head
-      store zero hp
-      for k in List.range 7 do store zero (← iaddImm hp (8 * (k + 1)))
-      let hp' ← iaddImm hp 64
-      return (hp', %[hp']))
-    (guardIdx := none)
+    -- Zero the histogram, eight words a trip. The region is a fixed size, so the
+    -- loop always runs and needs no guard.
+    let _ ← dwloop %[histPtr] .ult histEnd (contOnTrue := true) []
+      (body := fun c => do
+        let hp := c.head
+        store zero hp
+        for k in List.range 7 do store zero (← iaddImm hp (8 * (k + 1)))
+        let hp' ← iaddImm hp 64
+        return (hp', %[hp']))
+      (guardIdx := none)
 
-  -- a value past the last bin counts in the bin its low bits name
-  let binMask  ← iconst64 (BINS - 1)
-  let dataPtr2 ← iaddImm ptr DATA_OFF
-  let dataEnd  ← iadd dataPtr2 (← ishlImm n 2)
-  let n4       ← band n (← iconst64 (-4))
-  let dataEnd4 ← iadd dataPtr2 (← ishlImm n4 2)
+    -- a value past the last bin counts in the bin its low bits name
+    let binMask  ← iconst64 (BINS - 1)
+    let dataPtr2 ← iaddImm ptr DATA_OFF
+    let dataEnd  ← iadd dataPtr2 (← ishlImm n 2)
+    let n4       ← band n (← iconst64 (-4))
+    let dataEnd4 ← iadd dataPtr2 (← ishlImm n4 2)
 
-  -- Four counts a trip while a whole group is left, then one at a time.
-  let mid ← ifte .ult dataPtr2 dataEnd4
-    (thn := do
-      let _ ← wloop1 dataPtr2
-        (head := fun dp => return (contIfULt dp dataEnd4, %[], ()))
-        (body := fun dp _ => do
-          for k in List.range 4 do
-            let v ← band (← uload32_64 (← iaddImm dp (4 * k))) binMask
-            let a ← iadd histPtr (← ishlImm v 3)
-            let c ← load64 a
-            store (← iaddImm c 1) a
-          return %[← iaddImm dp 16])
-      pure %[dataEnd4])
-    (els := pure %[dataPtr2])
+    -- Four counts a trip while a whole group is left, then one at a time.
+    let mid ← ifte .ult dataPtr2 dataEnd4
+      (thn := do
+        let _ ← wloop1 dataPtr2
+          (head := fun dp => return (contIfULt dp dataEnd4, %[], ()))
+          (body := fun dp _ => do
+            for k in List.range 4 do
+              let v ← band (← uload32_64 (← iaddImm dp (4 * k))) binMask
+              let a ← iadd histPtr (← ishlImm v 3)
+              let c ← load64 a
+              store (← iaddImm c 1) a
+            return %[← iaddImm dp 16])
+        pure %[dataEnd4])
+      (els := pure %[dataPtr2])
 
-  let _ ← wloop1 (mid.head)
-    (head := fun dp => return (contIfULt dp dataEnd, %[], ()))
-    (body := fun dp _ => do
-      let v ← band (← uload32_64 dp) binMask
-      let a ← iadd histPtr (← ishlImm v 3)
-      let c ← load64 a
-      store (← iaddImm c 1) a
-      return %[← iaddImm dp 4])
+    let _ ← wloop1 (mid.head)
+      (head := fun dp => return (contIfULt dp dataEnd, %[], ()))
+      (body := fun dp _ => do
+        let v ← band (← uload32_64 dp) binMask
+        let a ← iadd histPtr (← ishlImm v 3)
+        let c ← load64 a
+        store (← iaddImm c 1) a
+        return %[← iaddImm dp 4])
 
-  let outPath ← iaddImm ptr OUTPUT_PATH_OFF
-  let outCap ← iconst64 PATH_MAX_OUT
-  let _ ← ext fnEmpty %[outPath, outCap, zero]
-  let _ ← ext fnWrite %[outPath, outCap, ← iaddImm ptr HIST_OFF, zero, ← iconst64 HIST_BYTES]
+    let _ ← replaceFileAt ptr (← iconst64 OUTPUT_PATH_OFF) (← iconst64 PATH_MAX_OUT) (← iconst64 HIST_OFF)
+      (← iconst64 HIST_BYTES)
 
 
 def clifIR : Except String (List FuncData) :=

@@ -41,6 +41,12 @@ wasmtime-internal-jit-icache-coherence = "=36.0.13"
 # Waiting on a word of memory (`builtin/sync.rs`): the system's own address wait
 # (futex, WaitOnAddress, os_sync_wait_on_address), which a host's threads meet.
 wait_on_address = "=0.1.6"
+# Reading and writing a file at an offset (`builtin/fs.rs`): pread and pwrite,
+# or their Windows counterparts.
+positioned-io = { version = "=0.3.5", default-features = false }
+# The system's randomness (`builtin/sync.rs`): getrandom, BCryptGenRandom,
+# getentropy.
+getrandom = "=0.3.4"
 # A thread's priority on one scale for every system (`builtin/os.rs`).
 thread-priority = "=3.1.1"
 

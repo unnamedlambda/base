@@ -283,9 +283,10 @@ def translate (ev out : V .i64) : Prog V L (V .i64) := do
   storeI64 z (← iaddImm out 24)
   pure kind
 
-/-- Up to `max` of the window's events written at `events`, 32 bytes each, in
-    the engine's records: how many. -/
+/-- What has arrived pumped, then up to `max` of the window's events written at
+    `events`, 32 bytes each, in the engine's records: how many. -/
 def pollEvents (a : App) (base win events : V .i64) (max : Nat) : Prog V L (V .i64) := do
+  let _ ← ext (.window .pump) %[]
   let z ← iconst64 0
   let m ← iconst64 max
   let ev ← iaddImm base a.EV

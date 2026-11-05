@@ -1,6 +1,8 @@
 module
 public import AlgorithmLib.Surface.Prog
 meta import AlgorithmLib.Surface.Prog
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -114,7 +116,7 @@ def loadTokenizerM (c : TokMem) : Prog V L Unit := do
   let _ ← ext (.cuda .memAllocHost) %[← iaddImm ptr c.bufPtr, bytes64]
   let bufP ← load64 (← iaddImm ptr c.bufPtr)
   let zero64 ← iconst64 0
-  let _ ← ext (.base .fileReadToPtr) %[pathP, pathC, bufP, zero64, bytes64]
+  let _ ← readFileFrom pathP pathC bufP zero64 bytes64
   callLibVoid .htInit %[ptr]
   let htCtx ← load64At ptr c.htCtx
   let _ ← callLib .htCreate %[htCtx]

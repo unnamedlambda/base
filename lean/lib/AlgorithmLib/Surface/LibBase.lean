@@ -24,9 +24,6 @@ def memcpy (dst src n : V .i64) : Prog V L (V .i64) := ext (.c .memcpy) %[dst, s
 def memset (dst : V .i64) (c : V .i32) (n : V .i64) : Prog V L (V .i64) :=
   ext (.c .memset) %[dst, c, n]
 
-/-- The bytes before the first NUL at `p`. -/
-def strlen (p : V .i64) : Prog V L (V .i64) := ext (.c .strlen) %[p]
-
 def at_ (s : V .i64) (off : Nat) : Prog V L (V .i64) := iaddImm s off
 
 /-- `-1` when `cc a b` holds, `k` otherwise. -/

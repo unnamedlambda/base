@@ -47,9 +47,6 @@ namespace Hist
 open HistogramBench1 (INPUT_PATH_OFF OUTPUT_PATH_OFF HIST_OFF HIST_BYTES DATA_OFF MEM_SIZE MAX_DATA_BYTES
   PATH_MAX_IN PATH_MAX_OUT BINS)
 
-abbrev fnRead : Ext := .base .fileReadToPtr
-abbrev fnEmpty : Ext := .base .fileSetLen
-abbrev fnWrite : Ext := .base .fileWriteFromPtr
 
 /-- `HistogramBench1.orchFn`, as a term. -/
 def code : Prog V L Unit := do
@@ -78,64 +75,66 @@ def code : Prog V L Unit := do
       when .eq ch zeroI (brk l %[di])
       return %[← iaddImm di 1])
   istore8 zeroI (← iadd (← iaddImm (← basePtr) OUTPUT_PATH_OFF) outEnd.head)
-  -- read the file, then derive the element count and the histogram bounds
-  -- at most the data region
-  let fileSize ← ext fnRead
-    %[← iaddImm (← basePtr) INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← iaddImm (← basePtr) DATA_OFF, zeroI,
-     ← iconst64 MAX_DATA_BYTES]
-  let n ← ushr fileSize (← iconst64 2)
-  let histPtr ← iaddImm (← basePtr) HIST_OFF
-  let histEnd ← iadd histPtr (← iconst64 HIST_BYTES)
-  -- zero the histogram, eight words per iteration; the region is a fixed
-  -- size, so the loop always runs and is tested at the bottom
-  let _ ← dwloop %[histPtr] .ult histEnd (contOnTrue := true) []
-    (body := fun c => do
-      let hp := c.head
-      store zeroI hp
-      for off in [8, 16, 24, 32, 40, 48, 56] do
-        store zeroI (← iadd hp (← iconst64 off))
-      let hp' ← iaddImm hp 64
-      return (hp', %[hp']))
-    (guardIdx := none)
-  -- scan bounds
-  let dataPtr2 ← iaddImm (← basePtr) DATA_OFF
-  let dataEnd ← iadd dataPtr2 (← ishl n (← iconst64 2))
-  let n4 ← band n (← iconst64 (-4))
-  let dataEnd4 ← iadd dataPtr2 (← ishl n4 (← iconst64 2))
-  -- four elements per iteration, then the scalar tail; a value past the last
-  -- bin counts in the bin its low bits name
-  let bump := fun (histPtr one dp : V .i64) (off : Int) => do
-    let v ← band (← uload32_64 (← iadd dp (← iconst64 off))) (← iconst64 (BINS - 1))
-    let a ← iadd histPtr (← ishl v (← iconst64 3))
-    store (← iadd (← load64 a) one) a
-  -- the four-wide part only where it has a whole group, as the benchmark: a
-  -- read that failed leaves an end below the start
-  let mid ← ifte .ult dataPtr2 dataEnd4
-    (thn := do
-      let _ ← wloop1 dataPtr2
-        (head := fun dp => return (contIfULt dp dataEnd4, %[], ()))
-        (body := fun dp _ => do
-          let one ← iconst64 1
-          for off in [0, 4, 8, 12] do bump histPtr one dp off
-          return %[← iaddImm dp 16])
-      pure %[dataEnd4])
-    (els := pure %[dataPtr2])
-  let _ ← wloop1 (mid.head)
-    (head := fun dp => return (contIfULt dp dataEnd, %[], ()))
-    (body := fun dp _ => do
-      bump histPtr (← iconst64 1) dp 0
-      return %[← iaddImm dp 4])
-  -- write the histogram out, in place of what the file held
-  let outPath ← iaddImm (← basePtr) OUTPUT_PATH_OFF
-  let outCap ← iconst64 PATH_MAX_OUT
-  let _ ← ext fnEmpty %[outPath, outCap, zeroI]
-  let _ ← ext fnWrite %[outPath, outCap, ← iaddImm (← basePtr) HIST_OFF, zeroI, ← iconst64 HIST_BYTES]
-  return ()
+  -- the input opened, or nothing done
+  let f ← ext (.fs .open) %[← iaddImm (← basePtr) INPUT_PATH_OFF, ← iconst64 PATH_MAX_IN, ← iconst32 fsModeRead]
+  when .ne f zeroI do
+    -- read the file, then derive the element count and the histogram bounds
+    -- at most the data region
+    let fileSize ← ext (.fs .read) %[f, ← iaddImm (← basePtr) DATA_OFF, ← iconst64 MAX_DATA_BYTES, zeroI]
+    ext (.fs .close) %[f]
+    let n ← ushr fileSize (← iconst64 2)
+    let histPtr ← iaddImm (← basePtr) HIST_OFF
+    let histEnd ← iadd histPtr (← iconst64 HIST_BYTES)
+    -- zero the histogram, eight words per iteration; the region is a fixed
+    -- size, so the loop always runs and is tested at the bottom
+    let _ ← dwloop %[histPtr] .ult histEnd (contOnTrue := true) []
+      (body := fun c => do
+        let hp := c.head
+        store zeroI hp
+        for off in [8, 16, 24, 32, 40, 48, 56] do
+          store zeroI (← iadd hp (← iconst64 off))
+        let hp' ← iaddImm hp 64
+        return (hp', %[hp']))
+      (guardIdx := none)
+    -- scan bounds
+    let dataPtr2 ← iaddImm (← basePtr) DATA_OFF
+    let dataEnd ← iadd dataPtr2 (← ishl n (← iconst64 2))
+    let n4 ← band n (← iconst64 (-4))
+    let dataEnd4 ← iadd dataPtr2 (← ishl n4 (← iconst64 2))
+    -- four elements per iteration, then the scalar tail; a value past the last
+    -- bin counts in the bin its low bits name
+    let bump := fun (histPtr one dp : V .i64) (off : Int) => do
+      let v ← band (← uload32_64 (← iadd dp (← iconst64 off))) (← iconst64 (BINS - 1))
+      let a ← iadd histPtr (← ishl v (← iconst64 3))
+      store (← iadd (← load64 a) one) a
+    -- the four-wide part only where it has a whole group, as the benchmark: a
+    -- read that failed leaves an end below the start
+    let mid ← ifte .ult dataPtr2 dataEnd4
+      (thn := do
+        let _ ← wloop1 dataPtr2
+          (head := fun dp => return (contIfULt dp dataEnd4, %[], ()))
+          (body := fun dp _ => do
+            let one ← iconst64 1
+            for off in [0, 4, 8, 12] do bump histPtr one dp off
+            return %[← iaddImm dp 16])
+        pure %[dataEnd4])
+      (els := pure %[dataPtr2])
+    let _ ← wloop1 (mid.head)
+      (head := fun dp => return (contIfULt dp dataEnd, %[], ()))
+      (body := fun dp _ => do
+        bump histPtr (← iconst64 1) dp 0
+        return %[← iaddImm dp 4])
+    -- write the histogram out, in place of what the file held
+    let _ ← replaceFileAt (← basePtr) (← iconst64 OUTPUT_PATH_OFF) (← iconst64 PATH_MAX_OUT)
+      (← iconst64 HIST_OFF) (← iconst64 HIST_BYTES)
+    return ()
 
 
 /-- The program reads one file and then writes one, and does nothing else
     across the FFI. -/
-theorem code_calls : callsOf (Prog.emit code) = [.ext fnRead, .ext fnEmpty, .ext fnWrite] := rfl
+theorem code_calls : callsOf (Prog.emit code) =
+    [.ext (.fs .open), .ext (.fs .read), .ext (.fs .close), .ext (.fs .open), .ext (.fs .write), .ext (.fs .close)] :=
+  rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
@@ -262,14 +261,11 @@ def code : Prog V L Unit := do
     (thn := do pure %[← iadd acc (← iconst64 1000)])
     (els := pure %[acc])
   store (branched.head) (← iaddImm (← basePtr) 0x408)
-  let outPath ← iaddImm (← basePtr) 0x200
-  let outCap ← iconst64 0x200
-  let _ ← ext Hist.fnEmpty %[outPath, outCap, zeroI]
-  let _ ← ext Hist.fnWrite %[outPath, outCap, ← iaddImm (← basePtr) 0x400, zeroI, ← iconst64 16]
+  let _ ← replaceFileAt (← basePtr) (← iconst64 0x200) (← iconst64 0x200) (← iconst64 0x400) (← iconst64 16)
   return ()
 
 
-theorem code_calls : Prog.callNames code = ["base!cl_file_set_len", "base!cl_file_write_from_ptr"] := rfl
+theorem code_calls : Prog.callNames code = ["fs!base_fs_open", "fs!base_fs_write", "fs!base_fs_close"] := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
@@ -372,7 +368,7 @@ def histCompileSound : Except String (Nat × Nat) :=
       (fun (mm : Sem.Mem) i => mm.store (Sem.addrOf .data i) 1 (payload.get! i).toUInt64) m0 with
   | none => .error "could not place the payload"
   | some m =>
-      let w : Sem.World := { mem := m, fs := { files := [("in.bin", input)] } }
+      let w : Sem.World := { mem := m, fs := .ofFiles [("in.bin", input)] }
       -- The four an entry point is called with: the caller's input and output
       -- buffers with their lengths.
       let args : List Sem.V :=

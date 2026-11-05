@@ -30,7 +30,7 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
     the memory in their frame: every engine function but a thread's start and
     join, which change which memory is the program's. -/
 def _root_.AlgorithmLib.IR.Ext.aside : Ext → Bool
-  | .present _ | .c _ | .window _ | .cpu _ | .serial _ | .usb _ => true
+  | .present _ | .c _ | .window _ | .cpu _ | .serial _ | .usb _ | .fs _ | .net _ => true
   | .base f => !f.thread
   | _ => false
 
@@ -41,6 +41,11 @@ def _root_.AlgorithmLib.IR.Ext.opens : Ext → Option Held
   | .usb .open => some .usbDevice
   | .usb .claim => some .usbInterface
   | .c .calloc => some .heap
+  | .fs .open => some .file
+  | .fs .dirOpen => some .dir
+  | .net .tcpListen => some .listener
+  | .net .tcpConnect | .net .tcpAccept => some .stream
+  | .net .udpBind => some .udp
   | _ => none
 
 /-- The kind of handle a call closes: the one it is handed first. -/
@@ -50,6 +55,11 @@ def _root_.AlgorithmLib.IR.Ext.closes : Ext → Option Held
   | .usb .close => some .usbDevice
   | .usb .release => some .usbInterface
   | .c .free => some .heap
+  | .fs .close => some .file
+  | .fs .dirClose => some .dir
+  | .net .tcpListenerClose => some .listener
+  | .net .tcpClose => some .stream
+  | .net .udpClose => some .udp
   | _ => none
 
 set_option hygiene false in
@@ -105,6 +115,33 @@ theorem usbDevice_live_iff {w : World} {a : UInt64} :
 theorem usbInterface_live_iff {w : World} {a : UInt64} :
     Held.usbInterface.live w a = true ↔ ∃ j, usbIfaceAddr j = a ∧ w.usbIfaces[j]?.map (·.live) = some true :=
   find_live_iff _ _ _ _
+
+theorem file_live_iff {w : World} {a : UInt64} :
+    Held.file.live w a = true ↔ ∃ j, fsFileAddr j = a ∧ w.openFiles[j]?.map (·.live) = some true :=
+  find_live_iff _ _ _ _
+
+theorem dir_live_iff {w : World} {a : UInt64} :
+    Held.dir.live w a = true ↔ ∃ j, fsDirAddr j = a ∧ w.openDirs[j]?.map (·.live) = some true :=
+  find_live_iff _ _ _ _
+
+/-- A socket of kind `kind` the program holds. -/
+def sockHeld (kind : SockKind) (s : Sock) : Bool := s.live && s.held && s.kind == kind
+
+theorem sock_live_iff {w : World} {kind : SockKind} {a : UInt64} :
+    (w.sock? kind a).isSome = true ↔ ∃ j, netSockAddr j = a ∧ w.socks[j]?.map (sockHeld kind) = some true :=
+  find_live_iff _ _ _ _
+
+/-- The kinds of handle the file and network libraries hand out. -/
+def _root_.AlgorithmLib.HProg.Contracts.Held.fsnet : Held → Bool
+  | .file | .dir | .listener | .stream | .udp => true
+  | _ => false
+
+/-- A call that leaves the files and sockets alone keeps every such handle. -/
+theorem fsnet_keep {w w' : World} (hf : w'.openFiles = w.openFiles) (hd : w'.openDirs = w.openDirs)
+    (hs : w'.socks = w.socks) {k : Held} (hk : k.fsnet = true) {a : UInt64} (hl : k.live w a = true) :
+    k.live w' a = true := by
+  cases k <;> simp only [Held.fsnet, reduceCtorEq] at hk <;>
+    simp only [Held.live, World.fsFile?, World.fsDir?, World.sock?, hf, hd, hs] at hl ⊢ <;> exact hl
 
 /-- The slot a handle names has the handle's address. -/
 theorem find_addr {α : Type} {arr : Array α} {live : α → Bool} {addr : Nat → UInt64} {a : UInt64} {j : Nat}
@@ -226,11 +263,10 @@ theorem wlEffect_shape (c : WlCall) (w : World) :
   | close => exact ⟨_, w.wlInput, rfl⟩
   | pump => exact wlPump_shape w
   | poll k =>
-      obtain ⟨wl, inp, hp⟩ := wlPump_shape w
       simp only [wlEffect]
       split
-      · rw [hp]; exact ⟨_, inp, rfl⟩
-      · rw [hp]; exact ⟨wl, inp, rfl⟩
+      · exact ⟨_, w.wlInput, rfl⟩
+      · exact ⟨w.wl, w.wlInput, rfl⟩
   | answer => exact ⟨w.wl, w.wlInput, rfl⟩
 
 theorem wlEffect_live {c : WlCall} {w : World} {j : Nat} (hc : ∀ k, c = .close k → k ≠ j)
@@ -250,8 +286,8 @@ theorem wlEffect_live {c : WlCall} {w : World} {j : Nat} (hc : ∀ k, c = .close
   | poll k =>
       simp only [wlEffect]
       split
-      · rw [map_modify_live _ _ _ _ _ (by intro; rfl), wlPump_live]; exact h
-      · rw [wlPump_live]; exact h
+      · rw [map_modify_live _ _ _ _ _ (by intro; rfl)]; exact h
+      · exact h
   | answer => exact h
 
 theorem wlDecode_close {f : WindowFn} {bits : List UInt64} {w : World} {j : Nat}
@@ -365,6 +401,7 @@ theorem wl_step {f : WindowFn} {bits : List UInt64} {w : World} {r : Option V} {
     | wg _ =>
         have : ((wlEffect c w).2).wg = w.wg := by rw [he]
         simp only [Held.live] at hl ⊢; rw [this]; exact hl
+    | _ => exact fsnet_keep (by rw [he]) (by rw [he]) (by rw [he]) rfl hl
   · intro k x hk hx h0
     cases f <;> (try cases hk)
     rcases wlDecode_open hc with rfl | ⟨wd, ht, rfl⟩
@@ -482,6 +519,7 @@ theorem serial_step {f : SerialFn} {bits : List UInt64} {w : World} {r : Option 
     | wg _ =>
         have : ((serEffect c w).2).wg = w.wg := by rw [he]
         simp only [Held.live] at hl ⊢; rw [this]; exact hl
+    | _ => exact fsnet_keep (by rw [he]) (by rw [he]) (by rw [he]) rfl hl
   · intro k x hk hx h0
     cases f <;> (try cases hk)
     rcases serDecode_open hc with rfl | ⟨p, rfl⟩
@@ -641,6 +679,7 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
     | wg _ =>
         have : ((usbEffect c w).2).wg = w.wg := by rw [he]
         simp only [Held.live] at hl ⊢; rw [this]; exact hl
+    | _ => exact fsnet_keep (by rw [he]) (by rw [he]) (by rw [he]) rfl hl
   · intro k x hk hx h0
     cases f <;> (try cases hk)
     · rcases usbDecode_open hc with rfl | ⟨i, rfl⟩
@@ -659,6 +698,389 @@ theorem usb_step {f : UsbFn} {bits : List UInt64} {w : World} {r : Option V} {w'
         subst hx
         refine usbInterface_live_iff.mpr ⟨w.usbIfaces.size, rfl, ?_⟩
         simp [usbEffect]
+
+-- ---------------------------------------------------------------------------
+-- The file library
+-- ---------------------------------------------------------------------------
+
+theorem fsEffect_shape (c : FsCall) (w : World) :
+    ∃ fs fl dl, (fsEffect c w).2 = { w with fs := fs, openFiles := fl, openDirs := dl } := by
+  cases c <;> simp only [fsEffect]
+  all_goals (repeat' split) <;> exact ⟨_, _, _, rfl⟩
+
+theorem fsEffect_file_live {c : FsCall} {w : World} {j : Nat} (hc : ∀ k, c = .close k → k ≠ j)
+    (h : w.openFiles[j]?.map (·.live) = some true) :
+    (fsEffect c w).2.openFiles[j]?.map (·.live) = some true := by
+  cases c with
+  | close k =>
+      simp only [fsEffect, Array.getElem?_modify]
+      rw [if_neg (hc k rfl)]; exact h
+  | _ =>
+      simp only [fsEffect]
+      (repeat' split) <;> first | exact h | exact map_push_live _ _ _ h
+
+theorem fsEffect_dir_live {c : FsCall} {w : World} {j : Nat} (hc : ∀ k, c = .dirClose k → k ≠ j)
+    (h : w.openDirs[j]?.map (·.live) = some true) :
+    (fsEffect c w).2.openDirs[j]?.map (·.live) = some true := by
+  cases c with
+  | dirClose k =>
+      simp only [fsEffect, Array.getElem?_modify]
+      rw [if_neg (hc k rfl)]; exact h
+  | dirNext k =>
+      simp only [fsEffect]
+      split
+      · rw [map_modify_live _ _ _ _ _ (by intro; rfl)]; exact h
+      · exact h
+  | _ =>
+      simp only [fsEffect]
+      (repeat' split) <;> first | exact h | exact map_push_live _ _ _ h
+
+theorem fsDecode_close {f : FsFn} {bits : List UInt64} {w : World} {j : Nat}
+    (h : fsDecode f bits w = some (.close j)) : f = .close := by
+  cases f <;> simp only [fsDecode] at h
+  case close => rfl
+  all_goals
+    try unfold fsDOpen at h
+    try unfold fsDRead at h
+    try unfold fsDWrite at h
+    try unfold fsDSize at h
+    try unfold fsDSetLen at h
+    try unfold fsDSync at h
+    try unfold fsDPathCall at h
+    try unfold fsDRename at h
+    try unfold fsDDirOpen at h
+    try unfold fsDDirNext at h
+    try unfold fsDDirClose at h
+    try unfold fsPath at h
+    decode_inv
+
+theorem fsDecode_dirClose {f : FsFn} {bits : List UInt64} {w : World} {j : Nat}
+    (h : fsDecode f bits w = some (.dirClose j)) : f = .dirClose := by
+  cases f <;> simp only [fsDecode] at h
+  case dirClose => rfl
+  all_goals
+    try unfold fsDOpen at h
+    try unfold fsDClose at h
+    try unfold fsDRead at h
+    try unfold fsDWrite at h
+    try unfold fsDSize at h
+    try unfold fsDSetLen at h
+    try unfold fsDSync at h
+    try unfold fsDPathCall at h
+    try unfold fsDRename at h
+    try unfold fsDDirOpen at h
+    try unfold fsDDirNext at h
+    try unfold fsPath at h
+    decode_inv
+
+theorem fsCall_of {f : FsFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : fsCall f bits w = some (r, w')) :
+    ∃ c, fsDecode f bits w = some c ∧ r = (fsEffect c w).1 ∧
+      ∃ M, w' = { (fsEffect c w).2 with mem := M } ∧ Rewritten w.mem M := by
+  simp only [fsCall] at h
+  obtain ⟨c, hc, h⟩ := Option.map_eq_some_iff.mp h
+  refine ⟨c, hc, ?_⟩
+  split at h
+  all_goals first
+    | (simp only [Prod.mk.injEq] at h; obtain ⟨rfl, rfl⟩ := h
+       refine ⟨rfl, _, rfl, ?_⟩
+       exact Rewritten.copyIn _ _ _)
+    | (have e1 : r = (fsEffect c w).1 := by rw [h]
+       have e2 : w' = (fsEffect c w).2 := by rw [h]
+       refine ⟨e1, w.mem, ?_, Rewritten.refl _⟩
+       rw [e2, ← fsEffect_mem c w])
+
+/-- An open's answer: null, or the handle it pushed, held. -/
+theorem fsEffect_open_live {c : FsCall} {w : World} {x : UInt64}
+    (hr : (fsEffect c w).1.bind asBits = some x) (h0 : x ≠ 0)
+    (hc : c = .answer (.sc .i64 0) ∨ ∃ p r wr cr t, c = .open p r wr cr t) :
+    Held.file.live (fsEffect c w).2 x = true := by
+  rcases hc with rfl | ⟨p, r, wr, cr, t, rfl⟩
+  · simp [fsEffect, asBits] at hr; exact absurd hr.symm h0
+  · simp only [fsEffect] at hr ⊢
+    repeat' split at hr
+    all_goals first
+      | (simp [asBits] at hr; exact absurd hr.symm h0)
+      | (simp only [Option.bind_some, asBits, Option.some.injEq] at hr
+         subst hr
+         refine file_live_iff.mpr ⟨w.openFiles.size, rfl, ?_⟩
+         simp_all)
+
+theorem fsDecode_open {bits : List UInt64} {w : World} {c : FsCall} (h : fsDecode .open bits w = some c) :
+    c = .answer (.sc .i64 0) ∨ ∃ p r wr cr t, c = .open p r wr cr t := by
+  simp only [fsDecode] at h
+  unfold fsDOpen at h
+  split at h
+  · unfold fsPath at h
+    rw [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+    obtain ⟨_, -, h⟩ := h
+    repeat' split at h
+    all_goals (injection h with h; subst h)
+    all_goals first | exact .inl rfl | exact .inr ⟨_, _, _, _, _, rfl⟩
+  · cases h
+
+theorem fsDecode_dirOpen {bits : List UInt64} {w : World} {c : FsCall} (h : fsDecode .dirOpen bits w = some c) :
+    c = .answer (.sc .i64 0) ∨ ∃ p, c = .dirOpen p := by
+  simp only [fsDecode] at h
+  unfold fsDDirOpen at h
+  split at h
+  · unfold fsPath at h
+    rw [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+    obtain ⟨_, -, h⟩ := h
+    repeat' split at h
+    all_goals (injection h with h; subst h)
+    all_goals first | exact .inl rfl | exact .inr ⟨_, rfl⟩
+  · cases h
+
+theorem fs_step {f : FsFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : fsCall f bits w = some (r, w')) : LibStep (.fs f) bits w r w' := by
+  obtain ⟨c, hc, hr, M, rfl, hM⟩ := fsCall_of h
+  obtain ⟨fs, fl, dl, he⟩ := fsEffect_shape c w
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he]; exact ⟨rfl, rfl, rfl⟩, hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  · intro k a hk hl
+    cases k with
+    | file =>
+        obtain ⟨j, hj, hlj⟩ := file_live_iff.mp hl
+        refine file_live_iff.mpr ⟨j, hj, ?_⟩
+        show (fsEffect c w).2.openFiles[j]?.map (·.live) = some true
+        refine fsEffect_file_live ?_ hlj
+        rintro k rfl rfl
+        exact hk (by rw [fsDecode_close hc]; rfl)
+    | dir =>
+        obtain ⟨j, hj, hlj⟩ := dir_live_iff.mp hl
+        refine dir_live_iff.mpr ⟨j, hj, ?_⟩
+        show (fsEffect c w).2.openDirs[j]?.map (·.live) = some true
+        refine fsEffect_dir_live ?_ hlj
+        rintro k rfl rfl
+        exact hk (by rw [fsDecode_dirClose hc]; rfl)
+    | window =>
+        have : ((fsEffect c w).2).wl = w.wl := by rw [he]
+        simp only [Held.live, World.wlWin?] at hl ⊢; rw [this]; exact hl
+    | port =>
+        have : ((fsEffect c w).2).ser = w.ser := by rw [he]
+        simp only [Held.live, World.serPort?] at hl ⊢; rw [this]; exact hl
+    | usbDevice =>
+        have : ((fsEffect c w).2).usb = w.usb := by rw [he]
+        simp only [Held.live, World.usbDev?] at hl ⊢; rw [this]; exact hl
+    | usbInterface =>
+        have : ((fsEffect c w).2).usbIfaces = w.usbIfaces := by rw [he]
+        simp only [Held.live, World.usbIface?] at hl ⊢; rw [this]; exact hl
+    | heap =>
+        have : ((fsEffect c w).2).heap = w.heap := by rw [he]
+        simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
+    | wg _ =>
+        have : ((fsEffect c w).2).wg = w.wg := by rw [he]
+        simp only [Held.live] at hl ⊢; rw [this]; exact hl
+    | listener =>
+        have : ((fsEffect c w).2).socks = w.socks := by rw [he]
+        simp only [Held.live, World.sock?] at hl ⊢; rw [this]; exact hl
+    | stream =>
+        have : ((fsEffect c w).2).socks = w.socks := by rw [he]
+        simp only [Held.live, World.sock?] at hl ⊢; rw [this]; exact hl
+    | udp =>
+        have : ((fsEffect c w).2).socks = w.socks := by rw [he]
+        simp only [Held.live, World.sock?] at hl ⊢; rw [this]; exact hl
+  · intro k x hk hx h0
+    cases f <;> (try cases hk)
+    · subst hr
+      show Held.file.live { (fsEffect c w).2 with mem := M } x = true
+      have := fsEffect_open_live hx h0 (fsDecode_open hc)
+      simpa [Held.live, World.fsFile?] using this
+    · subst hr
+      rcases fsDecode_dirOpen hc with rfl | ⟨p, rfl⟩
+      · simp [fsEffect, asBits] at hx; exact absurd hx.symm h0
+      · simp only [fsEffect] at hx ⊢
+        split at hx
+        · simp only [Option.bind_some, asBits, Option.some.injEq] at hx
+          subst hx
+          refine dir_live_iff.mpr ⟨w.openDirs.size, rfl, ?_⟩
+          simp_all
+        · simp [asBits] at hx; exact absurd hx.symm h0
+
+-- ---------------------------------------------------------------------------
+-- The network library
+-- ---------------------------------------------------------------------------
+
+theorem map_modify_mono {α : Type} (live : α → Bool) (arr : Array α) (k j : Nat) (g : α → α)
+    (hg : ∀ x, live x = true → live (g x) = true) (h : arr[j]?.map live = some true) :
+    (arr.modify k g)[j]?.map live = some true := by
+  rw [Array.getElem?_modify]
+  split
+  · cases e : arr[j]? with
+    | none => rw [e] at h; cases h
+    | some x => rw [e] at h; simp only [Option.map_some, Option.some.injEq] at h ⊢; exact hg x h
+  · exact h
+
+theorem netEffect_shape (c : NetCall) (w : World) : ∃ ss, (netEffect c w).2 = { w with socks := ss } := by
+  cases c <;> simp only [netEffect]
+  all_goals (repeat' split) <;> exact ⟨_, rfl⟩
+
+/-- A socket keeps being held through every call but its close. -/
+theorem netEffect_live {c : NetCall} {w : World} {kind : SockKind} {j : Nat} (hc : ∀ k, c = .close k → k ≠ j)
+    (h : w.socks[j]?.map (sockHeld kind) = some true) :
+    (netEffect c w).2.socks[j]?.map (sockHeld kind) = some true := by
+  cases c with
+  | close k =>
+      simp only [netEffect]
+      have hk := hc k rfl
+      split
+      · refine map_modify_mono _ _ _ _ _ (fun x hx => by simpa [sockHeld] using hx) ?_
+        rw [Array.getElem?_modify, if_neg hk]; exact h
+      · rw [Array.getElem?_modify, if_neg hk]; exact h
+  | _ =>
+      simp only [netEffect]
+      (repeat' split) <;>
+        (repeat' first
+          | exact h
+          | apply map_push_live
+          | refine map_modify_mono _ _ _ _ _ (fun x hx => by
+              simp only [sockHeld, Bool.and_eq_true] at hx ⊢; (try split) <;> simp_all) ?_)
+
+/-- The held kind a socket kind is. -/
+def _root_.AlgorithmLib.HProg.Sem.SockKind.held : SockKind → Held
+  | .listener => .listener
+  | .stream => .stream
+  | .udp => .udp
+
+theorem sock_find {w : World} {kind : SockKind} {a : UInt64} {k : Nat} (h : w.sock? kind a = some k) :
+    netSockAddr k = a ∧ w.socks[k]?.map (sockHeld kind) = some true := by
+  unfold World.sock? at h
+  have := List.find?_some h
+  simp only [Bool.and_eq_true, beq_iff_eq] at this
+  refine ⟨this.1, ?_⟩
+  cases e : w.socks[k]? with
+  | none => rw [e] at this; simp at this
+  | some s => rw [e] at this; simp only [Option.map_some, Option.getD_some] at this; simp [sockHeld, this.2]
+
+theorem netDecode_close {f : NetFn} {bits : List UInt64} {w : World} {j : Nat}
+    (h : netDecode f bits w = some (.close j)) :
+    ∃ kind p, (Ext.net f).closes = some kind.held ∧ w.sock? kind p = some j := by
+  cases f <;> simp only [netDecode] at h
+  case tcpClose =>
+    unfold netDHeld at h; split at h
+    · obtain ⟨k, hk, e⟩ := Option.map_eq_some_iff.mp h; cases e; exact ⟨.stream, _, rfl, hk⟩
+    · cases h
+  case tcpListenerClose =>
+    unfold netDHeld at h; split at h
+    · obtain ⟨k, hk, e⟩ := Option.map_eq_some_iff.mp h; cases e; exact ⟨.listener, _, rfl, hk⟩
+    · cases h
+  case udpClose =>
+    unfold netDHeld at h; split at h
+    · obtain ⟨k, hk, e⟩ := Option.map_eq_some_iff.mp h; cases e; exact ⟨.udp, _, rfl, hk⟩
+    · cases h
+  all_goals
+    try unfold netDResolve at h
+    try unfold netDTimed at h
+    try unfold netDListen at h
+    try unfold netDLocal at h
+    try unfold netDAccept at h
+    try unfold netDSend at h
+    try unfold netDRecv at h
+    try unfold netDHeld at h
+    try unfold netDUdpSend at h
+    try unfold netDUdpRecv at h
+    decode_inv
+
+theorem netCall_of {f : NetFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : netCall f bits w = some (r, w')) :
+    ∃ c, netDecode f bits w = some c ∧ r = (netEffect c w).1 ∧
+      ∃ M, w' = { (netEffect c w).2 with mem := M } ∧ Rewritten w.mem M := by
+  simp only [netCall] at h
+  obtain ⟨c, hc, h⟩ := Option.map_eq_some_iff.mp h
+  refine ⟨c, hc, ?_⟩
+  split at h
+  all_goals first
+    | (simp only [Prod.mk.injEq] at h; obtain ⟨rfl, rfl⟩ := h
+       refine ⟨rfl, _, rfl, ?_⟩
+       exact Rewritten.copyIn _ _ _)
+    | (have e1 : r = (netEffect c w).1 := by rw [h]
+       have e2 : w' = (netEffect c w).2 := by rw [h]
+       refine ⟨e1, w.mem, ?_, Rewritten.refl _⟩
+       rw [e2, ← netEffect_mem c w])
+
+/-- What an open of the network library answers, other than null, is a socket
+    of the kind it opens, held. -/
+theorem net_opens {f : NetFn} {bits : List UInt64} {w : World} {c : NetCall} {k : Held} {x : UInt64}
+    (h : netDecode f bits w = some c) (hk : (Ext.net f).opens = some k)
+    (hx : (netEffect c w).1.bind asBits = some x) (h0 : x ≠ 0) : k.live (netEffect c w).2 x = true := by
+  have zero : ∀ {v : Option V}, v = some (.sc .i64 0) → v.bind asBits = some x → False := by
+    intro v hv hb; subst hv; simp [asBits] at hb; exact h0 hb.symm
+  cases f <;> simp only [Ext.opens, reduceCtorEq, Option.some.injEq] at hk <;> subst hk <;>
+    simp only [netDecode] at h
+  all_goals
+    try unfold netDTimed at h
+    try unfold netDListen at h
+    try unfold netDAccept at h
+    decode_inv
+  all_goals first
+    | exact (zero rfl hx).elim
+    | (simp only [netEffect] at hx ⊢
+       repeat' split at hx
+       all_goals first
+         | exact (zero rfl hx).elim
+         | (simp only [Option.bind_some, asBits, Option.some.injEq, sockAns] at hx
+            subst hx
+            simp only [Held.live]
+            refine sock_live_iff.mpr ⟨_, rfl, ?_⟩
+            simp_all [sockHeld, sockAns, Array.getElem?_modify, Array.getElem?_push] <;>
+              (try (split <;> simp_all))))
+
+theorem net_step {f : NetFn} {bits : List UInt64} {w : World} {r : Option V} {w' : World}
+    (h : netCall f bits w = some (r, w')) : LibStep (.net f) bits w r w' := by
+  obtain ⟨c, hc, hr, M, rfl, hM⟩ := netCall_of h
+  obtain ⟨ss, he⟩ := netEffect_shape c w
+  have keepSock : ∀ (kind : SockKind) a, (Ext.net f).closes ≠ some kind.held →
+      (w.sock? kind a).isSome = true → ((netEffect c w).2.sock? kind a).isSome = true := by
+    intro kind a hk hl
+    obtain ⟨j, hj, hlj⟩ := sock_live_iff.mp hl
+    refine sock_live_iff.mpr ⟨j, hj, netEffect_live ?_ hlj⟩
+    rintro k rfl rfl
+    obtain ⟨kind', p, hcl, hp⟩ := netDecode_close hc
+    obtain ⟨-, hk'⟩ := sock_find hp
+    have : kind' = kind := by
+      cases e : w.socks[k]? with
+      | none => rw [e] at hlj; cases hlj
+      | some s =>
+          rw [e] at hlj hk'
+          simp only [Option.map_some, Option.some.injEq, sockHeld, Bool.and_eq_true, beq_iff_eq] at hlj hk'
+          exact hk'.2.symm.trans hlj.2
+    subst this
+    exact hk hcl
+  refine ⟨by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he], by rw [he]; exact ⟨rfl, rfl, rfl⟩, hM, ?_, ?_, fun ⟨_, h⟩ => nomatch h⟩
+  · intro k a hk hl
+    cases k with
+    | listener => exact keepSock .listener a hk hl
+    | stream => exact keepSock .stream a hk hl
+    | udp => exact keepSock .udp a hk hl
+    | window =>
+        have : ((netEffect c w).2).wl = w.wl := by rw [he]
+        simp only [Held.live, World.wlWin?] at hl ⊢; rw [this]; exact hl
+    | port =>
+        have : ((netEffect c w).2).ser = w.ser := by rw [he]
+        simp only [Held.live, World.serPort?] at hl ⊢; rw [this]; exact hl
+    | usbDevice =>
+        have : ((netEffect c w).2).usb = w.usb := by rw [he]
+        simp only [Held.live, World.usbDev?] at hl ⊢; rw [this]; exact hl
+    | usbInterface =>
+        have : ((netEffect c w).2).usbIfaces = w.usbIfaces := by rw [he]
+        simp only [Held.live, World.usbIface?] at hl ⊢; rw [this]; exact hl
+    | heap =>
+        have : ((netEffect c w).2).heap = w.heap := by rw [he]
+        simp only [Held.live, World.heapAt?] at hl ⊢; rw [this]; exact hl
+    | wg _ =>
+        have : ((netEffect c w).2).wg = w.wg := by rw [he]
+        simp only [Held.live] at hl ⊢; rw [this]; exact hl
+    | file =>
+        have h1 : ((netEffect c w).2).openFiles = w.openFiles := by rw [he]
+        simp only [Held.live, World.fsFile?] at hl ⊢; rw [h1]; exact hl
+    | dir =>
+        have h2 : ((netEffect c w).2).openDirs = w.openDirs := by rw [he]
+        simp only [Held.live, World.fsDir?] at hl ⊢; rw [h2]; exact hl
+  · intro k x hk hx h0
+    subst hr
+    have := net_opens hc hk hx h0
+    cases k <;> simpa [Held.live, World.sock?, World.fsFile?, World.fsDir?, World.wlWin?, World.serPort?,
+      World.usbDev?, World.usbIface?, World.heapAt?] using this
 
 -- ---------------------------------------------------------------------------
 -- The CPU library
@@ -682,9 +1104,9 @@ theorem base_step {f : BaseFn} {bits : List UInt64} {w : World} {r : Option V} {
     · rw [hm]; exact Rewritten.refl _
     · exact Rewritten.of_eq (copyIn_sizes_eq hc) (copyIn_busy hc) (copyIn_lent hc)
   generalize w'.native = n at hw
-  generalize w'.fs = fs at hw
   generalize w'.stdin = si at hw
   generalize w'.stdout = so at hw
+  generalize w'.stderr = se at hw
   generalize w'.mem = m at hw hr
   subst hw
   exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, ⟨rfl, rfl, rfl⟩, hr,
@@ -732,10 +1154,6 @@ theorem cCall_step {f : CFn} {bits bits' : List UInt64} {w : World} {r : Option 
     cases h
     exact LibStep.of_mem (Rewritten.of_eq (copyIn_sizes_eq hm) (copyIn_busy hm) (copyIn_lent hm)) rfl
       (DevSpec.copyIn_same hm).live.symm
-  -- strlen
-  · obtain ⟨i, -, h⟩ := Option.bind_eq_some_iff.mp h
-    cases h
-    exact LibStep.of_mem (Rewritten.refl _) rfl rfl
   -- calloc
   · dsimp only at h
     split at h
@@ -816,6 +1234,8 @@ theorem lib_step {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {r : O
   · exact cpu_step h
   · exact serial_step h
   · exact usb_step h
+  · exact fs_step h
+  · exact net_step h
   · exact base_step (by simpa using ha) h
 
 /-- Whether a call with these argument bits keeps a fact, whatever it
@@ -967,6 +1387,46 @@ theorem serDecode_answer {f : SerialFn} {bits : List UInt64} {w : World} {v : V}
     decode_inv
   all_goals exact ⟨_, _, rfl⟩
 
+theorem fsDecode_answer {f : FsFn} {bits : List UInt64} {w : World} {v : V}
+    (h : fsDecode f bits w = some (.answer v)) : ∃ t x, v = .sc t x := by
+  cases f <;> simp only [fsDecode] at h
+  all_goals
+    try unfold fsDOpen at h
+    try unfold fsDClose at h
+    try unfold fsDRead at h
+    try unfold fsDWrite at h
+    try unfold fsDSize at h
+    try unfold fsDSetLen at h
+    try unfold fsDSync at h
+    try unfold fsDPathCall at h
+    try unfold fsDRename at h
+    try unfold fsDDirOpen at h
+    try unfold fsDDirNext at h
+    try unfold fsDDirClose at h
+    try unfold fsPath at h
+    try unfold fsNeg at h
+    decode_inv
+  all_goals exact ⟨_, _, rfl⟩
+
+theorem netDecode_answer {f : NetFn} {bits : List UInt64} {w : World} {v : V}
+    (h : netDecode f bits w = some (.answer v)) : ∃ t x, v = .sc t x := by
+  cases f <;> simp only [netDecode] at h
+  all_goals
+    try unfold netDResolve at h
+    try unfold netDTimed at h
+    try unfold netDListen at h
+    try unfold netDLocal at h
+    try unfold netDAccept at h
+    try unfold netDSend at h
+    try unfold netDRecv at h
+    try unfold netDHeld at h
+    try unfold netDUdpSend at h
+    try unfold netDUdpRecv at h
+    try unfold netNeg at h
+    try unfold netNull at h
+    decode_inv
+  all_goals exact ⟨_, _, rfl⟩
+
 theorem usbDecode_answer {f : UsbFn} {bits : List UInt64} {w : World} {v : V}
     (h : usbDecode f bits w = some (.answer v)) : ∃ t x, v = .sc t x := by
   cases f <;> simp only [usbDecode] at h
@@ -994,8 +1454,6 @@ theorem cCall_scalar {f : CFn} {bits : List UInt64} {w : World} {v : V} {w' : Wo
     cases h; exact ⟨_, _, rfl⟩
   · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    cases h; exact ⟨_, _, rfl⟩
-  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
     cases h; exact ⟨_, _, rfl⟩
   · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
     cases h; exact ⟨_, _, rfl⟩
@@ -1048,6 +1506,16 @@ theorem lib_scalar {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {v :
     all_goals (repeat' split at hr) <;> first
       | (cases hr <;> exact ⟨_, _, rfl⟩)
       | (cases hr <;> exact usbDecode_answer hc)
+  · obtain ⟨c, hc, hr, -⟩ := fsCall_of h
+    cases c <;> simp only [fsEffect] at hr
+    all_goals (repeat' split at hr) <;> first
+      | (cases hr <;> exact ⟨_, _, rfl⟩)
+      | (cases hr <;> exact fsDecode_answer hc)
+  · obtain ⟨c, hc, hr, -⟩ := netCall_of h
+    cases c <;> simp only [netEffect] at hr
+    all_goals (repeat' split at hr) <;> first
+      | (cases hr <;> exact ⟨_, _, rfl⟩)
+      | (cases hr <;> exact netDecode_answer hc)
   · obtain ⟨x, hx⟩ := (ExtContracts.baseCall_same (by simpa using ha) h).2.2 _ rfl
     exact ⟨_, x, hx⟩
 
@@ -1099,6 +1567,23 @@ theorem lib_open_i64 {e : Ext} {k : Held} (hk : e.opens = some k) {vs : List V} 
   · obtain ⟨c, hc, hr, -⟩ := usbCall_of h
     rcases usbDecode_claim hc with rfl | ⟨_, _, rfl⟩ <;>
       (simp only [usbEffect, Option.some.injEq] at hr; exact ⟨_, hr⟩)
+  all_goals first
+    | (obtain ⟨c, hc, hr, -⟩ := fsCall_of h
+       first
+         | (rcases fsDecode_open hc with rfl | ⟨_, _, _, _, _, rfl⟩)
+         | (rcases fsDecode_dirOpen hc with rfl | ⟨_, rfl⟩)
+       all_goals (simp only [fsEffect] at hr; (repeat' split at hr) <;>
+         (simp only [Option.some.injEq] at hr; exact ⟨_, hr⟩)))
+    | (obtain ⟨c, hc, hr, -⟩ := netCall_of h
+       clear h
+       have h := hc
+       simp only [netDecode] at h
+       try unfold netDTimed at h
+       try unfold netDListen at h
+       try unfold netDAccept at h
+       decode_inv
+       all_goals (simp only [netEffect, netNull, sockAns] at hr; (repeat' split at hr) <;>
+         (simp only [Option.some.injEq] at hr; exact ⟨_, hr⟩)))
 
 /-- A call of the engine's own libraries reads only its arguments' bits. -/
 theorem extCall_bits {e : Ext} (ha : e.aside = true) {cs cs' : List V} {bits : List UInt64} (w : World)
@@ -1153,17 +1638,14 @@ theorem roomAt_sub {S S' : TState} (hsub : ∀ x ∈ S', x ∈ S) {a : UInt64} {
 /-- What an engine function needs: its arguments, and for a wait or a wake
     four bytes at an address a multiple of four. -/
 def baseNeeds : BaseFn → List UInt64 → Option (List (Held × UInt64) × List (UInt64 × Nat))
-  | .clockNow, [] => some ([], [])
+  | .clockNow, [] | .clockWall, [] => some ([], [])
   | .memLock, [_, _] | .memUnlock, [_, _] | .memAdviseHuge, [_, _] => some ([], [])
   | .threadPriority, [_] => some ([], [])
   | .memWait, [a, _, _] | .memWake, [a, _] => if a % 4 = 0 then some ([], [(a, 4)]) else none
   | .nativeArch, [] => some ([], [])
   | .nativeLoad, [src, len] => some ([], [(src, (asI64 len).toNat)])
-  | .cpuHas, [p, c] | .fileCreateDirAll, [p, c] | .fileSize, [p, c] | .fileSetLen, [p, c, _]
-  | .stdoutWrite, [p, c] => some ([], [(p, c.toNat)])
-  | .stdinReadline, [d, c] => some ([], [(d, c.toNat)])
-  | .fileReadToPtr, [pp, pc, s, _, n] | .fileWriteFromPtr, [pp, pc, s, _, n] =>
-      some ([], [(pp, pc.toNat), (s, n.toNat)])
+  | .cpuHas, [p, c] | .stdoutWrite, [p, c] | .stderrWrite, [p, c] => some ([], [(p, c.toNat)])
+  | .stdinRead, [d, c] | .random, [d, c] => some ([], [(d, c.toNat)])
   | _, _ => none
 
 theorem baseNeeds_length {f : BaseFn} {bits : List UInt64} {n : List (Held × UInt64) × List (UInt64 × Nat)}
@@ -1178,6 +1660,7 @@ theorem baseNeeds_pre {f : BaseFn} {bits : List UInt64} {w : World} {hs : List (
   split at hn <;> (try cases hn) <;> (try trivial)
   all_goals first
     | exact fun _ => (room _ List.mem_cons_self).readable
+    | exact fun _ => (room _ List.mem_cons_self).writable
     | exact (room _ List.mem_cons_self).readable
     | exact fun _ _ _ _ => (Fits.mono (Nat.min_le_right _ _) (room _ List.mem_cons_self)).writable
     | exact fun _ => ⟨(room _ List.mem_cons_self).readable,
@@ -1189,6 +1672,55 @@ theorem baseNeeds_pre {f : BaseFn} {bits : List UInt64} {w : World} {hs : List (
          obtain ⟨r, off, hd, hp, hs, -, hl⟩ := room _ List.mem_cons_self
          exact ⟨ha, load_isSome hd hp hs hl⟩
        · cases hn)
+
+/-- What a file library call needs: each handle it is handed, held, and room
+    for each path and buffer. -/
+def fsNeeds : FsFn → List UInt64 → Option (List (Held × UInt64) × List (UInt64 × Nat))
+  | .open, [p, c, _] => some ([], [(p, c.toNat)])
+  | .close, [h] => some ([(.file, h)], [])
+  | .read, [h, buf, len, _] => some ([(.file, h)], [(buf, len.toNat)])
+  | .write, [h, buf, len, _] => some ([(.file, h)], [(buf, len.toNat)])
+  | .size, [h] => some ([(.file, h)], [])
+  | .setLen, [h, _] => some ([(.file, h)], [])
+  | .sync, [h] => some ([(.file, h)], [])
+  | .createDir, [p, c] => some ([], [(p, c.toNat)])
+  | .removeFile, [p, c] => some ([], [(p, c.toNat)])
+  | .removeDir, [p, c] => some ([], [(p, c.toNat)])
+  | .rename, [a, ac, b, bc] => some ([], [(a, ac.toNat), (b, bc.toNat)])
+  | .dirOpen, [p, c] => some ([], [(p, c.toNat)])
+  | .dirNext, [d, out, cap] => some ([(.dir, d)], [(out, cap.toNat)])
+  | .dirClose, [d] => some ([(.dir, d)], [])
+  | _, _ => none
+
+theorem fsNeeds_length {f : FsFn} {bits : List UInt64} {n : List (Held × UInt64) × List (UInt64 × Nat)}
+    (h : fsNeeds f bits = some n) : bits.length = (Ext.fs f).sig.1.length := by
+  unfold fsNeeds at h
+  split at h <;> first | rfl | cases h
+
+/-- What a network library call needs: each socket it is handed, held, and
+    room for each name, address record and buffer. -/
+def netNeeds : NetFn → List UInt64 → Option (List (Held × UInt64) × List (UInt64 × Nat))
+  | .resolve, [n, c, out, oc] => some ([], [(n, c.toNat), (out, oc.toNat)])
+  | .tcpConnect, [a, _] => some ([], [(a, addrBytes)])
+  | .tcpListen, [a] => some ([], [(a, addrBytes)])
+  | .tcpLocal, [h, out] => some ([(.listener, h)], [(out, addrBytes)])
+  | .tcpAccept, [l, _] => some ([(.listener, l)], [])
+  | .tcpSend, [s, buf, len] => some ([(.stream, s)], [(buf, len.toNat)])
+  | .tcpRecv, [s, buf, len] => some ([(.stream, s)], [(buf, len.toNat)])
+  | .tcpShutdown, [s] => some ([(.stream, s)], [])
+  | .tcpClose, [s] => some ([(.stream, s)], [])
+  | .tcpListenerClose, [l] => some ([(.listener, l)], [])
+  | .udpBind, [a, _] => some ([], [(a, addrBytes)])
+  | .udpLocal, [u, out] => some ([(.udp, u)], [(out, addrBytes)])
+  | .udpSend, [u, buf, len, a] => some ([(.udp, u)], [(buf, len.toNat), (a, addrBytes)])
+  | .udpRecv, [u, buf, len] => some ([(.udp, u)], [(buf, len.toNat)])
+  | .udpClose, [u] => some ([(.udp, u)], [])
+  | _, _ => none
+
+theorem netNeeds_length {f : NetFn} {bits : List UInt64} {n : List (Held × UInt64) × List (UInt64 × Nat)}
+    (h : netNeeds f bits = some n) : bits.length = (Ext.net f).sig.1.length := by
+  unfold netNeeds at h
+  split at h <;> first | rfl | cases h
 
 /-- The C strings a call reads: a window's title. -/
 def extStrs : Ext → List UInt64 → List UInt64
@@ -1215,6 +1747,8 @@ def extNeeds : Ext → List UInt64 → Option (List (Held × UInt64) × List (UI
   | .cpu .count, [] | .cpu .unpin, [] => some ([], [])
   | .cpu .core, [_] | .cpu .package, [_] | .cpu .pin, [_] => some ([], [])
   | .base f, bits => baseNeeds f bits
+  | .fs f, bits => fsNeeds f bits
+  | .net f, bits => netNeeds f bits
   | .serial .count, [] => some ([], [])
   | .serial .name, [_, out, cap] => some ([], [(out, lenOf cap)])
   | .serial .close, [p] | .serial .pending, [p] => some ([(.port, p)], [])
@@ -1230,7 +1764,7 @@ def extNeeds : Ext → List UInt64 → Option (List (Held × UInt64) × List (UI
 theorem extNeeds_length {e : Ext} {bits : List UInt64} {n : List (Held × UInt64) × List (UInt64 × Nat)}
     (h : extNeeds e bits = some n) : bits.length = e.sig.1.length := by
   unfold extNeeds at h
-  split at h <;> first | rfl | cases h | exact baseNeeds_length h
+  split at h <;> first | rfl | cases h | exact baseNeeds_length h | exact fsNeeds_length h | exact netNeeds_length h
 
 theorem copyIn_zeros {w : World} {a : UInt64} {n : Nat} (h : Fits w.mem a n) :
     ∃ m, Sem.copyIn w.mem a (ByteArray.mk (Array.replicate n 0)) = some m :=
@@ -1252,6 +1786,210 @@ theorem usbIface_get {w : World} {a : UInt64} {j : Nat} (h : w.usbIface? a = som
   cases e : w.usbIfaces[j]? with
   | none => rw [e] at this; simp at this
   | some f => exact ⟨f, rfl⟩
+
+/-- A length the C side reads as an `int64_t`, not negative, is its own. -/
+theorem lenOf_eq {x : UInt64} (h : negI64 x = false) : lenOf x = x.toNat := by
+  unfold negI64 at h; unfold lenOf
+  have h' : ¬ (x ≥ 0x8000000000000000) := by simpa using h
+  rw [if_pos]
+  rw [ge_iff_le, UInt64.le_iff_toNat_le] at h'
+  rw [UInt64.lt_iff_toNat_lt]; omega
+
+theorem negI64_false {b c : Bool} (h : ¬ ((b || c) = true)) : b = false := by
+  cases b <;> simp_all
+
+theorem fsNeeds_pre {f : FsFn} {bits : List UInt64} {w : World} {hs : List (Held × UInt64)}
+    {rs : List (UInt64 × Nat)} (hn : fsNeeds f bits = some (hs, rs))
+    (live : ∀ p ∈ hs, p.1.live w p.2 = true) (room : ∀ q ∈ rs, Fits w.mem q.1 q.2) :
+    ExtContracts.fsPre f bits w := by
+  have field : ∀ {p c : UInt64}, Fits w.mem p c.toNat → ∃ x, readField w.mem p c = some x :=
+    fun h => live_some (readField_isSome h.readable)
+  unfold fsNeeds at hn
+  split at hn <;> (try cases hn)
+  -- open
+  · obtain ⟨x, hx⟩ := field (room _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [fsDecode, fsDOpen, fsPath, hx, Option.bind_eq_bind, Option.bind_some]
+    repeat' split
+    all_goals rfl
+  -- close
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    exact ⟨rfl, by simp [fsDecode, fsDClose, hk]⟩
+  -- read
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [fsDecode, fsDRead, hk, Option.bind_eq_bind, Option.bind_some]
+    split
+    · rfl
+    · rename_i hh bb ll oo hneg
+      have hr := room _ List.mem_cons_self
+      obtain ⟨m, hm⟩ := copyIn_zeros
+        (Fits.mono (n := ((w.fsContents k).extract oo.toNat (oo.toNat + ll.toNat)).size)
+          (by rw [ByteArray.size_extract]; omega) hr)
+      simp only [hm, Option.bind_some, Option.isSome_some]
+  -- write
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [fsDecode, fsDWrite, hk, Option.bind_eq_bind, Option.bind_some]
+    split
+    · rfl
+    · rename_i hneg
+      have hr := room _ List.mem_cons_self
+      obtain ⟨bs, hbs⟩ := readBytes_some hr
+      simp [hbs]
+  -- size
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    exact ⟨rfl, by simp [fsDecode, fsDSize, hk]⟩
+  -- setLen
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [fsDecode, fsDSetLen, hk, Option.bind_eq_bind, Option.bind_some]
+    split <;> rfl
+  -- sync
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    exact ⟨rfl, by simp [fsDecode, fsDSync, hk]⟩
+  -- createDir, removeFile, removeDir
+  all_goals try
+    (obtain ⟨x, hx⟩ := field (room _ List.mem_cons_self)
+     refine ⟨rfl, ?_⟩
+     simp only [fsDecode, fsDPathCall, fsDDirOpen, fsPath, hx, Option.bind_eq_bind, Option.bind_some]
+     repeat' split
+     all_goals rfl
+     done)
+  -- rename
+  · obtain ⟨x, hx⟩ := field (room _ List.mem_cons_self)
+    obtain ⟨y, hy⟩ := field (room _ (List.mem_cons_of_mem _ List.mem_cons_self))
+    refine ⟨rfl, ?_⟩
+    simp only [fsDecode, fsDRename, hx, hy, Option.bind_eq_bind, Option.bind_some]
+    repeat' split
+    all_goals rfl
+  -- dirNext
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [fsDecode, fsDDirNext, hk, Option.bind_eq_bind, Option.bind_some]
+    split
+    · rename_i name _ _
+      obtain ⟨m, hm⟩ := copyIn_zeros
+        (Fits.mono (n := min name.utf8ByteSize (lenOf _))
+          (Nat.le_trans (Nat.min_le_right _ _) (lenOf_le _)) (room _ List.mem_cons_self))
+      simp [hm]
+    · rfl
+  -- dirClose
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    exact ⟨rfl, by simp [fsDecode, fsDDirClose, hk]⟩
+
+theorem netNeeds_pre {f : NetFn} {bits : List UInt64} {w : World} {hs : List (Held × UInt64)}
+    {rs : List (UInt64 × Nat)} (hn : netNeeds f bits = some (hs, rs))
+    (live : ∀ p ∈ hs, p.1.live w p.2 = true) (room : ∀ q ∈ rs, Fits w.mem q.1 q.2) :
+    ExtContracts.netPre f bits w := by
+  have field : ∀ {p c : UInt64}, Fits w.mem p c.toNat → ∃ x, readField w.mem p c = some x :=
+    fun h => live_some (readField_isSome h.readable)
+  have addr : ∀ {a : UInt64}, Fits w.mem a addrBytes → ∃ x, addrAt w a = some x := fun h => by
+    obtain ⟨bs, hbs⟩ := readBytes_some h
+    exact ⟨NetAddr.ofBytes bs, by simp [addrAt, hbs]⟩
+  unfold netNeeds at hn
+  split at hn <;> (try cases hn)
+  -- resolve
+  · obtain ⟨x, hx⟩ := field (room _ List.mem_cons_self)
+    have hr := room _ (List.mem_cons_of_mem _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDResolve, hx, Option.bind_eq_bind, Option.bind_some]
+    repeat' split
+    all_goals try rfl
+    rename_i as _
+    obtain ⟨m, hm⟩ := copyIn_zeros (Fits.mono (n := addrBytes * min as.length (lenOf _ / addrBytes))
+      (Nat.le_trans (Nat.le_trans (Nat.mul_le_mul_left _ (Nat.min_le_right _ _)) (Nat.mul_div_le _ _))
+        (lenOf_le _)) hr)
+    simp [hm]
+  -- connect
+  · obtain ⟨x, hx⟩ := addr (room _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDTimed, hx, Option.bind_eq_bind, Option.bind_some]
+    repeat' split
+    all_goals rfl
+  -- listen
+  · obtain ⟨x, hx⟩ := addr (room _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDListen, hx, Option.bind_eq_bind, Option.bind_some]
+    split <;> rfl
+  -- the listener's address
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    dsimp only at hk
+    obtain ⟨m, hm⟩ := copyIn_zeros (room _ List.mem_cons_self)
+    exact ⟨rfl, by simp [netDecode, netDLocal, hk, hm]⟩
+  -- accept
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    dsimp only at hk
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDAccept, hk, Option.bind_eq_bind, Option.bind_some]
+    split <;> rfl
+  -- send
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    dsimp only at hk
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDSend, hk, Option.bind_eq_bind, Option.bind_some]
+    split
+    · rfl
+    · rename_i hneg
+      have hr := room _ List.mem_cons_self
+      obtain ⟨bs, hbs⟩ := readBytes_some hr
+      simp [hbs]
+  -- receive
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    dsimp only at hk
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDRecv, hk, Option.bind_eq_bind, Option.bind_some]
+    split
+    · rfl
+    · rename_i hneg
+      split
+      · rfl
+      · have hr := room _ List.mem_cons_self
+        obtain ⟨m, hm⟩ := copyIn_zeros hr
+        simp [hm]
+  -- shutdown, close, the listener's close
+  all_goals try
+    (obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+     dsimp only at hk
+     refine ⟨rfl, ?_⟩
+     simp [netDecode, netDHeld, hk]
+     done)
+  -- bind
+  · obtain ⟨x, hx⟩ := addr (room _ List.mem_cons_self)
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDTimed, hx, Option.bind_eq_bind, Option.bind_some]
+    repeat' split
+    all_goals rfl
+  -- the UDP socket's address
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    dsimp only at hk
+    obtain ⟨m, hm⟩ := copyIn_zeros (room _ List.mem_cons_self)
+    exact ⟨rfl, by simp [netDecode, netDLocal, hk, hm]⟩
+  -- UDP send
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    dsimp only at hk
+    obtain ⟨x, hx⟩ := addr (room _ (List.mem_cons_of_mem _ List.mem_cons_self))
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDUdpSend, hk, hx, Option.bind_eq_bind, Option.bind_some]
+    split
+    · split
+      · rfl
+      · rename_i hneg
+        have hr := room _ List.mem_cons_self
+        obtain ⟨bs, hbs⟩ := readBytes_some hr
+        simp [hbs]
+    · rfl
+  -- UDP receive
+  · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
+    dsimp only at hk
+    refine ⟨rfl, ?_⟩
+    simp only [netDecode, netDUdpRecv, hk, Option.bind_eq_bind, Option.bind_some]
+    split
+    · rfl
+    · rename_i hneg
+      have hr := room _ List.mem_cons_self
+      obtain ⟨m, hm⟩ := copyIn_zeros hr
+      simp [hm]
 
 /-- **What a call needs is enough**: the handles `extNeeds` names held, and
     the bytes it names in memory, give the call's precondition. -/
@@ -1307,6 +2045,8 @@ theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
   all_goals try exact rfl
   -- the engine's own
   · exact baseNeeds_pre hn room
+  · exact fsNeeds_pre hn live room
+  · exact netNeeds_pre hn live room
   -- serial: count
   · exact ⟨rfl, rfl⟩
   -- serial: name

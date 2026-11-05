@@ -62,7 +62,7 @@ def frame : IR.LibFn → Frame := fun _ => .none
 def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   | .present _ => .none
   | .c .memcpy | .c .memmove | .c .memset => .at 0 2
-  | .c .strlen | .c .calloc | .c .free => .none
+  | .c .calloc | .c .free => .none
   | .cuda .deviceGet => .fixed 0 4
   | .cuda .primaryCtxRetain | .cuda .memAlloc | .cuda .moduleLoadData
   | .cuda .moduleGetFunction | .cuda .streamCreate | .cuda .eventCreate
@@ -81,10 +81,9 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   | .cublas .create => .fixed 0 8
   | .cublas _ => .none
   | .cpu _ => .none
-  -- A file read or a line of standard input lands in memory; the engine's
-  -- other functions write none.
-  | .base .fileReadToPtr => .at 2 4
-  | .base .stdinReadline => .at 0 1
+  -- Standard input and randomness land in memory; the engine's other
+  -- functions write none.
+  | .base .stdinRead | .base .random => .at 0 1
   | .base .threadJoin => .anywhere
   | .base _ => .none
   -- The serial library writes a port's name and what a read takes; the USB
@@ -94,6 +93,15 @@ def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
   | .usb .control => .at 5 6
   | .usb .bulk | .usb .interrupt => .at 2 3
   | .usb _ => .none
+  -- The file library writes what a read takes and a listed name; the network
+  -- library the records a resolve or an address asked for hands back, and
+  -- what a receive takes.
+  | .fs .read | .fs .dirNext => .at 1 2
+  | .fs _ => .none
+  | .net .resolve => .at 2 3
+  | .net .tcpLocal | .net .udpLocal => .fixed 1 24
+  | .net .tcpRecv | .net .udpRecv => .at 1 2
+  | .net _ => .none
   -- wgpu writes host memory only where a texture is acquired: the
   -- `WGPUSurfaceTexture` it is handed.
   | .wgpu .bufferRead => .at 3 4

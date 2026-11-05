@@ -142,6 +142,7 @@ private theorem preBase_sound (hS : S.holds w) {f : BaseFn} {as : List AV} {bits
   unfold preBase at h
   split at h
   · argbits hb []; exact ⟨[], rfl, by simp⟩
+  · argbits hb []; exact ⟨[], rfl, by simp⟩
   · argbits hb [h1, h2]; exact ⟨[], rfl, by simp⟩
   · argbits hb [h1, h2]; exact ⟨[], rfl, by simp⟩
   · argbits hb [h1, h2]; exact ⟨[], rfl, by simp⟩
@@ -169,13 +170,6 @@ private theorem preBase_sound (hS : S.holds w) {f : BaseFn} {as : List AV} {bits
     | (argbits hb [h1, h2, h3]
        exact ⟨[(_, _)], rfl, fun q hq => by
          simp only [List.mem_singleton] at hq; subst hq; exact memBR_fits hS h1 h2 h (hrb 0 1)⟩)
-    | (simp only [Bool.and_eq_true] at h
-       argbits hb [h1, h2, h3, h4, h5]
-       exact ⟨[(_, _), (_, _)], rfl, fun q hq => by
-         simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
-         rcases hq with rfl | rfl
-         · exact memBR_fits hS h1 h2 h.1 (hrb 0 1)
-         · exact memBR_fits hS h3 h5 h.2 (hrb 2 4)⟩)
     | cases h
 
 /-- Room for `n` bytes the arguments name, and a handle the arguments name,
@@ -187,6 +181,113 @@ private theorem ext_room {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w) (hd : 
 private theorem ext_hand {a : AV} {x : UInt64} {k : Contracts.Held} (hd : ∃ t, a.Desc Γ w (.sc t x))
     (h : handB k a = true) : ∀ p ∈ [(k, x)], p.1.live w p.2 = true := by
   intro q hq; simp only [List.mem_singleton] at hq; subst hq; exact handB_sound hd h
+
+/-- **What `preFs` decides is what the file library asks.** -/
+private theorem preFs_sound (hS : S.holds w) {f : FsFn} {as : List AV} {bits : List UInt64}
+    (hb : ArgBits Γ w as bits) (h : preFs S rb f as = true) (hrb : RbSound w bits rb) :
+    ∃ hs rs, Contracts.fsNeeds f bits = some (hs, rs) ∧ (∀ p ∈ hs, p.1.live w p.2 = true) ∧
+      (∀ q ∈ rs, Fits w.mem q.1 q.2) := by
+  unfold preFs at h
+  split at h
+  -- open
+  · argbits hb [h1, h2, h3]
+    exact ⟨[], _, rfl, by simp, fun q hq => by
+      simp only [List.mem_singleton] at hq; subst hq; exact memBR_fits hS h1 h2 h (hrb 0 1)⟩
+  -- close
+  · argbits hb [h1]
+    exact ⟨_, [], rfl, fun p hp => by
+      simp only [List.mem_singleton] at hp; subst hp; exact handB_sound h1 h, by simp⟩
+  -- read, write
+  all_goals first
+    | (simp only [Bool.and_eq_true] at h
+       argbits hb [h1, h2, h3, h4]
+       exact ⟨_, _, rfl, fun p hp => by
+         simp only [List.mem_singleton] at hp; subst hp; exact handB_sound h1 h.1, fun q hq => by
+         simp only [List.mem_singleton] at hq; subst hq; exact (memBR_fits hS h2 h3 h.2 (hrb 1 2))⟩)
+    | (argbits hb [h1]
+       exact ⟨_, [], rfl, fun p hp => by
+         simp only [List.mem_singleton] at hp; subst hp; exact handB_sound h1 h, by simp⟩)
+    | (argbits hb [h1, h2]
+       first
+         | exact ⟨_, [], rfl, fun p hp => by
+             simp only [List.mem_singleton] at hp; subst hp; exact handB_sound h1 h, by simp⟩
+         | exact ⟨[], _, rfl, by simp, fun q hq => by
+             simp only [List.mem_singleton] at hq; subst hq; exact memBR_fits hS h1 h2 h (hrb 0 1)⟩)
+    | (simp only [Bool.and_eq_true] at h
+       argbits hb [h1, h2, h3, h4]
+       exact ⟨[], _, rfl, by simp, fun q hq => by
+         simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+         rcases hq with rfl | rfl
+         · exact memBR_fits hS h1 h2 h.1 (hrb 0 1)
+         · exact memBR_fits hS h3 h4 h.2 (hrb 2 3)⟩)
+    | (simp only [Bool.and_eq_true] at h
+       argbits hb [h1, h2, h3]
+       exact ⟨_, _, rfl, fun p hp => by
+         simp only [List.mem_singleton] at hp; subst hp; exact handB_sound h1 h.1, fun q hq => by
+         simp only [List.mem_singleton] at hq; subst hq; exact (memBR_fits hS h2 h3 h.2 (hrb 1 2))⟩)
+    | cases h
+
+/-- **What `preNet` decides is what the network library asks.** -/
+private theorem preNet_sound (hS : S.holds w) {f : NetFn} {as : List AV} {bits : List UInt64}
+    (hb : ArgBits Γ w as bits) (h : preNet S rb f as = true) (hrb : RbSound w bits rb) :
+    ∃ hs rs, Contracts.netNeeds f bits = some (hs, rs) ∧ (∀ p ∈ hs, p.1.live w p.2 = true) ∧
+      (∀ q ∈ rs, Fits w.mem q.1 q.2) := by
+  have one : ∀ {k : Contracts.Held} {a : AV} {x : UInt64}, (∃ t, a.Desc Γ w (.sc t x)) → handB k a = true →
+      ∀ p ∈ [(k, x)], p.1.live w p.2 = true := fun hd hh p hp => by
+    simp only [List.mem_singleton] at hp; subst hp; exact handB_sound hd hh
+  unfold preNet at h
+  split at h
+  -- resolve
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2, h3, h4]
+    exact ⟨[], _, rfl, by simp, fun q hq => by
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+      rcases hq with rfl | rfl
+      · exact memBR_fits hS h1 h2 h.1 (hrb 0 1)
+      · exact (memBR_fits hS h3 h4 h.2 (hrb 2 3))⟩
+  -- connect
+  · argbits hb [h1, h2]; exact ⟨[], _, rfl, by simp, ext_room hS h1 h⟩
+  -- listen
+  · argbits hb [h1]; exact ⟨[], _, rfl, by simp, ext_room hS h1 h⟩
+  -- the listener's address
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2]; exact ⟨_, _, rfl, one h1 h.1, ext_room hS h2 h.2⟩
+  -- accept
+  · argbits hb [h1, h2]; exact ⟨_, [], rfl, one h1 h, by simp⟩
+  -- send, receive
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2, h3]
+    exact ⟨_, _, rfl, one h1 h.1, fun q hq => by
+      simp only [List.mem_singleton] at hq; subst hq; exact (memBR_fits hS h2 h3 h.2 (hrb 1 2))⟩
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2, h3]
+    exact ⟨_, _, rfl, one h1 h.1, fun q hq => by
+      simp only [List.mem_singleton] at hq; subst hq; exact (memBR_fits hS h2 h3 h.2 (hrb 1 2))⟩
+  -- shutdown, close, the listener's close
+  · argbits hb [h1]; exact ⟨_, [], rfl, one h1 h, by simp⟩
+  · argbits hb [h1]; exact ⟨_, [], rfl, one h1 h, by simp⟩
+  · argbits hb [h1]; exact ⟨_, [], rfl, one h1 h, by simp⟩
+  -- bind
+  · argbits hb [h1, h2]; exact ⟨[], _, rfl, by simp, ext_room hS h1 h⟩
+  -- the UDP socket's address
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2]; exact ⟨_, _, rfl, one h1 h.1, ext_room hS h2 h.2⟩
+  -- UDP send
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2, h3, h4]
+    exact ⟨_, _, rfl, one h1 h.1.1, fun q hq => by
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+      rcases hq with rfl | rfl
+      · exact (memBR_fits hS h2 h3 h.1.2 (hrb 1 2))
+      · exact memN_fits hS h4 h.2⟩
+  -- UDP receive
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2, h3]
+    exact ⟨_, _, rfl, one h1 h.1, fun q hq => by
+      simp only [List.mem_singleton] at hq; subst hq; exact (memBR_fits hS h2 h3 h.2 (hrb 1 2))⟩
+  -- close
+  · argbits hb [h1]; exact ⟨_, [], rfl, one h1 h, by simp⟩
+  · cases h
 
 /-- **What `preExt` decides is what the library contracts ask**: the handles
     and the room `extNeeds` names for the bits handed over. -/
@@ -274,6 +375,8 @@ theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List U
   -- the engine's own
   · obtain ⟨rs, hn, hr⟩ := preBase_sound hS hb h hrb
     exact ⟨[], rs, hn, none_, hr⟩
+  · exact preFs_sound hS hb h hrb
+  · exact preNet_sound hS hb h hrb
   -- serial: count
   · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
   -- serial: name

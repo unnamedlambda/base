@@ -206,12 +206,6 @@ theorem get!_of_data {a b : ByteArray} {i j : Nat} (h : a.data[i]? = b.data[j]?)
   show a.data[i]! = b.data[j]!
   rw [getElem!_def, getElem!_def, h]
 
-theorem fitBytes_size (n : Nat) (bs : ByteArray) : (fitBytes n bs).size = n := by
-  unfold fitBytes
-  simp only [ByteArray.size_append, ByteArray.size_extract]
-  show _ + (Array.replicate _ _).size = _
-  rw [Array.size_replicate]; omega
-
 theorem fitBytes_get {n : Nat} {bs : ByteArray} {j : Nat} (hn : j < n) (hb : j < bs.size) :
     (fitBytes n bs).get! j = bs.get! j := by
   apply get!_of_data

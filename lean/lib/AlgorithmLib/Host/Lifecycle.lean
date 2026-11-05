@@ -1029,12 +1029,6 @@ theorem cstr_imp_of_state {S : TState} {w : World} {a : UInt64} {P : Prop} (hS :
     (h : S.contains (.cstr a) = true) : P → CStr w.mem a :=
   fun _ => holds_of_mem hS h
 
-/-- **A read into memory has room**: room for as many bytes as it asks for. -/
-theorem readTo_of_state {S : TState} {w : World} {dst fileOff size : UInt64} {p : String → Prop}
-    (hS : S.holds w) (h : roomAt S dst size.toNat = true) :
-    ∀ path c, p path → w.fs.get path = some c → Writable w.mem dst (readCountPtr c fileOff size) :=
-  fun _ _ _ _ => writable_of_state hS (roomAt_mono h (Nat.min_le_left _ _))
-
 -- ---------------------------------------------------------------------------
 -- What a program's own store leaves
 -- ---------------------------------------------------------------------------

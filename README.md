@@ -6,9 +6,9 @@ artifact loaded by a driver.
 
 An artifact holds a program and the memory it starts with. The program is CLIF,
 the IR of the Cranelift code generator: it runs on the CPU and calls a fixed set
-of primitives for everything else, such as GPU dispatch, file reads, drawing to
-a display and threads. The driver compiles the program with Cranelift when it loads
-the artifact, then runs its entry points by name.
+of primitives for everything else, such as GPU dispatch, file reads, network
+sends, drawing to a display and threads. The driver compiles the program with
+Cranelift when it loads the artifact, then runs its entry points by name.
 
 Artifacts are produced by generators. The generators here are written in Lean,
 where theorems prove, at build time, properties of an artifact's run-time

@@ -1083,17 +1083,25 @@ theorem reloc1_iext (k : IExt) (ty : ClifTy) : Reloc1 (Op.iext k ty) := by
 -- The world a term runs in
 -- ---------------------------------------------------------------------------
 
-/-- The files a run may read and write, by absolute path. Modelling them as
-    state is what keeps the semantics a pure function. -/
+/-- The file system a run sees: each regular file's path and the contents it
+    names, the contents themselves, and the directories. A path names
+    contents rather than holding them, so a handle open on a file keeps them
+    through a rename or a removal of its path. Modelling them as state is what
+    keeps the semantics a pure function. -/
 structure FS where
-  files : List (String × ByteArray) := []
+  names : List (String × Nat) := []
+  nodes : Array ByteArray := #[]
+  dirs : List String := []
   deriving Inhabited
 
-def FS.get (fs : FS) (p : String) : Option ByteArray :=
-  (fs.files.find? (·.1 == p)).map (·.2)
+/-- The regular files at the given paths, with the given contents. -/
+def FS.ofFiles (files : List (String × ByteArray)) : FS :=
+  { names := files.zipIdx.map (fun ((p, _), k) => (p, k)), nodes := (files.map (·.2)).toArray }
 
-def FS.set (fs : FS) (p : String) (b : ByteArray) : FS :=
-  { files := (p, b) :: fs.files.filter (·.1 != p) }
+/-- The contents the path names, if a regular file is there. -/
+def FS.node? (fs : FS) (p : String) : Option Nat := (fs.names.find? (·.1 == p)).map (·.2)
+
+def FS.get (fs : FS) (p : String) : Option ByteArray := (fs.node? p).bind (fs.nodes[·]?)
 
 /-- One entry of the observation trace. -/
 inductive Obs where
@@ -1470,6 +1478,64 @@ structure UsbIface where
   dev : Nat
   number : Nat
 
+/-- Where the `k`th file opened lives: outside every region. -/
+def fsFileAddr (k : Nat) : UInt64 := 0xE800000000 + 0x10000 * UInt64.ofNat k
+
+/-- A file the program opened: whether it is open, the contents it is open
+    on, and whether it may read and write them. -/
+structure FsOpen where
+  live : Bool := true
+  node : Nat
+  read : Bool
+  write : Bool
+
+/-- Where the `k`th directory opened for listing lives: outside every region. -/
+def fsDirAddr (k : Nat) : UInt64 := 0xF000000000 + 0x10000 * UInt64.ofNat k
+
+/-- A directory the program opened for listing: whether it is open, and the
+    names of the entries not yet listed. -/
+structure FsDir where
+  live : Bool := true
+  left : List String
+
+/-- Where the `k`th socket lives: outside every region. -/
+def netSockAddr (k : Nat) : UInt64 := 0xF800000000 + 0x10000 * UInt64.ofNat k
+
+/-- An address as the network library's 24-byte record holds it: the family
+    (`4` or `6`), the port, the IPv6 scope, and the IP's sixteen bytes (an
+    IPv4 address in the first four, the rest zero). -/
+structure NetAddr where
+  family : Nat
+  port : Nat
+  scope : Nat
+  ip : List UInt8
+  deriving DecidableEq, Inhabited
+
+/-- What a socket is. -/
+inductive SockKind where
+  | listener | stream | udp
+  deriving DecidableEq, Repr
+
+/-- A socket: whether it is open and the program holds it (a stream a
+    listener has queued is not held until it is accepted), what it is, and
+    the address it is bound to. A stream has its other end, where that is a
+    socket of this run, what has arrived and not yet been read, whether the
+    other end has shut sending, whether it has, and what it has sent to an end
+    outside the run; a listener the streams waiting to be accepted; a UDP
+    socket the datagrams that have arrived, each with its sender. -/
+structure Sock where
+  live : Bool := true
+  held : Bool := true
+  kind : SockKind
+  addr : NetAddr
+  peer : Option Nat := none
+  incoming : ByteArray := ByteArray.empty
+  shut : Bool := false
+  wshut : Bool := false
+  sent : ByteArray := ByteArray.empty
+  queue : List Nat := []
+  dgrams : List (NetAddr × ByteArray) := []
+
 /-- The window library as the program has made it: whether this thread's
     event loop is up, and the windows by opening order. -/
 structure WlState where
@@ -1480,12 +1546,34 @@ structure WlState where
 structure World where
   mem : Mem
   fs  : FS := {}
-  /-- The lines of standard input still to be read, in order, each including
-      its newline; a read takes the first, or as much of it as fits, and leaves
-      the rest. An empty list is end of input. -/
+  /-- Standard input still to be read, as the reads the system hands it over
+      in: a read takes the first, or as much of it as fits, and leaves the
+      rest. An empty list is end of input. -/
   stdin : List ByteArray := []
   /-- What `cl_stdout_write` has written so far. -/
   stdout : ByteArray := ByteArray.empty
+  /-- What `cl_stderr_write` has written so far. -/
+  stderr : ByteArray := ByteArray.empty
+  /-- The files the program opened, by opening order. -/
+  openFiles : Array FsOpen := #[]
+  /-- The directories the program opened for listing, by opening order. -/
+  openDirs : Array FsDir := #[]
+  /-- **Whether a file or directory can be made at a path**: its parent is a
+      directory the process may write. -/
+  creatable : String → Bool := fun _ => true
+  /-- **The order the system lists a directory's entries in**, from their
+      names in sorted order. -/
+  listOrder : List String → List String := id
+  /-- The sockets the program made, and the streams their connections made,
+      by making order. -/
+  socks : Array Sock := #[]
+  /-- **The addresses a name resolves to**, `none` where it does not. -/
+  resolves : String → Option (List NetAddr) := fun _ => none
+  /-- **The port the system picks** for the `k`th socket bound to port `0`. -/
+  netPort : Nat → Nat := fun k => 40000 + k
+  /-- **A server outside the run**: what one at an address sends a stream
+      connected to it, `none` where none accepts. -/
+  remote : NetAddr → Option ByteArray := fun _ => none
   /-- The C library's live heap allocations, as `(offset, length)` in the
       host-allocation region, which holds every allocation the host makes,
       page-locked or not: these are the ones `free` may release. -/
@@ -1551,6 +1639,10 @@ structure World where
       `"hugepages"`, `"priority"` — which depends on its limits and
       privileges, not on the program. -/
   grants : String → Bool := fun _ => true
+  /-- **The wall clock** `cl_clock_wall` reads, in nanoseconds since 1970. -/
+  wall : Int := 0
+  /-- **What the system's randomness hands a request** of so many bytes. -/
+  entropy : Nat → ByteArray := fun n => ByteArray.mk (Array.replicate n 0)
   /-- **The clock** `cl_clock_now` reads. Time does not pass in this model, so
       two readings agree; a claim that needs the clock to move says so. -/
   clock : Int := 0

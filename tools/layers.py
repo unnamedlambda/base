@@ -61,7 +61,7 @@ PROOFS = {f"AlgorithmLib.Host.{m}" for m in
 # Generators that still reach them, and why.
 GENERATOR_EXCEPTIONS = {
     # The conformance corpora and the pilots are checked against the semantics.
-    "Host.Pilots", "Host.Corpus", "Host.NativeCorpus", "Host.LocalCorpus", "Host.ThreadCorpus", "Host.DriverCorpus", "Host.CpuCorpus", "Host.SerialCorpus", "Host.UsbCorpus", "Host.WgpuCorpus",
+    "Host.Pilots", "Host.Corpus", "Host.NativeCorpus", "Host.LocalCorpus", "Host.ThreadCorpus", "Host.DriverCorpus", "Host.CpuCorpus", "Host.SerialCorpus", "Host.FsCorpus", "Host.NetCorpus", "Host.UsbCorpus", "Host.WgpuCorpus",
 }
 
 IMPORT = re.compile(r"^\s*(?:public\s+)?(?:meta\s+)?import\s+(?:all\s+)?(\S+)", re.M)

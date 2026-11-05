@@ -954,10 +954,6 @@ def casesExt : List (Case V L) := Id.run do
   cs := cs ++ [⟨"memset", do
     let _ ← ext (.c .memset) %[← at_ 0x41, ← iconst32 0x1ab, ← iconst64 5]
     load64 (← at_ 0x40)⟩]
-  cs := cs ++ [⟨"strlen", do
-    storeI64 (← opq .i64 0x006f6c6c6568) (← at_ 0x60)
-    ext (.c .strlen) %[← at_ 0x60]⟩,
-    ⟨"strlen/empty", do ext (.c .strlen) %[← at_ 0x80]⟩]
   -- Zeroed memory, written and read back, then released. Without the library
   -- the answer is `-1`, which nothing here dereferences.
   cs := cs ++ [⟨"calloc/free", do

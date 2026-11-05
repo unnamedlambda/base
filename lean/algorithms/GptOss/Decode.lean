@@ -549,7 +549,7 @@ def dInitM : Prog V L Unit := do
   let poolPtr ← load64 (← iaddImm ptr DPOOL_OFF)
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
-  let _ ← ext (.base .fileReadToPtr) %[pExp, ← iconst64 D_PATH_FIELD, poolPtr, zero64, poolBytes]
+  let _ ← readFileFrom pExp (← iconst64 D_PATH_FIELD) poolPtr zero64 poolBytes
   -- a staging buffer, big enough for the widest dense tensor
   let stageBytes ← iconst64 STAGE_BYTES
   let _ ← ext (.cuda .memAllocHost) %[← iaddImm ptr DSTAGE_OFF, stageBytes]
@@ -618,45 +618,48 @@ def dInitM : Prog V L Unit := do
       let ix ← iaddImm base6 (SLOTSTORE + t)
       let off ← imul ix eight
       let _ ← ext (.cuda .memAlloc) %[← iadd (← iaddImm ptr DBIND_OFF) off, sz]
-  -- the dense weights: read from the file, staged, uploaded, and resident
+  -- the dense weights: read from the file, opened once, staged, uploaded, and
+  -- resident
   let pDen ← iaddImm dataPtr D_PDEN
-  for l in List.range NL do
-    for k in List.range 9 do
-      let n := dKindBytes.getD k 0
-      let fo ← iconst64 (denseOff l k)
-      let nb ← iconst64 n
-      let _ ← ext (.base .fileReadToPtr) %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
-      let id ← load64 (← iaddImm ptr (dBindOff (dStoreBuf l k)))
-      let _ ← ext (.cuda .memcpyHtoD) %[id, stagePtr, nb]
-  -- `lm_head` is 1.08 GiB and the staging buffer is 29.5 MiB, so it goes over
-  -- in pieces.  Reading it in one call would write a gigabyte past the end of
-  -- a pinned allocation -- not a wrong answer but a corrupted heap, and the
-  -- expert pool is what sits next to it.
-  for (off, n, b) in [(fileFinalNorm, HH * 4, B_FNORM),
-                      (fileLmHead, VOCAB * HH * 2, B_LMHEAD)] do
-    let id ← load64 (← iaddImm ptr (dBindOff b))
-    let chunks := (n + STAGE_BYTES - 1) / STAGE_BYTES
-    for c in List.range chunks do
-      let take := min STAGE_BYTES (n - c * STAGE_BYTES)
-      let fo ← iconst64 (off + c * STAGE_BYTES)
-      let nb ← iconst64 take
-      let _ ← ext (.base .fileReadToPtr) %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, fo, nb]
-      let bo ← iconst64 (c * STAGE_BYTES)
-      let _ ← ext (.cuda .memcpyHtoD) %[← iadd id bo, stagePtr, nb]
-  -- **The rotation tables: two slices, and sines first.**
-  --
-  -- The kernel indexes sine at zero and cosine at `ROPE_N * HALF`
-  -- (`GptOssAttention.ropeCosIx`); the file has the opposite order and the
-  -- full published height. So this is two reads, not one, and the order is
-  -- the kernel's rather than the file's. See `ROPE_FILE_ROWS`.
-  let ropeSlice := ROPE_N * HALF * 4
-  let bRope ← load64 (← iaddImm ptr (dBindOff B_ROPE))
-  for (fo, bo) in [(fileRopeSin, 0), (fileRope, ropeSlice)] do
-    let f ← iconst64 fo
-    let nb ← iconst64 ropeSlice
-    let _ ← ext (.base .fileReadToPtr) %[pDen, ← iconst64 D_PATH_FIELD, stagePtr, f, nb]
-    let b ← iconst64 bo
-    let _ ← ext (.cuda .memcpyHtoD) %[← iadd bRope b, stagePtr, nb]
+  let _ ← withFile pDen (← iconst64 D_PATH_FIELD) fsModeRead fun fDen => do
+    for l in List.range NL do
+      for k in List.range 9 do
+        let n := dKindBytes.getD k 0
+        let fo ← iconst64 (denseOff l k)
+        let nb ← iconst64 n
+        let _ ← ext (.fs .read) %[fDen, stagePtr, nb, fo]
+        let id ← load64 (← iaddImm ptr (dBindOff (dStoreBuf l k)))
+        let _ ← ext (.cuda .memcpyHtoD) %[id, stagePtr, nb]
+    -- `lm_head` is 1.08 GiB and the staging buffer is 29.5 MiB, so it goes over
+    -- in pieces.  Reading it in one call would write a gigabyte past the end of
+    -- a pinned allocation -- not a wrong answer but a corrupted heap, and the
+    -- expert pool is what sits next to it.
+    for (off, n, b) in [(fileFinalNorm, HH * 4, B_FNORM),
+                        (fileLmHead, VOCAB * HH * 2, B_LMHEAD)] do
+      let id ← load64 (← iaddImm ptr (dBindOff b))
+      let chunks := (n + STAGE_BYTES - 1) / STAGE_BYTES
+      for c in List.range chunks do
+        let take := min STAGE_BYTES (n - c * STAGE_BYTES)
+        let fo ← iconst64 (off + c * STAGE_BYTES)
+        let nb ← iconst64 take
+        let _ ← ext (.fs .read) %[fDen, stagePtr, nb, fo]
+        let bo ← iconst64 (c * STAGE_BYTES)
+        let _ ← ext (.cuda .memcpyHtoD) %[← iadd id bo, stagePtr, nb]
+    -- **The rotation tables: two slices, and sines first.**
+    --
+    -- The kernel indexes sine at zero and cosine at `ROPE_N * HALF`
+    -- (`GptOssAttention.ropeCosIx`); the file has the opposite order and the
+    -- full published height. So this is two reads, not one, and the order is
+    -- the kernel's rather than the file's. See `ROPE_FILE_ROWS`.
+    let ropeSlice := ROPE_N * HALF * 4
+    let bRope ← load64 (← iaddImm ptr (dBindOff B_ROPE))
+    for (fo, bo) in [(fileRopeSin, 0), (fileRope, ropeSlice)] do
+      let f ← iconst64 fo
+      let nb ← iconst64 ropeSlice
+      let _ ← ext (.fs .read) %[fDen, stagePtr, nb, f]
+      let b ← iconst64 bo
+      let _ ← ext (.cuda .memcpyHtoD) %[← iadd bRope b, stagePtr, nb]
+    iconst64 0
   -- the narrow kernel's two counts
   for (b, v) in [(B_NMH, HH / 2), (B_NMQ, (64 * 64) / 2),
                  (B_NMQKV, dQkvOut / 2)] do
@@ -981,7 +984,7 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let rowB ← iconst64 (HH * 2)
   let rowOff ← imul (← uextend64 tok) rowB
   let pEmb ← iaddImm dataPtr D_PEMB
-  let _ ← ext (.base .fileReadToPtr) %[pEmb, ← iconst64 D_PATH_FIELD, stagePtrT, rowOff, rowB]
+  let _ ← readFileFrom pEmb (← iconst64 D_PATH_FIELD) stagePtrT rowOff rowB
   let _ ← ext (.cuda .memcpyHtoD) %[bEmb, stagePtrT, rowB]
   dEnqueue ptr S_WIDEN ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_EMB, B_X, B_NMH]
   -- the meta both cache depths need

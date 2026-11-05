@@ -363,7 +363,7 @@ def wordB (S : TState) (p : AV) : Bool :=
 /-- What an engine function needs, decided: its arguments, and a wait's or
     a wake's word. -/
 def preBase (S : TState) (rb : Nat → Nat → Bool) : BaseFn → List AV → Bool
-  | .clockNow, [] => true
+  | .clockNow, [] | .clockWall, [] => true
   | .memLock, [_, _] | .memUnlock, [_, _] | .memAdviseHuge, [_, _] => true
   | .threadPriority, [_] => true
   | .memWait, [p, _, _] | .memWake, [p, _] => wordB S p
@@ -371,10 +371,47 @@ def preBase (S : TState) (rb : Nat → Nat → Bool) : BaseFn → List AV → Bo
   | .nativeLoad, [s, n] => match n.bits with
       | some k => memN S s (asI64 k).toNat
       | none => false
-  | .cpuHas, [p, c] | .fileCreateDirAll, [p, c] | .fileSize, [p, c] | .fileSetLen, [p, c, _]
-  | .stdoutWrite, [p, c] | .stdinReadline, [p, c] => memBR S rb 0 1 p c
-  | .fileReadToPtr, [pp, pc, s, _, n] | .fileWriteFromPtr, [pp, pc, s, _, n] =>
-      memBR S rb 0 1 pp pc && memBR S rb 2 4 s n
+  | .cpuHas, [p, c] | .stdoutWrite, [p, c] | .stderrWrite, [p, c]
+  | .stdinRead, [p, c] | .random, [p, c] => memBR S rb 0 1 p c
+  | _, _ => false
+
+/-- What a file library call needs, decided: each handle held, and room for
+    each path by its field's length and each buffer by its length. -/
+def preFs (S : TState) (rb : Nat → Nat → Bool) : FsFn → List AV → Bool
+  | .open, [p, c, _] => memBR S rb 0 1 p c
+  | .close, [h] => handB .file h
+  | .read, [h, b, n, _] => handB .file h && memBR S rb 1 2 b n
+  | .write, [h, b, n, _] => handB .file h && memBR S rb 1 2 b n
+  | .size, [h] => handB .file h
+  | .setLen, [h, _] => handB .file h
+  | .sync, [h] => handB .file h
+  | .createDir, [p, c] => memBR S rb 0 1 p c
+  | .removeFile, [p, c] => memBR S rb 0 1 p c
+  | .removeDir, [p, c] => memBR S rb 0 1 p c
+  | .rename, [a, ac, b, bc] => memBR S rb 0 1 a ac && memBR S rb 2 3 b bc
+  | .dirOpen, [p, c] => memBR S rb 0 1 p c
+  | .dirNext, [d, o, c] => handB .dir d && memBR S rb 1 2 o c
+  | .dirClose, [d] => handB .dir d
+  | _, _ => false
+
+/-- What a network library call needs, decided: each socket held, and room
+    for each name, address record and buffer. -/
+def preNet (S : TState) (rb : Nat → Nat → Bool) : NetFn → List AV → Bool
+  | .resolve, [n, c, o, oc] => memBR S rb 0 1 n c && memBR S rb 2 3 o oc
+  | .tcpConnect, [a, _] => memN S a addrBytes
+  | .tcpListen, [a] => memN S a addrBytes
+  | .tcpLocal, [h, o] => handB .listener h && memN S o addrBytes
+  | .tcpAccept, [l, _] => handB .listener l
+  | .tcpSend, [s, b, n] => handB .stream s && memBR S rb 1 2 b n
+  | .tcpRecv, [s, b, n] => handB .stream s && memBR S rb 1 2 b n
+  | .tcpShutdown, [s] => handB .stream s
+  | .tcpClose, [s] => handB .stream s
+  | .tcpListenerClose, [l] => handB .listener l
+  | .udpBind, [a, _] => memN S a addrBytes
+  | .udpLocal, [u, o] => handB .udp u && memN S o addrBytes
+  | .udpSend, [u, b, n, a] => handB .udp u && memBR S rb 1 2 b n && memN S a addrBytes
+  | .udpRecv, [u, b, n] => handB .udp u && memBR S rb 1 2 b n
+  | .udpClose, [u] => handB .udp u
   | _, _ => false
 
 /-- **What a call of the engine's own libraries needs, decided** by the
@@ -405,6 +442,8 @@ def preExt (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Ext �
   | .cpu .count, [] | .cpu .unpin, [] => true
   | .cpu .core, [_] | .cpu .package, [_] | .cpu .pin, [_] => true
   | .base f, as => preBase S rb f as
+  | .fs f, as => preFs S rb f as
+  | .net f, as => preNet S rb f as
   | .serial .count, [] => true
   | .serial .name, [_, out, cap] => match cap.bits with
       | some c => memN S out (lenOf c)

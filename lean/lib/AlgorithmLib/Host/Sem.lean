@@ -4,6 +4,8 @@ public import AlgorithmLib.Host.CpuLib
 public import AlgorithmLib.Host.UsbLib
 public import AlgorithmLib.Host.Wgpu
 public import AlgorithmLib.Host.WindowLib
+public import AlgorithmLib.Host.FsLib
+public import AlgorithmLib.Host.NetLib
 meta import AlgorithmLib.Host.Blas
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
@@ -278,15 +280,6 @@ def atomicCall (a : Atomic) (vs : List V) (w : World) : Option (Option V × Worl
       else some (some (.sc t old), w)
   | _, _ => none
 
-/-- The offset of the first zero byte at or after `a`, within its region. -/
-def strlenAt (m : Mem) (a : UInt64) : Option Nat := do
-  let (r, off) ← decodeAddr a
-  let bs := m.region r
-  let n := bs.size - off
-  let i ← (List.range n).find? fun i => bs.get! (off + i) == 0
-  let _ ← copyOut m a (i + 1)
-  some i
-
 /-- Whether library `l` is there: one built into the engine always is
     (`Lib.builtin`); another as the machine has it. -/
 def World.has (w : World) (l : Lib) : Bool := l.builtin || w.present l
@@ -301,10 +294,6 @@ def World.has (w : World) (l : Lib) : Bool := l.builtin || w.present l
 -- A join of a running thread's handle answers what its function answered and
 -- hands its bytes back as the thread left them (`threadOut`); joining anything
 -- else is undefined.
-
-/-- `bs` cut or padded with zeros to `n` bytes. -/
-def fitBytes (n : Nat) (bs : ByteArray) : ByteArray :=
-  (bs.extract 0 n) ++ ByteArray.mk (Array.replicate (n - bs.size) 0)
 
 def ffiThreadSpawn (bits : List UInt64) (w : World) : Option (Option V × World) :=
   match bits with
@@ -346,13 +335,11 @@ def baseCall (f : BaseFn) (bits : List UInt64) (w : World) : Option (Option V ×
   | .nativeFree => ffiNativeFree bits w
   | .nativeArch => ffiNativeArch bits w
   | .cpuHas => ffiCpuHas bits w
-  | .fileCreateDirAll => ffiFileCreateDirAll bits w
-  | .fileSize => ffiFileSize bits w
-  | .fileSetLen => ffiFileSetLen bits w
+  | .stdinRead => ffiStdinRead bits w
   | .stdoutWrite => ffiStdoutWrite bits w
-  | .fileReadToPtr => ffiFileReadToPtr bits w
-  | .fileWriteFromPtr => ffiFileWriteFromPtr bits w
-  | .stdinReadline => ffiStdinReadline bits w
+  | .stderrWrite => ffiStderrWrite bits w
+  | .clockWall => ffiClockWall bits w
+  | .random => ffiRandom bits w
   | .threadSpawn => ffiThreadSpawn bits w
   | .threadJoin => ffiThreadJoin bits w
 
@@ -373,9 +360,6 @@ def cCall (f : CFn) (bits : List UInt64) (w : World) : Option (Option V × World
   | .memset, [d, c, n] => do
       let m ← copyIn w.mem d (ByteArray.mk (Array.replicate n.toNat (c &&& 0xff).toUInt8))
       some (some (.sc .i64 d), { w with mem := m })
-  | .strlen, [a] => do
-      let i ← strlenAt w.mem a
-      some (some (.sc .i64 (UInt64.ofNat i)), w)
   -- An empty request is not modelled. Out of room, the answer is null.
   | .calloc, [n, sz] =>
       let bytes := n.toNat * sz.toNat
@@ -434,6 +418,12 @@ def extCall (e : Ext) (vs : List V) (w : World) : Option (Option V × World) :=
   | .usb f, vs => do
       let bits ← vs.mapM asBits
       usbCall f bits w
+  | .fs f, vs => do
+      let bits ← vs.mapM asBits
+      fsCall f bits w
+  | .net f, vs => do
+      let bits ← vs.mapM asBits
+      netCall f bits w
   | .base f, vs => do
       let bits ← vs.mapM asBits
       baseCall f bits w

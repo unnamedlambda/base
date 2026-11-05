@@ -127,20 +127,20 @@ inductive Atomic where
     It is loaded when a program first names it; a library that is not there
     makes its functions absent rather than the program unloadable. The C
     library, wgpu, the engine's own functions (`base`) and
-    its window, CPU, serial and USB libraries are built into it
-    (`Lib.builtin`): always there, bound to the functions the engine links. -/
+    its file, network, window, CPU, serial and USB libraries are built into
+    it (`Lib.builtin`): always there, bound to the functions the engine links. -/
 inductive Lib where
-  | c | cuda | cublas | usb | window | cpu | wgpu | serial | base
+  | c | cuda | cublas | usb | window | cpu | wgpu | serial | fs | net | base
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 def Lib.name : Lib → String
   | .c => "c" | .cuda => "cuda" | .cublas => "cublas" | .usb => "usb"
   | .window => "window" | .cpu => "cpu" | .wgpu => "wgpu" | .serial => "serial"
-  | .base => "base"
+  | .fs => "fs" | .net => "net" | .base => "base"
 
 /-- Built into the engine: present on every platform, with no file to find. -/
 def Lib.builtin : Lib → Bool
-  | .c | .usb | .window | .cpu | .wgpu | .serial | .base => true
+  | .c | .usb | .window | .cpu | .wgpu | .serial | .fs | .net | .base => true
   | _ => false
 
 /-- The C library's memory functions: pointers and sizes only, so the same
@@ -148,7 +148,7 @@ def Lib.builtin : Lib → Bool
     its sign differs between implementations. `calloc` and `free` are the
     heap: zeroed memory, and its release. -/
 inductive CFn where
-  | memcpy | memmove | memset | strlen | calloc | free
+  | memcpy | memmove | memset | calloc | free
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- The CUDA driver API, called directly: context, memory, modules, launches
@@ -281,21 +281,19 @@ def CpuFn.all : List CpuFn := [.count, .core, .package, .pin, .unpin]
 theorem CpuFn.mem_all (f : CpuFn) : f ∈ CpuFn.all := by cases f <;> simp [CpuFn.all]
 
 /-- The engine's own functions over the operating system (`base/src/ffi`):
-    the monotonic clock, in nanoseconds; requests the system may grant or
+    the monotonic and wall clocks, in nanoseconds, and the system's
+    randomness; requests the system may grant or
     decline, each answering `0` or `-1` (locking memory in RAM, unlocking it,
     advising huge pages, raising the thread's priority); and waiting on a
     32-bit word of memory and waking its waiters; and placing machine code
     where it can run, unmapping it, naming the CPU's architecture and asking
-    whether it has a feature; creating a directory, a file's length and
-    setting it, reading a file into memory and writing memory to a file;
-    reading a line of standard input into memory and writing memory to
-    standard output; and starting a thread on one of the program's functions
-    and joining it. -/
+    whether it has a feature; reading standard input into memory and writing
+    memory to standard output and error; and starting a thread on one of the
+    program's functions and joining it. -/
 inductive BaseFn where
   | clockNow | memLock | memUnlock | memAdviseHuge | threadPriority | memWait | memWake
   | nativeLoad | nativeFree | nativeArch | cpuHas
-  | fileCreateDirAll | fileSize | fileSetLen | fileReadToPtr | fileWriteFromPtr | stdinReadline
-  | stdoutWrite | threadSpawn | threadJoin
+  | stdinRead | stdoutWrite | stderrWrite | clockWall | random | threadSpawn | threadJoin
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- Starting and joining a thread: the engine functions that change which
@@ -314,6 +312,37 @@ inductive SerialFn where
 def SerialFn.all : List SerialFn := [.count, .name, .open, .close, .read, .write, .pending]
 
 theorem SerialFn.mem_all (f : SerialFn) : f ∈ SerialFn.all := by cases f <;> simp [SerialFn.all]
+
+/-- The engine's file library (`base/src/builtin/fs.rs`, over `std::fs`): a
+    regular file opened by path to a handle, read and written at offsets,
+    sized, cut, synced and closed; a directory made, opened to a handle and
+    listed an entry at a time, and removed; a file removed or renamed. -/
+inductive FsFn where
+  | open | close | read | write | size | setLen | sync
+  | createDir | removeFile | removeDir | rename | dirOpen | dirNext | dirClose
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def FsFn.all : List FsFn :=
+  [.open, .close, .read, .write, .size, .setLen, .sync,
+   .createDir, .removeFile, .removeDir, .rename, .dirOpen, .dirNext, .dirClose]
+
+theorem FsFn.mem_all (f : FsFn) : f ∈ FsFn.all := by cases f <;> simp [FsFn.all]
+
+/-- The engine's network library (`base/src/builtin/net.rs`, over `std::net`):
+    a name resolved to addresses; a TCP listener bound, asked its address and
+    accepted from; a stream connected, sent on, received from, shut for
+    sending and closed; a UDP socket bound, asked its address, sent from and
+    received on. An address is a 24-byte record. -/
+inductive NetFn where
+  | resolve | tcpConnect | tcpListen | tcpLocal | tcpAccept | tcpSend | tcpRecv | tcpShutdown
+  | tcpClose | tcpListenerClose | udpBind | udpLocal | udpSend | udpRecv | udpClose
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def NetFn.all : List NetFn :=
+  [.resolve, .tcpConnect, .tcpListen, .tcpLocal, .tcpAccept, .tcpSend, .tcpRecv, .tcpShutdown,
+   .tcpClose, .tcpListenerClose, .udpBind, .udpLocal, .udpSend, .udpRecv, .udpClose]
+
+theorem NetFn.mem_all (f : NetFn) : f ∈ NetFn.all := by cases f <;> simp [NetFn.all]
 
 /-- The engine's USB library (`base/src/builtin/usb.rs`, over the `nusb`
     crate): the devices the system lists and what each is, a device opened
@@ -339,6 +368,8 @@ inductive Ext where
   | cpu (f : CpuFn)
   | serial (f : SerialFn)
   | usb (f : UsbFn)
+  | fs (f : FsFn)
+  | net (f : NetFn)
   | base (f : BaseFn)
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
@@ -352,13 +383,15 @@ def Ext.lib : Ext → Lib
   | .cpu _ => .cpu
   | .serial _ => .serial
   | .usb _ => .usb
+  | .fs _ => .fs
+  | .net _ => .net
   | .base _ => .base
 
 /-- The symbol the library exports, empty for the presence probe. -/
 def Ext.symbol : Ext → String
   | .present _ => ""
   | .c .memcpy => "memcpy" | .c .memmove => "memmove" | .c .memset => "memset"
-  | .c .strlen => "strlen" | .c .calloc => "calloc" | .c .free => "free"
+  | .c .calloc => "calloc" | .c .free => "free"
   | .cuda f => match f with
     | .init => "cuInit" | .deviceGet => "cuDeviceGet"
     | .primaryCtxRetain => "cuDevicePrimaryCtxRetain"
@@ -434,11 +467,9 @@ def Ext.symbol : Ext → String
     | .memWait => "cl_mem_wait" | .memWake => "cl_mem_wake"
     | .nativeLoad => "cl_native_load" | .nativeFree => "cl_native_free"
     | .nativeArch => "cl_native_arch" | .cpuHas => "cl_cpu_has"
-    | .fileCreateDirAll => "cl_file_create_dir_all" | .fileSize => "cl_file_size"
-    | .fileSetLen => "cl_file_set_len" | .stdoutWrite => "cl_stdout_write"
-    | .fileWriteFromPtr => "cl_file_write_from_ptr" | .stdinReadline => "cl_stdin_read_line"
+    | .stdinRead => "cl_stdin_read" | .stdoutWrite => "cl_stdout_write"
+    | .stderrWrite => "cl_stderr_write" | .clockWall => "cl_clock_wall" | .random => "cl_random"
     | .threadSpawn => "cl_thread_spawn" | .threadJoin => "cl_thread_join"
-    | .fileReadToPtr => "cl_file_read_to_ptr"
   | .serial f => "base_serial_" ++ match f with
     | .count => "count" | .name => "name" | .open => "open" | .close => "close"
     | .read => "read" | .write => "write" | .pending => "pending"
@@ -446,6 +477,17 @@ def Ext.symbol : Ext → String
     | .count => "count" | .info => "info" | .open => "open" | .close => "close"
     | .claim => "claim" | .release => "release" | .control => "control"
     | .bulk => "bulk" | .interrupt => "interrupt"
+  | .fs f => "base_fs_" ++ match f with
+    | .open => "open" | .close => "close" | .read => "read" | .write => "write" | .size => "size"
+    | .setLen => "set_len" | .sync => "sync" | .createDir => "create_dir"
+    | .removeFile => "remove_file" | .removeDir => "remove_dir" | .rename => "rename"
+    | .dirOpen => "dir_open" | .dirNext => "dir_next" | .dirClose => "dir_close"
+  | .net f => "base_net_" ++ match f with
+    | .resolve => "resolve" | .tcpConnect => "tcp_connect" | .tcpListen => "tcp_listen"
+    | .tcpLocal => "tcp_local" | .tcpAccept => "tcp_accept" | .tcpSend => "tcp_send"
+    | .tcpRecv => "tcp_recv" | .tcpShutdown => "tcp_shutdown" | .tcpClose => "tcp_close"
+    | .tcpListenerClose => "tcp_listener_close" | .udpBind => "udp_bind" | .udpLocal => "udp_local"
+    | .udpSend => "udp_send" | .udpRecv => "udp_recv" | .udpClose => "udp_close"
 
 /-- Parameters and result, as the C declaration gives them: a pointer or a
     `size_t` is an `i64`, an `int` an `i32`. -/
@@ -453,7 +495,6 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
   | .present _ => ([], some .i32)
   | .c .memcpy | .c .memmove => ([.i64, .i64, .i64], some .i64)
   | .c .memset => ([.i64, .i32, .i64], some .i64)
-  | .c .strlen => ([.i64], some .i64)
   | .c .calloc => ([.i64, .i64], some .i64)
   | .c .free => ([.i64], none)
   -- `CUresult`, `CUdevice`, `unsigned int` are `i32`; handles, pointers,
@@ -546,10 +587,9 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
   -- address and length and answers where they now run (0 if they could not
   -- be placed); `nativeArch` and `cpuHas` (a NUL-terminated feature name)
   -- decide which bytes to carry in. Running them is not an import: it is a
-  -- call with `Callee.native`. `fileCreateDirAll (path)` makes the directory
-  -- at the path and every one missing on the way.
+  -- call with `Callee.native`.
   | .base f => match f with
-    | .clockNow => ([], some .i64)
+    | .clockNow | .clockWall => ([], some .i64)
     | .memLock | .memUnlock | .memAdviseHuge => ([.i64, .i64], some .i32)
     | .threadPriority => ([.i32], some .i32)
     | .memWait => ([.i64, .i32, .i64], none)
@@ -558,9 +598,7 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
     | .nativeFree => ([.i64], none)
     | .nativeArch => ([], some .i32)
     | .cpuHas => ([.i64, .i64], some .i32)
-    | .fileCreateDirAll | .fileSize | .stdoutWrite | .stdinReadline => ([.i64, .i64], some .i64)
-    | .fileReadToPtr | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64, .i64], some .i64)
-    | .fileSetLen => ([.i64, .i64, .i64], some .i64)
+    | .stdinRead | .stdoutWrite | .stderrWrite | .random => ([.i64, .i64], some .i64)
     | .threadSpawn => ([.i64, .i64, .i64], some .i64)
     | .threadJoin => ([.i64], some .i64)
   -- A port, a device, a buffer, a length and a count are `i64`s; an index,
@@ -582,6 +620,22 @@ def Ext.sig : Ext → List ClifTy × Option ClifTy
     | .release => ([.i64], none)
     | .control => ([.i64, .i32, .i32, .i32, .i32, .i64, .i32, .i32], some .i64)
     | .bulk | .interrupt => ([.i64, .i32, .i64, .i64, .i32], some .i64)
+  -- A handle, a path, a buffer, a length, an offset and an address record are
+  -- `i64`s; a mode and a timeout `i32`s.
+  | .fs f => match f with
+    | .open => ([.i64, .i64, .i32], some .i64)
+    | .close | .dirClose => ([.i64], none)
+    | .read | .write | .rename => ([.i64, .i64, .i64, .i64], some .i64)
+    | .size | .sync => ([.i64], some .i64)
+    | .setLen | .createDir | .removeFile | .removeDir | .dirOpen => ([.i64, .i64], some .i64)
+    | .dirNext => ([.i64, .i64, .i64], some .i64)
+  | .net f => match f with
+    | .resolve | .udpSend => ([.i64, .i64, .i64, .i64], some .i64)
+    | .tcpConnect | .tcpAccept | .udpBind => ([.i64, .i32], some .i64)
+    | .tcpListen | .tcpShutdown => ([.i64], some .i64)
+    | .tcpLocal | .udpLocal => ([.i64, .i64], some .i64)
+    | .tcpSend | .tcpRecv | .udpRecv => ([.i64, .i64, .i64], some .i64)
+    | .tcpClose | .tcpListenerClose | .udpClose => ([.i64], none)
 
 /-- The C declaration's parameter types, for the functions a header declares
     more than once in C++ (as overloads that take older enums): what selects

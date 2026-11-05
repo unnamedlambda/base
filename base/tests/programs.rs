@@ -12,10 +12,13 @@ fn a_primitive_acts_on_the_world() {
     let d = driver(artifact(
         functions(vec![function().named("main").entry(vec![
             iconst64(v(1), 256),
-            iconst64(v(2), 5),
-            call(Some(v(3)), base_primitive("cl_file_set_len"), &[v(0), v(1), v(2)]),
-            call(Some(v(4)), base_primitive("cl_file_size"), &[v(0), v(1)]),
-            ret_status(v(4)),
+            iconst32(v(2), 6),
+            call(Some(v(3)), lib_fn("fs", "base_fs_open", &[I64, I64, I32], Some(I64)), &[v(0), v(1), v(2)]),
+            iconst64(v(4), 5),
+            call(Some(v(5)), lib_fn("fs", "base_fs_set_len", &[I64, I64], Some(I64)), &[v(3), v(4)]),
+            call(Some(v(6)), lib_fn("fs", "base_fs_size", &[I64], Some(I64)), &[v(3)]),
+            call(None, lib_fn("fs", "base_fs_close", &[I64], None), &[v(3)]),
+            ret_status(v(6)),
         ])]),
         256,
         vec![Segment { offset: 0, bytes: path.to_str().unwrap().as_bytes().to_vec() }],

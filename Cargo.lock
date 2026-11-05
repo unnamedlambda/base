@@ -195,11 +195,13 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "getrandom 0.3.4",
  "lean-artifacts",
  "libc",
  "libloading",
  "nusb",
  "pollster",
+ "positioned-io",
  "region",
  "serde_json",
  "serialport",
@@ -1860,6 +1862,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
 dependencies = [
  "portable-atomic",
+]
+
+[[package]]
+name = "positioned-io"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4ec4b80060f033312b99b6874025d9503d2af87aef2dd4c516e253fbfcdada7"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

@@ -140,24 +140,36 @@ theorem ofInt_neg_one_i32 {t : ClifTy} {x : UInt64} (h : ofInt .i32 (-1) = .sc t
   have e : ofInt .i32 (-1) = .sc .i32 0xFFFFFFFF := by rfl
   rw [e, V.sc.injEq] at h; exact h.2.symm
 
-/-- **A file read answers `-1` or at most the bytes it was asked for.** -/
-theorem fileRead_answer {a b c d size : UInt64} {w : World} {t : ClifTy} {x : UInt64} {w' : World}
-    (h : Sem.baseCall .fileReadToPtr [a, b, c, d, size] w = some (some (V.sc t x), w')) :
-    x.toNat = 18446744073709551615 ∨ (0 < size.toNat → x.toNat ≤ size.toNat) := by
-  simp only [Sem.baseCall, ffiFileReadToPtr] at h
-  split at h
-  · simp only [Option.some.injEq, Prod.mk.injEq] at h
-    exact .inl (by rw [ofInt_neg_one_i64 h.1]; rfl)
-  · obtain ⟨path, -, h⟩ := Option.bind_eq_some_iff.mp h
-    split at h
-    · simp only [Option.some.injEq, Prod.mk.injEq] at h
-      exact .inl (by rw [ofInt_neg_one_i64 h.1]; rfl)
-    · obtain ⟨m, -, h⟩ := Option.bind_eq_some_iff.mp h
-      simp only [Option.some.injEq, Prod.mk.injEq] at h
-      right; intro _
-      have := size.toNat_lt
-      rw [ofInt_toNat h.1 (k := 64) (by decide) (by decide) (by omega)]
-      omega
+/-- **A file read answers a 64-bit count: `-1`, or at most the bytes it was
+    asked for.** -/
+theorem fsRead_answer {h buf len off : UInt64} {w : World} {v : V} {w' : World}
+    (hc : fsCall .read [h, buf, len, off] w = some (some v, w')) :
+    ∃ x, v = .sc .i64 x ∧ (x.toNat = 18446744073709551615 ∨ (0 < len.toNat → x.toNat ≤ len.toNat)) := by
+  simp only [fsCall] at hc
+  obtain ⟨c, hd, he⟩ := Option.map_eq_some_iff.mp hc
+  simp only [Prod.mk.injEq] at he
+  obtain ⟨he, -⟩ := he
+  simp only [fsDecode, fsDRead] at hd
+  rw [Option.bind_eq_bind, Option.bind_eq_some_iff] at hd
+  obtain ⟨k, -, hd⟩ := hd
+  split at hd
+  · simp only [Option.some.injEq] at hd; subst hd
+    simp only [fsNeg, fsEffect, Option.some.injEq] at he
+    subst he
+    exact ⟨0xFFFFFFFFFFFFFFFF, rfl, .inl rfl⟩
+  · rw [Option.bind_eq_bind, Option.bind_eq_some_iff] at hd
+    obtain ⟨_, -, hd⟩ := hd
+    simp only [Option.some.injEq] at hd; subst hd
+    simp only [fsEffect, Option.some.injEq] at he
+    subst he
+    have hs : ((w.fsContents k).extract off.toNat (off.toNat + len.toNat)).size ≤ len.toNat := by
+      rw [ByteArray.size_extract]; omega
+    have := len.toNat_lt
+    obtain ⟨x, hx⟩ : ∃ x, ofInt .i64 (((w.fsContents k).extract off.toNat (off.toNat + len.toNat)).size : Int)
+        = .sc .i64 x := ⟨_, rfl⟩
+    refine ⟨x, hx, .inr fun _ => ?_⟩
+    rw [ofInt_toNat hx (k := 64) (by decide) (by decide) (by omega)]
+    exact hs
 
 /-- A typestate asks less once some of its facts are dropped. -/
 theorem TState.holds_filter {S : TState} {w : World} (p : Fact → Bool) (h : S.holds w) :

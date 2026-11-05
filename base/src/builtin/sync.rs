@@ -1,6 +1,7 @@
-//! Waiting on a word and the monotonic clock, through the system's own calls
-//! (futex, `WaitOnAddress`, `os_sync_wait_on_address`), so a host's threads
-//! and a program's meet at the same words. A wait may end spuriously.
+//! Waiting on a word, through the system's own calls (futex, `WaitOnAddress`,
+//! `os_sync_wait_on_address`), so a host's threads and a program's meet at the
+//! same words, and a wait may end spuriously; the monotonic and wall clocks;
+//! and the system's randomness.
 
 use std::sync::atomic::AtomicU32;
 use std::time::Duration;
@@ -67,6 +68,33 @@ pub(crate) extern "C" fn cl_clock_now() -> i64 {
             QueryPerformanceFrequency(&mut freq);
         }
         (ticks as i128 * 1_000_000_000 / freq as i128) as i64
+    }
+}
+
+/// Nanoseconds since 1970-01-01 00:00:00 UTC on the system's wall clock,
+/// negative before it. The system may set it back or forward.
+pub(crate) extern "C" fn cl_clock_wall() -> i64 {
+    let ns = |d: std::time::Duration| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX);
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => ns(d),
+        Err(e) => -ns(e.duration()),
+    }
+}
+
+/// `len` bytes from the system's source of randomness written at `dst`: `len`,
+/// or `-1` for a negative length or a source that fails.
+///
+/// # Safety
+///
+/// `dst` has room for `len` bytes.
+pub(crate) unsafe extern "C" fn cl_random(dst: *mut u8, len: i64) -> i64 {
+    let Ok(n) = usize::try_from(len) else { return -1 };
+    if n == 0 {
+        return 0;
+    }
+    match getrandom::fill(std::slice::from_raw_parts_mut(dst, n)) {
+        Ok(()) => len,
+        Err(_) => -1,
     }
 }
 

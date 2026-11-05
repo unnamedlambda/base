@@ -171,6 +171,10 @@ lean_exe genhprogdrivercorpus where
   root := `Main.Host.DriverCorpus
 lean_exe genhprogserialcorpus where
   root := `Main.Host.SerialCorpus
+lean_exe genhprogfscorpus where
+  root := `Main.Host.FsCorpus
+lean_exe genhprognetcorpus where
+  root := `Main.Host.NetCorpus
 lean_exe genhprogusbcorpus where
   root := `Main.Host.UsbCorpus
 lean_exe genhprogcpucorpus where

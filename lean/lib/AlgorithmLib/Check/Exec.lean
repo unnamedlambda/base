@@ -902,10 +902,10 @@ def callRecs (fo lb : Bool) (A : AS) : List Stmt → List CallRec
         | .error _ => []
 
 /-- Where a call's answer is one of two the contract tells apart, the state
-    after it for each, from `A'`, the state after it: `fileReadToPtr`, asked
-    for a known positive number of bytes, answers `-1` or at most that many. -/
+    after it for each, from `A'`, the state after it: a file read, asked for a
+    known positive number of bytes, answers `-1` or at most that many. -/
 def answerCases (A A' : AS) : Stmt → Option (AS × AS)
-  | .call (.ext (.base .fileReadToPtr)) [_, _, _, _, n] =>
+  | .call (.ext (.fs .read)) [_, _, n, _] =>
       match A.get n with
       | .known (.sc _ s) =>
           if 0 < s.toNat then

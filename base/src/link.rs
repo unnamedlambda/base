@@ -27,17 +27,11 @@ fn opened() -> &'static Mutex<HashMap<String, Option<&'static libloading::Librar
     LIBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The files `lib` is on this system, newest first.
+/// The files `lib` may be, tried in order: a system opens only its own kind.
 fn files(lib: &str) -> &'static [&'static str] {
     match lib {
-        #[cfg(target_os = "linux")]
-        "cuda" => &["libcuda.so.1"],
-        #[cfg(target_os = "linux")]
-        "cublas" => &["libcublas.so.12"],
-        #[cfg(windows)]
-        "cuda" => &["nvcuda.dll"],
-        #[cfg(windows)]
-        "cublas" => &["cublas64_12.dll"],
+        "cuda" => &["libcuda.so.1", "nvcuda.dll"],
+        "cublas" => &["libcublas.so.12", "cublas64_12.dll"],
         _ => &[],
     }
 }
@@ -65,6 +59,8 @@ fn builtin(lib: &str) -> Option<fn(&str) -> Option<usize>> {
         "cpu" => Some(crate::builtin::cpu::linked),
         "serial" => Some(crate::builtin::serial::linked),
         "usb" => Some(crate::builtin::usb::linked),
+        "fs" => Some(crate::builtin::fs::linked),
+        "net" => Some(crate::builtin::net::linked),
         _ => None,
     }
 }

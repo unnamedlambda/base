@@ -172,15 +172,6 @@ theorem ffiCpuHas_mem {bits : List UInt64} {w : World} {r w'}
     split at h <;> (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
   · cases h
 
-theorem ffiFileCreateDirAll_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiFileCreateDirAll bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiFileCreateDirAll at h
-  split at h
-  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    repeat' split at h
-    all_goals (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
-  · cases h
-
 theorem ffiGrant_mem_memLock {bits : List UInt64} {w : World} {r w'}
     (h : ffiGrant "lock" 2 bits w = some (r, w')) : w'.mem = w.mem := by
   unfold ffiGrant at h
@@ -220,24 +211,6 @@ theorem ffiMemWake_world {bits : List UInt64} {w : World} {r w'}
   unfold ffiMemWake at h
   repeat' split at h
   all_goals (cases h <;> rfl)
-
-theorem ffiFileSize_world {bits : List UInt64} {w : World} {r w'}
-    (h : ffiFileSize bits w = some (r, w')) : w' = w := by
-  unfold ffiFileSize at h
-  split at h
-  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    repeat' split at h
-    all_goals (simp only [Option.some.injEq, Prod.mk.injEq] at h; exact h.2.symm)
-  · cases h
-
-theorem ffiFileSetLen_mem {bits : List UInt64} {w : World} {r w'}
-    (h : ffiFileSetLen bits w = some (r, w')) : w'.mem = w.mem := by
-  unfold ffiFileSetLen at h
-  split at h
-  · obtain ⟨_, -, h⟩ := Option.bind_eq_some_iff.mp h
-    repeat' split at h
-    all_goals (simp only [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨-, rfl⟩ := h; rfl)
-  · cases h
 
 theorem ffiClockNow_world {bits : List UInt64} {w : World} {r w'}
     (h : ffiClockNow bits w = some (r, w')) : w' = w := by

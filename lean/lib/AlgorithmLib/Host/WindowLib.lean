@@ -15,9 +15,9 @@ then carried out, always answering (`wlDecode`, `wlEffect`).
 
 A window lives outside every region (`wlWinAddr`), so a program passes it and
 never loads through it. Events come from the world's `wlInput`, a batch each
-time the library pumps: at `base_window_pump` and at every
-`base_window_poll`; each record goes to the window it names, and one for a
-window since closed is dropped. Without a display the event loop does not
+time the library pumps (`base_window_pump`); each record goes to the window it
+names, and one for a window since closed is dropped. A poll takes the next
+record already pumped. Without a display the event loop does not
 start, `base_window_init` answers `false`, and no window opens. A window's
 size in pixels is the world's `wlPixels` of the size it was opened at. A
 wgpu surface is made from the window's handle (`Host/Wgpu.lean`).
@@ -108,9 +108,9 @@ def World.wlPump (w : World) : World :=
         w.wl.windows
       { w with wl := { w.wl with windows }, wlInput := rest }
 
-/-- The next record of window `k`, after a pump. -/
+/-- The next record of window `k`. -/
 def World.wlNext (w : World) (k : Nat) : Option ByteArray :=
-  ((w.wlPump.wl.windows[k]?).map (·.pending)).bind List.head?
+  ((w.wl.windows[k]?).map (·.pending)).bind List.head?
 
 def wlTrue : Option V := some (ofInt .i8 1)
 def wlFalse : Option V := some (ofInt .i8 0)
@@ -132,7 +132,6 @@ def wlEffect (c : WlCall) (w : World) : Option V × World :=
         { win with live := false, pending := [] } } })
   | .pump => (none, w.wlPump)
   | .poll k =>
-      let w := w.wlPump
       match (w.wl.windows[k]?).map (·.pending) with
       | some (_ :: rest) =>
           (wlTrue, { w with wl := { w.wl with windows := w.wl.windows.modify k fun win =>

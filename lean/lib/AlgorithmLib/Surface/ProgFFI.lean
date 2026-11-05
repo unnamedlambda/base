@@ -104,51 +104,81 @@ def htGetEntry (ptr : V .i64) (index : V .i32) (keyOutOff valOutOff : V .i64)
 
 -- A file is named by the path in a field of memory: `filenameCap` bytes at
 -- `filenameOff`, the path being its bytes up to the first zero, or all of them
--- (`Sem.readField`).
+-- (`Sem.readField`). It is opened to a handle, read or written through it, and
+-- closed.
+
+/-- What an open asks for: `1` read, `2` write, `4` create, `8` cut to nothing. -/
+def fsModeRead : Int := 1
+def fsModeReplace : Int := 2 + 4 + 8
+def fsModeWrite : Int := 2 + 4
+
+/-- `body` on the file at the path in the `cap`-byte field at `path`, opened
+    for `mode`, closed after it: what `body` answers, `-1` where it does not
+    open. -/
+def withFile (path cap : V .i64) (mode : Int) (body : V .i64 → Prog V L (V .i64)) : Prog V L (V .i64) := do
+  let f ← ext (.fs .open) %[path, cap, ← iconst32 mode]
+  let r ← ifte (jTys := [.i64]) .ne f (← iconst64 0)
+    (do
+      let n ← body f
+      ext (.fs .close) %[f]
+      pure %[n])
+    (do pure %[← iconst64 (-1)])
+  pure r.head
+
+/-- The file at the path in the `cap`-byte field at `path`, from its start,
+    read into `room` bytes at `dst` as far as it fits: the byte count, `-1`
+    where it does not open. -/
+def readFileAt (path cap dst : V .i64) (room : Nat) : Prog V L (V .i64) :=
+  withFile path cap fsModeRead fun f => do
+    ext (.fs .read) %[f, dst, ← iconst64 room, ← iconst64 0]
+
+/-- The file at the path in the `cap`-byte field at `path`, read from `off`
+    into `len` bytes at `dst` as far as it fits: the byte count, `-1` where it
+    does not open. -/
+def readFileFrom (path cap dst off len : V .i64) : Prog V L (V .i64) :=
+  withFile path cap fsModeRead fun f => ext (.fs .read) %[f, dst, len, off]
 
 /-- Read a file into `room` bytes of shared memory; the result is the byte
     count. A longer file is read as far as it fits. -/
 def readFile (ptr : V .i64) (filenameOff filenameCap dataOff room : Nat) : Prog V L (V .i64) := do
-  let path ← iadd ptr (← iconst64 filenameOff)
-  let dst ← iadd ptr (← iconst64 dataOff)
-  ext (.base .fileReadToPtr) %[path, ← iconst64 filenameCap, dst, ← iconst64 0, ← iconst64 room]
+  readFileAt (← iadd ptr (← iconst64 filenameOff)) (← iconst64 filenameCap) (← iadd ptr (← iconst64 dataOff)) room
 
 /-- Read the file the caller's input names into `room` bytes of shared memory;
     the result is the byte count. The path is the input's bytes up to the first
     zero, or all of them. -/
 def readInputFile (ptr : V .i64) (dataOff room : Nat) : Prog V L (V .i64) := do
-  let dst ← iadd ptr (← iconst64 dataOff)
-  ext (.base .fileReadToPtr) %[← dataPtr, ← dataLen, dst, ← iconst64 0, ← iconst64 room]
+  readFileAt (← dataPtr) (← dataLen) (← iadd ptr (← iconst64 dataOff)) room
 
-/-- Write a region of shared memory over a file from `fileOffset`, keeping
-    what the file holds past it; the result is the byte count. -/
-def writeFile (ptr : V .i64) (filenameOff filenameCap srcOff : Nat) (fileOffset size : V .i64) :
-    Prog V L (V .i64) := do
-  let path ← iadd ptr (← iconst64 filenameOff)
-  let src ← iadd ptr (← iconst64 srcOff)
-  ext (.base .fileWriteFromPtr) %[path, ← iconst64 filenameCap, src, fileOffset, size]
+/-- `writeFile`, with the offsets as values. -/
+def writeFileAt (ptr filenameOff filenameCap srcOff fileOffset size : V .i64) : Prog V L (V .i64) := do
+  withFile (← iadd ptr filenameOff) filenameCap fsModeWrite fun f => do
+    ext (.fs .write) %[f, ← iadd ptr srcOff, size, fileOffset]
+
+/-- `writeFile0`, with the offsets as values. -/
+def replaceFileAt (ptr filenameOff filenameCap srcOff size : V .i64) : Prog V L (V .i64) := do
+  withFile (← iadd ptr filenameOff) filenameCap fsModeReplace fun f => do
+    ext (.fs .write) %[f, ← iadd ptr srcOff, size, ← iconst64 0]
 
 /-- Replace a file with a region of shared memory. -/
 def writeFile0 (ptr : V .i64) (filenameOff filenameCap srcOff : Nat) (size : V .i64) :
     Prog V L (V .i64) := do
-  let _ ← ext (.base .fileSetLen) %[← iadd ptr (← iconst64 filenameOff), ← iconst64 filenameCap, ← iconst64 0]
-  writeFile ptr filenameOff filenameCap srcOff (← iconst64 0) size
+  replaceFileAt ptr (← iconst64 filenameOff) (← iconst64 filenameCap) (← iconst64 srcOff) size
 
-/-- `writeFile`, with the offsets as values. -/
-def writeFileAt (ptr filenameOff filenameCap srcOff fileOffset size : V .i64) : Prog V L (V .i64) := do
-  ext (.base .fileWriteFromPtr) %[← iadd ptr filenameOff, filenameCap, ← iadd ptr srcOff, fileOffset, size]
-
-/-- `writeFile0`, with the offsets as values. -/
-def replaceFileAt (ptr filenameOff filenameCap srcOff size : V .i64) : Prog V L (V .i64) := do
-  let zero ← iconst64 0
-  let _ ← ext (.base .fileSetLen) %[← iadd ptr filenameOff, filenameCap, zero]
-  writeFileAt ptr filenameOff filenameCap srcOff zero size
-
-/-- Read a line from standard input to `dstOff` in memory: the line with its
-    newline, or as much of it as `cap` holds, the rest left for the next read;
-    `0` at the end of input. -/
+/-- Read a line from standard input to `dstOff` in memory, a byte at a time:
+    the line with its newline, or as much of it as `cap` holds, the rest left
+    for the next read; `0` at the end of input. -/
 def stdinReadline (ptr : V .i64) (dstOff cap : V .i64) : Prog V L (V .i64) := do
-  ext (.base .stdinReadline) %[← iadd ptr dstOff, cap]
+  let dst ← iadd ptr dstOff
+  let r ← wloop1L (exitTys := [.i64]) (← iconst64 0)
+    (head := fun _ n => return (contIfULt n cap, %[n], ()))
+    (body := fun l n _ => do
+      let at_ ← iadd dst n
+      let got ← ext (.base .stdinRead) %[at_, ← iconst64 1]
+      let _ ← ifte (jTys := []) .slt got (← iconst64 1) (brk l %[n]) (pure %[])
+      let n1 ← iaddImm n 1
+      let _ ← ifte (jTys := []) .eq (← uload8_64 at_) (← iconst64 10) (brk l %[n1]) (pure %[])
+      return %[n1])
+  pure r.head
 
 /-- Write `size` bytes from `srcOff` in memory to standard output: `size`, or
     `-1`. -/
@@ -340,12 +370,5 @@ def threadSpawn (f arg stack : V .i64) : Prog V L (V .i64) := ext (.base .thread
     function answered; its bytes are the program's again, as it left them. -/
 def threadJoin (h : V .i64) : Prog V L (V .i64) := ext (.base .threadJoin) %[h]
 
-/-- The length of the file at the path in the `cap`-byte field at `path`,
-    `-1` for none. -/
-def fileSize (path cap : V .i64) : Prog V L (V .i64) := ext (.base .fileSize) %[path, cap]
-
-/-- The file at the path in the `cap`-byte field at `path` made `len` bytes
-    long, created if there is none. -/
-def fileSetLen (path cap len : V .i64) : Prog V L (V .i64) := ext (.base .fileSetLen) %[path, cap, len]
 
 end AlgorithmLib.Prog

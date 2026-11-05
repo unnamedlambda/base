@@ -194,9 +194,10 @@ def Part.get : Part → World → Bool
   | .has l, w => w.has l
 
 /-- **The kinds of handle a library hands a program**, which a typestate
-    may say it holds: an open window, serial port or USB device. -/
+    may say it holds: an open window, serial port, USB device, file,
+    directory or socket. -/
 inductive Held where
-  | window | port | usbDevice | usbInterface | heap
+  | window | port | usbDevice | usbInterface | heap | file | dir | listener | stream | udp
   /-- The one live wgpu object of a kind made afresh each time round a loop
       (`WgState.isOne`), or any value once the device is lost. -/
   | wg (k : IR.WgObj)
@@ -210,6 +211,11 @@ def Held.live : Held → World → UInt64 → Bool
   | .usbDevice, w, a => (w.usbDev? a).isSome
   | .usbInterface, w, a => (w.usbIface? a).isSome
   | .heap, w, a => (w.heapAt? a).isSome
+  | .file, w, a => (w.fsFile? a).isSome
+  | .dir, w, a => (w.fsDir? a).isSome
+  | .listener, w, a => (w.sock? .listener a).isSome
+  | .stream, w, a => (w.sock? .stream a).isSome
+  | .udp, w, a => (w.sock? .udp a).isSome
   | .wg k, w, a => w.wg.lost || match wgIndex a with
     | some i => w.wg.isOne k i
     | none => false

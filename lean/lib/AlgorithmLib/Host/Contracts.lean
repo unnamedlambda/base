@@ -17,8 +17,7 @@ them into its rows):
 * memory: `CStr` (a readable C string), `Slot8` (an eight-byte slot the
   program may write), `Load8`, `Readable`, `Writable`, `Field`;
 * the device: `Ready` from `DevSpec` (the race vocabulary), `VendorKeeps`,
-  `SgemvOk`, `GemmOk`, `PinnedRoom`;
-* the counts a call copies: `readCountPtr`.
+  `SgemvOk`, `GemmOk`, `PinnedRoom`.
 -/
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.DevSpec
@@ -58,10 +57,6 @@ theorem bind_some {α β : Type} {x : Option α} {f : α → Option β} (h : x.i
 theorem obind_some {α β : Type} {x : Option α} {f : α → Option β} (h : x.isSome = true)
     (hf : ∀ a, x = some a → (f a).isSome = true) : (x.bind f).isSome = true := bind_some h hf
 
-/-- How many bytes a read through raw pointers copies out of `c`. -/
-def readCountPtr (c : ByteArray) (fileOff size : UInt64) : Nat :=
-  min size.toNat (c.size - min fileOff.toNat c.size)
-
 /-- The `cap`-byte field at `a` is there to read: all a path or a name that
     base's own calls take needs ([`readField`]). -/
 def Field (m : Mem) (a cap : UInt64) : Prop := Readable m a cap.toNat
@@ -70,54 +65,20 @@ theorem readField_isSome {m : Mem} {a cap : UInt64} (h : Field m a cap) :
     (readField m a cap).isSome = true := by
   unfold readField; exact bind_some h fun _ _ => rfl
 
-theorem fileReadToPtr_safe {w : World} {pathPtr pathCap dstPtr fileOff size : UInt64}
-    (hp : ¬ asI64 size ≤ 0 → Field w.mem pathPtr pathCap)
-    (hw : ∀ path c, readField w.mem pathPtr pathCap = some (some path) → w.fs.get path = some c →
-      Writable w.mem dstPtr (readCountPtr c fileOff size)) :
-    (ffiFileReadToPtr [pathPtr, pathCap, dstPtr, fileOff, size] w).isSome = true := by
-  unfold ffiFileReadToPtr; dsimp only
+theorem stdinRead_safe {w : World} {dst cap : UInt64}
+    (hw : ∀ chunk rest, w.stdin = chunk :: rest → ¬ asI64 cap ≤ 0 →
+      Writable w.mem dst (min chunk.size cap.toNat)) :
+    (ffiStdinRead [dst, cap] w).isSome = true := by
+  unfold ffiStdinRead; dsimp only
   split
   · rfl
-  · next hsz =>
-    refine bind_some (readField_isSome (hp hsz)) fun path e => ?_
-    dsimp only
-    split
+  · split
     · rfl
-    · next c ec =>
-        obtain ⟨p, rfl, ec'⟩ : ∃ p, path = some p ∧ w.fs.get p = some c := by
-          rcases path with _ | p
-          · simp at ec
-          · exact ⟨p, rfl, by split at ec <;> simp_all⟩
-        exact bind_some (hw p c e ec' _ (by simp [readCountPtr])) fun _ _ => rfl
-
-theorem fileWriteFromPtr_safe {w : World} {pathPtr pathCap srcPtr fileOff size : UInt64}
-    (hp : ¬ (asI64 size ≤ 0 ∨ asI64 fileOff < 0) → Field w.mem pathPtr pathCap ∧ Readable w.mem srcPtr size.toNat) :
-    (ffiFileWriteFromPtr [pathPtr, pathCap, srcPtr, fileOff, size] w).isSome = true := by
-  unfold ffiFileWriteFromPtr; dsimp only
-  split
-  · rfl
-  · next hsz =>
-    have h := hp (by simpa using hsz)
-    exact bind_some (readField_isSome h.1) fun _ _ => by
-      try dsimp only
+    · next hc =>
       split
-      · split
-        · rfl
-        · exact bind_some h.2 fun _ _ => rfl
       · rfl
-
-theorem stdinReadline_safe {w : World} {dst cap : UInt64}
-    (hw : ∀ line rest, w.stdin = line :: rest → ¬ asI64 cap ≤ 0 →
-      Writable w.mem dst (min line.size cap.toNat)) :
-    (ffiStdinReadline [dst, cap] w).isSome = true := by
-  unfold ffiStdinReadline; dsimp only
-  split
-  · rfl
-  · next hc =>
-    split
-    · rfl
-    · next line rest hs =>
-      exact bind_some (hw line rest hs hc _ (size_toByteArray_map_range _ _)) fun _ _ => rfl
+      · next chunk rest hs =>
+        exact bind_some (hw chunk rest hs hc _ (by simp [ByteArray.size_extract])) fun _ _ => rfl
 
 theorem stdoutWrite_safe {w : World} {src size : UInt64}
     (hr : ¬ asI64 size < 0 → Readable w.mem src size.toNat) :
@@ -126,6 +87,22 @@ theorem stdoutWrite_safe {w : World} {src size : UInt64}
   split
   · rfl
   · next h => exact bind_some (hr h) fun _ _ => rfl
+
+theorem stderrWrite_safe {w : World} {src size : UInt64}
+    (hr : ¬ asI64 size < 0 → Readable w.mem src size.toNat) :
+    (ffiStderrWrite [src, size] w).isSome = true := by
+  unfold ffiStderrWrite; dsimp only
+  split
+  · rfl
+  · next h => exact bind_some (hr h) fun _ _ => rfl
+
+theorem random_safe {w : World} {dst len : UInt64}
+    (hw : ¬ asI64 len < 0 → Writable w.mem dst len.toNat) :
+    (ffiRandom [dst, len] w).isSome = true := by
+  unfold ffiRandom; dsimp only
+  split
+  · rfl
+  · next h => exact bind_some (hw h _ (fitBytes_size _ _)) fun _ _ => rfl
 
 -- CUDA: pinned memory, memory info, events, graphs
 
@@ -247,22 +224,6 @@ theorem cpuHas_safe {w : World} {name cap : UInt64} (hn : Field w.mem name cap) 
     (ffiCpuHas [name, cap] w).isSome = true := by
   unfold ffiCpuHas; dsimp only
   exact bind_some (readField_isSome hn) fun _ _ => by split <;> rfl
-
-theorem fileCreateDirAll_safe {w : World} {path cap : UInt64} (hp : Field w.mem path cap) :
-    (ffiFileCreateDirAll [path, cap] w).isSome = true := by
-  unfold ffiFileCreateDirAll; dsimp only
-  exact bind_some (readField_isSome hp) fun _ _ => by
-    split <;> (try split) <;> (try split) <;> rfl
-
-theorem fileSize_safe {w : World} {path cap : UInt64} (hp : Field w.mem path cap) :
-    (ffiFileSize [path, cap] w).isSome = true := by
-  unfold ffiFileSize; dsimp only
-  exact bind_some (readField_isSome hp) fun _ _ => by split <;> rfl
-
-theorem fileSetLen_safe {w : World} {path cap len : UInt64} (hp : Field w.mem path cap) :
-    (ffiFileSetLen [path, cap, len] w).isSome = true := by
-  unfold ffiFileSetLen; dsimp only
-  exact bind_some (readField_isSome hp) fun _ _ => by split <;> (try split) <;> rfl
 
 -- threads
 

@@ -1517,7 +1517,7 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
     Stmt1 cfg (A.Holds vals) s (fun Γ w => B1.Holds vals Γ w ∨ B2.Holds vals Γ w) fo := by
   unfold answerCases at hc
   split at hc
-  · rename_i pp pc d fo' n
+  · rename_i hh bb n oo
     split at hc
     · rename_i t0 sz hn
       split at hc
@@ -1531,7 +1531,7 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
           cases h
           refine call_rule fun Γ w vs hA hvs => ?_
           obtain ⟨r, w', hcall, hA', hr⟩ := extCall_core (cfg := cfg) ha hsc hp hA hvs
-          have hA1 := hA.obsCall (.ext (.base .fileReadToPtr)) vs
+          have hA1 := hA.obsCall (.ext (.fs .read)) vs
           have hd := descAll_of hA1 hvs
           obtain ⟨bits, hb⟩ := bits_exist hd hsc
           have hab := argBits_of hd hb
@@ -1541,22 +1541,22 @@ theorem answerCases_sound {cfg : Cfg} [Linked lb cfg] {A A' B1 B2 : AS} {s : Stm
           simp only [callOf, extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true,
             Bool.false_eq_true, if_false, hb, Option.bind_eq_bind, Option.bind_some] at hc2
           subst hv
-          obtain ⟨x, rfl⟩ := (ExtContracts.baseCall_same rfl hc2).2.2 _ rfl
+          -- the size asked for is the one the state knows
+          simp only [List.map_cons, List.map_nil] at hab
+          rcases bits with _ | ⟨_, _ | ⟨_, _ | ⟨size, _ | ⟨_, _ | ⟨_, _⟩⟩⟩⟩⟩ <;>
+            simp only [ArgBits, and_false] at hab
+          obtain ⟨x, rfl, hans⟩ := fsRead_answer hc2
           have hP := hA'.push hdv
           have hlen : Γ.size = A.len := hA.1.1
           have hat : ∀ u, (Γ.push (.sc .i64 x))[A.len]? = some u → u = .sc .i64 x := by
             intro u hu
             rw [← hlen, Array.getElem?_push_size] at hu
             cases hu; rfl
-          -- the size asked for is the one the state knows
-          simp only [List.map_cons, List.map_nil] at hab
-          rcases bits with _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨_, _ | ⟨size, _ | ⟨_, _⟩⟩⟩⟩⟩⟩ <;>
-            simp only [ArgBits, and_false] at hab
-          obtain ⟨-, -, -, -, ⟨t, hd'⟩, -⟩ := hab
+          obtain ⟨-, -, ⟨t, hd'⟩, -, -⟩ := hab
           rw [hn] at hd'
           simp only [AV.Desc, V.sc.injEq] at hd'
           obtain ⟨-, rfl⟩ := hd'
-          rcases fileRead_answer hc2 with h1 | h2
+          rcases hans with h1 | h2
           · left
             refine hP.setAV fun u hu => ?_
             rw [hat u hu]
