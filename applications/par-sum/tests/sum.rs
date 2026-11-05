@@ -21,13 +21,13 @@ fn run(base: &Driver, data: &[u8]) -> u64 {
         cell.store(b, Relaxed);
     }
     let mut out = [0u8; 8];
-    unsafe { base.function("main") }.expect("no such entry")(&[], &mut out);
+    base.function("main").expect("no such entry")(&[], &mut out);
     u64::from_le_bytes(out)
 }
 
 #[test]
 fn four_threads_sum_every_word() {
-    let base = Driver::load(ARTIFACT).expect("Driver::load");
+    let base = unsafe { Driver::load(ARTIFACT).expect("Driver::load") };
     assert!(base.arena().len() >= BYTES);
     let mut cases: Vec<(&str, Vec<u8>)> = vec![
         ("zeros", vec![0; BYTES]),
@@ -62,8 +62,8 @@ fn four_threads_sum_every_word() {
 
 #[test]
 fn no_room_writes_nothing() {
-    let base = Driver::load(ARTIFACT).expect("Driver::load");
+    let base = unsafe { Driver::load(ARTIFACT).expect("Driver::load") };
     let mut out = [7u8; 7];
-    unsafe { base.function("main") }.expect("no such entry")(&[], &mut out);
+    base.function("main").expect("no such entry")(&[], &mut out);
     assert_eq!(out, [7u8; 7]);
 }

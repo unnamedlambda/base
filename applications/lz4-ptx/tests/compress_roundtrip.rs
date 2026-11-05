@@ -56,16 +56,16 @@ fn gen_corpus(total: usize) -> Vec<u8> {
 fn check_artifact(artifact: &[u8], block: usize, num_blk: usize) {
     let original = gen_corpus(num_blk * block);
 
-    let base = Driver::load(&artifact).expect("compile");
+    let base = unsafe { Driver::load(&artifact).expect("compile") };
     // The driver, the allocation and the kernel, made once.
-    unsafe { base.function("load") }.expect("load")(&[], &mut []);
+    base.function("load").expect("load")(&[], &mut []);
 
     let len_off = block + block / 16 + 256;
     let out_stride = len_off + 8;
     // The blocks, then the geometry the program was built for, six i64s.
     let blocks = num_blk * out_stride;
     let mut out = vec![0u8; blocks + 48];
-    unsafe { base.function("main") }.expect("run")(&original, &mut out);
+    base.function("main").expect("run")(&original, &mut out);
     let geom = |i: usize| {
         i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as usize
     };

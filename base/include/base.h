@@ -27,7 +27,8 @@ typedef int64_t (*BaseFunction)(const uint8_t *in, size_t in_len, uint8_t *out, 
 
 /* A driver for the encoded artifact, opening the system libraries it names;
  * release with `base_driver_free`. NULL on failure, with why written to `err`
- * (may be NULL), NUL-terminated and cut to `err_cap` bytes. */
+ * (may be NULL), NUL-terminated and cut to `err_cap` bytes. The caller vouches
+ * that every call of the artifact's functions is safe. */
 BaseDriver *base_driver_load(const uint8_t *artifact, size_t len, char *err, size_t err_cap);
 
 /* The function named `name` (UTF-8, not NUL-terminated), callable until the

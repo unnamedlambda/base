@@ -21,9 +21,9 @@ fn interpreter_and_system_agree() {
     let names: Vec<String> =
         v["names"].as_array().expect("names").iter().map(|n| n.as_str().expect("name").to_string()).collect();
 
-    let b = base::Driver::load(&std::fs::read(dir.join("hprog_usb_corpus.cbor")).expect("read artifact")).expect("compile");
+    let b = unsafe { base::Driver::load(&std::fs::read(dir.join("hprog_usb_corpus.cbor")).expect("read artifact")).expect("compile") };
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
+    b.function("main").expect("execute")(&[], &mut out);
 
     let word = |bs: &[u8], k: usize| i32::from_le_bytes(bs[4 * k..4 * k + 4].try_into().unwrap());
     let bad: Vec<String> = names

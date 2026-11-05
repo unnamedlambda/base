@@ -21,9 +21,9 @@ fn interpreter_and_jit_agree_on_local_calls() {
         .map(|b| b.as_u64().expect("byte") as u8)
         .collect();
 
-    let b = base::Driver::load(lean_artifacts::HPROG_LOCAL_CORPUS).expect("compile");
+    let b = unsafe { base::Driver::load(lean_artifacts::HPROG_LOCAL_CORPUS).expect("compile") };
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
+    b.function("main").expect("execute")(&[], &mut out);
 
     let word = |bs: &[u8], k: usize| i64::from_le_bytes(bs[8 * k..8 * k + 8].try_into().unwrap());
     for (k, what) in [

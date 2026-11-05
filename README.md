@@ -54,12 +54,12 @@ output buffers, as a C host gets a function pointer and Python a callable.
 ```rust
 use base::Driver;
 
-let driver = Driver::load(lean_artifacts::BYTE_SCRUB)?;
+// SAFETY: the artifact is one Lean built and checked.
+let driver = unsafe { Driver::load(lean_artifacts::BYTE_SCRUB)? };
 
 let input = [0u8; 4096];
 let mut output = [0u8; 4096];
-// SAFETY: the artifact is one Lean built and checked.
-let scrub = unsafe { driver.function("main") }?;
+let scrub = driver.function("main")?;
 scrub(&input, &mut output);
 assert!(!output.contains(&0));
 ```

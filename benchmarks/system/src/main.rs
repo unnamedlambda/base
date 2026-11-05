@@ -90,14 +90,14 @@ fn cstr(p: &Path) -> Vec<u8> {
 }
 
 fn main() {
-    let drv = Driver::load(lean_artifacts::SYSTEM_BENCH).expect("system_bench loads");
+    let drv = unsafe { Driver::load(lean_artifacts::SYSTEM_BENCH).expect("system_bench loads") };
     let mut out = vec![0u8; OUT_BYTES];
     let work = std::env::temp_dir().join(format!("base-system-bench-{}", std::process::id()));
     std::fs::create_dir_all(&work).unwrap();
 
     // ht
     let input = N.to_le_bytes().to_vec();
-    let ht = unsafe { drv.function("ht") }.unwrap();
+    let ht = drv.function("ht").unwrap();
     ht(&input, &mut out);
     assert_eq!(answer(&out), rust_ht(N), "ht");
     let t = time(2, |c| match c {
@@ -119,7 +119,7 @@ fn main() {
     std::fs::write(&file, &text).unwrap();
     let input = cstr(&file);
     let mut buf = Vec::with_capacity(WC_BYTES);
-    let wc = unsafe { drv.function("wc") }.unwrap();
+    let wc = drv.function("wc").unwrap();
     wc(&input, &mut out);
     assert_eq!(answer(&out), rust_wc(&file, &mut buf), "wc");
     let t = time(2, |c| match c {

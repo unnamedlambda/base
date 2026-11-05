@@ -13,7 +13,7 @@ const NEEDLES: [u8; 3] = [b',', b'\n', b' '];
 
 fn counts(base: &Driver, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
     let mut out = [0u8; 8 * NEEDLES.len()];
-    unsafe { base.function(entry) }.expect("no such entry")(data, &mut out);
+    base.function(entry).expect("no such entry")(data, &mut out);
     let mut got = [0u64; NEEDLES.len()];
     for (i, slot) in got.iter_mut().enumerate() {
         *slot = u64::from_le_bytes(out[i * 8..(i + 1) * 8].try_into().unwrap());
@@ -23,7 +23,7 @@ fn counts(base: &Driver, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
 
 #[test]
 fn counts_every_needle() {
-    let base = Driver::load(ARTIFACT).expect("Driver::load");
+    let base = unsafe { Driver::load(ARTIFACT).expect("Driver::load") };
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("none", vec![b'x'; WINDOW]),

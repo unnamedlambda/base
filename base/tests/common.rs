@@ -119,12 +119,12 @@ pub fn main_of(insts: Vec<Inst>) -> Artifact {
 }
 
 pub fn driver(a: Artifact) -> Driver {
-    Driver::load(&a.to_bytes()).unwrap()
+    unsafe { Driver::load(&a.to_bytes()).unwrap() }
 }
 
 /// Calls `name` with `input` and `output`, answering its status.
 pub fn call_with(d: &Driver, name: &str, input: &[u8], output: &mut [u8]) -> i64 {
-    unsafe { d.function(name) }.unwrap()(input, output)
+    d.function(name).unwrap()(input, output)
 }
 
 /// The `n` bytes of the arena from `offset`.

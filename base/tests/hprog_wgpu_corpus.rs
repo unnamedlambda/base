@@ -22,9 +22,9 @@ fn interpreter_and_wgpu_agree() {
         v["names"].as_array().expect("names").iter().map(|n| n.as_str().expect("name").to_string()).collect();
     let read = v["read"].as_u64().expect("read") as usize;
 
-    let b = base::Driver::load(&std::fs::read(dir.join("hprog_wgpu_corpus.cbor")).expect("read artifact")).expect("compile");
+    let b = unsafe { base::Driver::load(&std::fs::read(dir.join("hprog_wgpu_corpus.cbor")).expect("read artifact")).expect("compile") };
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
+    b.function("main").expect("execute")(&[], &mut out);
 
     let mut bad: Vec<String> = names
         .iter()

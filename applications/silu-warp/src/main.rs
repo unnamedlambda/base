@@ -13,12 +13,12 @@ pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..N).map(|i| ((i % 2048) as f32 - 1024.0) * 0.01).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let base = Driver::load(ART).expect("Driver::load");
-    let run = unsafe { base.function("run") }.expect("run");
-    let fetch = unsafe { base.function("fetch") }.expect("fetch");
+    let base = unsafe { Driver::load(ART).expect("Driver::load") };
+    let run = base.function("run").expect("run");
+    let fetch = base.function("fetch").expect("fetch");
 
     let mut out = vec![0u8; N * 4];
-    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
+    base.function("main").expect("main")(&bytes, &mut []);
     run(b"", &mut []);
     let reps = 50;
     let t0 = std::time::Instant::now();
@@ -42,7 +42,7 @@ pub fn main(_args: Vec<String>) {
     println!("elements    : {N}");
     println!("kernel time : {:.3} ms", dt * 1e3);
     // The same spec, 8 elements per lane: 8x fewer blocks.
-    let run_loop = unsafe { base.function("runLoop") }.expect("runLoop");
+    let run_loop = base.function("runLoop").expect("runLoop");
     run_loop(b"", &mut []);
     let t1 = std::time::Instant::now();
     for _ in 0..reps { run_loop(b"", &mut []); }

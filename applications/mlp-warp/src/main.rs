@@ -39,12 +39,12 @@ pub fn main(_args: Vec<String>) {
         .collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let base = Driver::load(ART).expect("Driver::load");
-    let run = unsafe { base.function("run") }.expect("run");
-    let fetch = unsafe { base.function("fetch") }.expect("fetch");
+    let base = unsafe { Driver::load(ART).expect("Driver::load") };
+    let run = base.function("run").expect("run");
+    let fetch = base.function("fetch").expect("fetch");
 
     let mut out = vec![0u8; LANES * 4];
-    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
+    base.function("main").expect("main")(&bytes, &mut []);
     run(b"", &mut []);
     let reps = 20;
     let t0 = std::time::Instant::now();

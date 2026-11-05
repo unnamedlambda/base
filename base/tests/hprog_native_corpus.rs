@@ -32,9 +32,9 @@ fn interpreter_and_runtime_agree() {
         .map(|b| b.as_u64().expect("byte") as u8)
         .collect();
 
-    let b = base::Driver::load(lean_artifacts::HPROG_NATIVE_CORPUS).expect("compile");
+    let b = unsafe { base::Driver::load(lean_artifacts::HPROG_NATIVE_CORPUS).expect("compile") };
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
+    b.function("main").expect("execute")(&[], &mut out);
 
     let mut bad = Vec::new();
     for (k, what) in WHAT.iter().enumerate() {

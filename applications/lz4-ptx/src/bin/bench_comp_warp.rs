@@ -13,9 +13,9 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let data = original.to_vec();
     // Looked up by name: this bench selects a kernel by name.
     let bytes = lean_artifacts::by_name(name).unwrap_or_else(|| panic!("no artifact {name}"));
-    let base = Driver::load(&bytes).expect("compile");
+    let base = unsafe { Driver::load(&bytes).expect("compile") };
     // The driver, the allocation and the kernel, made once.
-    unsafe { base.function("load") }.expect("load")(&[], &mut []);
+    base.function("load").expect("load")(&[], &mut []);
 
     // Layout mirrors Lz4Ship.WP in lean/algorithms/Lz4/Kernel.lean; asserted against the
     // geometry the program writes after the blocks.
@@ -25,7 +25,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let blocks = num_blk * out_stride;
     let mut out = vec![0u8; blocks + 48];
 
-    let compress = unsafe { base.function("main") }.expect("run");
+    let compress = base.function("main").expect("run");
     compress(&data, &mut out);
     let geom = |i: usize| {
         i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as u64

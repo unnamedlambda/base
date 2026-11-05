@@ -8,7 +8,7 @@ const ARTIFACT_BINARY: &[u8] =
 fn run_scenario(base: &Driver, entry: &str) -> (i64, i64, i64) {
     // The scenario answers pass, actual and expected in its out buffer.
     let mut out = [0u8; 24];
-    unsafe { base.function(entry) }.expect("execute failed")(&[], &mut out);
+    base.function(entry).expect("execute failed")(&[], &mut out);
     let col = |i: usize| i64::from_le_bytes(out[i * 8..i * 8 + 8].try_into().unwrap());
     (col(0), col(1), col(2))
 }
@@ -17,7 +17,7 @@ fn run_scenario(base: &Driver, entry: &str) -> (i64, i64, i64) {
 /// once); each scenario resets state, so they can run back to back.
 #[test]
 fn logic_scenarios() {
-    let base = Driver::load(ARTIFACT_BINARY).expect("Driver::load");
+    let base = unsafe { Driver::load(ARTIFACT_BINARY).expect("Driver::load") };
 
     for name in [
         "test_move_right",
@@ -35,7 +35,7 @@ fn logic_scenarios() {
 /// is never called, so no window/display is required).
 #[test]
 fn render_pixel_scenario() {
-    let base = Driver::load(ARTIFACT_BINARY).expect("Driver::load");
+    let base = unsafe { Driver::load(ARTIFACT_BINARY).expect("Driver::load") };
 
     let (pass, actual, expected) = run_scenario(&base, "test_render_pixel");
     assert_eq!(

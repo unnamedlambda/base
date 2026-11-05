@@ -289,9 +289,9 @@ fn vips_scale() -> Scale<'static> {
 /// lives as long as the process.
 fn base_driver(path: &str) -> &'static base::Driver {
     let bytes = std::fs::read(path).expect("the artifact is readable");
-    let drv: &'static base::Driver = Box::leak(Box::new(base::Driver::load(&bytes).expect("the artifact loads")));
+    let drv: &'static base::Driver = Box::leak(Box::new(unsafe { base::Driver::load(&bytes).expect("the artifact loads") }));
     let mut slots = [0u8; 40];
-    unsafe { drv.function("asm_load") }.expect("asm_load")(&[], &mut slots);
+    drv.function("asm_load").expect("asm_load")(&[], &mut slots);
     let word = |k: usize| u64::from_le_bytes(slots[8 * k..8 * k + 8].try_into().unwrap());
     assert!(word(0) == 4 && (1..=4).all(|k| word(k) != 0), "every AVX2 loop loaded");
     drv
@@ -299,7 +299,7 @@ fn base_driver(path: &str) -> &'static base::Driver {
 
 /// Base's entry `name`: one frame in, the frame and its scratch out.
 fn base_scale(drv: &'static base::Driver, name: &str) -> Scale<'static> {
-    let f = unsafe { drv.function(name) }.expect("the artifact has the entry");
+    let f = drv.function(name).expect("the artifact has the entry");
     Box::new(move |src, dst| {
         f(&src[..frame_bytes(SRC)], &mut dst[..BASE_OUT]);
     })

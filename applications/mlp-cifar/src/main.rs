@@ -56,17 +56,17 @@ pub fn main(_args: Vec<String>) {
     // Seam check: Lean publishes the byte count its `hostIn` layout expects, so
     // the packing here and the uploader there cannot drift apart silently.
     const HOST_LEN_OFF: usize = 0x0080;
-    let base = Driver::load(ART).expect("Driver::load");
+    let base = unsafe { Driver::load(ART).expect("Driver::load") };
     let want = base.arena()[HOST_LEN_OFF..HOST_LEN_OFF + 4]
         .iter()
         .rev()
         .fold(0usize, |n, b| n << 8 | b.load(std::sync::atomic::Ordering::Relaxed) as usize);
     assert_eq!(blob.len(), want, "host packing disagrees with Lean's `hostIn`");
     let go = |b: &Driver, name: &str, data: &[u8], out: &mut [u8]| {
-        unsafe { b.function(name) }.unwrap_or_else(|e| panic!("{name}: {e:?}"))(data, out);
+        b.function(name).unwrap_or_else(|e| panic!("{name}: {e:?}"))(data, out);
     };
 
-    unsafe { base.function("main") }.expect("load")(&blob, &mut []);
+    base.function("main").expect("load")(&blob, &mut []);
     println!("MLP {IN} → {H} → {CLASSES} (padded to {C}), batch {B}, lr = 1/{}", (1.0 / LR) as u32);
     println!("host packing: {} bytes, matches Lean's hostIn\n", blob.len());
 
@@ -198,7 +198,7 @@ pub fn main(_args: Vec<String>) {
     // ── the same five GEMMs through cuBLAS, checking its column-major convention ──
     // The optimiser has stepped W1/W2; reset them to the references' weights.
     let mut blas_ok = true;
-    unsafe { base.function("main") }.expect("reload")(&blob, &mut []);
+    base.function("main").expect("reload")(&blob, &mut []);
     go(&base, "uploadBias", &le(&bias), &mut []);
     go(&base, "uploadOneHot", &le(&onehot), &mut []);
     go(&base, "uploadX", &le(&x), &mut []);
@@ -257,11 +257,11 @@ pub fn main(_args: Vec<String>) {
     let xb = le(&x);
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.function("uploadX") }.unwrap()(&xb, &mut []);
-        unsafe { base.function("runFwd") }.unwrap()(b"", &mut []);
-        unsafe { base.function("fetchLogits") }.unwrap()(b"", &mut buf_bc);
-        unsafe { base.function("uploadOneHot") }.unwrap()(&oh, &mut []);
-        unsafe { base.function("runBwd") }.unwrap()(b"", &mut []);
+        base.function("uploadX").unwrap()(&xb, &mut []);
+        base.function("runFwd").unwrap()(b"", &mut []);
+        base.function("fetchLogits").unwrap()(b"", &mut buf_bc);
+        base.function("uploadOneHot").unwrap()(&oh, &mut []);
+        base.function("runBwd").unwrap()(b"", &mut []);
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (fused: 2 runs, 2 uploads, 1 download)", "step", dt * 1e6);
@@ -269,11 +269,11 @@ pub fn main(_args: Vec<String>) {
 
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        unsafe { base.function("uploadX") }.unwrap()(&xb, &mut []);
-        unsafe { base.function("runFwdBlas") }.unwrap()(b"", &mut []);
-        unsafe { base.function("fetchLogits") }.unwrap()(b"", &mut buf_bc);
-        unsafe { base.function("uploadOneHot") }.unwrap()(&oh, &mut []);
-        unsafe { base.function("runBwdBlas") }.unwrap()(b"", &mut []);
+        base.function("uploadX").unwrap()(&xb, &mut []);
+        base.function("runFwdBlas").unwrap()(b"", &mut []);
+        base.function("fetchLogits").unwrap()(b"", &mut buf_bc);
+        base.function("uploadOneHot").unwrap()(&oh, &mut []);
+        base.function("runBwdBlas").unwrap()(b"", &mut []);
     }
     let dtb = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (cuBLAS for the 5 GEMMs)", "step/blas", dtb * 1e6);

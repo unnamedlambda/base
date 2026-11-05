@@ -27,13 +27,13 @@ fn load_with(flags: &[&str]) -> Inst {
 
 #[test]
 fn an_empty_artifact_loads() {
-    assert!(Driver::load(&arena_of(256, vec![]).to_bytes()).is_ok());
+    assert!(unsafe { Driver::load(&arena_of(256, vec![]).to_bytes()) }.is_ok());
 }
 
 #[test]
 fn every_generated_artifact_loads() {
     for &name in lean_artifacts::NAMES {
-        Driver::load(lean_artifacts::by_name(name).unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        unsafe { Driver::load(lean_artifacts::by_name(name).unwrap()).unwrap_or_else(|e| panic!("{name}: {e}")) };
     }
 }
 
@@ -92,7 +92,7 @@ fn each_malformed_artifact_is_refused_with_what_is_wrong() {
         ("a parameter attribute CLIF does not write", body(vec![call_indirect(None, normal, v(0), &[v(0)]), ret()]), &["not a parameter as CLIF writes one"]),
     ];
     for (what, a, says) in cases {
-        let Err(e) = Driver::load(&a.to_bytes()) else { panic!("{what}: loaded") };
+        let Err(e) = (unsafe { Driver::load(&a.to_bytes()) }) else { panic!("{what}: loaded") };
         let msg = e.to_string();
         for s in says {
             assert!(msg.contains(s), "{what}: {msg:?} does not say {s:?}");

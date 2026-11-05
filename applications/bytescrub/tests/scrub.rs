@@ -14,13 +14,13 @@ const NEW: u8 = b' ';
 
 fn scrub(base: &Driver, entry: &str, data: &[u8]) -> Vec<u8> {
     let mut out = vec![0xAAu8; BYTES];
-    unsafe { base.function(entry) }.expect("no such entry")(data, &mut out);
+    base.function(entry).expect("no such entry")(data, &mut out);
     out
 }
 
 #[test]
 fn scrubs_every_vector() {
-    let base = Driver::load(ARTIFACT).expect("Driver::load");
+    let base = unsafe { Driver::load(ARTIFACT).expect("Driver::load") };
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("none", vec![b'x'; BYTES]),

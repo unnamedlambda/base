@@ -28,9 +28,9 @@ fn interpreter_and_driver_agree() {
         .collect();
     let data = v["data"].as_u64().expect("data") as usize;
     let bytes = std::fs::read(dir.join("hprog_driver_corpus.cbor")).expect("read artifact");
-    let b = base::Driver::load(&bytes).expect("compile");
+    let b = unsafe { base::Driver::load(&bytes).expect("compile") };
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
+    b.function("main").expect("execute")(&[], &mut out);
 
     let mut bad = Vec::new();
     for (k, name) in names.iter().enumerate() {

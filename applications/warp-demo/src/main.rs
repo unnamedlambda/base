@@ -15,14 +15,14 @@ pub fn main(_args: Vec<String>) {
     let input: Vec<f32> = (0..N).map(|i| ((i % 1024) as f32) * 0.001).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let base = Driver::load(ART).expect("Driver::load");
+    let base = unsafe { Driver::load(ART).expect("Driver::load") };
 
     let mut out = vec![0u8; GRID * 4];
-    let run = unsafe { base.function("run") }.expect("run");
-    let fetch = unsafe { base.function("fetch") }.expect("fetch");
+    let run = base.function("run").expect("run");
+    let fetch = base.function("fetch").expect("fetch");
 
     // upload once
-    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
+    base.function("main").expect("main")(&bytes, &mut []);
     // warm up, then time the LAUNCH ONLY
     run(b"", &mut []);
     let reps = 20;

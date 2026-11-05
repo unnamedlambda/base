@@ -73,11 +73,11 @@ fn time(cols: &[Col], mut run: impl FnMut(&Col)) -> Vec<f64> {
 pub fn main() {
     let art = Artifact::from_bytes(lean_artifacts::CPU_BENCH).expect("the build checked this artifact");
     let names: Vec<String> = art.functions.iter().filter_map(|f| f.name.clone()).collect();
-    let drv = Driver::load(lean_artifacts::CPU_BENCH).expect("cpu_bench loads");
+    let drv = unsafe { Driver::load(lean_artifacts::CPU_BENCH).expect("cpu_bench loads") };
     // Map the machine code, once, as a program would at startup; every body
     // must have loaded, or an `_asm` row would be timing its fallback.
     let mut slots = vec![0u8; 8 * 64];
-    unsafe { drv.function("asm_load") }.expect("asm_load runs")(&[], &mut slots);
+    drv.function("asm_load").expect("asm_load runs")(&[], &mut slots);
     let word = |k: usize| u64::from_le_bytes(slots[8 * k..8 * k + 8].try_into().unwrap());
     let bodies = word(0) as usize;
     assert!(bodies > 0 && (1..=bodies).all(|k| word(k) != 0),
@@ -86,7 +86,7 @@ pub fn main() {
     let inp = make_input();
     let mut out_buf = Lines::<u8>::zeroed(OUT_BYTES);
     let out = &mut out_buf[..];
-    let noop = unsafe { drv.function("noop") }.unwrap();
+    let noop = drv.function("noop").unwrap();
     let t = time(&[Col::Base(Box::new(noop))], |_| { black_box(noop(&[], out)); });
     println!("call\tnoop\t{:.1}", t[0]);
 
@@ -106,7 +106,7 @@ pub fn main() {
             }
             // the answer's slot, so an entry that never wrote it is caught
             out[..8].fill(0);
-            let f = unsafe { drv.function(&entry) }.unwrap();
+            let f = drv.function(&entry).unwrap();
             f(data, out);
             let got = u64::from_le_bytes(out[..8].try_into().unwrap());
             assert_eq!(got, want, "{entry} answers {got:#x}, the Rust kernel {want:#x}");

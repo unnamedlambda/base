@@ -107,7 +107,12 @@ impl Drop for Driver {
 impl Driver {
     /// Decodes an encoded artifact, allocates its arena and compiles its
     /// functions.
-    pub fn load(artifact: &[u8]) -> Result<Self, Error> {
+    ///
+    /// # Safety
+    ///
+    /// Every call of the artifact's functions is safe, in any order, from any
+    /// thread, on any `input` and `output`.
+    pub unsafe fn load(artifact: &[u8]) -> Result<Self, Error> {
         let artifact = Artifact::from_bytes(artifact).map_err(Error::Encoding)?;
         let too_large = Error::ArenaTooLarge { size: artifact.arena_size };
         let size = usize::try_from(artifact.arena_size).map_err(|_| too_large.clone())?;
@@ -146,22 +151,14 @@ impl Driver {
     /// runs it on the caller's buffers in place and answers its status (`0`
     /// when it returns nothing). It is `Copy`, any number of threads may call
     /// it at once, and it borrows the driver, which outlives every call.
-    ///
-    /// # Safety
-    ///
-    /// The one trust this asks for, as `libloading`'s `Library::get` does: the
-    /// function is safe to call on any `input` and `output`. It keeps the
-    /// contracts of what it calls and reaches only its arena, `input` and
-    /// `output`. For an artifact Lean built, that is its no-misuse theorem.
-    /// The floating-point environment safe Rust runs in is the one it expects.
-    pub unsafe fn function(
+    pub fn function(
         &self,
         name: &str,
     ) -> Result<impl Fn(&[u8], &mut [u8]) -> i64 + Copy + Send + Sync + '_, Error> {
         let f = self.exports.get(name).copied().ok_or_else(|| Error::NoSuchFunction(name.to_owned()))?;
         Ok(move |input: &[u8], output: &mut [u8]| {
             // SAFETY: loading verified the signature, the code lives as long as
-            // the borrowed driver, and the rest the caller of `function` vouched.
+            // the borrowed driver, and the rest the caller of `load` vouched.
             unsafe { f(input.as_ptr(), input.len(), output.as_mut_ptr(), output.len()) }
         })
     }

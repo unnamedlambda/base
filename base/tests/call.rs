@@ -122,7 +122,7 @@ fn functions_are_found_by_name_only() {
     let d = driver(artifact(functions(vec![answering(1), answering(2).named("two")]), 64, vec![]));
     assert_eq!(call_with(&d, "two", &[], &mut []), 2);
     for name in ["u0:0", "one", ""] {
-        let Err(base::Error::NoSuchFunction(missing)) = (unsafe { d.function(name) }) else { panic!("{name:?} should not be found") };
+        let Err(base::Error::NoSuchFunction(missing)) = (d.function(name)) else { panic!("{name:?} should not be found") };
         assert_eq!(missing, name);
     }
 }
@@ -159,7 +159,7 @@ fn names_survive_a_reordering() {
 #[test]
 fn threads_call_one_driver_at_once() {
     let d = driver(main_of(vec![iconst64(v(1), 1), atomic_add(v(2), v(0), v(1)), ret()]));
-    let f = unsafe { d.function("main") }.unwrap();
+    let f = d.function("main").unwrap();
     std::thread::scope(|s| {
         for _ in 0..8 {
             s.spawn(|| {

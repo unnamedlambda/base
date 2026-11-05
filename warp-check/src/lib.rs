@@ -178,7 +178,7 @@ pub const ROOFLINE_GBS: f64 = 360.0;
 
 /// Seconds per launch, after one warm-up.
 pub fn time(base: &Driver, entry: &str, reps: usize) -> f64 {
-    let launch = unsafe { base.function(entry) }.expect("the artifact has the entry");
+    let launch = base.function(entry).expect("the artifact has the entry");
     launch(b"", &mut []);
     let t = std::time::Instant::now();
     for _ in 0..reps {

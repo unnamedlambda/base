@@ -34,7 +34,7 @@ fn main() {
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         let t = std::time::Instant::now();
-        match Driver::load(&artifact.to_bytes()) {
+        match unsafe { Driver::load(&artifact.to_bytes()) } {
             Ok(b) => {
                 let el = t.elapsed();
                 println!(

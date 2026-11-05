@@ -10,15 +10,15 @@ const ITEMS: u64 = 100_000;
 const CONSUMERS: usize = 4;
 
 fn load() -> Driver {
-    Driver::load(lean_artifacts::SHARED_SUM).unwrap()
+    unsafe { Driver::load(lean_artifacts::SHARED_SUM).unwrap() }
 }
 
 #[test]
 fn rayon_producers_and_consumers_share_the_ring() {
     let driver = load();
-    let push = unsafe { driver.function("push") }.unwrap();
-    let pop = unsafe { driver.function("pop") }.unwrap();
-    let close = unsafe { driver.function("close") }.unwrap();
+    let push = driver.function("push").unwrap();
+    let pop = driver.function("pop").unwrap();
+    let close = driver.function("close").unwrap();
     let popped = Mutex::new(Vec::with_capacity(ITEMS as usize));
 
     // A consumer blocks in `pop` while the ring is empty, so the pool has room

@@ -38,8 +38,8 @@ fn bench(
     let mut bytes: Vec<u8> = a.iter().flat_map(|f| f.to_le_bytes()).collect();
     bytes.extend(x.iter().flat_map(|f| f.to_le_bytes()));
 
-    let base = Driver::load(art_bytes).expect("Driver::load");
-    let fetch = unsafe { base.function("fetch") }.expect("fetch");
+    let base = unsafe { Driver::load(art_bytes).expect("Driver::load") };
+    let fetch = base.function("fetch").expect("fetch");
     let dot = fam_label == "dot";
     let runs = if dot {
         [
@@ -55,7 +55,7 @@ fn bench(
         ]
     };
 
-    unsafe { base.function("main") }.expect("main")(&bytes, &mut []);
+    base.function("main").expect("main")(&bytes, &mut []);
 
     let mut times = Vec::new();
     let mut outs: Vec<Vec<f32>> = Vec::new();

@@ -49,8 +49,8 @@ mod window_demo;
 ///
 /// As [`base::Driver::function`].
 pub unsafe fn run(artifact: &[u8], name: &str, input: &[u8]) -> Result<i64, base::Error> {
-    let driver = base::Driver::load(artifact)?;
-    let f = unsafe { driver.function(name) }?;
+    let driver = unsafe { base::Driver::load(artifact)? };
+    let f = driver.function(name)?;
     Ok(f(input, &mut []))
 }
 

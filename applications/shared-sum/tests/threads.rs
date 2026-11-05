@@ -12,7 +12,7 @@ const CALLS_AT: usize = 0x48;
 const HIST_AT: usize = 0x50;
 
 fn load() -> Driver {
-    Driver::load(lean_artifacts::SHARED_SUM).unwrap()
+    unsafe { Driver::load(lean_artifacts::SHARED_SUM).unwrap() }
 }
 
 /// The word at `at`, in one atomic load as the program's atomics write it: a
@@ -47,7 +47,7 @@ fn concurrent_adds_on_one_driver_all_land() {
                 for i in 0..CALLS {
                     let input = bytes(t, i);
                     let mut before = [0u8; 8];
-                    let sum = unsafe { driver.function("add") }.unwrap()(&input, &mut before) as u64;
+                    let sum = driver.function("add").unwrap()(&input, &mut before) as u64;
                     assert_eq!(sum, input.iter().map(|&b| b as u64).sum::<u64>());
                     spans.lock().unwrap().push((u64::from_le_bytes(before), sum));
                 }
@@ -75,9 +75,9 @@ fn concurrent_adds_on_one_driver_all_land() {
             }
         }
     }
-    assert_eq!(unsafe { driver.function("total") }.unwrap()(&[], &mut []) as u64, sent);
+    assert_eq!(driver.function("total").unwrap()(&[], &mut []) as u64, sent);
     assert_eq!(read_u64(&driver, TOTAL_AT), sent);
-    assert_eq!(unsafe { driver.function("calls") }.unwrap()(&[], &mut []) as usize, THREADS * CALLS);
+    assert_eq!(driver.function("calls").unwrap()(&[], &mut []) as usize, THREADS * CALLS);
     assert_eq!(read_u64(&driver, CALLS_AT) as usize, THREADS * CALLS);
     for (b, &n) in hist.iter().enumerate() {
         assert_eq!(read_u64(&driver, HIST_AT + 8 * b), n, "histogram counter {b}");

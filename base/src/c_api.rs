@@ -35,7 +35,8 @@ unsafe fn slice_in<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
 /// # Safety
 ///
 /// `artifact` must point to `len` readable bytes, or be null with `len` zero.
-/// `err` must point to `err_cap` writable bytes, or be null.
+/// `err` must point to `err_cap` writable bytes, or be null. The artifact's
+/// functions are safe to call, as [`Driver::load`] requires.
 #[no_mangle]
 pub unsafe extern "C" fn base_driver_load(
     artifact: *const u8,
@@ -45,7 +46,8 @@ pub unsafe extern "C" fn base_driver_load(
 ) -> *mut Driver {
     let loaded = guard(|| {
         let bytes = slice_in(artifact, len).ok_or("artifact is null with a non-zero length")?;
-        Driver::load(bytes).map_err(|e| e.to_string())
+        // SAFETY: the caller vouched for the artifact.
+        unsafe { Driver::load(bytes) }.map_err(|e| e.to_string())
     });
     match loaded {
         Ok(driver) => Box::into_raw(Box::new(driver)),

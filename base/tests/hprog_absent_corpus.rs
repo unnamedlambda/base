@@ -37,9 +37,9 @@ fn absent_libraries_answer_as_modelled() {
         p.lib = format!("missing-{}", p.lib);
     }
 
-    let b = base::Driver::load(&a.to_bytes()).expect("compile");
+    let b = unsafe { base::Driver::load(&a.to_bytes()).expect("compile") };
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.function("main") }.expect("execute")(&[], &mut out);
+    b.function("main").expect("execute")(&[], &mut out);
 
     let bad: Vec<String> = names
         .iter()

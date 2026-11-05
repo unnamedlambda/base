@@ -16,10 +16,10 @@ fn artifact(name: &str) -> Artifact {
 // ---------------------------------------------------------------------------
 
 fn run_histogram(a: &Artifact, input: &Path, output: &Path) -> Vec<u8> {
-    let b = base::Driver::load(&a.to_bytes()).expect("compile");
+    let b = unsafe { base::Driver::load(&a.to_bytes()).expect("compile") };
     let _ = std::fs::remove_file(output);
     let data = format!("{}\0{}\0", input.to_str().unwrap(), output.to_str().unwrap());
-    unsafe { b.function("main") }.expect("execute")(data.as_bytes(), &mut []);
+    b.function("main").expect("execute")(data.as_bytes(), &mut []);
     std::fs::read(output).expect("histogram written")
 }
 
@@ -60,10 +60,10 @@ fn histogram_matches_generator() {
 // ---------------------------------------------------------------------------
 
 fn run_clamp_sum(a: &Artifact, input: &[f32]) -> f64 {
-    let b = base::Driver::load(&a.to_bytes()).expect("compile");
+    let b = unsafe { base::Driver::load(&a.to_bytes()).expect("compile") };
     let data: Vec<u8> = input.iter().flat_map(|v| v.to_le_bytes()).collect();
     let mut out = [0u8; 8];
-    unsafe { b.function("main") }.expect("execute")(&data, &mut out);
+    b.function("main").expect("execute")(&data, &mut out);
     f64::from_le_bytes(out)
 }
 
@@ -101,13 +101,13 @@ fn clamp_sum_matches_generator() {
 #[test]
 fn nested_loops_and_branch_compute() {
     let a = artifact("nested_hprog");
-    let b = base::Driver::load(&a.to_bytes()).expect("compile");
+    let b = unsafe { base::Driver::load(&a.to_bytes()).expect("compile") };
 
     let tmp = tempfile::TempDir::new().unwrap();
     let out = tmp.path().join("nested.bin");
     // The copy loop reads until NUL, so the terminator has to be in the buffer.
     let data = format!("{}\0", out.to_str().unwrap());
-    unsafe { b.function("main") }.expect("execute")(data.as_bytes(), &mut []);
+    b.function("main").expect("execute")(data.as_bytes(), &mut []);
 
     let bytes = std::fs::read(&out).expect("output written");
     let sum = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
@@ -126,13 +126,13 @@ fn run_rmsnorm(a: &Artifact, weights: &[f32], x: &[f32]) -> Option<Vec<f32>> {
     let mut data = Vec::new();
     data.extend_from_slice(&(n as u64).to_le_bytes());
     data.extend(weights.iter().flat_map(|v| v.to_le_bytes()));
-    let b = base::Driver::load(&a.to_bytes()).ok()?;
-    unsafe { b.function("main") }.ok()?(&data, &mut []);
+    let b = unsafe { base::Driver::load(&a.to_bytes()).ok()? };
+    b.function("main").ok()?(&data, &mut []);
 
     let xs: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
-    unsafe { b.function("prep") }.ok()?(&xs, &mut []);
+    b.function("prep").ok()?(&xs, &mut []);
     let mut out = vec![0u8; n * 4];
-    unsafe { b.function("infer") }.ok()?(&xs, &mut out);
+    b.function("infer").ok()?(&xs, &mut out);
     Some(
         out.chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))

@@ -10,16 +10,16 @@ const ARTIFACT: &[u8] = lean_artifacts::SELF_DESCRIBING;
 const INPUT: &[u8] = b"abca";
 
 fn driver() -> Driver {
-    Driver::load(ARTIFACT)
+    unsafe { Driver::load(ARTIFACT) }
         .expect("compile")
 }
 
 /// Call `entry` the way a host that does not know the output's size does: ask
 /// with no buffer, then call again with as many bytes as it answered.
 fn call(base: &Driver, entry: &str, data: &[u8]) -> Vec<u8> {
-    let need = unsafe { base.function(entry) }.expect("execute")(data, &mut []);
+    let need = base.function(entry).expect("execute")(data, &mut []);
     let mut out = vec![0u8; usize::try_from(need).expect("a size")];
-    assert_eq!(unsafe { base.function(entry) }.expect("execute")(data, &mut out), need);
+    assert_eq!(base.function(entry).expect("execute")(data, &mut out), need);
     out
 }
 
@@ -147,9 +147,9 @@ fn a_stale_bulk_reader_refuses() {
 fn a_buffer_too_small_is_left_alone() {
     let base = driver();
     for entry in ["schema", "stats", "bulk"] {
-        let need = unsafe { base.function(entry) }.expect("execute")(INPUT, &mut []);
+        let need = base.function(entry).expect("execute")(INPUT, &mut []);
         let mut out = vec![0xaau8; need as usize - 1];
-        assert_eq!(unsafe { base.function(entry) }.expect("execute")(INPUT, &mut out), need, "{entry}");
+        assert_eq!(base.function(entry).expect("execute")(INPUT, &mut out), need, "{entry}");
         assert!(out.iter().all(|&b| b == 0xaa), "{entry} wrote into a buffer too small for it");
     }
 }

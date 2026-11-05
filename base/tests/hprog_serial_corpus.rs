@@ -65,9 +65,9 @@ fn interpreter_and_terminal_agree() {
 
     let mut input = path.clone().into_bytes();
     input.push(0);
-    let b = base::Driver::load(&std::fs::read(dir.join("hprog_serial_corpus.cbor")).expect("read artifact")).expect("compile");
+    let b = unsafe { base::Driver::load(&std::fs::read(dir.join("hprog_serial_corpus.cbor")).expect("read artifact")).expect("compile") };
     let mut out = vec![0u8; expected.len()];
-    unsafe { b.function("main") }.expect("execute")(&input, &mut out);
+    b.function("main").expect("execute")(&input, &mut out);
 
     let word = |bs: &[u8], k: usize| i32::from_le_bytes(bs[4 * k..4 * k + 4].try_into().unwrap());
     let bad: Vec<String> = names
