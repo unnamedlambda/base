@@ -1,13 +1,13 @@
 # Base
 
 Base is an interface and system for programming at the scope of an entire
-board. The CPU, GPU, network and file system are all controlled through a single
+board. The CPU, GPU, display and file system are all controlled through a single
 artifact loaded by a driver.
 
 An artifact holds a program and the memory it starts with. The program is CLIF,
 the IR of the Cranelift code generator: it runs on the CPU and calls a fixed set
-of primitives for everything else, such as GPU dispatch, file reads, network
-sends and threads. The driver compiles the program with Cranelift when it loads
+of primitives for everything else, such as GPU dispatch, file reads, drawing to
+a display and threads. The driver compiles the program with Cranelift when it loads
 the artifact, then runs its entry points by name.
 
 Artifacts are produced by generators. The generators here are written in Lean,
