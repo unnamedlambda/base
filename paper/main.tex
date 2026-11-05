@@ -66,7 +66,7 @@
 \maketitle
 \begin{abstract}
 Base is an interface and system for programming at the scope of an entire board.
-The CPU, GPU, display and file system are all controlled through a single
+The CPU, GPU, display, file system and network are all controlled through a single
 artifact loaded by a driver. Its compiled entry points can then be called at
 run time, with the driver embedded through its C API and usable from Rust,
 Python, C and Lean. Lean generators for artifacts have theorems which prove, at
@@ -595,7 +595,7 @@ compile.
 \section{Conclusion}
 Base enables programming at the scope of an entire system board. A single
 interface accepts CPU control via CLIF functions, a shared memory arena, and a
-selection of primitive functions CLIF can call, which cover device, display and
+selection of primitive functions CLIF can call, which cover device, display, network and
 other board behavior.
 The artifact and driver API allow Base to be embedded both in systems code, which
 interacts with existing artifacts, and in proof assistants, which generate
