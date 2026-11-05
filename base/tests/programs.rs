@@ -48,18 +48,18 @@ fn a_program_runs_machine_code_it_carries() {
     let (arch, add): (i64, &[u8]) = (2, &[0x00, 0x00, 0x01, 0x8b, 0xc0, 0x03, 0x5f, 0xd6]); // add x0,x0,x1; ret
     let d = driver(artifact(
         functions(vec![function().named("main").entry(vec![
-            call(Some(v(1)), base_primitive("cl_native_arch"), &[]),
+            call(Some(v(1)), base_primitive("base_native_arch"), &[]),
             uextend64(v(9), v(1)),
             store(v(9), v(0), 300),
             iadd_imm(v(2), v(0), 0x100),
             iconst64(v(3), add.len() as i64),
-            call(Some(v(4)), base_primitive("cl_native_load"), &[v(2), v(3)]),
+            call(Some(v(4)), base_primitive("base_native_load"), &[v(2), v(3)]),
             iconst64(v(5), 40),
             iconst64(v(6), 2),
             iconst64(v(7), 0),
             call_indirect(Some(v(8)), sig(Convention::Arch, &[I64; 4], Some(I64)), v(4), &[v(5), v(6), v(7), v(7)]),
             store(v(8), v(0), 200),
-            call(None, base_primitive("cl_native_free"), &[v(4)]),
+            call(None, base_primitive("base_native_free"), &[v(4)]),
             ret(),
         ])]),
         4096,

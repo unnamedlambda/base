@@ -74,7 +74,7 @@ fn each_malformed_artifact_is_refused_with_what_is_wrong() {
         ("a call to no function", body(vec![call(None, local(3), &[v(0)]), ret()]), &["u0:3"]),
         ("a call to no primitive", body(vec![call(None, Callee::Primitive(1000), &[]), ret()]), &["primitive 1000, which the program does not declare"]),
         ("a primitive declared twice", twice, &["declared twice"]),
-        ("a primitive called at another signature", body(vec![call(None, base_primitive("cl_native_arch"), &[v(0)]), ret()]), &["cl_native_arch", "takes"]),
+        ("a primitive called at another signature", body(vec![call(None, base_primitive("base_native_arch"), &[v(0)]), ret()]), &["base_native_arch", "takes"]),
         ("a function called at another signature", named(vec![answering(0), function().named("main").entry(vec![call(None, local(0), &[v(0)]), ret()])]), &["u0:0", "takes"]),
         ("an indirect call at another signature", body(vec![iconst64(v(1), 0), call_indirect(Some(v(2)), sig(Convention::Arch, &[I64; 4], Some(I64)), v(1), &[v(1)]), ret()]), &["indirect callee", "1 argument"]),
         ("no such opcode", body(vec![Inst::Binary(vec![v(1)], "iadd_frobnicate".into(), None, v(0), v(0)), ret()]), &["not a CLIF opcode"]),

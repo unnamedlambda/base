@@ -32,7 +32,7 @@ pub(crate) fn wake(word: &AtomicU32, count: i32) {
 ///
 /// `addr` is 4-byte aligned and points to 4 readable bytes, which every access
 /// to while waiters may exist is atomic.
-pub(crate) unsafe extern "C" fn cl_mem_wait(addr: *const u8, expected: i32, timeout_ns: i64) {
+pub(crate) unsafe extern "C" fn base_mem_wait(addr: *const u8, expected: i32, timeout_ns: i64) {
     wait(AtomicU32::from_ptr(addr as *mut u32), expected as u32, timeout_ns);
 }
 
@@ -40,13 +40,13 @@ pub(crate) unsafe extern "C" fn cl_mem_wait(addr: *const u8, expected: i32, time
 ///
 /// # Safety
 ///
-/// As [`cl_mem_wait`].
-pub(crate) unsafe extern "C" fn cl_mem_wake(addr: *const u8, count: i32) {
+/// As [`base_mem_wait`].
+pub(crate) unsafe extern "C" fn base_mem_wake(addr: *const u8, count: i32) {
     wake(AtomicU32::from_ptr(addr as *mut u32), count);
 }
 
 /// Nanoseconds on the system's monotonic clock.
-pub(crate) extern "C" fn cl_clock_now() -> i64 {
+pub(crate) extern "C" fn base_clock_now() -> i64 {
     #[cfg(unix)]
     {
         #[cfg(target_vendor = "apple")]
@@ -73,7 +73,7 @@ pub(crate) extern "C" fn cl_clock_now() -> i64 {
 
 /// Nanoseconds since 1970-01-01 00:00:00 UTC on the system's wall clock,
 /// negative before it. The system may set it back or forward.
-pub(crate) extern "C" fn cl_clock_wall() -> i64 {
+pub(crate) extern "C" fn base_clock_wall() -> i64 {
     let ns = |d: std::time::Duration| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX);
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => ns(d),
@@ -87,7 +87,7 @@ pub(crate) extern "C" fn cl_clock_wall() -> i64 {
 /// # Safety
 ///
 /// `dst` has room for `len` bytes.
-pub(crate) unsafe extern "C" fn cl_random(dst: *mut u8, len: i64) -> i64 {
+pub(crate) unsafe extern "C" fn base_random(dst: *mut u8, len: i64) -> i64 {
     let Ok(n) = usize::try_from(len) else { return -1 };
     if n == 0 {
         return 0;
@@ -109,7 +109,7 @@ mod tests {
     fn a_word_that_changed_is_not_slept_on() {
         let w = AtomicU32::new(5);
         let t0 = Instant::now();
-        unsafe { cl_mem_wait(w.as_ptr() as *const u8, 4, 5_000_000_000) };
+        unsafe { base_mem_wait(w.as_ptr() as *const u8, 4, 5_000_000_000) };
         assert!(t0.elapsed() < Duration::from_secs(1));
     }
 
@@ -117,7 +117,7 @@ mod tests {
     fn a_wait_ends_by_its_timeout() {
         let w = AtomicU32::new(5);
         let t0 = Instant::now();
-        unsafe { cl_mem_wait(w.as_ptr() as *const u8, 5, 20_000_000) };
+        unsafe { base_mem_wait(w.as_ptr() as *const u8, 5, 20_000_000) };
         assert!(t0.elapsed() < Duration::from_secs(5));
     }
 
@@ -130,13 +130,13 @@ mod tests {
         let waiter = std::thread::spawn(move || {
             for round in 0..2000u32 {
                 while w2.load(Ordering::SeqCst) == round {
-                    unsafe { cl_mem_wait(w2.as_ptr() as *const u8, round as i32, -1) };
+                    unsafe { base_mem_wait(w2.as_ptr() as *const u8, round as i32, -1) };
                 }
             }
         });
         for round in 1..=2000u32 {
             word.store(round, Ordering::SeqCst);
-            unsafe { cl_mem_wake(word.as_ptr() as *const u8, -1) };
+            unsafe { base_mem_wake(word.as_ptr() as *const u8, -1) };
         }
         waiter.join().unwrap();
     }
@@ -163,7 +163,7 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(20));
         word.store(1, Ordering::SeqCst);
-        unsafe { cl_mem_wake(word.as_ptr() as *const u8, 1) };
+        unsafe { base_mem_wake(word.as_ptr() as *const u8, 1) };
         host.join().unwrap();
     }
 
@@ -174,15 +174,15 @@ mod tests {
         let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
         let system = t.tv_sec as i64 * 1_000_000_000 + t.tv_nsec as i64;
-        let ours = cl_clock_now();
+        let ours = base_clock_now();
         assert!(ours >= system && ours - system < 1_000_000_000, "{system} {ours}");
     }
 
     #[test]
     fn the_clock_does_not_go_backwards() {
-        let mut last = cl_clock_now();
+        let mut last = base_clock_now();
         for _ in 0..1000 {
-            let now = cl_clock_now();
+            let now = base_clock_now();
             assert!(now >= last);
             last = now;
         }

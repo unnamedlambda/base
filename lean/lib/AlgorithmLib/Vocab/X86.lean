@@ -218,7 +218,7 @@ inductive Item
   | data (bs : List UInt8)
   deriving DecidableEq, Repr, Inhabited
 
-/-- A body of machine code: what one `cl_native_load` maps. -/
+/-- A body of machine code: what one `base_native_load` maps. -/
 abbrev Body := List Item
 
 def lbl (name : String) : Item := .label name

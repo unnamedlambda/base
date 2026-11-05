@@ -48,7 +48,7 @@ def STREAM_SLOT : Nat := 1
 
 /-- `0x00`--`0x40` are the runtime's context slots. From `SLOT_OFF`, one `i64`
     per body: where `asm_load` mapped it, or 0. At `NAME_OFF`, `"avx"`,
-    NUL-terminated, for `cl_cpu_has`. At `POLY_OFF`, poly's five
+    NUL-terminated, for `base_cpu_has`. At `POLY_OFF`, poly's five
     coefficients, each as four lanes. From `CODE_OFF`, the bodies, each on a
     64-byte boundary. -/
 def SLOT_OFF : Nat := 0x100

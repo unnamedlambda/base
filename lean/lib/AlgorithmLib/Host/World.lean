@@ -1550,9 +1550,9 @@ structure World where
       in: a read takes the first, or as much of it as fits, and leaves the
       rest. An empty list is end of input. -/
   stdin : List ByteArray := []
-  /-- What `cl_stdout_write` has written so far. -/
+  /-- What `base_stdout_write` has written so far. -/
   stdout : ByteArray := ByteArray.empty
-  /-- What `cl_stderr_write` has written so far. -/
+  /-- What `base_stderr_write` has written so far. -/
   stderr : ByteArray := ByteArray.empty
   /-- The files the program opened, by opening order. -/
   openFiles : Array FsOpen := #[]
@@ -1619,10 +1619,10 @@ structure World where
   wgslOk : String → Bool := fun _ => true
   /-- The buffers presented to the window, oldest first. -/
   shown : List ByteArray := []
-  /-- Machine code `cl_native_load` placed, by load order, empty once freed.
+  /-- Machine code `base_native_load` placed, by load order, empty once freed.
       The `k`th load answers `nativeAddr k`. -/
   native : Array (Option ByteArray) := #[]
-  /-- **The host's architecture**, as `cl_native_arch` numbers it: 1 for
+  /-- **The host's architecture**, as `base_native_arch` numbers it: 1 for
       x86-64, 2 for AArch64, 0 for any other. -/
   arch : Int := 1
   /-- **What the CPU has**, by Rust's spelling of the feature: `none` for a
@@ -1639,11 +1639,11 @@ structure World where
       `"hugepages"`, `"priority"` — which depends on its limits and
       privileges, not on the program. -/
   grants : String → Bool := fun _ => true
-  /-- **The wall clock** `cl_clock_wall` reads, in nanoseconds since 1970. -/
+  /-- **The wall clock** `base_clock_wall` reads, in nanoseconds since 1970. -/
   wall : Int := 0
   /-- **What the system's randomness hands a request** of so many bytes. -/
   entropy : Nat → ByteArray := fun n => ByteArray.mk (Array.replicate n 0)
-  /-- **The clock** `cl_clock_now` reads. Time does not pass in this model, so
+  /-- **The clock** `base_clock_now` reads. Time does not pass in this model, so
       two readings agree; a claim that needs the clock to move says so. -/
   clock : Int := 0
   /-- **The logical CPUs online**, each with its physical core and package

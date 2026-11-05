@@ -22,7 +22,7 @@ byte with what the interpreter computed here. Each thread owns 32 bytes of
 the arena: it sums the four words there, writes the sum over the first, and
 answers twice the sum. The interpreter runs a thread's function in its view
 of those bytes (`Thread.runOut`), the machine `ThreadHonest` names, so the
-bytes agreeing check that `cl_thread_spawn` and `cl_thread_join` do what
+bytes agreeing check that `base_thread_spawn` and `base_thread_join` do what
 `Sem` says they do.
 -/
 

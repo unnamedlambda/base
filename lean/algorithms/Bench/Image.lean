@@ -70,7 +70,7 @@ def LZV_SLOT : Nat := 3
 
 /-- `0x00`--`0x40` are the runtime's context slots. From `SLOT_OFF`, one `i64`
     per body: where `asm_load` mapped it, or 0. At `NAME_OFF`, `"avx2"`,
-    NUL-terminated, for `cl_cpu_has`. From `CODE_OFF`, the bodies, each on a
+    NUL-terminated, for `base_cpu_has`. From `CODE_OFF`, the bodies, each on a
     64-byte boundary. -/
 def SLOT_OFF : Nat := 0x100
 def NAME_OFF : Nat := 0x140

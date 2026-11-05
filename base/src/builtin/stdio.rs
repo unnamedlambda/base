@@ -8,7 +8,7 @@ use std::io::{Read, Write as IoWrite};
 /// # Safety
 ///
 /// `dst` has room for `cap` bytes.
-pub(crate) unsafe extern "C" fn cl_stdin_read(dst: *mut u8, cap: i64) -> i64 {
+pub(crate) unsafe extern "C" fn base_stdin_read(dst: *mut u8, cap: i64) -> i64 {
     let Ok(cap) = usize::try_from(cap) else { return -1 };
     let buf = if cap == 0 { &mut [][..] } else { std::slice::from_raw_parts_mut(dst, cap) };
     loop {
@@ -35,7 +35,7 @@ unsafe fn write_all(mut out: impl IoWrite, src: *const u8, size: i64) -> i64 {
 /// # Safety
 ///
 /// `src` holds `size` readable bytes.
-pub(crate) unsafe extern "C" fn cl_stdout_write(src: *const u8, size: i64) -> i64 {
+pub(crate) unsafe extern "C" fn base_stdout_write(src: *const u8, size: i64) -> i64 {
     write_all(std::io::stdout().lock(), src, size)
 }
 
@@ -44,6 +44,6 @@ pub(crate) unsafe extern "C" fn cl_stdout_write(src: *const u8, size: i64) -> i6
 /// # Safety
 ///
 /// `src` holds `size` readable bytes.
-pub(crate) unsafe extern "C" fn cl_stderr_write(src: *const u8, size: i64) -> i64 {
+pub(crate) unsafe extern "C" fn base_stderr_write(src: *const u8, size: i64) -> i64 {
     write_all(std::io::stderr().lock(), src, size)
 }

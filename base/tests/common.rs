@@ -213,9 +213,9 @@ pub fn lib_fn(lib: &str, symbol: &str, params: &[ClifTy], result: Option<ClifTy>
 /// One of base's own functions, at the signature Lean declares it at.
 pub fn base_primitive(name: &str) -> Callee {
     let (params, result): (&[ClifTy], _) = match name {
-        "cl_native_load" => (&[I64; 2], Some(I64)),
-        "cl_native_free" => (&[I64], None),
-        "cl_native_arch" => (&[], Some(I32)),
+        "base_native_load" => (&[I64; 2], Some(I64)),
+        "base_native_free" => (&[I64], None),
+        "base_native_arch" => (&[], Some(I32)),
         _ => panic!("no signature here for {name}"),
     };
     base_fn(name, params, result)
