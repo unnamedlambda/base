@@ -74,16 +74,36 @@ step() {
 # One invocation: lake decides staleness by hashing contents, so asking twice
 # only costs the up-to-date check twice, and a failing build caches nothing.
 #
-# The root package's libraries reach only the library modules they import, so
-# the library is built whole as well: a module nothing imports -- a proof such
-# as `Host.Sound` -- is otherwise never checked.
+# A library builds only what its roots import, so a module nothing imports
+# would never be checked. Every tracked file is therefore also named as a module
+# target: Lake builds it, and refuses a file no library of its package claims
+# ("unknown module"), so a new file cannot sit outside the build.
+
+# `+Module` for each tracked `.lean` file under `$1`, the package's source
+# directory, relative to the repository.
+modules() {
+  git -C "$ROOT" ls-files -- "$1/*.lean" |
+    sed "s|^$1/||; s|\.lean\$||; s|/|.|g" | grep -vx lakefile | sed 's/^/+/'
+}
 
 lean_build() {
   cd "$ROOT/lean"
   local libs
   libs=$(grep -oP '^lean_lib \K\w+' lakefile.lean | tr '\n' ' ')
-  "${GUARD[@]}" taskset -c 0-3 lake build algorithmLib/AlgorithmLib $libs &&
+  "${GUARD[@]}" taskset -c 0-3 lake build algorithmLib/AlgorithmLib $libs \
+    $(modules lean/lib) $(modules lean/algorithms) &&
     "${GUARD[@]}" taskset -c 0-3 lake build algorithmLib/artifacts
+}
+
+# The statements over the reals, on Mathlib: their own package, so nothing else
+# pays for Mathlib. Its prebuilt files are fetched once; building Mathlib from
+# source would take hours.
+lean_real() {
+  cd "$ROOT/lean/real"
+  if [ ! -d .lake/packages/mathlib/.lake/build ]; then
+    "${GUARD[@]}" lake exe cache get || return 1
+  fi
+  "${GUARD[@]}" taskset -c 0-3 lake build $(modules lean/real)
 }
 
 # `sorry` leaves a warning rather than an error, so a file can carry one and
@@ -228,7 +248,7 @@ gptoss_kernels() {
 
 lean_host() {
   cd "$ROOT/lean/host"
-  "${GUARD[@]}" lake build upcasehost || return 1
+  "${GUARD[@]}" lake build upcasehost $(modules lean/host) || return 1
   # From a scratch directory: the demo reads and writes in its working
   # directory, and `lean/host` is a tree we do not want it writing into.
   local work
@@ -271,6 +291,7 @@ python_host() {
 # --- run ---------------------------------------------------------------------
 
 step "lean build"          lean_build
+step "lean real"           lean_real
 step "no sorry"            no_sorry
 step "layers"              layers
 step "one definition"      one_definition
