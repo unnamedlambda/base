@@ -254,6 +254,20 @@ cpp_host() {
     CARGO="${GUARD[*]} taskset -c 0-3 cargo" CARGO_FLAGS=-j2 ARTIFACT="$dir/shared_sum.cbor"
 }
 
+# --- the Python host ---------------------------------------------------------
+# `py-base` is a Python extension module, so its suite is pytest's against the
+# installed extension, as PyO3 projects run theirs; `cargo test` cannot build a
+# crate's own `cdylib` for a test. A release build, because a debug extension
+# runs everything some fifteen times slower. It needs no device.
+
+python_host() {
+  local venv="$ROOT/py-base/.venv"
+  cd "$ROOT/py-base"
+  VIRTUAL_ENV="$venv" CARGO_BUILD_JOBS=2 \
+    "${GUARD[@]}" taskset -c 0-3 "$venv/bin/maturin" develop --release -q || return 1
+  "$venv/bin/python" -m pytest tests -q
+}
+
 # --- run ---------------------------------------------------------------------
 
 step "lean build"          lean_build
@@ -265,6 +279,7 @@ step "artifacts reproduce" artifacts_reproduce
 step "rust check"          rust_check
 step "lean host"           lean_host
 step "c++ host"            cpp_host
+step "python host"         python_host
 if [ "$FAST" = 1 ]; then
   step "rust test (fast)"  rust_test_fast
 else

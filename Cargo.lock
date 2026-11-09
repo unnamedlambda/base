@@ -1910,7 +1910,6 @@ version = "0.1.0"
 dependencies = [
  "base",
  "pyo3",
- "tempfile",
 ]
 
 [[package]]
