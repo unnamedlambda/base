@@ -5,10 +5,7 @@ use std::path::PathBuf;
 
 #[test]
 fn interpreter_and_driver_agree() {
-    let dir = match std::env::var("BASE_HPROG_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(lean_artifacts::DIR),
-    };
+    let dir = PathBuf::from(lean_artifacts::DIR);
     let v: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.join("hprog_driver_corpus/expected.json"))
             .expect("read corpus"),
@@ -58,10 +55,7 @@ fn interpreter_and_driver_agree() {
 /// `cublas_v2.h`.
 #[test]
 fn signatures_match_cuda_h() {
-    let dir = match std::env::var("BASE_HPROG_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(lean_artifacts::DIR),
-    };
+    let dir = PathBuf::from(lean_artifacts::DIR);
     let include = std::env::var("CUDA_PATH")
         .map(|p| PathBuf::from(p).join("include"))
         .into_iter()

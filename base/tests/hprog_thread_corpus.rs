@@ -5,10 +5,7 @@ use std::path::PathBuf;
 
 #[test]
 fn interpreter_and_jit_agree_on_threads() {
-    let dir = match std::env::var("BASE_HPROG_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(lean_artifacts::DIR),
-    };
+    let dir = PathBuf::from(lean_artifacts::DIR);
     let v: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.join("hprog_thread_corpus/expected.json")).expect("read corpus"),
     )

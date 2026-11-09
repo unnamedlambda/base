@@ -1,6 +1,5 @@
 //! The differential corpus: what `Host.Sem` says each operation computes,
-//! against the machine. `BASE_HPROG_DIR` runs a corpus generated elsewhere.
-
+//! against the machine.
 
 use std::path::PathBuf;
 
@@ -41,17 +40,9 @@ impl Corpus {
     }
 }
 
-/// Where the build wrote the corpus.
-fn generated_corpus() -> PathBuf {
-    PathBuf::from(lean_artifacts::DIR)
-}
-
 #[test]
 fn interpreter_and_machine_agree() {
-    let dir = match std::env::var("BASE_HPROG_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => generated_corpus(),
-    };
+    let dir = PathBuf::from(lean_artifacts::DIR);
 
     let corpus = Corpus::read(&dir.join("hprog_corpus/expected.json"));
 

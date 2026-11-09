@@ -3,16 +3,9 @@
 
 use std::path::PathBuf;
 
-fn corpus_dir() -> PathBuf {
-    match std::env::var("BASE_HPROG_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(lean_artifacts::DIR),
-    }
-}
-
 #[test]
 fn interpreter_and_system_agree() {
-    let dir = corpus_dir();
+    let dir = PathBuf::from(lean_artifacts::DIR);
     let v: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.join("hprog_fs_corpus/expected.json")).expect("read corpus"),
     )

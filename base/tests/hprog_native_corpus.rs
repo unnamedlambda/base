@@ -1,7 +1,6 @@
 //! The native-code entry points on an x86-64 host, against the interpreter
 //! (`Host/NativeCorpus.lean`), byte for byte.
 
-
 use std::path::PathBuf;
 
 /// Result codes, `i32`s from byte 0.
@@ -17,10 +16,7 @@ const WHAT: [&str; 6] = [
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn interpreter_and_runtime_agree() {
-    let dir = match std::env::var("BASE_HPROG_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(lean_artifacts::DIR),
-    };
+    let dir = PathBuf::from(lean_artifacts::DIR);
     let v: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.join("hprog_native_corpus/expected.json")).expect("read corpus"),
     )

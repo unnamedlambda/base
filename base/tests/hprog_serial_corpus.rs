@@ -2,13 +2,6 @@
 
 use std::path::PathBuf;
 
-fn corpus_dir() -> PathBuf {
-    match std::env::var("BASE_HPROG_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(lean_artifacts::DIR),
-    }
-}
-
 /// A pseudo-terminal: its far end, and the path and a descriptor of the
 /// near end, which is kept open in raw mode so what the far end sends waits
 /// unaltered.
@@ -35,7 +28,7 @@ fn terminal() -> (libc::c_int, String, libc::c_int) {
 #[cfg(target_os = "linux")]
 #[test]
 fn interpreter_and_terminal_agree() {
-    let dir = corpus_dir();
+    let dir = PathBuf::from(lean_artifacts::DIR);
     let v: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.join("hprog_serial_corpus/expected.json")).expect("read corpus"),
     )
