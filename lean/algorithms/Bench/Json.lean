@@ -58,6 +58,8 @@ def STR_LEN : Nat := 0x108
     powers of five for Eisel–Lemire, `5^q` for `q` in `-342 … 308`, two words
     each (high, low). -/
 def POW10 : Nat := 0x200
+/-- `10^0 … 10^8` as words, to scale a value by the digits read after it. -/
+def POWI : Nat := 0x300
 def POW5 : Nat := 0x400
 def POW5_MIN : Int := -342
 def POW5_COUNT : Nat := 651
@@ -102,7 +104,8 @@ def tables : List UInt8 :=
   let p5 := (List.range POW5_COUNT).flatMap fun i =>
     let v := pow5 (POW5_MIN + Int.ofNat i)
     u64le (v / 2 ^ 64) ++ u64le (v % 2 ^ 64)
-  zeros (POW10 - 0) ++ p10 ++ zeros (POW5 - POW10 - p10.length) ++ p5
+  let pi := (List.range 9).flatMap fun i => u64le (10 ^ i)
+  zeros (POW10 - 0) ++ p10 ++ zeros (POWI - POW10 - p10.length) ++ pi ++ zeros (POW5 - POWI - pi.length) ++ p5
 
 -- the table is fast_float's: its first entry, and 5^0
 #guard pow5 (-342) / 2 ^ 64 == 0xeef453d6923bd65a ∧ pow5 (-342) % 2 ^ 64 == 0x113faa2906a13b3f
@@ -578,22 +581,28 @@ def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := d
     wloopL %[from_, w0, n0, zero]
       (head := fun _ cs => do pure (contIfULt cs.head e, %[cs.head, cs.snd, cs.thd, cs.fth], ()))
       (body := fun out cs _ => do
-        -- eight digits at once (fast_float's SWAR), while the value stays
-        -- within 19 digits
+        -- up to eight digits at once (fast_float's SWAR): the digits leading
+        -- an 8-byte read, the rest shifted out, while the value stays within
+        -- 19 digits
         when .ule (← iaddImm cs.head 8) e do
-          when .ule cs.thd (← c 11) do
-            let x ← load64 cs.head
-            let hiNib ← c (0xF0F0F0F0F0F0F0F0 - 2 ^ 64)
-            let eight ← icmp .eq (← bor (← band x hiNib)
-                (← ushrImm (← band (← iadd x (← c 0x0606060606060606)) hiNib) 4)) (← c 0x3333333333333333)
-            when .ne (← b2i eight) (← c 0) do
-              let v0 ← isub x (← c 0x3030303030303030)
-              let v1 ← iadd (← imul v0 (← c 10)) (← ushrImm v0 8)
-              let mask ← c 0x000000FF000000FF
-              let v ← ushrImm (← iadd (← imul (← band v1 mask) (← c 0x000F424000000064))
-                (← imul (← band (← ushrImm v1 16) mask) (← c 0x0000271000000001))) 32
-              continueWith out %[← iaddImm cs.head 8, ← iadd (← imul cs.snd (← c 100000000)) v,
-                ← iaddImm cs.thd 8, cs.fth]
+          let x ← load64 cs.head
+          let hiNib ← c (0xF0F0F0F0F0F0F0F0 - 2 ^ 64)
+          -- a byte 0x33 exactly where a digit is (no carry reaches a byte
+          -- before the first that is not one)
+          let cls ← bxor (← bor (← band x hiNib)
+              (← ushrImm (← band (← iadd x (← c 0x0606060606060606)) hiNib) 4)) (← c 0x3333333333333333)
+          let k ← ushrImm (← select (← icmp .eq cls zero) (← c 64) (← ctz cls)) 3
+          when .ule (← iadd cs.thd k) (← c 19) do
+            when .eq k zero do brk out %[cs.head, cs.snd, cs.thd, cs.fth]
+            let v0 ← ishl (← isub x (← c 0x3030303030303030)) (← isub (← c 64) (← ishlImm k 3))
+            let v1 ← iadd (← imul v0 (← c 10)) (← ushrImm v0 8)
+            let mask ← c 0x000000FF000000FF
+            let v ← ushrImm (← iadd (← imul (← band v1 mask) (← c 0x000F424000000064))
+              (← imul (← band (← ushrImm v1 16) mask) (← c 0x0000271000000001))) 32
+            let w ← iadd (← imul cs.snd (← load64 (← iadd (← at_ POWI) (← ishlImm k 3)))) v
+            let r := %[← iadd cs.head k, w, ← iadd cs.thd k, cs.fth]
+            when .ult k (← c 8) do brk out r
+            continueWith out r
         let d ← isub (← uload8_64 cs.head) (← ch '0')
         when .uge d (← c 10) do brk out %[cs.head, cs.snd, cs.thd, cs.fth]
         let w := cs.snd
