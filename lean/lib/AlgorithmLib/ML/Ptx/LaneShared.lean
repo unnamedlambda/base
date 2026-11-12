@@ -476,10 +476,10 @@ theorem snapshots_fold (all : List (Nat × UInt64 × Nat × UInt64)) (smem0 : By
     thread passed that many barriers. -/
 theorem snapshots_get {n : Nat} {smem0 : ByteArray} {calls : Nat → List (Intr × List V)}
     {stores : Nat → List (Nat × UInt64 × Nat × UInt64)} {b t : Nat} (ht : t < n)
-    (hb : b < ((calls t).filter (·.1 == .barrier)).length) :
+    (hb : b < ((calls t).filter (·.1 == .barrier)).length)
+    (hna : ∀ t, t < n → ∀ x ∈ calls t, x.1 ≠ .sharedAdd) :
     (snapshots n smem0 calls stores)[b]? = some (snapMem ((List.range n).flatMap stores) smem0 (b + 1)).arena := by
-  unfold snapshots
-  simp only
+  rw [Kernel.snapshots_noAdds hna]
   have hnb : ((calls t).filter (·.1 == .barrier)).length ≤
       (List.range n).foldl (fun m t => max m ((calls t).filter (·.1 == .barrier)).length) 0 := by
     have key : ∀ (L : List Nat) (m0 : Nat), t ∈ L ∨ ((calls t).filter (·.1 == .barrier)).length ≤ m0 →
@@ -1055,7 +1055,16 @@ theorem block_laws (S : Nat) (hS : S ≤ 2 ^ 36) (s : EWStmt) (ws0 : WSt F32)
   | bar ws' =>
     cases he
     have hn : bars (EV.take p) = b := by rw [bars_filterMap]; exact hpb
-    rw [snapshots_get (t := 32 * 0 + l.val) (by have : l.val < 32 := l.isLt; omega) hlt, Option.getD_some, hall,
+    have hna : ∀ t, t < 32 → ∀ x ∈ calls t, x.1 ≠ .sharedAdd := by
+      intro t ht x hx
+      rw [hc t ht] at hx
+      obtain ⟨e, he, rfl⟩ := List.mem_map.mp hx
+      obtain ⟨i', ws', h | h | h | h⟩ := hJ e he
+      · obtain ⟨d, p, rfl⟩ := h; simp [callOne, callLeaf]
+      · obtain ⟨d, v, sr, rfl⟩ := h; simp [callOne, callLeaf]
+      · obtain ⟨d, sr, m, rfl, _⟩ := h; simp [callOne, callLeaf]
+      · subst h; simp [callOne, callLeaf]
+    rw [snapshots_get (t := 32 * 0 + l.val) (by have : l.val < 32 := l.isLt; omega) hlt hna, Option.getD_some, hall,
       snap_law cta S hS EV ws0.int.smem hin hok hp hn]
     exact congrArg (bytesOf S) (ev_smem hw cta im s 0 ws0 p _ hp).symm
 

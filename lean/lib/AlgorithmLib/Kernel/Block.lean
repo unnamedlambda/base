@@ -40,6 +40,9 @@ def sqrtApprox : LocalRef [.f32] (some .f32) := { callee := .intr .sqrtApprox }
 def rsqrtApprox : LocalRef [.f32] (some .f32) := { callee := .intr .rsqrtApprox }
 /-- `dp4a.s32.s32`: `c` plus the dot product of `a`'s and `b`'s signed bytes. -/
 def dp4a : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .dp4a }
+/-- `red.shared.add.u32`: `x` added to the shared word at `p`, which every
+    thread finds after the next barrier. -/
+def sharedAdd : LocalRef [.i64, .i32] none := { callee := .intr .sharedAdd }
 
 def c32 (k : Nat) : Prog V L (V .i32) := iconst32 (Int.ofNat k)
 def c64n (k : Nat) : Prog V L (V .i64) := iconst64 (Int.ofNat k)

@@ -5482,7 +5482,7 @@ theorem barrier_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat)
   have hlow : (lower F tag (.call none (.intr .barrier) [])).lines =
       (([if F.warp then PtxIr.Instr.barWarp (.imm 0xffffffff) else .bar 0] : List PtxIr.Instr).map
         (PtxIr.Line.ins none)).toArray := by
-    rw [lower_inst F tag _ rfl]; simp [inst, emit, emitL, facts?]
+    rw [lower_inst F tag _ rfl]; simp [inst, voidIntr, emit, emitL, facts?]
   have hbi : exec c (if F.warp then PtxIr.Instr.barWarp (.imm 0xffffffff) else .bar 0) = exec c (.bar 0) := by
     cases hw : F.warp
     · rfl
@@ -5594,7 +5594,8 @@ theorem shfl_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
     rw [hk, hx] at hst
     have hnb' : i ≠ .barrier := by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
-    simp [Except.toOption, hnb', hx] at hst
+    have hns' : i ≠ .sharedAdd := by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
+    simp [Except.toOption, hnb', hns', hx] at hst
     exact hst.symm
   subst hs1
   -- the lines
@@ -5686,7 +5687,7 @@ theorem ballot_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.an
       Nat.add_sub_cancel] at hst
     have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
     rw [hk, hx] at hst
-    simp [Except.toOption, show Intr.ballot ≠ .barrier by decide, hx] at hst
+    simp [Except.toOption, show Intr.ballot ≠ .barrier by decide, show Intr.ballot ≠ .sharedAdd by decide, hx] at hst
     exact hst.symm
   subst hs1
   -- the lines: the flag's predicate, then one `vote`
@@ -6968,18 +6969,538 @@ theorem ctz_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d 
 theorem not_win_of (F : Facts) (v : Val) (h : F.win v = false) : ¬ Win F v := by
   intro hw; rw [(win_iff F v).mpr hw] at h; cases h
 
+open PtxRun in
+/-- An `atom` read-modify-write through a register holding `x`: aligned there,
+    it reads the old value, stores the new one, records the store, and the
+    destination gets the old value. -/
+theorem exec_atom_rmw (c : PtxRun.Ctx) (ts : PtxRun.TS) (sp : PtxIr.Space) (o : PtxIr.AtomOp) (od : Bool) (k : AtomicRmw)
+    (pt : PtxIr.Ty) (dr R : PtxIr.Reg) (vo : PtxIr.Opnd) (x z y old : UInt64) (m : Mem)
+    (hk : o.rmw? = some k) (hsp : sp ≠ .param) (hR : OpVal c ts (.reg R) x) (hp : place sp x = z)
+    (hal : z % UInt64.ofNat (pt.width / 8) = 0) (hv : OpVal c ts vo y)
+    (hl : ts.w.mem.load z (pt.width / 8) = some old)
+    (hm : ts.w.mem.store z (pt.width / 8) (PtxRun.mask pt.width (rmwNew k (atomTy pt) old y)) = some m) :
+    (exec c (.atom sp o od pt (some dr) { base := .reg R } vo)).run ts =
+      .ok (.step, { ts with regs := ts.regs.insert dr old, w := { ts.w with mem := m, obs := (Obs.store z (pt.width / 8) (PtxRun.mask pt.width (rmwNew k (atomTy pt) old y))) :: ts.w.obs } }) := by
+  simp only [OpVal] at hR hv
+  have hne : (sp == .param) = false := by cases sp <;> first | rfl | exact absurd rfl hsp
+  simp only [exec, PtxRun.atom, hk, aligned, PtxRun.load, PtxRun.store, StateT.run, bind, StateT.bind, hne,
+    Bool.false_eq_true, if_false] at hR hv ⊢
+  simp [hR, hv, Except.bind, ofInt_toNat, hp, hal, hl, hm, MonadState.get, getThe, MonadStateOf.get, StateT.get,
+    set, MonadStateOf.set, StateT.set, setReg, pure, StateT.pure, Except.pure, modify, modifyGet,
+    MonadStateOf.modifyGet, StateT.modifyGet]
+
+/-- An atomic read-modify-write: the address's lines, the operand's, then one
+    `atom`. -/
+theorem lower_atom_rmw (F : Facts) (tag : Nat) (d p x : Val) (t : ClifTy) (k : AtomicRmw) (ord : AtomicOrder)
+    (op : PtxIr.AtomOp)
+    (hop : atomOp k = some op) :
+    (lower F tag (.call (some d) (.atomic (.rmw t k ord)) [p, x])).lines =
+      ((runLM (r x) F tag (runLM (addr p) F tag {}).2).2.lines).push
+        (.ins none (.atom (runLM (addr p) F tag {}).1.1 op (ord == .seqCst) (atomPty op t) (some (regOf t d))
+          (runLM (addr p) F tag {}).1.2 (.reg (runLM (r x) F tag (runLM (addr p) F tag {}).2).1))) := by
+  rw [lower_inst F tag _ rfl, inst]
+  simp only [atomic, hop, runLM_bind, o]
+  rfl
+
+theorem atomPty_width (op : PtxIr.AtomOp) (t : ClifTy) (ht : t = .i32 ∨ t = .i64) :
+    (atomPty op t).width / 8 = tyBytes t ∧ PtxRun.atomTy (atomPty op t) = t ∧ (atomPty op t).width = t.width := by
+  rcases ht with rfl | rfl <;> cases op <;> decide
+
+theorem atomOp_rmw (k : AtomicRmw) (op : PtxIr.AtomOp) (h : atomOp k = some op) : op.rmw? = some k := by
+  cases k <;> simp [atomOp] at h <;> subst h <;> rfl
+
+theorem rmwNew_mask (k : AtomicRmw) (t : ClifTy) (old x : UInt64) :
+    rmwNew k t old x &&& widthMask t = rmwNew k t old x := by
+  simp only [rmwNew, UInt64.and_assoc, UInt64.and_self]
+
+/-- What an atomic read-modify-write answers: aligned, the old value loaded,
+    the new stored and recorded. -/
+theorem atomicCall_rmw (w w' : World) (t : ClifTy) (k : AtomicRmw) (ord : AtomicOrder) (xp xx : UInt64) (r : Option V)
+    (h : atomicCall (.rmw t k ord) [.sc .i64 xp, .sc t xx] w = some (r, w')) :
+    ∃ old m, xp % UInt64.ofNat (tyBytes t) = 0 ∧ w.mem.load xp (tyBytes t) = some old ∧
+      w.mem.store xp (tyBytes t) (rmwNew k t old xx) = some m ∧ r = some (.sc t old) ∧
+      w' = { w with mem := m, obs := .store xp (tyBytes t) (rmwNew k t old xx) :: w.obs } := by
+  simp only [atomicCall, bne_self_eq_false, Bool.false_or] at h
+  by_cases ha : xp % UInt64.ofNat (tyBytes t) = 0
+  · simp only [ha, obsStore] at h
+    obtain ⟨old, hl, h⟩ := Option.bind_eq_some_iff.mp h
+    obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
+    simp only [Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact ⟨old, m, ha, hl, hm, rfl, rfl⟩
+  · simp [ha] at h
+
+/-- A word's or double word's bits, masked to its width, are themselves. -/
+theorem mask_int (t : ClifTy) (ht : t = .i32 ∨ t = .i64) (v : UInt64) (hv : v &&& widthMask t = v) :
+    PtxRun.mask t.width v = v := by
+  rcases ht with rfl | rfl
+  · rw [show widthMask .i32 = (1 <<< UInt64.ofNat 32) - 1 from rfl] at hv
+    simpa [PtxRun.mask, ClifTy.width] using hv
+  · simp [PtxRun.mask, ClifTy.width]
+
+open PtxRun in
+/-- **An atomic read-modify-write** at a buffer's word or double word meets
+    its obligation: the block semantics records the call, which a launch does
+    not read, then loads the old value, stores the new and answers the old;
+    the `atom` does the same to the same bytes. -/
+theorem atom_rmw_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d p x : Val) (t : ClifTy)
+    (k : AtomicRmw) (ord : AtomicOrder) (op : PtxIr.AtomOp) (hop : atomOp k = some op) (ht : t = .i32 ∨ t = .i64)
+    (hwx : ¬ Win F x) (hwd : F.win d = false)
+    (htp : F.tys.get? p.id = some .i64) (htx : F.tys.get? x.id = some t)
+    (htd : F.tys.get? d.id = some t) (hld : F.lits.get? d.id = none)
+    (hmo : magOk F d (.call (some d) (.atomic (.rmw t k ord)) [p, x]) = true) :
+    InstOk F lc c start0 (.call (some d) (.atomic (.rmw t k ord)) [p, x]) := by
+  intro tag D s s1 ts hst huses hS hW _ hmok
+  have hup : p ∈ Inst.uses (.call (some d) (.atomic (.rmw t k ord)) [p, x]) := by simp [Inst.uses]
+  have hux : x ∈ Inst.uses (.call (some d) (.atomic (.rmw t k ord)) [p, x]) := by simp [Inst.uses]
+  obtain ⟨tp, xp, hvp, htp'⟩ := hS.pres p (huses p hup)
+  rw [htp] at htp'; cases htp'
+  obtain ⟨tx, xx, hvx, htx'⟩ := hS.pres x (huses x hux)
+  rw [htx] at htx'; cases htx'
+  have hnx := hS.normd x t xx (huses x hux) hvx
+  have hne8 : t ≠ .i8 := by rcases ht with rfl | rfl <;> decide
+  obtain ⟨hbytes, hty, hwid⟩ := atomPty_width op t ht
+  -- the block semantics' step
+  let ob : Obs := .call (.atomic (.rmw t k ord)) [.sc .i64 xp, .sc t xx]
+  obtain ⟨old, m, hal, hold, hm, rfl⟩ : ∃ old m, xp % UInt64.ofNat (tyBytes t) = 0 ∧
+      s.world.mem.load xp (tyBytes t) = some old ∧ s.world.mem.store xp (tyBytes t) (rmwNew k t old xx) = some m ∧
+      s1 = { vals := Blocks.setV s.vals d (.sc t old), world := { s.world with mem := m, obs := .store xp (tyBytes t) (rmwNew k t old xx) :: ob :: s.world.obs } } := by
+    simp only [step1, List.mapM_cons, List.mapM_nil, hvp, hvx, bind, Option.bind, pure] at hst
+    rw [show callOf lc (.atomic (.rmw t k ord)) [.sc .i64 xp, .sc t xx]
+        (obsCall s.world (.atomic (.rmw t k ord)) [.sc .i64 xp, .sc t xx]) =
+        atomicCall (.rmw t k ord) [.sc .i64 xp, .sc t xx]
+        (obsCall s.world (.atomic (.rmw t k ord)) [.sc .i64 xp, .sc t xx]) from rfl] at hst
+    cases hc : atomicCall (.rmw t k ord) [.sc .i64 xp, .sc t xx]
+        (obsCall s.world (.atomic (.rmw t k ord)) [.sc .i64 xp, .sc t xx]) with
+    | none => rw [hc] at hst; cases hst
+    | some rw' =>
+      obtain ⟨r', w'⟩ := rw'
+      rw [hc] at hst
+      obtain ⟨old, m, hal, hl, hm, rfl, rfl⟩ := atomicCall_rmw _ _ t k ord xp xx r' hc
+      simp only [Option.some.injEq] at hst
+      refine ⟨old, m, hal, hl, hm, ?_⟩
+      rw [← hst]
+      have hcw' : callWords s.world (.atomic (.rmw t k ord)) [.sc .i64 xp, .sc t xx] = [] := rfl
+      simp [obsCall, hcw', ob]
+  -- the lines
+  let sa := (runLM (addr p) F tag {}).2
+  obtain ⟨La, hLa, hn1, R, xr, hbase, hns1, hnf1, hreach, regs1, hrun1, hreg1, hkeep1⟩ :=
+    addr_sound F tag {} s.vals c ts p xp D hS (huses p hup) hvp htp
+  have hS1 : Sim F D s.vals regs1 := hS.frame (fun c' n => hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨Lv, hLv, hn2, hnf2, hns2, regs2, hrun2, hreg2, hkeep2⟩ :=
+    r_sound F tag sa s.vals c { ts with regs := regs1 } x t xx D hS1 (huses x hux) hvx htx hwx
+  simp only [enc, hne8, if_false, hnx] at hreg2
+  let core : PtxIr.Instr := .atom (runLM (addr p) F tag {}).1.1 op (ord == .seqCst) (atomPty op t) (some (regOf t d))
+    { base := .reg R } (.reg (runLM (r x) F tag sa).1)
+  have hlist : (lower F tag (.call (some d) (.atomic (.rmw t k ord)) [p, x])).lines =
+      ((La ++ Lv ++ [core]).map (PtxIr.Line.ins none)).toArray := by
+    rw [lower_atom_rmw F tag d p x t k ord op hop, hLv]
+    show (sa.lines ++ _).push _ = _
+    rw [hLa, hbase]; simp [core, sa]
+  refine ⟨by rw [hlist]; exact straight_map _, ?_⟩
+  have hmem : ts.w.mem = s.world.mem := (congrArg World.mem hW.1).symm
+  have hl' : ts.w.mem.load xp (tyBytes t) = some old := by rw [hmem]; exact hold
+  have hm' : ts.w.mem.store xp (tyBytes t) (rmwNew k t old xx) = some m := by rw [hmem]; exact hm
+  have hmask : PtxRun.mask (atomPty op t).width (rmwNew k (atomTy (atomPty op t)) old xx) = rmwNew k t old xx := by
+    rw [hty, hwid]; exact mask_int t ht _ (rmwNew_mask k t old xx)
+  have he : (exec c core).run { ts with regs := regs2 } =
+      .ok (.step, { ts with regs := regs2.insert (regOf t d) old, w := { ts.w with mem := m, obs := (Obs.store xp (tyBytes t) (rmwNew k t old xx)) :: ts.w.obs } }) := by
+    have := exec_atom_rmw c { ts with regs := regs2 } _ op (ord == .seqCst) k (atomPty op t) (regOf t d) R _ xr xp xx old m
+      (atomOp_rmw k op hop) (reaches_sp hreach)
+      (opVal_reg c _ _ _ hns1 (by rw [hkeep2 _ hnf1]; exact hreg1))
+      (place_eq hreach (fit_store hm' hmok.2)) (by rw [hbytes]; exact hal)
+      (opVal_reg c _ _ _ hns2 hreg2) (by rw [hbytes]; exact hl') (by rw [hbytes, hmask]; exact hm')
+    simpa [hbytes, hmask] using this
+  -- the old value fits its type
+  have hbw : old &&& widthMask t = old := by
+    have hlt := load_lt _ _ _ old (by rcases ht with rfl | rfl <;> decide) hold
+    apply UInt64.toNat_inj.mp
+    rcases ht with rfl | rfl
+    · rw [show widthMask .i32 = ((2 ^ 32 - 1 : Nat).toUInt64) from rfl, toNat_and_mask _ _ (by decide)]
+      simp [tyBytes, ClifTy.width] at hlt
+      exact Nat.mod_eq_of_lt hlt
+    · rw [show widthMask .i64 = ((2 ^ 64 - 1 : Nat).toUInt64) from rfl, toNat_and_mask _ _ (by decide)]
+      exact Nat.mod_eq_of_lt old.toNat_lt
+  refine ⟨{ ts with regs := regs2.insert (regOf t d) old, w := { ts.w with mem := m, obs := (Obs.store xp (tyBytes t) (rmwNew k t old xx)) :: ts.w.obs } }, ?_, ?_, ?_⟩
+  · rw [hlist, instrsOf_map, steps_append c _ _ ts _ (by rw [steps_append c _ _ ts _ hrun1]; exact hrun2)]
+    simp only [StateT.run] at he
+    simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+  · apply sim_set (hmo := hmo) (hrule := fun _ hk => by simp [magRule] at hk) F D s.vals ts.regs _ _ d t old rfl
+      hS htd hbw
+    · intro _ _
+      simp [Std.HashMap.get?_eq_getElem?, enc, hne8, hbw]
+    · intro l hl; rw [hld] at hl; cases hl
+    · intro hw; rw [(win_iff F d).mpr hw] at hwd; cases hwd
+    · intro h8; exact absurd h8 hne8
+    · intro h8; exact absurd h8 hne8
+    · intro c' n' hn
+      have hne : PtxIr.Reg.val c' n' ≠ regOf t d := by simp [regOf]; omega
+      rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hne),
+        ← Std.HashMap.get?_eq_getElem?]
+      rw [hkeep2 _ (fun ⟨p, k, _, h⟩ => by cases h), hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h)]
+  · have := wrel_cons start0 _ { s.world with obs := ob :: s.world.obs } ts.w m
+      (Obs.store xp (tyBytes t) (rmwNew k t old xx)) (wrel_skip start0 _ s.world ts.w ob hW (by simp [viewObs, ob]))
+    simpa using this
+
+open PtxRun in
+/-- An `atom` load through a register holding `x`: aligned there, the
+    destination gets the bytes. -/
+theorem exec_atom_load (c : PtxRun.Ctx) (ts : PtxRun.TS) (sp : PtxIr.Space) (od : Bool) (pt : PtxIr.Ty) (dr R : PtxIr.Reg)
+    (vo : PtxIr.Opnd) (x z v : UInt64) (hsp : sp ≠ .param) (hR : OpVal c ts (.reg R) x) (hp : place sp x = z)
+    (hal : z % UInt64.ofNat (pt.width / 8) = 0) (hl : ts.w.mem.load z (pt.width / 8) = some v) :
+    (exec c (.atom sp .load od pt (some dr) { base := .reg R } vo)).run ts =
+      .ok (.step, { ts with regs := ts.regs.insert dr v }) := by
+  simp only [OpVal] at hR
+  have hne : (sp == .param) = false := by cases sp <;> first | rfl | exact absurd rfl hsp
+  simp only [exec, PtxRun.atom, PtxIr.AtomOp.rmw?, aligned, PtxRun.load, StateT.run, bind, StateT.bind, hne,
+    Bool.false_eq_true, if_false] at hR ⊢
+  simp [hR, Except.bind, ofInt_toNat, hp, hal, hl, MonadState.get, getThe, MonadStateOf.get, StateT.get,
+    setReg, pure, StateT.pure, Except.pure, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet]
+
+open PtxRun in
+/-- An `atom` store through a register holding `x`: aligned there, it stores
+    and records the store. -/
+theorem exec_atom_store (c : PtxRun.Ctx) (ts : PtxRun.TS) (sp : PtxIr.Space) (od : Bool) (pt : PtxIr.Ty) (R : PtxIr.Reg)
+    (vo : PtxIr.Opnd) (x z y : UInt64) (m : Mem) (hR : OpVal c ts (.reg R) x) (hp : place sp x = z)
+    (hal : z % UInt64.ofNat (pt.width / 8) = 0) (hv : OpVal c ts vo y)
+    (hm : ts.w.mem.store z (pt.width / 8) (PtxRun.mask pt.width y) = some m) :
+    (exec c (.atom sp .store od pt none { base := .reg R } vo)).run ts =
+      .ok (.step, { ts with w := { ts.w with mem := m, obs := (Obs.store z (pt.width / 8) (PtxRun.mask pt.width y)) :: ts.w.obs } }) := by
+  simp only [OpVal] at hR hv
+  simp only [exec, PtxRun.atom, PtxIr.AtomOp.rmw?, aligned, PtxRun.store, StateT.run, bind, StateT.bind] at hR hv ⊢
+  simp [hR, hv, Except.bind, ofInt_toNat, hp, hal, hm, MonadState.get, getThe, MonadStateOf.get, StateT.get, set,
+    MonadStateOf.set, StateT.set, pure, StateT.pure, Except.pure]
+
+/-- What an atomic load answers: aligned, the bytes there, the world as it
+    was. -/
+theorem atomicCall_load (w w' : World) (t : ClifTy) (ord : AtomicOrder) (xp : UInt64) (r : Option V)
+    (h : atomicCall (.load t ord) [.sc .i64 xp] w = some (r, w')) :
+    ∃ b, xp % UInt64.ofNat (tyBytes t) = 0 ∧ w.mem.load xp (tyBytes t) = some b ∧ r = some (.sc t b) ∧ w' = w := by
+  simp only [atomicCall] at h
+  by_cases ha : xp % UInt64.ofNat (tyBytes t) = 0
+  · simp only [ha] at h
+    obtain ⟨b, hl, h⟩ := Option.bind_eq_some_iff.mp h
+    simp only [Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact ⟨b, ha, hl, rfl, rfl⟩
+  · simp [ha] at h
+
+/-- What an atomic store does: aligned, the bytes stored and recorded. -/
+theorem atomicCall_store (w w' : World) (t : ClifTy) (ord : AtomicOrder) (xv xp : UInt64) (r : Option V)
+    (h : atomicCall (.store t ord) [.sc t xv, .sc .i64 xp] w = some (r, w')) :
+    ∃ m, xp % UInt64.ofNat (tyBytes t) = 0 ∧ w.mem.store xp (tyBytes t) xv = some m ∧ r = none ∧
+      w' = { w with mem := m, obs := .store xp (tyBytes t) xv :: w.obs } := by
+  simp only [atomicCall, bne_self_eq_false, Bool.false_or] at h
+  by_cases ha : xp % UInt64.ofNat (tyBytes t) = 0
+  · simp only [ha, obsStore] at h
+    obtain ⟨m, hm, h⟩ := Option.bind_eq_some_iff.mp h
+    simp only [Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact ⟨m, ha, hm, rfl, rfl⟩
+  · simp [ha] at h
+
+theorem lower_atom_load (F : Facts) (tag : Nat) (d p : Val) (t : ClifTy) (ord : AtomicOrder) :
+    (lower F tag (.call (some d) (.atomic (.load t ord)) [p])).lines =
+      ((runLM (addr p) F tag {}).2.lines).push
+        (.ins none (.atom (runLM (addr p) F tag {}).1.1 .load (ord == .seqCst) (atomPty .load t) (some (regOf t d))
+          (runLM (addr p) F tag {}).1.2 (.imm 0))) := by
+  rw [lower_inst F tag _ rfl, inst]
+  simp only [atomic, runLM_bind]
+  rfl
+
+theorem lower_atom_store (F : Facts) (tag : Nat) (v p : Val) (t : ClifTy) (ord : AtomicOrder) :
+    (lower F tag (.call none (.atomic (.store t ord)) [v, p])).lines =
+      ((runLM (r v) F tag (runLM (addr p) F tag {}).2).2.lines).push
+        (.ins none (.atom (runLM (addr p) F tag {}).1.1 .store (ord == .seqCst) (atomPty .store t) none
+          (runLM (addr p) F tag {}).1.2 (.reg (runLM (r v) F tag (runLM (addr p) F tag {}).2).1))) := by
+  rw [lower_inst F tag _ rfl, inst]
+  simp only [atomic, runLM_bind, o]
+  rfl
+
+open PtxRun in
+/-- **An atomic load** of a buffer's word or double word meets its
+    obligation: the block semantics records the call, which a launch does not
+    read, and answers the bytes; the `atom` reads the same. -/
+theorem atom_load_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d p : Val) (t : ClifTy)
+    (ord : AtomicOrder)
+    (ht : t = .i32 ∨ t = .i64) (hwd : F.win d = false)
+    (htp : F.tys.get? p.id = some .i64) (htd : F.tys.get? d.id = some t) (hld : F.lits.get? d.id = none)
+    (hmo : magOk F d (.call (some d) (.atomic (.load t ord)) [p]) = true) :
+    InstOk F lc c start0 (.call (some d) (.atomic (.load t ord)) [p]) := by
+  intro tag D s s1 ts hst huses hS hW _ hmok
+  have hup : p ∈ Inst.uses (.call (some d) (.atomic (.load t ord)) [p]) := by simp [Inst.uses]
+  obtain ⟨tp, xp, hvp, htp'⟩ := hS.pres p (huses p hup)
+  rw [htp] at htp'; cases htp'
+  have hne8 : t ≠ .i8 := by rcases ht with rfl | rfl <;> decide
+  obtain ⟨hbytes, -, -⟩ := atomPty_width .load t ht
+  let ob : Obs := .call (.atomic (.load t ord)) [.sc .i64 xp]
+  obtain ⟨b, hal, hold, rfl⟩ : ∃ b, xp % UInt64.ofNat (tyBytes t) = 0 ∧ s.world.mem.load xp (tyBytes t) = some b ∧
+      s1 = { vals := Blocks.setV s.vals d (.sc t b), world := { s.world with obs := ob :: s.world.obs } } := by
+    simp only [step1, List.mapM_cons, List.mapM_nil, hvp, bind, Option.bind, pure] at hst
+    rw [show callOf lc (.atomic (.load t ord)) [.sc .i64 xp] (obsCall s.world (.atomic (.load t ord)) [.sc .i64 xp]) =
+        atomicCall (.load t ord) [.sc .i64 xp] (obsCall s.world (.atomic (.load t ord)) [.sc .i64 xp]) from rfl] at hst
+    cases hc : atomicCall (.load t ord) [.sc .i64 xp] (obsCall s.world (.atomic (.load t ord)) [.sc .i64 xp]) with
+    | none => rw [hc] at hst; cases hst
+    | some rw' =>
+      obtain ⟨r', w'⟩ := rw'
+      rw [hc] at hst
+      obtain ⟨b, hal, hl, rfl, rfl⟩ := atomicCall_load _ _ t ord xp r' hc
+      simp only [Option.some.injEq] at hst
+      refine ⟨b, hal, hl, ?_⟩
+      rw [← hst]
+      have hcw' : callWords s.world (.atomic (.load t ord)) [.sc .i64 xp] = [] := rfl
+      simp [obsCall, hcw', ob]
+  obtain ⟨La, hLa, hn1, R, xr, hbase, hns1, hnf1, hreach, regs1, hrun1, hreg1, hkeep1⟩ :=
+    addr_sound F tag {} s.vals c ts p xp D hS (huses p hup) hvp htp
+  let core : PtxIr.Instr := .atom (runLM (addr p) F tag {}).1.1 .load (ord == .seqCst) (atomPty .load t)
+    (some (regOf t d))
+    { base := .reg R } (.imm 0)
+  have hlist : (lower F tag (.call (some d) (.atomic (.load t ord)) [p])).lines =
+      ((La ++ [core]).map (PtxIr.Line.ins none)).toArray := by
+    rw [lower_atom_load F tag d p t ord, hLa, hbase]; simp [core]
+  refine ⟨by rw [hlist]; exact straight_map _, ?_⟩
+  have hmem : ts.w.mem = s.world.mem := (congrArg World.mem hW.1).symm
+  have hl' : ts.w.mem.load xp (tyBytes t) = some b := by rw [hmem]; exact hold
+  have he : (exec c core).run { ts with regs := regs1 } = .ok (.step, { ts with regs := regs1.insert (regOf t d) b }) :=
+    exec_atom_load c { ts with regs := regs1 } _ (ord == .seqCst) (atomPty .load t) (regOf t d) R _ xr xp b (reaches_sp hreach)
+      (opVal_reg c _ _ _ hns1 hreg1) (place_eq hreach (fit_load hl' hmok.2)) (by rw [hbytes]; exact hal)
+      (by rw [hbytes]; exact hl')
+  have hbw : b &&& widthMask t = b := by
+    have hlt := load_lt _ _ _ b (by rcases ht with rfl | rfl <;> decide) hold
+    apply UInt64.toNat_inj.mp
+    rcases ht with rfl | rfl
+    · rw [show widthMask .i32 = ((2 ^ 32 - 1 : Nat).toUInt64) from rfl, toNat_and_mask _ _ (by decide)]
+      simp [tyBytes, ClifTy.width] at hlt
+      exact Nat.mod_eq_of_lt hlt
+    · rw [show widthMask .i64 = ((2 ^ 64 - 1 : Nat).toUInt64) from rfl, toNat_and_mask _ _ (by decide)]
+      exact Nat.mod_eq_of_lt b.toNat_lt
+  refine ⟨{ ts with regs := regs1.insert (regOf t d) b }, ?_, ?_,
+    wrel_skip start0 _ s.world ts.w ob hW (by simp [viewObs, ob])⟩
+  · rw [hlist, instrsOf_map, steps_append c _ _ ts _ hrun1]
+    simp only [StateT.run] at he
+    simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+  · apply sim_set (hmo := hmo) (hrule := fun _ hk => by simp [magRule] at hk) F D s.vals ts.regs _ _ d t b rfl
+      hS htd hbw
+    · intro _ _
+      simp [Std.HashMap.get?_eq_getElem?, enc, hne8, hbw]
+    · intro l hl; rw [hld] at hl; cases hl
+    · intro hw; rw [(win_iff F d).mpr hw] at hwd; cases hwd
+    · intro h8; exact absurd h8 hne8
+    · intro h8; exact absurd h8 hne8
+    · intro c' n' hn
+      have hne : PtxIr.Reg.val c' n' ≠ regOf t d := by simp [regOf]; omega
+      rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hne),
+        ← Std.HashMap.get?_eq_getElem?]
+      exact hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h)
+
+open PtxRun in
+/-- **An atomic store** to a buffer's word or double word meets its
+    obligation: the block semantics records the call, which a launch does not
+    read, then the store; the `atom` stores the same bytes. -/
+theorem atom_store_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (v p : Val) (t : ClifTy)
+    (ord : AtomicOrder)
+    (ht : t = .i32 ∨ t = .i64) (hwv : ¬ Win F v)
+    (htp : F.tys.get? p.id = some .i64) (htv : F.tys.get? v.id = some t) :
+    InstOk F lc c start0 (.call none (.atomic (.store t ord)) [v, p]) := by
+  intro tag D s s1 ts hst huses hS hW _ hmok
+  have hup : p ∈ Inst.uses (.call none (.atomic (.store t ord)) [v, p]) := by simp [Inst.uses]
+  have huv : v ∈ Inst.uses (.call none (.atomic (.store t ord)) [v, p]) := by simp [Inst.uses]
+  obtain ⟨tp, xp, hvp, htp'⟩ := hS.pres p (huses p hup)
+  rw [htp] at htp'; cases htp'
+  obtain ⟨tv, xv, hvv, htv'⟩ := hS.pres v (huses v huv)
+  rw [htv] at htv'; cases htv'
+  have hnv := hS.normd v t xv (huses v huv) hvv
+  have hne8 : t ≠ .i8 := by rcases ht with rfl | rfl <;> decide
+  obtain ⟨hbytes, -, hwid⟩ := atomPty_width .store t ht
+  let ob : Obs := .call (.atomic (.store t ord)) [.sc t xv, .sc .i64 xp]
+  obtain ⟨m, hal, hm, rfl⟩ : ∃ m, xp % UInt64.ofNat (tyBytes t) = 0 ∧ s.world.mem.store xp (tyBytes t) xv = some m ∧
+      s1 = { s with world := { s.world with mem := m, obs := .store xp (tyBytes t) xv :: ob :: s.world.obs } } := by
+    simp only [step1, List.mapM_cons, List.mapM_nil, hvp, hvv, bind, Option.bind, pure] at hst
+    rw [show callOf lc (.atomic (.store t ord)) [.sc t xv, .sc .i64 xp]
+        (obsCall s.world (.atomic (.store t ord)) [.sc t xv, .sc .i64 xp]) =
+        atomicCall (.store t ord) [.sc t xv, .sc .i64 xp]
+        (obsCall s.world (.atomic (.store t ord)) [.sc t xv, .sc .i64 xp]) from rfl] at hst
+    cases hc : atomicCall (.store t ord) [.sc t xv, .sc .i64 xp]
+        (obsCall s.world (.atomic (.store t ord)) [.sc t xv, .sc .i64 xp]) with
+    | none => rw [hc] at hst; cases hst
+    | some rw' =>
+      obtain ⟨r', w'⟩ := rw'
+      rw [hc] at hst
+      obtain ⟨m, hal, hm, rfl, rfl⟩ := atomicCall_store _ _ t ord xv xp r' hc
+      simp only [Option.some.injEq] at hst
+      refine ⟨m, hal, hm, ?_⟩
+      rw [← hst]
+      have hcw' : callWords s.world (.atomic (.store t ord)) [.sc t xv, .sc .i64 xp] = [] := rfl
+      simp [obsCall, hcw', ob]
+  let sa := (runLM (addr p) F tag {}).2
+  obtain ⟨La, hLa, hn1, R, xr, hbase, hns1, hnf1, hreach, regs1, hrun1, hreg1, hkeep1⟩ :=
+    addr_sound F tag {} s.vals c ts p xp D hS (huses p hup) hvp htp
+  have hS1 : Sim F D s.vals regs1 := hS.frame (fun c' n => hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨Lv, hLv, hn2, hnf2, hns2, regs2, hrun2, hreg2, hkeep2⟩ :=
+    r_sound F tag sa s.vals c { ts with regs := regs1 } v t xv D hS1 (huses v huv) hvv htv hwv
+  simp only [enc, hne8, if_false, hnv] at hreg2
+  let core : PtxIr.Instr := .atom (runLM (addr p) F tag {}).1.1 .store (ord == .seqCst) (atomPty .store t) none
+    { base := .reg R } (.reg (runLM (r v) F tag sa).1)
+  have hlist : (lower F tag (.call none (.atomic (.store t ord)) [v, p])).lines =
+      ((La ++ Lv ++ [core]).map (PtxIr.Line.ins none)).toArray := by
+    rw [lower_atom_store F tag v p t ord, hLv]
+    show (sa.lines ++ _).push _ = _
+    rw [hLa, hbase]; simp [core, sa]
+  refine ⟨by rw [hlist]; exact straight_map _, ?_⟩
+  have hmem : ts.w.mem = s.world.mem := (congrArg World.mem hW.1).symm
+  have hm' : ts.w.mem.store xp (tyBytes t) xv = some m := by rw [hmem]; exact hm
+  have hmask : PtxRun.mask (atomPty .store t).width xv = xv := by rw [hwid]; exact mask_int t ht xv hnv
+  have he : (exec c core).run { ts with regs := regs2 } =
+      .ok (.step, { ts with regs := regs2, w := { ts.w with mem := m, obs := (Obs.store xp (tyBytes t) xv) :: ts.w.obs } }) := by
+    have := exec_atom_store c { ts with regs := regs2 } _ (ord == .seqCst) (atomPty .store t) R _ xr xp xv m
+      (opVal_reg c _ _ _ hns1 (by rw [hkeep2 _ hnf1]; exact hreg1))
+      (place_eq hreach (fit_store hm' hmok.2)) (by rw [hbytes]; exact hal)
+      (opVal_reg c _ _ _ hns2 hreg2) (by rw [hbytes, hmask]; exact hm')
+    simpa [hbytes, hmask] using this
+  refine ⟨{ ts with regs := regs2, w := { ts.w with mem := m, obs := (Obs.store xp (tyBytes t) xv) :: ts.w.obs } }, ?_, ?_, ?_⟩
+  · rw [hlist, instrsOf_map, steps_append c _ _ ts _ (by rw [steps_append c _ _ ts _ hrun1]; exact hrun2)]
+    simp only [StateT.run] at he
+    simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+  · have hS2 : Sim F D s.vals regs2 := hS1.frame (fun c' n => hkeep2 _ (fun ⟨p, k, _, h⟩ => by cases h))
+    exact hS2.sub (fun n h => by simpa [extD, Inst.dst?] using h)
+  · have := wrel_cons start0 _ { s.world with obs := ob :: s.world.obs } ts.w m
+      (Obs.store xp (tyBytes t) xv) (wrel_skip start0 _ s.world ts.w ob hW (by simp [viewObs, ob]))
+    simpa using this
+
+/-- A shared address's lines: the space is shared memory. -/
+theorem addr_shared (F : Facts) (tag : Nat) (s : Out) (p : Val) (h : F.origin.get? p.id = some .shared) :
+    (runLM (addr p) F tag s).1.1 = .shared := by
+  by_cases hw : F.win p = true
+  · simp [addr, isWin, facts?, runLM_bind, runLM_read, hw]
+  · simp only [Bool.not_eq_true] at hw
+    have h' : F.origin[p.id]? = some .shared := by simpa [Std.HashMap.get?_eq_getElem?] using h
+    simp [addr, isWin, facts?, runLM_bind, runLM_read, hw, h', own, emit, emitL, runLM_modify]
+
+/-- A shared add: its address's lines, its operand's, then one `red`. -/
+theorem lower_red (F : Facts) (tag : Nat) (p x : Val) :
+    (lower F tag (.call none (.intr .sharedAdd) [p, x])).lines =
+      ((runLM (r x) F tag (runLM (addr p) F tag {}).2).2.lines).push
+        (.ins none (.redShared (runLM (addr p) F tag {}).1.2
+          (.reg (runLM (r x) F tag (runLM (addr p) F tag {}).2).1))) := by
+  rw [lower_inst F tag _ rfl, inst]
+  simp only [voidIntr, runLM_bind, o]
+  rfl
+
+open PtxRun in
+/-- **A shared add** meets its obligation: both semantics record it with the
+    word's address and the word, the block semantics having found the address
+    one of shared memory, and leave the rest to the laws. -/
+theorem red_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (p x : Val) (hwx : ¬ Win F x)
+    (htp : F.tys.get? p.id = some .i64) (htx : F.tys.get? x.id = some .i32)
+    (hsh : F.origin.get? p.id = some .shared) :
+    InstOk F (threadLocals c.ans start0 c.hw c.provisional) c start0 (.call none (.intr .sharedAdd) [p, x]) := by
+  intro tag D s s1 ts hst huses hS hW _ hmok
+  have hup : p ∈ Inst.uses (.call none (.intr .sharedAdd) [p, x]) := by simp [Inst.uses]
+  have hux : x ∈ Inst.uses (.call none (.intr .sharedAdd) [p, x]) := by simp [Inst.uses]
+  obtain ⟨tp, xp, hvp, htp'⟩ := hS.pres p (huses p hup)
+  rw [htp] at htp'; cases htp'
+  obtain ⟨tx, xx, hvx, htx'⟩ := hS.pres x (huses x hux)
+  rw [htx] at htx'; cases htx'
+  have hnx := hS.normd x .i32 xx (huses x hux) hvx
+  let o : Obs := .call (.intr .sharedAdd) [.sc .i64 xp, .sc .i32 xx]
+  -- the block semantics' step: the word is shared memory's, and the call recorded
+  obtain ⟨hword, rfl⟩ : sharedWord s.world.mem [.sc .i64 xp, .sc .i32 xx] = true ∧
+      s1 = { s with world := { s.world with obs := o :: s.world.obs } } := by
+    simp only [step1, List.mapM_cons, List.mapM_nil, hvp, hvx, bind, Option.bind, pure, callOf, obsCall, callWords,
+      List.append_nil, threadLocals, Intr.find_slot, Intr.isColl, if_true, show Intr.sharedAdd ≠ .barrier by decide,
+      if_false] at hst
+    by_cases hw : sharedWord s.world.mem [.sc .i64 xp, .sc .i32 xx] = true
+    · simp [hw, Except.toOption] at hst
+      exact ⟨hw, hst.symm⟩
+    · simp [hw, Except.toOption] at hst
+  -- the word lies in shared memory, within 32 bits
+  have hfit : ∀ k, decodeAddr xp = some (.arena, k) → k < 2 ^ 32 := by
+    intro k hk
+    simp only [sharedWord, hk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hword
+    have hmem : ts.w.mem = s.world.mem := (congrArg World.mem hW.1).symm
+    have := hmok.2
+    rw [hmem] at this
+    omega
+  -- the lines
+  let sa := (runLM (addr p) F tag {}).2
+  obtain ⟨La, hLa, hn1, R, xr, hbase, hns1, hnf1, hreach, regs1, hrun1, hreg1, hkeep1⟩ :=
+    addr_sound F tag {} s.vals c ts p xp D hS (huses p hup) hvp htp
+  have hS1 : Sim F D s.vals regs1 := hS.frame (fun c' n => hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨Lv, hLv, hn2, hnf2, hns2, regs2, hrun2, hreg2, hkeep2⟩ :=
+    r_sound F tag sa s.vals c { ts with regs := regs1 } x .i32 xx D hS1 (huses x hux) hvx htx hwx
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hnx] at hreg2
+  have hsp := addr_shared F tag {} p hsh
+  rw [hsp] at hreach
+  have hpl : place .shared xr = xp := place_eq hreach hfit
+  let core : PtxIr.Instr := .redShared { base := .reg R } (.reg (runLM (r x) F tag sa).1)
+  have hlist : (lower F tag (.call none (.intr .sharedAdd) [p, x])).lines =
+      ((La ++ Lv ++ [core]).map (PtxIr.Line.ins none)).toArray := by
+    rw [lower_red F tag p x, hLv]
+    show (sa.lines ++ _).push _ = _
+    rw [hLa, hbase]; simp [core, sa]
+  refine ⟨by rw [hlist]; exact straight_map _, ?_⟩
+  have hm32 : PtxRun.mask 32 xx = xx := by
+    rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp), hnx]
+  have h1 : regs2.get? R = some xr := by rw [hkeep2 _ hnf1]; exact hreg1
+  simp only [Std.HashMap.get?_eq_getElem?] at h1 hreg2
+  have he : (exec c core).run { ts with regs := regs2 } =
+      .ok (.step, { ts with regs := regs2, w := { ts.w with obs := o :: ts.w.obs } }) := by
+    simp [core, exec, coll, opnd, getReg_plain _ _ hns1, getReg_plain _ _ hns2, h1, hreg2, hm32, ofInt_toNat, hpl,
+      show (Intr.sharedAdd == Intr.barrier) = false from rfl, o, MonadState.get, getThe, MonadStateOf.get,
+      StateT.get, set, MonadStateOf.set, StateT.set, pure, StateT.pure, Except.pure, StateT.bind, StateT.run, bind,
+      Except.bind]
+  refine ⟨{ ts with regs := regs2, w := { ts.w with obs := o :: ts.w.obs } }, ?_, ?_,
+    wrel_step start0 _ s.world ts.w _ _ o o hW rfl rfl rfl (by simpa using hW.1)⟩
+  · rw [hlist, instrsOf_map, steps_append c _ _ ts _ (by rw [steps_append c _ _ ts _ hrun1]; exact hrun2)]
+    simp only [StateT.run] at he
+    simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+  · have hS2 : Sim F D s.vals regs2 := hS1.frame (fun c' n => hkeep2 _ (fun ⟨p, k, _, h⟩ => by cases h))
+    exact hS2.sub (fun n h => by simpa [extD, Inst.dst?] using h)
+
+/-- The atomics the compiler takes, by shape. -/
+theorem takesAtomic_cases (F : Facts) (d : Option Val) (a : Atomic) (args : List Val)
+    (h : takesAtomic F d a args = true) :
+    (∃ dv t k o op p x, d = some dv ∧ a = .rmw t k o ∧ args = [p, x] ∧ atomOp k = some op ∧
+      atomAt F p t = true ∧ isTy F x [t] = true) ∨
+    (∃ dv t o p, d = some dv ∧ a = .load t o ∧ args = [p] ∧ atomAt F p t = true) ∨
+    (∃ t o v p, d = none ∧ a = .store t o ∧ args = [v, p] ∧ atomAt F p t = true ∧ isTy F v [t] = true) := by
+  rcases d with _ | dv <;> rcases a with ⟨t, o⟩ | ⟨t, o⟩ | ⟨t, k, o⟩ | t | _ <;>
+    rcases args with _ | ⟨p, _ | ⟨x, _ | ⟨y, rest⟩⟩⟩ <;>
+    simp only [takesAtomic, Bool.and_eq_true, Option.isSome_iff_exists] at h <;>
+    first
+    | (obtain ⟨⟨hp, hx⟩, op, hop⟩ := h; exact Or.inl ⟨_, _, _, _, op, _, _, rfl, rfl, rfl, hop, hp, hx⟩)
+    | exact Or.inr (Or.inl ⟨_, _, _, _, rfl, rfl, rfl, h⟩)
+    | (obtain ⟨hp, hv⟩ := h; exact Or.inr (Or.inr ⟨_, _, _, _, rfl, rfl, rfl, hp, hv⟩))
+    | (simp at h)
+
+/-- An atomic's address is 64 bits and its type a word or a double word. -/
+theorem atomAt_spec (F : Facts) (p : Val) (t : ClifTy) (h : atomAt F p t = true) :
+    F.tys.get? p.id = some .i64 ∧ (t = .i32 ∨ t = .i64) := by
+  simp only [atomAt, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq] at h
+  obtain ⟨⟨⟨hp, -⟩, ht⟩, -⟩ := h
+  obtain ⟨tp, htp, htp'⟩ := isTy_spec F p _ hp
+  simp at htp'; subst htp'
+  exact ⟨htp, ht⟩
+
+
 set_option maxHeartbeats 1000000 in
-/-- A call the compiler takes is a barrier, a shuffle, a ballot, a `dp4a` or
-    an approximation. -/
+/-- A call the compiler takes is a barrier, a shuffle, a ballot, a `dp4a`, an
+    approximation, an atomic or a shared add. -/
 theorem takes_call_none (F : Facts) (d : Option Val) (cal : Callee) (args : List Val)
+    (hat : ¬ ∃ a, cal = .atomic a)
     (hb : ¬ (d = none ∧ cal = .intr .barrier ∧ args = []))
     (hs : ¬ (∃ dv v m, d = some dv ∧ (cal = .intr .shflBfly ∨ cal = .intr .shflIdx) ∧ args = [v, m]))
     (hv : ¬ (∃ dv v, d = some dv ∧ cal = .intr .ballot ∧ args = [v]))
     (hd4 : ¬ (∃ dv a b e, d = some dv ∧ cal = .intr .dp4a ∧ args = [a, b, e]))
-    (ha : ¬ (∃ dv v i u, d = some dv ∧ cal = .intr i ∧ Ptx.approxOp i = some u ∧ args = [v])) :
+    (ha : ¬ (∃ dv v i u, d = some dv ∧ cal = .intr i ∧ Ptx.approxOp i = some u ∧ args = [v]))
+    (hsa : ¬ (∃ p x, d = none ∧ cal = .intr .sharedAdd ∧ args = [p, x])) :
     takes F (.call d cal args) = false := by
-  unfold takes
-  split <;> simp_all [Option.isSome_iff_exists]
+  by_cases hv0 : ∃ c', d = none ∧ cal = .intr c'
+  · obtain ⟨c', rfl, rfl⟩ := hv0
+    simp only [takes]
+    rcases c' <;> rcases args with _ | ⟨p, _ | ⟨x, _ | ⟨y, rest⟩⟩⟩ <;> simp_all [takesVoid]
+  · unfold takes
+    split <;> simp_all [Option.isSome_iff_exists]
 
 open PtxRun in
 /-- **Every instruction the compiler takes meets its obligation.** -/
@@ -7388,7 +7909,40 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
         rw [hlc]
         exact approx_ok (hmo := hmo) F c start0 hhw dv v i u hu (not_win_of F v (hvu v (by simp [valUses, Inst.uses]))) hside htv
           hty hlit
-      rw [takes_call_none F d cal args hb' hs' hv' hd4 ha'] at htk'; cases htk'
+      by_cases hat : ∃ a, cal = .atomic a
+      · obtain ⟨a, rfl⟩ := hat
+        simp only [takes] at htk'
+        rcases takesAtomic_cases F d a args htk' with
+          ⟨dv, t, k, ord, op, p, x, rfl, rfl, rfl, hop, hat, hx⟩ | ⟨dv, t, ord, p, rfl, rfl, rfl, hat⟩ |
+          ⟨t, ord, v, p, rfl, rfl, rfl, hat, hv⟩
+        · obtain ⟨htp, ht⟩ := atomAt_spec F p t hat
+          obtain ⟨tx, htx, htx'⟩ := isTy_spec F x _ hx
+          simp at htx'; subst htx'
+          obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd dv rfl
+          simp only [defSide, Bool.not_eq_true'] at hside
+          simp only [resTy, atomicRes, Option.map_some] at hty
+          exact atom_rmw_ok F lc c start0 dv p x tx k ord op hop ht
+            (not_win_of F x (hvu x (by simp [valUses, Inst.uses]))) hside htp htx hty hlit hmo
+        · obtain ⟨htp, ht⟩ := atomAt_spec F p t hat
+          obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd dv rfl
+          simp only [defSide, Bool.not_eq_true'] at hside
+          simp only [resTy, atomicRes, Option.map_some] at hty
+          exact atom_load_ok F lc c start0 dv p t ord ht hside htp hty hlit hmo
+        · obtain ⟨htp, ht⟩ := atomAt_spec F p t hat
+          obtain ⟨tv, htv, htv'⟩ := isTy_spec F v _ hv
+          simp at htv'; subst htv'
+          exact atom_store_ok F lc c start0 v p tv ord ht
+            (not_win_of F v (hvu v (by simp [valUses, Inst.uses]))) htp htv
+      by_cases hsa : ∃ p x, d = none ∧ cal = .intr .sharedAdd ∧ args = [p, x]
+      · obtain ⟨p, x, rfl, rfl, rfl⟩ := hsa
+        simp only [takes, takesVoid, sharedAt, Bool.and_eq_true, beq_iff_eq] at htk'
+        obtain ⟨⟨hp, hsh⟩, hx⟩ := htk'
+        obtain ⟨tp, htp, htp'⟩ := isTy_spec F p _ hp
+        obtain ⟨tx, htx, htx'⟩ := isTy_spec F x _ hx
+        simp at htp' htx'; subst htp'; subst htx'
+        rw [hlc]
+        exact red_ok F c start0 p x (not_win_of F x (hvu x (by simp [valUses, Inst.uses]))) htp htx hsh
+      rw [takes_call_none F d cal args hat hb' hs' hv' hd4 ha' hsa] at htk'; cases htk'
   | storeTyped ty v a =>
       simp only [takes, Bool.and_eq_true, beq_iff_eq] at htk'
       obtain ⟨⟨hia, hvt⟩, hty⟩ := htk'

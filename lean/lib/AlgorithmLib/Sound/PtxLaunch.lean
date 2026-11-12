@@ -152,6 +152,24 @@ theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array B
   | sqrtApprox => rfl
   | rsqrtApprox => rfl
   | dp4a => rfl
+  | sharedAdd => rfl
+
+/-- The shared adds read through the view: the view changes only ballots. -/
+theorem foldl_view {β : Type} (f : β → Intr × List V → β) (hf : ∀ a x, f a (callView x) = f a x) :
+    ∀ (l : List (Intr × List V)) (a : β), (l.map callView).foldl f a = l.foldl f a
+  | [], _ => rfl
+  | x :: xs, a => by simp only [List.map_cons, List.foldl_cons, hf]; exact foldl_view f hf xs _
+
+theorem phaseAdds_view (b : Nat) (l : List (Intr × List V)) :
+    phaseAdds b (l.map callView) = phaseAdds b l := by
+  unfold phaseAdds
+  rw [foldl_view]
+  intro a x
+  obtain ⟨c, args⟩ := x
+  by_cases hb : c = .ballot
+  · subst hb; rfl
+  · have hb' : (c == Intr.ballot) = false := by cases c <;> first | rfl | exact absurd rfl hb
+    simp only [callView, hb', Bool.false_eq_true, if_false]
 
 /-- **The laws read the records only as their view.** -/
 theorem answers_view (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
@@ -161,7 +179,7 @@ theorem answers_view (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (
     unfold snapshots callsView
     have : ∀ t, (((calls t).map callView).filter (·.1 == .barrier)).length = ((calls t).filter (·.1 == .barrier)).length := by
       intro t; rw [List.filter_map, List.length_map]; rfl
-    simp only [this]
+    simp only [this, phaseAdds_view]
   unfold answers
   rw [hsn]
   congr 1
@@ -231,6 +249,8 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, rfl, norm32_u32 _⟩⟩
+      · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨0, rfl, rfl⟩⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   intro k v hk

@@ -563,7 +563,9 @@ theorem snapshots_eq {calls : Nat → List (Intr × List V)} {stores : Nat → L
       cases n with
       | zero => simp [cum]
       | succ n => simp [cum]
-  unfold snapshots
+  rw [Kernel.snapshots_noAdds (fun t ht x hx => by
+    rw [hc t ht] at hx
+    rw [(List.eq_of_mem_replicate hx)]; decide)]
   simp only [hnb, hall]
   have := key 9 (Nat.le_refl 9)
   simp only [mem0] at this

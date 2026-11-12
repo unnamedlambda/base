@@ -64,9 +64,9 @@ def FnEnv.sigOf (e : FnEnv) : Callee → Option CalleeSig
   -- An atomic at an integer width: the address first, then the operands.
   | .atomic a => match a with
     | .fence => some { params := [], result := none }
-    | .load t => if t.isIntTy then some { params := [.i64], result := some t } else none
-    | .store t => if t.isIntTy then some { params := [t, .i64], result := none } else none
-    | .rmw t _ => if t.isIntTy then some { params := [.i64, t], result := some t } else none
+    | .load t _ => if t.isIntTy then some { params := [.i64], result := some t } else none
+    | .store t _ => if t.isIntTy then some { params := [t, .i64], result := none } else none
+    | .rmw t _ _ => if t.isIntTy then some { params := [.i64, t], result := some t } else none
     | .cas t => if t.isIntTy then some { params := [.i64, t, t], result := some t } else none
 
 /-- The table with one local function's signature recorded. A repeat at the

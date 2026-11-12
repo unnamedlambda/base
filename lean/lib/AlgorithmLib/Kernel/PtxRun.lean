@@ -119,6 +119,35 @@ def store (c : Ctx) (sp : Space) (t : Ty) (ad : Addr) (v : UInt64) : M Unit := d
   | some m => set { s with w := { s.w with mem := m, obs := .store a n v :: s.w.obs } }
   | none => throw s!"a store of {n} bytes at {a} reaches nothing"
 
+/-- The read-modify-write an `atom` performs, as CLIF's `atomic_rmw` names
+    it; none for a load or a store. -/
+def _root_.AlgorithmLib.PtxIr.AtomOp.rmw? : AtomOp → Option AtomicRmw
+  | .add => some .add | .and => some .and | .or => some .or | .xor => some .xor | .exch => some .xchg
+  | .umin => some .umin | .umax => some .umax | .smin => some .smin | .smax => some .smax
+  | .load | .store => none
+
+/-- The integer type of a width an `atom` takes. -/
+def atomTy (t : Ty) : ClifTy := if t.width == 64 then .i64 else .i32
+
+/-- An atomic access at `ad` must be aligned to its width. -/
+def aligned (c : Ctx) (sp : Space) (t : Ty) (ad : Addr) : M Unit := do
+  let base ← opnd c ad.base
+  let a := place sp (UInt64.ofInt ((base.toNat : Int) + ad.off))
+  if a % UInt64.ofNat (t.width / 8) != 0 then throw s!"an atomic access at {a} not aligned to its width"
+
+/-- An atomic access: the launch runs its threads one after another, so it is
+    the load, the store, or the load and then the store, of one thread. -/
+def atom (c : Ctx) (sp : Space) (o : AtomOp) (t : Ty) (d : Option Reg) (ad : Addr) (v : Opnd) : M Unit := do
+  aligned c sp t ad
+  match o.rmw?, o, d with
+  | some k, _, some d => do
+      let old ← load c sp t ad
+      store c sp t ad (rmwNew k (atomTy t) old (← opnd c v))
+      setReg d old
+  | none, .load, some d => do setReg d (← load c sp t ad)
+  | none, .store, none => store c sp t ad (← opnd c v)
+  | _, _, _ => throw "an atom without its destination, or with one it does not write"
+
 /-- A collective: recorded as the call `Kernel.Run` reads, and answered from
     the thread's answers. -/
 def coll (c : Ctx) (i : Intr) (args : List V) : M (Option V) := do
@@ -314,6 +343,12 @@ def exec (c : Ctx) : Instr → M Next
       setReg d (Intr.dp4aVal x y z); pure .step
   | .ld sp _ t d a => do setReg d (← load c sp t a); pure .step
   | .st sp t a v => do store c sp t a (← opnd c v); pure .step
+  | .atom sp o _ t d a v => do atom c sp o t d a v; pure .step
+  | .redShared a v => do
+      let base ← opnd c a.base
+      let p := place .shared (UInt64.ofInt ((base.toNat : Int) + a.off))
+      let _ ← coll c .sharedAdd [.sc .i64 p, .sc .i32 (mask 32 (← opnd c v))]
+      pure .step
   | .shfl m d a b cl _ => do
       if (← opnd c cl) != 31 then throw "a shuffle within less than a warp"
       let i ← match m with

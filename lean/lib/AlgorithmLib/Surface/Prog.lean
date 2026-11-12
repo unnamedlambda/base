@@ -1013,13 +1013,13 @@ def callLocalVoid {ps res} (r : LocalRef ps res) (args : Vals V ps) : Prog V L U
 /-- **Atomics.** Each travels as a call to `Callee.atomic`, which the engine
     emits as the instruction itself; the address comes first. An integer width
     and a naturally aligned address are what the model admits. -/
-def atomicLoad (ty : ClifTy) (p : V .i64) : Prog V L (V ty) :=
-  callLocal (⟨.atomic (.load ty)⟩ : LocalRef [.i64] (some ty)) %[p]
-def atomicStore {ty} (v : V ty) (p : V .i64) : Prog V L Unit :=
-  callLocalVoid (⟨.atomic (.store ty)⟩ : LocalRef [ty, .i64] none) %[v, p]
+def atomicLoad (ty : ClifTy) (p : V .i64) (ord : AtomicOrder := .seqCst) : Prog V L (V ty) :=
+  callLocal (⟨.atomic (.load ty ord)⟩ : LocalRef [.i64] (some ty)) %[p]
+def atomicStore {ty} (v : V ty) (p : V .i64) (ord : AtomicOrder := .seqCst) : Prog V L Unit :=
+  callLocalVoid (⟨.atomic (.store ty ord)⟩ : LocalRef [ty, .i64] none) %[v, p]
 /-- The old value, having left `k old x` in its place. -/
-def atomicRmw (k : AtomicRmw) {ty} (p : V .i64) (x : V ty) : Prog V L (V ty) :=
-  callLocal (⟨.atomic (.rmw ty k)⟩ : LocalRef [.i64, ty] (some ty)) %[p, x]
+def atomicRmw (k : AtomicRmw) {ty} (p : V .i64) (x : V ty) (ord : AtomicOrder := .seqCst) : Prog V L (V ty) :=
+  callLocal (⟨.atomic (.rmw ty k ord)⟩ : LocalRef [.i64, ty] (some ty)) %[p, x]
 /-- The old value, having replaced it with `n` exactly when it was `e`. -/
 def atomicCas {ty} (p : V .i64) (e n : V ty) : Prog V L (V ty) :=
   callLocal (⟨.atomic (.cas ty)⟩ : LocalRef [.i64, ty, ty] (some ty)) %[p, e, n]

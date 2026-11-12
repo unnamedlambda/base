@@ -249,7 +249,11 @@ def rmwNew (k : AtomicRmw) (t : ClifTy) (old x : UInt64) : UInt64 :=
     write until the join (`Mem.lent`), so no two accesses the model admits
     touch the same bytes at once. A program whose answer depends on how
     atomics from concurrently running threads interleave is outside what this
-    states.
+    states. On the device a launch's threads run one after another, its
+    blocks in order (`Kernel.Run`), which is one order the hardware may take:
+    there an atomic is exact for a kernel whose result is the same in every
+    order (a sum of counts, a sweep's look-back), and what it answers along
+    the way is what that order answers.
 
     The address must be naturally aligned: a misaligned atomic faults on
     AArch64, so a portable program has none. -/
@@ -257,15 +261,15 @@ def atomicCall (a : Atomic) (vs : List V) (w : World) : Option (Option V × Worl
   let aligned (t : ClifTy) (p : UInt64) : Bool := p % UInt64.ofNat (tyBytes t) == 0
   match a, vs with
   | .fence, [] => some (none, w)
-  | .load t, [.sc .i64 p] => do
+  | .load t _, [.sc .i64 p] => do
       if !aligned t p then none else
       let b ← w.mem.load p (tyBytes t)
       some (some (.sc t b), w)
-  | .store t, [.sc t' x, .sc .i64 p] => do
+  | .store t _, [.sc t' x, .sc .i64 p] => do
       if t' != t || !aligned t p then none else
       let m ← w.mem.store p (tyBytes t) x
       some (none, { obsStore w p (tyBytes t) x with mem := m })
-  | .rmw t k, [.sc .i64 p, .sc t' x] => do
+  | .rmw t k _, [.sc .i64 p, .sc t' x] => do
       if t' != t || !aligned t p then none else
       let old ← w.mem.load p (tyBytes t)
       let nv := rmwNew k t old x

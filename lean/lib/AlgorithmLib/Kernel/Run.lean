@@ -93,13 +93,24 @@ def smemAt (ans : List Answer) (k : Nat) : ByteArray :=
   | some (.smem b) => b
   | _ => .empty
 
+/-- A shared add's arguments: an aligned word of the block's shared memory,
+    and a word to add to it. -/
+def sharedWord (m : Mem) : List V → Bool
+  | [.sc _ a, .sc _ _] =>
+      match decodeAddr a with
+      | some (.arena, k) => k % 4 == 0 && k + 4 ≤ m.arena.size
+      | _ => false
+  | _ => false
+
 /-- What a thread's calls answer, its collectives counted from the `start`-th
     observation: its `k`-th collective from `ans[k]` — a barrier by the shared
     memory it holds, stuck where it holds none unless the run is a round of
     finding the answers (`provisional`), when it leaves shared memory alone;
-    any other collective by the value `valAt` gives, zero where it holds none —
-    an approximating intrinsic as the hardware `hw` does, and `dp4a` exactly. A run whose
-    answers the laws do not give back is not a block's (`BlockRuns`). -/
+    a shared add by nothing, its word one of the block's shared memory (the
+    laws add it at the next barrier); any other collective by the value
+    `valAt` gives, zero where it holds none — an approximating intrinsic as
+    the hardware `hw` does, and `dp4a` exactly. A run whose answers the laws
+    do not give back is not a block's (`BlockRuns`). -/
 def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := false) : Locals := fun i vs w' =>
   match Intr.all.find? (·.slot == i) with
   | some c =>
@@ -109,6 +120,9 @@ def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := fal
         | some (.smem b) => .ok (none, { w' with mem := { w'.mem with arena := b } })
         | _ => if provisional then .ok (none, w')
             else .error (.stuck "a barrier no law has answered with shared memory")
+      else if c = .sharedAdd then
+        if sharedWord w'.mem vs then .ok (none, w')
+        else .error (.stuck "a shared add other than to a word of shared memory")
       else .ok (some (valAt ans ((collCalls w' start).length - 1)), w')
     else
       match vs with
@@ -158,14 +172,32 @@ theorem phase_lent (all : List (Nat × UInt64 × Nat × UInt64)) (b : Nat) : ∀
         | some m => exact Mem.store_lent h
       · rfl
 
+/-- The shared adds a thread's collectives make after `b` of its barriers:
+    each word's address and what is added to it. -/
+def phaseAdds (b : Nat) (calls : List (Intr × List V)) : List (UInt64 × UInt64) :=
+  (calls.foldl (fun (acc : Nat × List (UInt64 × UInt64)) (c, args) =>
+      if c == .barrier then (acc.1 + 1, acc.2)
+      else if c == .sharedAdd && acc.1 == b then
+        match args with
+        | [.sc _ a, .sc _ x] => (acc.1, (a, x) :: acc.2)
+        | _ => acc
+      else acc) (0, [])).2.reverse
+
+/-- Memory with adds applied, each to a word of shared memory. -/
+def addAll (adds : List (UInt64 × UInt64)) (cur : Mem) : Mem :=
+  adds.foldl (fun c (a, x) =>
+    match decodeAddr a, c.load a 4 with
+    | some (.arena, _), some old => (c.store a 4 ((old + x) &&& 0xffffffff)).getD c
+    | _, _ => c) cur
+
 /-- Shared memory after each of a block's barriers: the block's shared stores
-    applied phase by phase. -/
+    applied phase by phase, then its shared adds. -/
 def snapshots (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
     (stores : Nat → List (Nat × UInt64 × Nat × UInt64)) : Array ByteArray :=
   let all := (List.range threads).flatMap stores
   let nb := (List.range threads).foldl (fun m t => max m ((calls t).filter (·.1 == .barrier)).length) 0
   ((List.range nb).foldl (fun (acc : Mem × Array ByteArray) b =>
-      let cur := phase all b acc.1
+      let cur := addAll ((List.range threads).flatMap fun t => phaseAdds b (calls t)) (phase all b acc.1)
       (cur, acc.2.push cur.arena))
     (({ arena := smem0, data := .empty, out := .empty } : Mem), #[])).2
 
@@ -193,6 +225,7 @@ def answerStep (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray)
             | [v] => pure (if (asBits v).getD 0 != 0 then acc ||| (1 <<< l.toUInt32) else acc)
             | _ => throw "a ballot of other than one value") (0 : UInt32)
           pure (nbar, out.push (.val (.sc .i32 bits.toUInt64)))
+      | .sharedAdd, _ => pure (nbar, out.push (.val (.sc .i32 0)))
       | _, _ => throw s!"{c.name} on arguments it does not take"
 
 /-- What the laws answer thread `t`'s collectives, in order. -/

@@ -129,6 +129,15 @@ def storeV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) (sp : Space) (t
   | some m => .ok { w with mem := m, obs := .store a n v :: w.obs }
   | none => .error s!"a store of {n} bytes at {a} reaches nothing"
 
+/-- Whether an atomic access at `ad` is aligned to its width, as `aligned`
+    finds. -/
+def alignedV (c : Ctx) (regs : Std.HashMap Reg UInt64) (sp : Space) (t : Ty) (ad : Addr) :
+    Except String Unit := do
+  let base ← opndV c regs ad.base
+  let a := place sp (UInt64.ofInt ((base.toNat : Int) + ad.off))
+  if a % UInt64.ofNat (t.width / 8) != 0 then .error s!"an atomic access at {a} not aligned to its width"
+  else .ok ()
+
 /-- A collective's answer and world, as `coll` leaves them. -/
 def collV (c : Ctx) (w : World) (i : Intr) (args : List V) : Except String (Option V × World) :=
   let k := (collCalls w c.start).length
@@ -198,6 +207,28 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
   | .st sp t a v => do
       let x ← opndV c regs v
       let w' ← storeV c regs w sp t a x
+      pure (.step, w', none)
+  | .atom sp o _ t d a v => do
+      alignedV c regs sp t a
+      match o.rmw?, o, d with
+      | some k, _, some d => do
+          let old ← loadV c regs w sp t a
+          let x ← opndV c regs v
+          let w' ← storeV c regs w sp t a (rmwNew k (atomTy t) old x)
+          pure (.step, w', some (d, old))
+      | none, .load, some d => do
+          let old ← loadV c regs w sp t a
+          pure (.step, w, some (d, old))
+      | none, .store, none => do
+          let x ← opndV c regs v
+          let w' ← storeV c regs w sp t a x
+          pure (.step, w', none)
+      | _, _, _ => .error "an atom without its destination, or with one it does not write"
+  | .redShared a v => do
+      let base ← opndV c regs a.base
+      let p := place .shared (UInt64.ofInt ((base.toNat : Int) + a.off))
+      let x ← opndV c regs v
+      let (_, w') ← collV c w .sharedAdd [.sc .i64 p, .sc .i32 (mask 32 x)]
       pure (.step, w', none)
   | .shfl m d a b cl _ => do
       let k ← opndV c regs cl
@@ -271,6 +302,15 @@ theorem store_run (c : Ctx) (sp : Space) (t : Ty) (ad : Addr) (v : UInt64) (s : 
       simp only [Except.map, run_bind', run_get, bind, Except.bind]
       cases hm : s.w.mem.store (place sp (UInt64.ofInt ((x.toNat : Int) + ad.off))) (t.width / 8)
           (mask t.width v) <;> simp only [hm] <;> rfl
+
+theorem aligned_run (c : Ctx) (sp : Space) (t : Ty) (ad : Addr) (s : TS) :
+    (aligned c sp t ad).run s = (alignedV c s.regs sp t ad).map (·, s) := by
+  simp only [aligned, alignedV, run_bind', opnd_run]
+  cases opndV c s.regs ad.base with
+  | error e => rfl
+  | ok x =>
+      simp only [Except.map, bind, Except.bind]
+      split <;> rfl
 
 theorem coll_run (c : Ctx) (i : Intr) (args : List V) (s : TS) :
     (coll c i args).run s = (collV c s.w i args).map (fun (r, w) => (r, { s with w })) := by
@@ -376,6 +416,26 @@ theorem exec_run (c : Ctx) (i : Instr) (ts : TS) :
       simp only [exec, stepV]; norm
       rd opndV c ts.regs v
       cases hh : storeV c ts.regs ts.w sp t a _ <;> simp only [hh] <;> norm
+  | atom sp o od t d a v =>
+      simp only [exec, stepV, PtxRun.atom]; norm
+      simp only [aligned_run]; norm
+      rd alignedV c ts.regs sp t a
+      cases o <;> cases d <;> simp only [AtomOp.rmw?] <;> norm
+      all_goals first
+        | done
+        | (rd loadV c ts.regs ts.w sp t a
+           rd opndV c ts.regs v
+           cases hh : storeV c ts.regs ts.w sp t a _ <;> simp only [hh] <;> norm
+           done)
+        | (rd loadV c ts.regs ts.w sp t a; done)
+        | (rd opndV c ts.regs v
+           cases hh : storeV c ts.regs ts.w sp t a _ <;> simp only [hh] <;> norm
+           done)
+  | redShared a v =>
+      simp only [exec, stepV]; norm
+      rd opndV c ts.regs a.base
+      rd opndV c ts.regs v
+      cases hc : collV c ts.w _ _ <;> simp only [hc] <;> norm
   | shfl m d a b cl k =>
       simp only [exec, stepV]; norm
       cases hh : opndV c ts.regs cl with
@@ -446,6 +506,11 @@ theorem storeV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Re
     (w : World) (sp : Space) (t : Ty) (a : Addr) (v : UInt64) (h : Agree ρ (Coalesce.Opnd.regs a.base) regs regs') :
     storeV (withBody c b L) regs' w sp t (Coalesce.Addr.ren ρ a) v = storeV c regs w sp t a v := by
   simp only [storeV, Coalesce.Addr.ren, opndV_with, opndV_ren c ρ a.base regs regs' h]
+
+theorem alignedV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren) (regs regs' : Std.HashMap Reg UInt64)
+    (sp : Space) (t : Ty) (a : Addr) (h : Agree ρ (Coalesce.Opnd.regs a.base) regs regs') :
+    alignedV (withBody c b L) regs' sp t (Coalesce.Addr.ren ρ a) = alignedV c regs sp t a := by
+  simp only [alignedV, Coalesce.Addr.ren, opndV_with, opndV_ren c ρ a.base regs regs' h]
 
 theorem collV_with (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (w : World) (i : Intr) (args : List V) :
     collV (withBody c b L) w i args = collV c w i args := rfl
@@ -541,6 +606,31 @@ theorem stepV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren
       simp only [bind, Except.bind]
       rw [storeV_ren c b L ρ regs regs' w sp t a _ (by ag hag)]
       cases storeV c regs w sp t a _ <;> rfl
+  | atom sp o od t d a v =>
+      rw_reads
+      rw [alignedV_ren c b L ρ regs regs' sp t a (by ag hag)]
+      cases alignedV c regs sp t a <;> try rfl
+      simp only [bind, Except.bind]
+      cases o <;> cases d <;> simp only [AtomOp.rmw?, Option.map] <;> try rfl
+      all_goals
+        first
+        | (rw [loadV_ren c b L ρ regs regs' w sp t a (by ag hag), R v (by ag hag)]
+           cases loadV c regs w sp t a <;> try rfl
+           cases opndV c regs v <;> try rfl
+           simp only [bind, Except.bind]
+           rw [storeV_ren c b L ρ regs regs' w sp t a _ (by ag hag)]
+           cases storeV c regs w sp t a _ <;> rfl)
+        | (rw [loadV_ren c b L ρ regs regs' w sp t a (by ag hag)]
+           cases loadV c regs w sp t a <;> rfl)
+        | (rw [R v (by ag hag)]
+           cases opndV c regs v <;> try rfl
+           simp only [bind, Except.bind]
+           rw [storeV_ren c b L ρ regs regs' w sp t a _ (by ag hag)]
+           cases storeV c regs w sp t a _ <;> rfl)
+  | redShared a v =>
+      rw_reads; simp only [Coalesce.Addr.ren]; rw [R a.base (by ag hag), R v (by ag hag)]
+      cases opndV c regs a.base <;> try rfl
+      cases opndV c regs v <;> rfl
   | shfl m d a b cl k =>
       rw_reads; rw [R cl (by ag hag), R a (by ag hag), R b (by ag hag)]
       cases opndV c regs cl <;> try rfl

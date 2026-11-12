@@ -42,11 +42,11 @@ open AlgorithmLib.HProg.Contracts AlgorithmLib.LibSpec AlgorithmLib.Prog
 
 
 /-- Locals that answer collectives as a thread answered from `ans` does: any
-    collective but a barrier the value `valAt` gives, leaving the world as it
+    collective but a barrier or a shared add the value `valAt` gives, leaving the world as it
     is; a barrier, where it answers, the shared memory `ans` holds, put in
     place. -/
 structure AnswersFrom (ans : List Answer) (start : Nat) (cfg : Cfg) : Prop where
-  val : ∀ (c : Intr) (vs : List V) (w : World), c.isColl = true → c ≠ .barrier →
+  val : ∀ (c : Intr) (vs : List V) (w : World), c.isColl = true → c ≠ .barrier → c ≠ .sharedAdd →
     cfg.locals c.slot vs w = .ok (some (valAt ans ((collCalls w start).length - 1)), w)
   smem : ∀ (vs : List V) (w w' : World) (r : Option V), cfg.locals Intr.barrier.slot vs w = .ok (r, w') →
     r = none ∧ ∃ b, w' = { w with mem := { w.mem with arena := b } } ∧
@@ -63,8 +63,8 @@ def ApproxFrom (hw : Hw) (cfg : Cfg) : Prop :=
 theorem answersFrom_thread (ans : List Answer) (start : Nat) (hw : Hw) :
     AnswersFrom ans start { env := [], locals := threadLocals ans start hw } := by
   constructor
-  · intro c vs w1 hc hb
-    simp [threadLocals, Intr.find_slot, hc, hb]
+  · intro c vs w1 hc hb hs
+    simp [threadLocals, Intr.find_slot, hc, hb, hs]
   · intro vs w1 w2 r hl
     simp only [threadLocals, Intr.find_slot, Intr.isColl, if_true] at hl
     split at hl
@@ -235,6 +235,8 @@ theorem answersOf_bfly {calls : Nat → List (Intr × List V)} {snaps : Array By
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun a ty m he => by cases he⟩
+      · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun a ty m he => by cases he⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   obtain ⟨y, hy, hP⟩ := h3 k _ hk
@@ -278,6 +280,9 @@ theorem answerStep_push {calls : Nat → List (Intr × List V)} {snaps : Array B
     simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
     exact ⟨_, by simp [show (Intr.ballot == Intr.barrier) = false by decide]; rfl,
       by simp [ha, show (Intr.ballot == Intr.barrier) = false by decide]; rfl⟩
+  · simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
+    exact ⟨_, by simp [show (Intr.sharedAdd == Intr.barrier) = false by decide]; rfl,
+      by simp [show (Intr.sharedAdd == Intr.barrier) = false by decide]; rfl⟩
   · cases h
 
 theorem foldAns {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
@@ -362,6 +367,7 @@ theorem answerStep_out {calls : Nat → List (Intr × List V)} {snaps : Array By
   · simp only [bind, Except.bind]; split
     · rfl
     · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
+  · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
   · rfl
 
 theorem foldAns_of {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
@@ -505,6 +511,8 @@ theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array B
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, rfl⟩⟩
+      · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨0, rfl⟩⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   intro a ha v hv
@@ -662,11 +670,12 @@ theorem wp_coll2 {ans : List Answer} {start : Nat} (hA : AnswersFrom ans start c
     (hs : start ≤ w.obs.length) {k : Nat} (hk : (collCalls w start).length = k)
     {v0 : V} (hv : valAt ans k = v0)
     {Q : Slot .i32 → Env → World → Prop}
-    (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x, y])) (hcb : c ≠ .barrier := by decide) :
+    (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x, y])) (hcb : c ≠ .barrier := by decide)
+    (hcs : c ≠ .sharedAdd := by decide) :
     wp cfg d J (AlgorithmLib.Prog.callLocal r %[a, b]) Q Γ w := by
   obtain ⟨callee⟩ := r
   cases hr
-  have hl := hA.val c [x, y] (obsCall w (.intr c) [x, y]) hc hcb
+  have hl := hA.val c [x, y] (obsCall w (.intr c) [x, y]) hc hcb hcs
   rw [collCalls_call hs, hc] at hl
   simp only [if_true, List.length_append, List.length_cons, List.length_nil, hk, Nat.add_sub_cancel, hv] at hl
   simp only [AlgorithmLib.Prog.callLocal, wp_callLocal]
@@ -727,11 +736,12 @@ theorem wpE_coll2 {Γ : Env} {w : World} {ans : List Answer} {start : Nat} (hA :
     {a b : Slot .i32} {x y : V} (ha : Γ[a]? = some x) (hb : Γ[b]? = some y)
     (hs : start ≤ w.obs.length) {k : Nat} (hk : (collCalls w start).length = k)
     {v0 : V} (hv : valAt ans k = v0) {Q : Slot .i32 → Env → World → Prop}
-    (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x, y])) (hcb : c ≠ .barrier := by decide) :
+    (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x, y])) (hcb : c ≠ .barrier := by decide)
+    (hcs : c ≠ .sharedAdd := by decide) :
     wpE cfg (AlgorithmLib.Prog.callLocal r %[a, b]) Q Γ w := by
   obtain ⟨callee⟩ := r
   cases hr
-  have hl := hA.val c [x, y] (obsCall w (.intr c) [x, y]) hc hcb
+  have hl := hA.val c [x, y] (obsCall w (.intr c) [x, y]) hc hcb hcs
   rw [collCalls_call hs, hc] at hl
   simp only [if_true, List.length_append, List.length_cons, List.length_nil, hk, Nat.add_sub_cancel, hv] at hl
   exact wpE_callLocal (vs := [x, y]) (v := v0) (w' := obsCall w (.intr c) [x, y]) rfl
@@ -743,11 +753,12 @@ theorem wpE_coll1 {Γ : Env} {w : World} {ans : List Answer} {start : Nat} (hA :
     {a : Slot ty} {x : V} (ha : Γ[a]? = some x)
     (hs : start ≤ w.obs.length) {k : Nat} (hk : (collCalls w start).length = k)
     {v0 : V} (hv : valAt ans k = v0) {Q : Slot .i32 → Env → World → Prop}
-    (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x])) (hcb : c ≠ .barrier := by decide) :
+    (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x])) (hcb : c ≠ .barrier := by decide)
+    (hcs : c ≠ .sharedAdd := by decide) :
     wpE cfg (AlgorithmLib.Prog.callLocal r %[a]) Q Γ w := by
   obtain ⟨callee⟩ := r
   cases hr
-  have hl := hA.val c [x] (obsCall w (.intr c) [x]) hc hcb
+  have hl := hA.val c [x] (obsCall w (.intr c) [x]) hc hcb hcs
   rw [collCalls_call hs, hc] at hl
   simp only [if_true, List.length_append, List.length_cons, List.length_nil, hk, Nat.add_sub_cancel, hv] at hl
   exact wpE_callLocal (vs := [x]) (v := v0) (w' := obsCall w (.intr c) [x]) rfl
@@ -951,18 +962,76 @@ theorem phase_size_any (all : List (Nat × UInt64 × Nat × UInt64)) (k : Nat) :
       | some m' => exact store_sizes h .arena
     · rfl
 
+/-- Shared adds keep shared memory's size. -/
+theorem addAll_size (adds : List (UInt64 × UInt64)) : ∀ (cur : Mem),
+    (addAll adds cur).arena.size = cur.arena.size := by
+  unfold addAll
+  induction adds with
+  | nil => intro cur; rfl
+  | cons x xs ih =>
+    intro cur
+    rw [List.foldl_cons, ih]
+    obtain ⟨a, v⟩ := x
+    dsimp only
+    split
+    · generalize hr : Mem.store _ _ _ _ = r
+      cases r with
+      | none => rfl
+      | some m' => exact store_sizes hr .arena
+    · rfl
+
+/-- A fold keeps what each step keeps. -/
+theorem foldl_inv {α β : Type} (f : β → α → β) (P : β → Prop) :
+    ∀ (l : List α) (b : β), P b → (∀ x ∈ l, ∀ b, P b → P (f b x)) → P (l.foldl f b)
+  | [], _, hb, _ => hb
+  | x :: xs, b, hb, hf =>
+      foldl_inv f P xs (f b x) (hf x List.mem_cons_self b hb) (fun y hy => hf y (List.mem_cons_of_mem _ hy))
+
+/-- A thread that makes no shared add adds nothing in any phase. -/
+theorem phaseAdds_nil (b : Nat) (l : List (Intr × List V)) (h : ∀ x ∈ l, x.1 ≠ .sharedAdd) :
+    phaseAdds b l = [] := by
+  unfold phaseAdds
+  rw [List.reverse_eq_nil_iff]
+  refine foldl_inv _ (fun acc : Nat × List (UInt64 × UInt64) => acc.2 = []) l _ rfl ?_
+  intro x hx acc hacc
+  obtain ⟨c, args⟩ := x
+  have hc : c ≠ .sharedAdd := h _ hx
+  have hc' : (c == Intr.sharedAdd) = false := by cases c <;> first | rfl | exact absurd rfl hc
+  dsimp only
+  split
+  · exact hacc
+  · simp [hc', hacc]
+
+/-- **Without shared adds the snapshots are the stores' alone**, phase by
+    phase. -/
+theorem snapshots_noAdds {n : Nat} {smem0 : ByteArray} {calls : Nat → List (Intr × List V)}
+    {stores : Nat → List (Nat × UInt64 × Nat × UInt64)} (h : ∀ t, t < n → ∀ x ∈ calls t, x.1 ≠ .sharedAdd) :
+    snapshots n smem0 calls stores =
+      ((List.range ((List.range n).foldl (fun m t => max m ((calls t).filter (·.1 == .barrier)).length) 0)).foldl
+        (fun (acc : Mem × Array ByteArray) b =>
+          (phase ((List.range n).flatMap stores) b acc.1, acc.2.push (phase ((List.range n).flatMap stores) b acc.1).arena))
+        (({ arena := smem0, data := .empty, out := .empty } : Mem), #[])).2 := by
+  have hz : ∀ b, ((List.range n).flatMap fun t => phaseAdds b (calls t)) = [] := fun b =>
+    List.flatMap_eq_nil_iff.mpr (fun t ht => phaseAdds_nil b _ (h t (List.mem_range.mp ht)))
+  unfold snapshots
+  simp only [hz, addAll, List.foldl_nil]
+
 theorem snapshots_size (n : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
     (stores : Nat → List (Nat × UInt64 × Nat × UInt64)) :
     ∀ B ∈ snapshots n smem0 calls stores, B.size = smem0.size := by
   unfold snapshots
   generalize (List.range n).foldl (fun m t => max m ((calls t).filter (·.1 == .barrier)).length) 0 = nb
   generalize (List.range n).flatMap stores = all
+  generalize hf : (fun (b : Nat) (m : Mem) =>
+    addAll ((List.range n).flatMap fun t => phaseAdds b (calls t)) (phase all b m)) = f
+  have hfs : ∀ b m, (f b m).arena.size = m.arena.size := by
+    intro b m; rw [← hf]; dsimp only; rw [addAll_size, phase_size_any]
   have key : ∀ (l : List Nat) (acc : Mem × Array ByteArray), acc.1.arena.size = smem0.size →
       (∀ B ∈ acc.2, B.size = smem0.size) →
       (l.foldl (fun (acc : Mem × Array ByteArray) b =>
-        (phase all b acc.1, acc.2.push (phase all b acc.1).arena)) acc).1.arena.size = smem0.size ∧
+        (f b acc.1, acc.2.push (f b acc.1).arena)) acc).1.arena.size = smem0.size ∧
       ∀ B ∈ (l.foldl (fun (acc : Mem × Array ByteArray) b =>
-        (phase all b acc.1, acc.2.push (phase all b acc.1).arena)) acc).2, B.size = smem0.size := by
+        (f b acc.1, acc.2.push (f b acc.1).arena)) acc).2, B.size = smem0.size := by
     intro l
     induction l with
     | nil => intro acc h1 h2; exact ⟨h1, h2⟩
@@ -970,12 +1039,13 @@ theorem snapshots_size (n : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr
       intro acc h1 h2
       rw [List.foldl_cons]
       apply ih
-      · simp only; rw [phase_size_any]; exact h1
+      · simp only; rw [hfs]; exact h1
       · intro B hB
         simp only [Array.mem_push] at hB
         rcases hB with hB | rfl
         · exact h2 B hB
-        · rw [phase_size_any]; exact h1
+        · rw [hfs]; exact h1
+  subst hf
   exact (key _ _ rfl (by simp)).2
 
 /-- **The laws answer shared memory of shared memory's size.** -/
@@ -1018,6 +1088,8 @@ theorem answersOf_smem_size {calls : Nat → List (Intr × List V)} {snaps : Arr
         split at hr
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun B hB => by cases hB⟩
+      · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun B hB => by cases hB⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr

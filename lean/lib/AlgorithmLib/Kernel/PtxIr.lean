@@ -135,6 +135,17 @@ inductive Shfl where
 def Shfl.name : Shfl → String
   | .bfly => "bfly" | .idx => "idx" | .up => "up" | .down => "down"
 
+/-- What an `atom` does, at the device's scope: a read-modify-write that
+    answers the old value, a load or a store; ordered, `acq_rel`, `acquire`
+    and `release`. -/
+inductive AtomOp where
+  | add | and | or | xor | exch | umin | umax | smin | smax | load | store
+  deriving Repr, DecidableEq, Inhabited
+
+def AtomOp.name : AtomOp → String
+  | .add => "add" | .and => "and" | .or => "or" | .xor => "xor" | .exch => "exch"
+  | .umin | .smin => "min" | .umax | .smax => "max" | .load => "load" | .store => "store"
+
 /-- An instruction. -/
 inductive Instr where
   | mov (t : Ty) (d : Reg) (a : Opnd)
@@ -152,6 +163,12 @@ inductive Instr where
   | dp4a (d : Reg) (a b c : Opnd)
   | ld (sp : Space) (nc : Bool) (t : Ty) (d : Reg) (a : Addr)
   | st (sp : Space) (t : Ty) (a : Addr) (v : Opnd)
+  /-- An atomic access of `t`'s width at `a`: `d` gets the old value (but
+      for a store), `v` is the operand (but for a load); `ordered`, the
+      thread's other accesses ordered around it, else `relaxed`. -/
+  | atom (sp : Space) (o : AtomOp) (ordered : Bool) (t : Ty) (d : Option Reg) (a : Addr) (v : Opnd)
+  /-- `red.shared.add.u32`: `v` added to the shared word at `a`. -/
+  | redShared (a : Addr) (v : Opnd)
   | shfl (m : Shfl) (d : Reg) (a b c mask : Opnd)
   | vote (d : Reg) (p mask : Opnd)
   | bar (n : Nat)
@@ -253,6 +270,12 @@ def Instr.text : Instr → String
   | .dp4a d a b c => s!"dp4a.s32.s32 {d.text}, {a.text}, {b.text}, {c.text}"
   | .ld sp nc t d a => s!"ld{sp.dot}{if nc then ".nc" else ""}.{t.name} {d.text}, {a.text}"
   | .st sp t a v => s!"st{sp.dot}.{t.name} {a.text}, {v.text}"
+  | .atom sp .load od t d a _ =>
+      s!"ld{sp.dot}.{if od then "acquire" else "relaxed"}.gpu.{t.name} {(d.map Reg.text).getD "_"}, {a.text}"
+  | .atom sp .store od t _ a v => s!"st{sp.dot}.{if od then "release" else "relaxed"}.gpu.{t.name} {a.text}, {v.text}"
+  | .atom sp o od t d a v =>
+      s!"atom{sp.dot}.{if od then "acq_rel" else "relaxed"}.gpu.{o.name}.{t.name} {(d.map Reg.text).getD "_"}, {a.text}, {v.text}"
+  | .redShared a v => s!"red.shared.add.u32 {a.text}, {v.text}"
   | .shfl m d a b c k => s!"shfl.sync.{m.name}.b32 {d.text}, {a.text}, {b.text}, {c.text}, {k.text}"
   | .vote d p k => s!"vote.sync.ballot.b32 {d.text}, {p.text}, {k.text}"
   | .bar n => s!"bar.sync {n}"

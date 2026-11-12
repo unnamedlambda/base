@@ -309,6 +309,11 @@ def Facts.wideMul (F : Facts) (a b : Val) : Bool :=
     | some (.imm _) => true
     | _ => false
 
+/-- The type of what an atomic answers, none for a store or a fence. -/
+def atomicRes : Atomic → Option ClifTy
+  | .load t _ | .rmw t _ _ | .cas t => some t
+  | .store .. | .fence => none
+
 /-- The value an instruction defines and its type, from its operands'. -/
 def resTy (ty : Val → Option ClifTy) : Inst → Option (Val × ClifTy)
   | .iconst d t _ | .fconst d t _ | .bitcast d t _ | .fcvtFromSint d t _ | .fconv d _ t _ | .iext d _ t _ =>
@@ -323,6 +328,7 @@ def resTy (ty : Val → Option ClifTy) : Inst → Option (Val × ClifTy)
   | .icmp d .. | .fcmp d .. => some (d, .i8)
   | .load d lo _ => some (d, lo.ty)
   | .call (some d) (.intr c) _ => c.sig.2.map (d, ·)
+  | .call (some d) (.atomic a) _ => (atomicRes a).map (d, ·)
   | _ => none
 
 /-- The facts of a body's blocks, `k0` the kernel's own parameters. -/
@@ -451,6 +457,46 @@ def iaddWin (d sa other : Val) : LM Unit := do
           emit (.cvt none .u32 .u64 t (← o other)); pure (.reg t)
         else o other
   emit (.bin .add none .u32 (winReg d) (.reg (← rw sa)) o32)
+
+/-- The `atom` of a CLIF read-modify-write; none for one PTX has not
+    (`sub`, `nand`). -/
+def atomOp : AtomicRmw → Option PtxIr.AtomOp
+  | .add => some .add | .and => some .and | .or => some .or | .xor => some .xor | .xchg => some .exch
+  | .umin => some .umin | .umax => some .umax | .smin => some .smin | .smax => some .smax
+  | .sub | .nand => none
+
+/-- The type an `atom` of `o` names at the width of `t`. -/
+def atomPty (o : PtxIr.AtomOp) (t : ClifTy) : PtxIr.Ty :=
+  let w64 := t.width == 64
+  match o with
+  | .add | .umin | .umax => if w64 then .u64 else .u32
+  | .smin | .smax => if w64 then .s64 else .s32
+  | _ => if w64 then .b64 else .b32
+
+/-- An atomic: its address's lines, its operand's, then one `atom`. -/
+def atomic : Option Val → Atomic → List Val → LM Unit
+  | some d, .rmw t k ord, [p, x] =>
+      match atomOp k with
+      | some op => do
+          let (sp, ad) ← addr p
+          emit (.atom sp op (ord == .seqCst) (atomPty op t) (some (regOf t d)) ad (← o x))
+      | none => fail s!"atomic_rmw {k.clif}, which PTX has not"
+  | some d, .load t ord, [p] => do
+      let (sp, ad) ← addr p
+      emit (.atom sp .load (ord == .seqCst) (atomPty .load t) (some (regOf t d)) ad (.imm 0))
+  | none, .store t ord, [v, p] => do
+      let (sp, ad) ← addr p
+      emit (.atom sp .store (ord == .seqCst) (atomPty .store t) none ad (← o v))
+  | _, _, _ => fail "an atomic the compiler does not take"
+
+/-- An intrinsic that answers nothing: a barrier, or a shared add, its
+    address's lines, its operand's, then one `red`. -/
+def voidIntr : Intr → List Val → LM Unit
+  | .barrier, [] => do emit (if (← facts?).warp then .barWarp (.imm 0xffffffff) else .bar 0)
+  | .sharedAdd, [p, x] => do
+      let (_, ad) ← addr p
+      emit (.redShared ad (← o x))
+  | c, _ => fail s!"{c.name} without a result, on arguments it does not take"
 
 /-- One instruction that is not a terminator. -/
 def inst (i : Inst) : LM Unit := do
@@ -587,8 +633,8 @@ def inst (i : Inst) : LM Unit := do
       let x ← o v; emit (.shfl .idx (regOf .i32 d) x (← o m) (.imm 31) (.imm 0xffffffff))
   | .call (some d) (.intr .ballot) [v] => do emit (.vote (regOf .i32 d) (← o v) (.imm 0xffffffff))
   | .call (some d) (.intr .dp4a) [a, b, e] => do emit (.dp4a (regOf .i32 d) (← o a) (← o b) (← o e))
-  | .call none (.intr .barrier) [] => do
-      emit (if (← facts?).warp then .barWarp (.imm 0xffffffff) else .bar 0)
+  | .call none (.intr c) args => voidIntr c args
+  | .call d (.atomic a) args => atomic d a args
   | .call (some d) (.intr c) [v] =>
       match approxOp c with
       | some u => do emit (.un u none .f32 (regOf .f32 d) (← o v))
@@ -931,6 +977,34 @@ def isTy (F : Ptx.Facts) (v : Val) (ts : List ClifTy) : Bool :=
   | some t => ts.contains t
   | none => false
 
+/-- An atomic's address: 64 bits into one of the launch's buffers (never
+    shared memory, whose block semantics answers a thread's reads from the
+    last barrier), and its value a word or a double word. -/
+def atomAt (F : Ptx.Facts) (p : Val) (t : ClifTy) : Bool :=
+  isTy F p [.i64] && !F.win p && (t == .i32 || t == .i64) &&
+    match F.origin.get? p.id with
+    | some (.global _) => true
+    | _ => false
+
+/-- A shared add's address: 64 bits into the block's shared memory. -/
+def sharedAt (F : Ptx.Facts) (p : Val) : Bool :=
+  isTy F p [.i64] && F.origin.get? p.id == some .shared
+
+/-- The intrinsics answering nothing the compiler takes: a barrier, and a
+    shared add of a word at a shared address. -/
+def takesVoid (F : Ptx.Facts) : Intr → List Val → Bool
+  | .barrier, [] => true
+  | .sharedAdd, [p, x] => sharedAt F p && isTy F x [.i32]
+  | _, _ => false
+
+/-- The atomics the compiler takes: at a word or a double word of a launch's
+    buffer, a read-modify-write PTX has, a load or a store. -/
+def takesAtomic (F : Ptx.Facts) : Option Val → Atomic → List Val → Bool
+  | some _, .rmw t k _, [p, x] => atomAt F p t && isTy F x [t] && (Ptx.atomOp k).isSome
+  | some _, .load t _, [p] => atomAt F p t
+  | none, .store t _, [v, p] => atomAt F p t && isTy F v [t]
+  | _, _, _ => false
+
 /-- **What the compiler takes**: the instructions it lowers, each in the forms
     it lowers, on operands of the types it lowers them for; an access's address
     is 64 bits. -/
@@ -978,7 +1052,8 @@ def takes (F : Ptx.Facts) : Inst → Bool
       isTy F v [.i32] && isTy F m [.i32]
   | .call (some _) (.intr .ballot) [v] => isTy F v [.i8]
   | .call (some _) (.intr .dp4a) [a, b, e] => isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
-  | .call none (.intr .barrier) [] => true
+  | .call none (.intr c) args => takesVoid F c args
+  | .call d (.atomic a) args => takesAtomic F d a args
   | .call (some _) (.intr c) [v] => (Ptx.approxOp c).isSome && isTy F v [.f32]
   | .jump .. | .brif .. | .ret none => true
   | _ => false
