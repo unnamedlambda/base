@@ -142,7 +142,7 @@ def isWs (b : V .i64) : Prog V L (V .i64) := do
 
 /-- `p` past JSON's whitespace, at most `e`: 16 bytes at a time while 16
     remain, then a byte at a time. -/
-def skipWs (p e : V .i64) : Prog V L (V .i64) := do
+def skipWsRun (p e : V .i64) : Prog V L (V .i64) := do
   let r ← wloopL %[p]
     (head := fun _ cs => do pure (contIfULt cs.head e, %[cs.head], ()))
     (body := fun out cs _ => do
@@ -153,6 +153,16 @@ def skipWs (p e : V .i64) : Prog V L (V .i64) := do
         brk out %[← iadd cs.head (← ctz other)]
       when .eq (← isWs (← uload8_64 cs.head)) (← c 0) do brk out %[cs.head]
       pure %[← iaddImm cs.head 1])
+  pure r.head
+
+/-- `p` past JSON's whitespace, at most `e`: unmoved where the byte there is
+    past a space (the usual case, tested alone), else `skipWsRun`. -/
+def skipWs (p e : V .i64) : Prog V L (V .i64) := do
+  let r ← ifte (jTys := [.i64]) .ult p e
+    (thn := do
+      let near ← icmp .ugt (← uload8_64 p) (← ch ' ')
+      ifte .ne (← b2i near) (← c 0) (thn := do pure %[p]) (els := do pure %[← skipWsRun p e]))
+    (els := do pure %[p])
   pure r.head
 
 /-- A hex digit's value, or 16 where `x` is not one. -/
@@ -232,6 +242,8 @@ def string (p e sp : V .i64) : Prog V L (V .i64 × V .i64 × V .i64) := do
         storeUnaligned v o
         when .eq m zero do continueWith out %[← iaddImm q 16, ← iaddImm o 16]
         let j ← ctz m
+        -- the closing quote: the string ends here
+        when .eq (← uload8_64 (← iadd q j)) (← ch '"') do brk out %[← iadd (← iadd q j) one, ← iadd o j, zero]
         when .ne j zero do continueWith out %[← iadd q j, ← iadd o j]
       let b ← uload8_64 q
       when .eq b (← ch '"') do brk out %[← iaddImm q 1, o, zero]
