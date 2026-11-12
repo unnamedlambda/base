@@ -736,20 +736,8 @@ def parseBody : Prog V L (V .i64) := do
         brk out %[zero, tp, sp]
       when .uge tp (← c (TAPE_WORDS - 2)) do fail out p
       let b ← uload8_64 p
-      -- a value just ended: a comma or the close of what is open
-      when .eq st (← c S_AFTER) do
-        when .eq d zero do fail out p
-        let top ← load64 (← iadd stack (← ishlImm (← iaddImm d (-1)) 3))
-        let isObj ← band top one
-        when .eq b (← ch ',') do
-          continueWith out %[← iaddImm p 1, tp, sp, d, ← select (← icmp .ne isObj zero) (← c S_KEY) (← c S_VALUE)]
-        let closer ← select (← icmp .ne isObj zero) (← ch '}') (← ch ']')
-        when .ne b closer do fail out p
-      -- a close: `}` after `{`, `]` after `[`, or after a value
-      let isClose ← bor (← band (← b2i (← icmp .eq st (← c S_OBJ0))) (← b2i (← icmp .eq b (← ch '}'))))
-        (← bor (← band (← b2i (← icmp .eq st (← c S_ARR0))) (← b2i (← icmp .eq b (← ch ']'))))
-          (← b2i (← icmp .eq st (← c S_AFTER))))
-      when .ne isClose zero do
+      -- the close of what is open: its open and close words linked
+      let close (_ : Unit) : Prog V L Unit := do
         when .eq d zero do fail out p
         let top ← load64 (← iadd stack (← ishlImm (← iaddImm d (-1)) 3))
         let openAt ← ushrImm top 1
@@ -759,18 +747,41 @@ def parseBody : Prog V L (V .i64) := do
         putTape openAt (← bor openTag tp)
         putTape tp (← bor closeTag openAt)
         continueWith out %[← iaddImm p 1, ← iaddImm tp 1, sp, ← iaddImm d (-1), ← c S_AFTER]
-      -- a key: a string, then `:`, then a value
-      let wantKey ← bor (← b2i (← icmp .eq st (← c S_OBJ0))) (← b2i (← icmp .eq st (← c S_KEY)))
-      when .ne wantKey zero do
-        when .ne b (← ch '"') do fail out p
+      -- a value just ended: a comma or the close of what is open
+      when .eq st (← c S_AFTER) do
+        when .eq d zero do fail out p
+        let top ← load64 (← iadd stack (← ishlImm (← iaddImm d (-1)) 3))
+        let isObj ← band top one
+        when .eq b (← ch ',') do
+          continueWith out %[← iaddImm p 1, tp, sp, d, ← select (← icmp .ne isObj zero) (← c S_KEY) (← c S_VALUE)]
+        when .ne b (← select (← icmp .ne isObj zero) (← ch '}') (← ch ']')) do fail out p
+        close ()
+      -- in an object: its close where it is empty, else a key, `:`, a value
+      when .uge st (← c S_OBJ0) do
+        when .ule st (← c S_KEY) do
+          when .eq st (← c S_OBJ0) do
+            when .eq b (← ch '}') do close ()
+          when .ne b (← ch '"') do fail out p
+          let (p1, sp1, err) ← string (← iaddImm p 1) e sp
+          when .ne err zero do fail out p1
+          putTape tp (← word '"' sp)
+          let p2 ← skipWs p1 e
+          let colon ← band (← b2i (← icmp .ult p2 e)) (← b2i (← icmp .eq (← uload8_64 (← select (← icmp .ult p2 e) p2 p)) (← ch ':')))
+          when .eq colon zero do fail out p2
+          continueWith out %[← iaddImm p2 1, ← iaddImm tp 1, sp1, d, ← c S_VALUE]
+      -- a value, the commonest first
+      when .eq b (← ch '"') do
         let (p1, sp1, err) ← string (← iaddImm p 1) e sp
         when .ne err zero do fail out p1
         putTape tp (← word '"' sp)
-        let p2 ← skipWs p1 e
-        let colon ← band (← b2i (← icmp .ult p2 e)) (← b2i (← icmp .eq (← uload8_64 (← select (← icmp .ult p2 e) p2 p)) (← ch ':')))
-        when .eq colon zero do fail out p2
-        continueWith out %[← iaddImm p2 1, ← iaddImm tp 1, sp1, d, ← c S_VALUE]
-      -- a value
+        continueWith out %[p1, ← iaddImm tp 1, sp1, d, ← c S_AFTER]
+      let num ← bor (← isDigit b) (← b2i (← icmp .eq b (← ch '-')))
+      when .ne num zero do
+        let (tag, v, p1, err) ← number p e
+        when .ne err zero do fail out p
+        putTape tp tag
+        putTape (← iaddImm tp 1) v
+        continueWith out %[p1, ← iaddImm tp 2, sp, d, ← c S_AFTER]
       let isOpen ← bor (← b2i (← icmp .eq b (← ch '{'))) (← b2i (← icmp .eq b (← ch '[')))
       when .ne isOpen zero do
         when .uge d (← c MAX_DEPTH) do fail out p
@@ -778,23 +789,16 @@ def parseBody : Prog V L (V .i64) := do
         storeI64 (← bor (← ishlImm tp 1) obj) (← iadd stack (← ishlImm d 3))
         continueWith out %[← iaddImm p 1, ← iaddImm tp 1, sp, ← iaddImm d 1,
           ← select (← icmp .ne obj zero) (← c S_OBJ0) (← c S_ARR0)]
-      when .eq b (← ch '"') do
-        let (p1, sp1, err) ← string (← iaddImm p 1) e sp
-        when .ne err zero do fail out p1
-        putTape tp (← word '"' sp)
-        continueWith out %[p1, ← iaddImm tp 1, sp1, d, ← c S_AFTER]
+      -- the close of an empty array
+      when .eq st (← c S_ARR0) do
+        when .eq b (← ch ']') do close ()
       for (lit, tag) in [("true", 't'), ("false", 'f'), ("null", 'n')] do
         when .eq b (← ch lit.front) do
           when .eq (← literal p e lit) zero do fail out p
           putTape tp (← word tag zero)
           continueWith out %[← iaddImm p lit.length, ← iaddImm tp 1, sp, d, ← c S_AFTER]
-      let num ← bor (← isDigit b) (← b2i (← icmp .eq b (← ch '-')))
-      when .eq num zero do fail out p
-      let (tag, v, p1, err) ← number p e
-      when .ne err zero do fail out p
-      putTape tp tag
-      putTape (← iaddImm tp 1) v
-      pure %[p1, ← iaddImm tp 2, sp, d, ← c S_AFTER])
+      fail out p
+      pure %[p, tp, sp, d, st])
   storeI64 r.snd (← at_ TAPE_LEN)
   storeI64 r.thd (← at_ STR_LEN)
   pure r.head
