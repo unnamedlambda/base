@@ -33,6 +33,11 @@ lean_lib Host where
 lean_lib Warp where
   globs := #[.submodules `Warp]
 
+-- ANN: base's engine for the approximate-nearest-neighbour benchmark.
+@[default_target]
+lean_lib Ann where
+  globs := #[.submodules `Ann]
+
 -- gpt-oss-20b: kernels, attention, the decode artifact.
 @[default_target]
 lean_lib GptOss where
@@ -123,6 +128,16 @@ lean_exe genimagebench where
   root := `Main.Bench.Image
 lean_exe gensystembench where
   root := `Main.Bench.System
+lean_exe genmemopsbench where
+  root := `Main.Bench.Memops
+lean_exe gensortbench where
+  root := `Main.Ann.Sort
+lean_exe genhashtablebench where
+  root := `Main.Bench.HashTable
+lean_exe genanalyticsbench where
+  root := `Main.Bench.Analytics
+lean_exe genjsonbench where
+  root := `Main.Bench.Json
 lean_exe genleanevalalgorithm where
   root := `Main.Demo.LeanEval
 lean_exe gendrawalgorithm where
@@ -163,6 +178,8 @@ lean_exe genwindowdemoalgorithm where
   root := `Main.Demo.WindowDemo
 lean_exe gentokenizertest where
   root := `Main.Tokenizer.Test
+lean_exe genannalgorithm where
+  root := `Main.Ann.Host
 lean_exe gengptossdecode where
   root := `Main.GptOss.Decode
 lean_exe gengptossalgorithm where

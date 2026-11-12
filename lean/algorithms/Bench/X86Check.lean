@@ -3,6 +3,8 @@ public import Bench.CpuAsm
 meta import Bench.CpuAsm
 public import Bench.ImageAsm
 meta import Bench.ImageAsm
+public import Bench.MemopsAsm
+meta import Bench.MemopsAsm
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -96,7 +98,7 @@ def integerCases : List Case := Id.run do
 def vexArithNames : List String :=
   ["vaddss", "vaddsd", "vaddps", "vaddpd", "vsubss", "vsubsd", "vsubps", "vsubpd",
    "vmulss", "vmulsd", "vmulps", "vmulpd", "vdivss", "vdivsd", "vdivps", "vdivpd",
-   "vandps", "vandpd", "vorps", "vorpd", "vxorps", "vxorpd", "vpand", "vpor", "vpxor",
+   "vandps", "vandpd", "vorps", "vorpd", "vxorps", "vxorpd", "vpand", "vpor", "vpxor", "vpcmpeqb",
    "vpaddd", "vpaddq", "vpsubd", "vpsubq", "vpaddw", "vpsubw", "vpmullw", "vpmaddwd",
    "vpackuswb", "vpackssdw", "vpunpcklwd", "vpunpckhwd"]
 
@@ -161,6 +163,13 @@ def vectorCases : List Case := Id.run do
   for s in ys vpick do
     for d in xs vpick do out := one (vextractf128 d s 0x1) :: out
     for a in someAddrs do out := one (vextractf128 (xmmword a) s 0x0) :: out
+  for v in xs vpick ++ ys vpick do
+    for r in pick do out := one (vpmovmskb (regW .d r) v) :: out
+  for d in pick do
+    for s in pick do
+      out := one (bsf (regW .d d) (regW .d s)) :: one (bsf (regW .q d) (regW .q s)) :: out
+    for a in someAddrs do
+      out := one (movzx (regW .d d) (byte a)) :: one (movzx (regW .q d) (byte a)) :: out
   for v in xs vpick do
     for r in pick do
       out := one (vmovd (regW .d r) v) :: one (vmovd v (regW .d r)) ::
@@ -208,7 +217,9 @@ def alignCases : List Case := Id.run do
 def shippedCases : List Case :=
   [("CpuBenchAsm.poly", CpuBenchAsm.poly), ("CpuBenchAsm.stream", CpuBenchAsm.stream),
    ("ImageAsm.rowpair", ImageAsm.rowpair), ("ImageAsm.boxrow", ImageAsm.boxrow),
-   ("ImageAsm.lzh", ImageAsm.lzh), ("ImageAsm.lzv", ImageAsm.lzv)]
+   ("ImageAsm.lzh", ImageAsm.lzh), ("ImageAsm.lzv", ImageAsm.lzv),
+   ("MemopsAsm.copy", MemopsAsm.copy), ("MemopsAsm.fill", MemopsAsm.fill),
+   ("MemopsAsm.compare", MemopsAsm.compare), ("MemopsAsm.differ", MemopsAsm.differ)]
 
 /-- Bodies `assemble` must refuse, and why. -/
 def refused : List (String × Body) :=
