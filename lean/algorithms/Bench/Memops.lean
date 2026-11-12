@@ -124,17 +124,19 @@ def LARGE0 : Nat := 5
 def large (slot : Nat) : LocalRef [.i64, .i64, .i64, .i64] (some .i64) := ⟨.local (LARGE0 + slot)⟩
 
 /-- **The large-size function of body `slot`**, `(n, a, b, c)`: the body on
-    `a b c` when it is mapped, else `fallback`; what either returns. Its own
-    function, so the entries' small sizes, which call nothing, save no
-    registers for the calls this makes. -/
-def largeBody (slot : Nat) (fallback : V .i64 → V .i64 → V .i64 → V .i64 → Prog V L (V .i64)) :
+    `a b c` when it is mapped, answering `answer n a b c` of what the body
+    returns, else `fallback`, answering what it does. Its own function, so the
+    entries' small sizes, which call nothing, save no registers for the calls
+    this makes. -/
+def largeBody (slot : Nat) (fallback : V .i64 → V .i64 → V .i64 → V .i64 → Prog V L (V .i64))
+    (answer : V .i64 → V .i64 → V .i64 → V .i64 → V .i64 → V .i64 := fun _ _ _ _ r => r) :
     Prog V L (V .i64) := do
   let ps ← entryParams [.i64, .i64, .i64, .i64]
   let n := ps.head; let a := ps.snd; let b := ps.thd; let c := ps.fth
   let (body, off) := ((natives.zip codeOffs)[slot]?).getD ([], CODE_OFF)
   let fn ← mapped slot body off
   let r ← ifte (jTys := [.i64]) .eq fn (← iconst64 UNMAPPED) (thn := do pure %[← fallback n a b c])
-    (els := do pure %[← nativeCall fn a b c (← iconst64 0)])
+    (els := do pure %[answer n a b c (← nativeCall fn a b c (← iconst64 0))])
   pure r.head
 
 /-- `small` under 128 bytes, else body `slot`'s large-size function on `n a b c`. -/
@@ -213,15 +215,11 @@ def order (x y : V .i64) : Prog V L (V .i64) := do
   let lt ← select (← icmp .ult x y) (← iconst64 (-1)) (← iconst64 0)
   select (← icmp .ugt x y) (← iconst64 1) lt
 
-/-- **The sign of the first byte where `a` and `b` differ** over `n` bytes:
-    from 16, 16 bytes a trip compared lane by lane until a lane differs, the
-    last 16 overlapping the trips before, and the first differing lane's bytes
-    compared; under 16, two words of 8, 4 or 2 overlapping, compared in byte
-    order (byte-swapped, so the first byte is the most significant), or the
-    one byte. -/
-def compareBytes (a b n : V .i64) : Prog V L (V .i64) := do
+/-- **`compare` under 16 bytes**: two words of 8, 4 or 2 overlapping,
+    compared in byte order (byte-swapped, so the first byte is the most
+    significant), or the one byte. -/
+def compareTiny (a b n : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
-  -- the order of two loads at offset `o`, of the width `ld` reads, as words
   let at_ (ld : V .i64 → Prog V L (V .i64)) (o : V .i64) : Prog V L (V .i64) := do
     order (← ld (← iadd a o)) (← ld (← iadd b o))
   let w64 (p : V .i64) : Prog V L (V .i64) := do bswap (← load64 p)
@@ -229,65 +227,90 @@ def compareBytes (a b n : V .i64) : Prog V L (V .i64) := do
   let w16 (p : V .i64) : Prog V L (V .i64) := do uextend64 (← bswap (← load_i16 p))
   -- the first of two orders that is not equal
   let first (x y : V .i64) : Prog V L (V .i64) := do select (← icmp .ne x zero) x y
-  let all ← iconst32 0xFFFF
-  -- the lanes of 16 bytes at `o` where `a` and `b` agree, a bit each
+  let half (w : Nat) (ld : V .i64 → Prog V L (V .i64)) : Prog V L (Vals V [.i64]) := do
+    pure %[← first (← at_ ld zero) (← at_ ld (← isub n (← iconst64 w)))]
+  let r ← ifte (jTys := [.i64]) .uge n (← iconst64 8) (thn := half 8 w64)
+    (els := ifte .uge n (← iconst64 4) (thn := half 4 w32)
+      (els := ifte .uge n (← iconst64 2) (thn := half 2 w16)
+        (els := ifte .ne n zero (thn := do pure %[← at_ uload8_64 zero]) (els := pure %[zero]))))
+  pure r.head
+
+/-- The lanes of the 16 bytes at `o1` (the low half) and the 16 at `o2` where
+    `a` and `b` agree, a bit each: all ones when every byte agrees. -/
+def agreePair (a b o1 o2 : V .i64) : Prog V L (V .i32) := do
   let agree (o : V .i64) : Prog V L (V .i32) := do
     vhighBits (← icmp .eq (← loadU (← iadd a o)) (← loadU (← iadd b o)))
-  -- the order of the first byte that differs in the 16 at `o`, given their mask
-  let firstIn (o : V .i64) (m : V .i32) : Prog V L (V .i64) := do
-    let j ← iadd o (← uextend64 (← ctz (← bxor m all)))
-    order (← uload8_64 (← iadd a j)) (← uload8_64 (← iadd b j))
+  bor (← agree o1) (← ishlImm (← agree o2) 16)
+
+/-- The order of the first byte that differs in the pair at `o1`, `o2`,
+    given its `agreePair` mask `m`, not all ones; `0` when it is all ones. -/
+def firstOfPair (a b o1 o2 : V .i64) (m : V .i32) : Prog V L (V .i64) := do
+  let r ← ifte (jTys := [.i64]) .ne m (← iconst32 0xFFFFFFFF)
+    (thn := do
+      let k ← uextend64 (← ctz (← bxor m (← iconst32 0xFFFFFFFF)))
+      let j ← select (← icmp .ult k (← iconst64 16)) (← iadd o1 k) (← iadd o2 (← isub k (← iconst64 16)))
+      pure %[← order (← uload8_64 (← iadd a j)) (← uload8_64 (← iadd b j))])
+    (els := do pure %[← iconst64 0])
+  pure r.head
+
+/-- **`compare` from 16 to 64 bytes**: the first 16 and the last 16 up to
+    32; past that the first 32, then the last 32. -/
+def comparePairs (a b n : V .i64) : Prog V L (V .i64) := do
+  let both ← iconst32 0xFFFFFFFF
+  let r ← ifte (jTys := [.i64]) .ule n (← iconst64 32)
+    (thn := do
+      let zero ← iconst64 0
+      let o2 ← isub n (← iconst64 16)
+      pure %[← firstOfPair a b zero o2 (← agreePair a b zero o2)])
+    (els := do
+      let zero ← iconst64 0
+      let o16 ← iconst64 16
+      let m ← agreePair a b zero o16
+      let r2 ← ifte (jTys := [.i64]) .ne m both (thn := do pure %[← firstOfPair a b zero o16 m])
+        (els := do
+          let o1 ← isub n (← iconst64 32)
+          let o2 ← iaddImm o1 16
+          pure %[← firstOfPair a b o1 o2 (← agreePair a b o1 o2)])
+      pure %[r2.head])
+  pure r.head
+
+/-- **The sign of the first byte where `a` and `b` differ** over `n` bytes:
+    from 16, 32 bytes a trip (two vectors' lane masks as one word) until a
+    lane differs, then the last 32 overlapping the trips (under 32, the first
+    16 and the last 16), and the first differing lane's bytes compared; under
+    16, `compareTiny`. -/
+def compareBytes (a b n : V .i64) : Prog V L (V .i64) := do
+  let zero ← iconst64 0
+  let both ← iconst32 0xFFFFFFFF
   let r ← ifte (jTys := [.i64]) .uge n (← iconst64 16)
     (thn := do
-      -- 32 bytes a trip while they agree (the two halves' masks tested as
-      -- one), the half that differs found after; then the last 16
-      let e ← isub n (← iconst64 16)
+      let one ← iconst64 1
       let e32 ← isub n (← iconst64 32)
-      let both ← iconst32 0xFFFFFFFF
-      let pairs ← wloop %[zero, both]
+      let s ← wloop %[zero, both]
         (fun cs => do
-          let more ← band (← select (← icmp .slt cs.head e32) (← iconst64 1) zero)
-            (← select (← icmp .eq cs.snd both) (← iconst64 1) zero)
+          let more ← band (← select (← icmp .slt cs.head e32) one zero)
+            (← select (← icmp .eq cs.snd both) one zero)
           pure (contIf .ne more zero, %[cs.head, cs.snd], ()))
         (fun cs _ => do
           let q := cs.head
-          let m ← bor (← agree q) (← ishlImm (← agree (← iaddImm q 16)) 16)
-          pure %[← iaddImm q 32, m])
-      -- where the trips stopped: a pair that differs (its first half if that
-      -- one does), or the 16-byte steps to the last 16
-      let q0 ← isub pairs.head (← iconst64 32)
-      let lo ← band pairs.snd all
-      let hit ← ifte (jTys := [.i64, .i32, .i64]) .ne pairs.snd both
+          pure %[← iaddImm q 32, ← agreePair a b q (← iaddImm q 16)])
+      let fin ← ifte (jTys := [.i64, .i64, .i32]) .ne s.snd both
         (thn := do
-          let r ← ifte (jTys := [.i64, .i32]) .ne lo all
-            (thn := do pure %[q0, lo])
-            (els := do pure %[← iaddImm q0 16, ← ushrImm pairs.snd 16])
-          pure %[r.head, r.snd, ← iconst64 1])
-        (els := do pure %[pairs.head, all, zero])
-      let res ← wloop %[hit.head, all, hit.head]
-        (fun cs => do
-          let more ← band (← select (← icmp .slt cs.head e) (← iconst64 1) zero)
-            (← band (← select (← icmp .eq cs.snd all) (← iconst64 1) zero)
-              (← select (← icmp .eq hit.thd zero) (← iconst64 1) zero))
-          pure (contIf .ne more zero, %[cs.snd, cs.thd], ()))
-        (fun cs _ => do pure %[← iaddImm cs.head 16, ← agree cs.head, cs.head])
-      let res ← ifte (jTys := [.i32, .i64]) .ne hit.thd zero
-        (thn := do pure %[hit.snd, hit.head]) (els := do pure %[res.head, res.snd])
-      let r2 ← ifte (jTys := [.i64]) .ne res.head all
-        (thn := do pure %[← firstIn res.snd res.head])
+          let o1 ← isub s.head (← iconst64 32)
+          pure %[o1, ← iaddImm o1 16, s.snd])
         (els := do
-          let m ← agree e
-          let r3 ← ifte (jTys := [.i64]) .ne m all (thn := do pure %[← firstIn e m]) (els := pure %[zero])
-          pure %[r3.head])
-      pure %[r2.head])
-    (els := ifte .uge n (← iconst64 8) (thn := do pure %[← first (← at_ w64 zero) (← at_ w64 (← isub n (← iconst64 8)))])
-    (els := do
-      let half (w : Nat) (ld : V .i64 → Prog V L (V .i64)) : Prog V L (Vals V [.i64]) := do
-        pure %[← first (← at_ ld zero) (← at_ ld (← isub n (← iconst64 w)))]
-      ifte .uge n (← iconst64 4) (thn := half 4 w32)
-        (els := ifte .uge n (← iconst64 2) (thn := half 2 w16)
-          (els := ifte .ne n zero (thn := do pure %[← at_ uload8_64 zero]) (els := pure %[zero])))))
+          let o1 ← select (← icmp .uge n (← iconst64 32)) e32 zero
+          let o2 ← isub n (← iconst64 16)
+          pure %[o1, o2, ← agreePair a b o1 o2])
+      pure %[← firstOfPair a b fin.head fin.snd fin.thd])
+    (els := do pure %[← compareTiny a b n])
   pure r.head
+
+/-- Where `memcmp`'s middle-size function sits (65 up to 128 bytes): its own
+    function, so the entry's smaller sizes save no registers its loop uses. -/
+def MID_COMPARE : Nat := LARGE0 + 4
+
+def midCompare : LocalRef [.i64, .i64, .i64, .i64] (some .i64) := ⟨.local MID_COMPARE⟩
 
 /-- **Whether `a` and `b` differ** over `n` bytes, `1` or `0`: the or of
     every piece's exclusive or (from 32, 32 bytes a trip in vectors and the
@@ -338,13 +361,22 @@ def differBytes (a b n : V .i64) : Prog V L (V .i64) := do
 /-! ## The entries -/
 
 
+/-- **The middle-size function** `(n, a, b, c)`: `f` on them. -/
+def midBody (f : V .i64 → V .i64 → V .i64 → V .i64 → Prog V L (V .i64)) : Prog V L (V .i64) := do
+  let ps ← entryParams [.i64, .i64, .i64, .i64]
+  f ps.head ps.snd ps.thd ps.fth
+
 def memcmpBody : Prog V L (V .i64) := do
   let n ← dataLen
   let r ← ifte (jTys := [.i64]) .ule n (← outLen)
     (thn := do
       let a ← dataPtr
       let b ← outPtr
-      pure %[← viaNative COMPARE_SLOT n a b n (compareBytes a b n)])
+      let r ← ifte (jTys := [.i64]) .ult n (← iconst64 16) (thn := do pure %[← compareTiny a b n])
+        (els := ifte .ule n (← iconst64 64) (thn := do pure %[← comparePairs a b n])
+          (els := ifte .ult n (← iconst64 128) (thn := do pure %[← callLocal midCompare %[n, a, b, n]])
+            (els := do pure %[← callLocal (large COMPARE_SLOT) %[n, a, b, n]])))
+      pure %[r.head])
     (els := do pure %[← iconst64 0])
   pure r.head
 
@@ -358,41 +390,57 @@ def bcmpBody : Prog V L (V .i64) := do
     (els := do pure %[← iconst64 0])
   pure r.head
 
-def memcpyBody : Prog V L Unit := do
+/-- `memcpy`: the input copied to the output when it fits; the output's
+    address, as C's `memcpy` answers its destination (`0` when it does not
+    fit). -/
+def memcpyBody : Prog V L (V .i64) := do
   let n ← dataLen
-  when .ule n (← outLen) do
-    let s ← dataPtr
-    let d ← outPtr
-    let _ ← viaNative COPY_SLOT n s d n (do copyBytes s d n; iconst64 0)
+  let r ← ifte (jTys := [.i64]) .ule n (← outLen)
+    (thn := do
+      let s ← dataPtr
+      let d ← outPtr
+      pure %[← viaNative COPY_SLOT n s d n (do copyBytes s d n; pure d)])
+    (els := do pure %[← iconst64 0])
+  pure r.head
 
-/-- `memset`'s byte in each of a word's 8, and in each lane of a vector. -/
-def setWide (c : V .i64) : Prog V L Unit := do
+/-- The output filled with `c`'s low byte, in each of a word's 8 and each
+    lane of a vector; the output's address. -/
+def setWide (c : V .i64) : Prog V L (V .i64) := do
   let c64 ← imul c (← iconst64 0x0101010101010101)
   let d ← outPtr
   let n ← outLen
-  let _ ← viaNative FILL_SLOT n d n c64 (do setBytes d n c64 (← splat .i8x16 (← ireduce .i8 c)); iconst64 0)
+  viaNative FILL_SLOT n d n c64 (do setBytes d n c64 (← splat .i8x16 (← ireduce .i8 c)); pure d)
 
-def memsetBody : Prog V L Unit := do
-  when .uge (← dataLen) (← iconst64 1) do setWide (← uload8_64 (← dataPtr))
+/-- `memset`: the output filled with the input's first byte; the output's
+    address, as C's `memset` answers its destination (`0` with no input
+    byte). -/
+def memsetBody : Prog V L (V .i64) := do
+  let r ← ifte (jTys := [.i64]) .uge (← dataLen) (← iconst64 1)
+    (thn := do pure %[← setWide (← uload8_64 (← dataPtr))]) (els := do pure %[← iconst64 0])
+  pure r.head
 
-def bzeroBody : Prog V L Unit := do setWide (← iconst64 0)
+def bzeroBody : Prog V L Unit := do let _ ← setWide (← iconst64 0)
 
 def clifIR : Except String (List FuncData) :=
   Prog.program
-    [Prog.entry "memcpy" (Prog.compileProg 0 memcpyBody),
-     Prog.entry "memset" (Prog.compileProg 1 memsetBody),
+    [Prog.entry "memcpy" (Prog.compileProgStatus 0 memcpyBody),
+     Prog.entry "memset" (Prog.compileProgStatus 1 memsetBody),
      Prog.entry "bzero" (Prog.compileProg 2 bzeroBody),
      Prog.entry "memcmp" (Prog.compileProgStatus 3 memcmpBody),
      Prog.entry "bcmp" (Prog.compileProgStatus 4 bcmpBody),
      Prog.compileProgStatus (LARGE0 + COPY_SLOT)
-       (largeBody COPY_SLOT fun n s d _ => do copyBytes s d n; iconst64 0) (List.replicate 4 .i64),
+       (largeBody COPY_SLOT (fun n s d _ => do copyBytes s d n; pure d) fun _ _ d _ _ => d)
+       (List.replicate 4 .i64),
      Prog.compileProgStatus (LARGE0 + FILL_SLOT)
-       (largeBody FILL_SLOT fun n d _ c64 => do
-         setBytes d n c64 (← splat .i8x16 (← ireduce .i8 c64)); iconst64 0) (List.replicate 4 .i64),
+       (largeBody FILL_SLOT (fun n d _ c64 => do
+         setBytes d n c64 (← splat .i8x16 (← ireduce .i8 c64)); pure d) fun _ d _ _ _ => d)
+       (List.replicate 4 .i64),
      Prog.compileProgStatus (LARGE0 + COMPARE_SLOT)
        (largeBody COMPARE_SLOT fun n a b _ => compareBytes a b n) (List.replicate 4 .i64),
      Prog.compileProgStatus (LARGE0 + DIFFER_SLOT)
-       (largeBody DIFFER_SLOT fun n a b _ => differBytes a b n) (List.replicate 4 .i64)]
+       (largeBody DIFFER_SLOT fun n a b _ => differBytes a b n) (List.replicate 4 .i64),
+     Prog.compileProgStatus MID_COMPARE (midBody fun n a b _ => compareBytes a b n)
+       (List.replicate 4 .i64)]
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "memops" { functions := clif, required_memory := MEM_SIZE, initial_memory := initialMemory }]

@@ -12,8 +12,9 @@
 //              (memcpy, memset, bzero, memcmp, bcmp; memmove is not one, as
 //              base's functions take an input and an output that do not
 //              overlap). Each call goes through a wrapper here that puts the
-//              arguments in the C API's order (about 1 ns a call: base's C API
-//              takes (in, in_len, out, out_len), not a libc signature).
+//              arguments in the C API's order and jumps to base's function
+//              (base's C API takes (in, in_len, out, out_len), not a libc
+//              signature).
 // Rust's core and std call the C library's functions on Linux, so glibc is
 // what a Rust program gets.
 //
@@ -121,14 +122,19 @@ static void base_load() {
   }();
 }
 
+// base's memcpy and memset answer the output's address, as libc's answer
+// their destination, so each wrapper is one tail call; memset's byte is read
+// from a table of every byte value.
 static void *base_memcpy(void *__restrict d, const void *__restrict s, size_t n) {
-  g_base.memcpy_((const uint8_t *)s, n, (uint8_t *)d, n);
-  return d;
+  return (void *)g_base.memcpy_((const uint8_t *)s, n, (uint8_t *)d, n);
 }
+static constexpr auto kBytes = [] {
+  struct { uint8_t b[256]; } t{};
+  for (int i = 0; i < 256; ++i) t.b[i] = (uint8_t)i;
+  return t;
+}();
 static void *base_memset(void *d, int c, size_t n) {
-  uint8_t b = (uint8_t)c;
-  g_base.memset_(&b, 1, (uint8_t *)d, n);
-  return d;
+  return (void *)g_base.memset_(&kBytes.b[(uint8_t)c], 1, (uint8_t *)d, n);
 }
 static void base_bzero(void *d, size_t n) { g_base.bzero_(nullptr, 0, (uint8_t *)d, n); }
 // The second buffer is the C API's output, which these only read.
