@@ -1822,7 +1822,7 @@ theorem code_ballot (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d :
     obtain rfl := (Option.some.inj hr).symm
     simp only [Body.stmt, Body.stmtT, Body.leaf]
     refine wpE_bind (wpE_ipred hE hS p (Extends.refl _) fun pv Γ1 hx1 hp => ?_)
-    refine wpE_bind (wpE_coll1 hA (c := .ballot) rfl Body.ballotR rfl hp hs rfl (valAt_words hW _) ?_)
+    refine wpE_bind (wpE_coll1 hA (c := .ballot) rfl AlgorithmLib.Kernel.Block.ballotR rfl hp hs rfl (valAt_words hW _) ?_)
     refine wpE_bind (wpE_uext32 (get_push_size) fun v Γ2 hx2 hv => ?_)
     have hx := hx1.trans ((Extends.push _ _).trans hx2)
     have hlt := ansW_lt x.ans (collCalls st.w x.start).length
@@ -1842,7 +1842,7 @@ theorem code_shflIdx (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d 
     simp only [Body.stmt, Body.stmtT, Body.leaf]
     refine wpE_bind ((wpE_exp hE hS v).2 (Extends.refl _) fun vv Γ1 hx1 hvv => ?_)
     refine wpE_bind ((wpE_exp hE hS sr).2 hx1 fun vs Γ2 hx2 hvs => ?_)
-    refine wpE_bind (wpE_coll2 hA (c := .shflIdx) rfl Body.shflIdxR rfl (hx2.get hvv) hvs hs rfl
+    refine wpE_bind (wpE_coll2 hA (c := .shflIdx) rfl AlgorithmLib.Kernel.Block.shflIdx rfl (hx2.get hvv) hvs hs rfl
       (valAt_words hW _) ?_)
     refine wpE_bind (wpE_uext32 (get_push_size) fun o Γ3 hx3 ho => ?_)
     have hx := hx1.trans (hx2.trans ((Extends.push _ _).trans hx3))

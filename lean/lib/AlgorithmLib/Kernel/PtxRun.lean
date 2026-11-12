@@ -309,6 +309,9 @@ def exec (c : Ctx) : Instr → M Next
         let k := ((sel >>> UInt64.ofNat (4 * i)) &&& 7).toNat
         acc ||| (bytes.getD k 0 <<< UInt64.ofNat (8 * i))) 0
       setReg d r; pure .step
+  | .dp4a d a b e => do
+      let x ← opnd c a; let y ← opnd c b; let z ← opnd c e
+      setReg d (Intr.dp4aVal x y z); pure .step
   | .ld sp _ t d a => do setReg d (← load c sp t a); pure .step
   | .st sp t a v => do store c sp t a (← opnd c v); pure .step
   | .shfl m d a b cl _ => do

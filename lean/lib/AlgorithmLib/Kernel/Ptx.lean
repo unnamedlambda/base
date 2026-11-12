@@ -586,6 +586,7 @@ def inst (i : Inst) : LM Unit := do
   | .call (some d) (.intr .shflIdx) [v, m] => do
       let x ← o v; emit (.shfl .idx (regOf .i32 d) x (← o m) (.imm 31) (.imm 0xffffffff))
   | .call (some d) (.intr .ballot) [v] => do emit (.vote (regOf .i32 d) (← o v) (.imm 0xffffffff))
+  | .call (some d) (.intr .dp4a) [a, b, e] => do emit (.dp4a (regOf .i32 d) (← o a) (← o b) (← o e))
   | .call none (.intr .barrier) [] => do
       emit (if (← facts?).warp then .barWarp (.imm 0xffffffff) else .bar 0)
   | .call (some d) (.intr c) [v] =>
@@ -743,12 +744,14 @@ def defOut (inn : Std.HashSet Nat) (b : BlockData) : Std.HashSet Nat :=
 
 /-- What every run has defined on entry to each block, by block id: nothing
     on entry to the first; elsewhere what every edge into the block has
-    defined, found by iterating from "everything" (`none`). -/
+    defined, found by iterating from "everything" (`none`) until a pass
+    changes nothing (a set only shrinks, so that is the fixpoint). -/
 def definedIn (f : FuncData) : Std.HashMap Nat (Std.HashSet Nat) := Id.run do
   let mut inn : Std.HashMap Nat (Option (Std.HashSet Nat)) :=
     (f.blocks.map fun b => (b.ref.id, if b.ref.id == 0 then some {} else none)).foldl
       (fun m (k, v) => m.insert k v) {}
   for _ in [0:f.blocks.length + 2] do
+    let mut changed := false
     for b in f.blocks do
       match inn.getD b.ref.id none with
       | none => pure ()
@@ -757,9 +760,13 @@ def definedIn (f : FuncData) : Std.HashMap Nat (Std.HashSet Nat) := Id.run do
           for i in b.insts do
             for t in Inst.targets i do
               if t.id != 0 then
-                inn := inn.insert t.id (some (match inn.getD t.id none with
-                  | none => out
-                  | some s' => s'.filter out.contains))
+                match inn.getD t.id none with
+                | none => inn := inn.insert t.id (some out); changed := true
+                | some s' =>
+                    let s'' := s'.filter out.contains
+                    if s''.size != s'.size then
+                      inn := inn.insert t.id (some s''); changed := true
+    if !changed then break
   return inn.fold (fun m k v => match v with
     | some s => m.insert k s
     | none => m) {}
@@ -970,6 +977,7 @@ def takes (F : Ptx.Facts) : Inst → Bool
   | .call (some _) (.intr .shflBfly) [v, m] | .call (some _) (.intr .shflIdx) [v, m] =>
       isTy F v [.i32] && isTy F m [.i32]
   | .call (some _) (.intr .ballot) [v] => isTy F v [.i8]
+  | .call (some _) (.intr .dp4a) [a, b, e] => isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
   | .call none (.intr .barrier) [] => true
   | .call (some _) (.intr c) [v] => (Ptx.approxOp c).isSome && isTy F v [.f32]
   | .jump .. | .brif .. | .ret none => true

@@ -147,6 +147,9 @@ inductive Instr where
   | setp (c : Cmp) (t : Ty) (p : Reg) (a b : Opnd)
   | selp (t : Ty) (d : Reg) (a b : Opnd) (p : Opnd)
   | prmt (d : Reg) (a b c : Opnd)
+  /-- `dp4a.s32.s32`: `c` plus the dot product of the four signed bytes of
+      `a` and of `b`. -/
+  | dp4a (d : Reg) (a b c : Opnd)
   | ld (sp : Space) (nc : Bool) (t : Ty) (d : Reg) (a : Addr)
   | st (sp : Space) (t : Ty) (a : Addr) (v : Opnd)
   | shfl (m : Shfl) (d : Reg) (a b c mask : Opnd)
@@ -247,6 +250,7 @@ def Instr.text : Instr → String
   | .setp c t p a b => s!"setp.{c.name}.{t.name} {p.text}, {a.text}, {b.text}"
   | .selp t d a b p => s!"selp.{t.name} {d.text}, {a.text}, {b.text}, {p.text}"
   | .prmt d a b c => s!"prmt.b32 {d.text}, {a.text}, {b.text}, {c.text}"
+  | .dp4a d a b c => s!"dp4a.s32.s32 {d.text}, {a.text}, {b.text}, {c.text}"
   | .ld sp nc t d a => s!"ld{sp.dot}{if nc then ".nc" else ""}.{t.name} {d.text}, {a.text}"
   | .st sp t a v => s!"st{sp.dot}.{t.name} {a.text}, {v.text}"
   | .shfl m d a b c k => s!"shfl.sync.{m.name}.b32 {d.text}, {a.text}, {b.text}, {c.text}, {k.text}"

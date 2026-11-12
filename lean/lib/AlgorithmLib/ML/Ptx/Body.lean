@@ -40,13 +40,10 @@ jumps to the loop's head, with no join (`Tail`, `goRound`).
 namespace AlgorithmLib.ML.Body
 
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog AlgorithmLib.ML AlgorithmLib.Kernel AlgorithmLib.HProg.Sem
-open AlgorithmLib.Kernel.Block (shflBfly barrier ex2Approx c32)
+open AlgorithmLib.Kernel.Block (shflBfly shflIdx barrier ex2Approx c32 ballotR)
 
 section
 variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
-
-def ballotR : LocalRef [.i8] (some .i32) := { callee := .intr .ballot }
-def shflIdxR : LocalRef [.i32, .i32] (some .i32) := { callee := .intr .shflIdx }
 
 /-- What a statement sees: the thread's lane and block, the buffers'
     addresses, shared memory's, the innermost loop's counter, and zeros. -/
@@ -419,7 +416,7 @@ def leaf (c : Ctx V) : Regs V → EWStmt → Prog V L (Regs V)
       pure (setW r d (← uextend64 m) m)
   | r, .shflIdx d v s => do
       let x ← low32 c r v
-      let o ← callLocal shflIdxR %[x, ← low32 c r s]
+      let o ← callLocal shflIdx %[x, ← low32 c r s]
       pure (setW r d (← uextend64 o) o)
   | r, _ => pure r
 

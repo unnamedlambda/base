@@ -300,6 +300,10 @@ def vxorpd (a b c : Opd) : Item := .ins "vxorpd" [a, b, c]
 def vpand (a b c : Opd) : Item := .ins "vpand" [a, b, c]
 def vpor (a b c : Opd) : Item := .ins "vpor" [a, b, c]
 def vpxor (a b c : Opd) : Item := .ins "vpxor" [a, b, c]
+def vpcmpeqb (a b c : Opd) : Item := .ins "vpcmpeqb" [a, b, c]
+def vpmovmskb (a b : Opd) : Item := .ins "vpmovmskb" [a, b]
+def bsf (a b : Opd) : Item := .ins "bsf" [a, b]
+def movzx (a b : Opd) : Item := .ins "movzx" [a, b]
 def vpaddd (a b c : Opd) : Item := .ins "vpaddd" [a, b, c]
 def vpaddq (a b c : Opd) : Item := .ins "vpaddq" [a, b, c]
 def vpsubd (a b c : Opd) : Item := .ins "vpsubd" [a, b, c]
@@ -527,7 +531,7 @@ def vexArith : String → Option (Nat × UInt8 × Bool)
   | "vorps" => some (0, 0x56, true) | "vorpd" => some (1, 0x56, true)
   | "vxorps" => some (0, 0x57, true) | "vxorpd" => some (1, 0x57, true)
   | "vpand" => some (1, 0xDB, true) | "vpor" => some (1, 0xEB, true)
-  | "vpxor" => some (1, 0xEF, true)
+  | "vpxor" => some (1, 0xEF, true) | "vpcmpeqb" => some (1, 0x74, true)
   | "vpaddd" => some (1, 0xFE, true) | "vpaddq" => some (1, 0xD4, true)
   | "vpsubd" => some (1, 0xFA, true) | "vpsubq" => some (1, 0xFB, true)
   | "vpaddw" => some (1, 0xFD, true) | "vpsubw" => some (1, 0xF9, true)
@@ -683,6 +687,16 @@ def encode (mn : String) (ops : List Opd) : Except String Enc := do
     let imm := leInt (if d.w == .b then 1 else 4) v
     if d.n == 0 then return legacy (d.w == .q) (byteOp d.w 0xA9) 0 { bytes := [] } imm
     return legacy (d.w == .q) (byteOp d.w 0xF7) 0 (rmReg 0 d) imm
+  | "bsf", [.r d, .r s] =>
+    if d.w != s.w || d.w == .b then throw "bsf takes two 32- or 64-bit registers"
+    return legacy (d.w == .q) [0x0F, 0xBC] d.n (rmReg d.n s)
+  | "movzx", [.r d, .m m] =>
+    if d.w == .b then throw "movzx widens into a 32- or 64-bit register"
+    if m.size != 1 then throw "movzx here reads a byte"
+    return legacy (d.w == .q) [0x0F, 0xB6] d.n (← rmMem d.n m.addr)
+  | "vpmovmskb", [.r d, .v s] =>
+    if d.w != .d then throw "vpmovmskb writes a 32-bit register"
+    return vex 1 1 false s.ymm 0xD7 d.n 0 (rmVReg d.n s)
   | "inc", [.r d] => return legacy (d.w == .q) (byteOp d.w 0xFF) 0 (rmReg 0 d)
   | "dec", [.r d] => return legacy (d.w == .q) (byteOp d.w 0xFF) 1 (rmReg 1 d)
   | "vshufps", [.v d, .v s1, s2, .i x] =>

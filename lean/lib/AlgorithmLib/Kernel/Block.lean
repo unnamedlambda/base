@@ -28,6 +28,8 @@ section
 variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 
 def shflBfly : LocalRef [.i32, .i32] (some .i32) := { callee := .intr .shflBfly }
+/-- `shfl.sync.idx`: lane `src`'s value, to every lane that asks. -/
+def shflIdx : LocalRef [.i32, .i32] (some .i32) := { callee := .intr .shflIdx }
 def barrier : LocalRef [] none := { callee := .intr .barrier }
 def ex2Approx : LocalRef [.f32] (some .f32) := { callee := .intr .ex2Approx }
 def rcpApprox : LocalRef [.f32] (some .f32) := { callee := .intr .rcpApprox }
@@ -36,6 +38,8 @@ def sinApprox : LocalRef [.f32] (some .f32) := { callee := .intr .sinApprox }
 def cosApprox : LocalRef [.f32] (some .f32) := { callee := .intr .cosApprox }
 def sqrtApprox : LocalRef [.f32] (some .f32) := { callee := .intr .sqrtApprox }
 def rsqrtApprox : LocalRef [.f32] (some .f32) := { callee := .intr .rsqrtApprox }
+/-- `dp4a.s32.s32`: `c` plus the dot product of `a`'s and `b`'s signed bytes. -/
+def dp4a : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .dp4a }
 
 def c32 (k : Nat) : Prog V L (V .i32) := iconst32 (Int.ofNat k)
 def c64n (k : Nat) : Prog V L (V .i64) := iconst64 (Int.ofNat k)
@@ -122,6 +126,30 @@ def blockAll (tid : V .i32) (sm : V .i64) (off warps : Nat)
   for k in List.range' 1 (warps - 1) do
     acc ← op acc (← loadF32 (← at_ slot (4 * k)))
   pure acc
+
+/-- `vote.sync.ballot`: bit `l` set where lane `l` passed true. -/
+def ballotR : LocalRef [.i8] (some .i32) := { callee := .intr .ballot }
+
+/-- The set bits of `x` (the PTX compiler has no `popc`): pairs, nibbles,
+    bytes, then the bytes summed by a multiply. -/
+def popc32 (x : V .i32) : Prog V L (V .i32) := do
+  let a ← isub x (← band (← ushrImm x 1) (← c32 0x55555555))
+  let b ← iadd (← band a (← c32 0x33333333)) (← band (← ushrImm a 2) (← c32 0x33333333))
+  let c ← band (← iadd b (← ushrImm b 4)) (← c32 0x0F0F0F0F)
+  ushrImm (← imul c (← c32 0x01010101)) 24
+
+/-- `1` where `c` holds, else `0`. -/
+def bit (c : V .i8) : Prog V L (V .i32) := do select c (← c32 1) (← c32 0)
+
+/-- The lanes holding the same 8-bit digit `d` as this one, among the lanes
+    where `active` holds: one ballot of `active`, then one a bit of `d`. -/
+def peers (d : V .i32) (active : V .i8) : Prog V L (V .i32) := do
+  let mut m ← callLocal ballotR %[active]
+  for b in List.range 8 do
+    let isSet ← icmp .ne (← band (← ushrImm d b) (← c32 1)) (← c32 0)
+    let bal ← callLocal ballotR %[isSet]
+    m ← band m (← select isSet bal (← bxor bal (← c32 0xFFFFFFFF)))
+  pure m
 
 /-- The lowest finite `Float32`: the maximum of a softmax state that has seen
     nothing, and what an input's `-∞` is raised to (`lowest`). With no

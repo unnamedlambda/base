@@ -189,6 +189,9 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
         let k := ((sel >>> UInt64.ofNat (4 * i)) &&& 7).toNat
         acc ||| (bytes.getD k 0 <<< UInt64.ofNat (8 * i))) 0
       pure (.step, w, some (d, r))
+  | .dp4a d a b e => do
+      let x ← opndV c regs a; let y ← opndV c regs b; let z ← opndV c regs e
+      pure (.step, w, some (d, Intr.dp4aVal x y z))
   | .ld sp _ t d a => do
       let v ← loadV c regs w sp t a
       pure (.step, w, some (d, v))
@@ -361,6 +364,11 @@ theorem exec_run (c : Ctx) (i : Instr) (ts : TS) :
       rd opndV c ts.regs a
       rd opndV c ts.regs b
       rd opndV c ts.regs x
+  | dp4a d a b x =>
+      simp only [exec, stepV]; norm
+      rd opndV c ts.regs a
+      rd opndV c ts.regs b
+      rd opndV c ts.regs x
   | ld sp nc t d a =>
       simp only [exec, stepV]; norm
       rd loadV c ts.regs ts.w sp t a
@@ -515,6 +523,11 @@ theorem stepV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren
       cases opndV c regs a <;> try rfl
       cases opndV c regs b <;> rfl
   | prmt d a b x =>
+      rw_reads; rw [R a (by ag hag), R b (by ag hag), R x (by ag hag)]
+      cases opndV c regs a <;> try rfl
+      cases opndV c regs b <;> try rfl
+      cases opndV c regs x <;> rfl
+  | dp4a d a b x =>
       rw_reads; rw [R a (by ag hag), R b (by ag hag), R x (by ag hag)]
       cases opndV c regs a <;> try rfl
       cases opndV c regs b <;> try rfl

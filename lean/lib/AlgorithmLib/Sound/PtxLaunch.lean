@@ -151,6 +151,7 @@ theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array B
   | cosApprox => rfl
   | sqrtApprox => rfl
   | rsqrtApprox => rfl
+  | dp4a => rfl
 
 /-- **The laws read the records only as their view.** -/
 theorem answers_view (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))

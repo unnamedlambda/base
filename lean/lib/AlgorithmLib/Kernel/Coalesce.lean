@@ -69,6 +69,7 @@ def Instr.ren (ρ : Ren) : Instr → Instr
   | .setp c t p a b => .setp c t (Reg.ren ρ p) (Opnd.ren ρ a) (Opnd.ren ρ b)
   | .selp t d a b p => .selp t (Reg.ren ρ d) (Opnd.ren ρ a) (Opnd.ren ρ b) (Opnd.ren ρ p)
   | .prmt d a b c => .prmt (Reg.ren ρ d) (Opnd.ren ρ a) (Opnd.ren ρ b) (Opnd.ren ρ c)
+  | .dp4a d a b c => .dp4a (Reg.ren ρ d) (Opnd.ren ρ a) (Opnd.ren ρ b) (Opnd.ren ρ c)
   | .ld sp nc t d a => .ld sp nc t (Reg.ren ρ d) (Addr.ren ρ a)
   | .st sp t a v => .st sp t (Addr.ren ρ a) (Opnd.ren ρ v)
   | .shfl m d a b c k => .shfl m (Reg.ren ρ d) (Opnd.ren ρ a) (Opnd.ren ρ b) (Opnd.ren ρ c) (Opnd.ren ρ k)
@@ -91,7 +92,7 @@ def Opnd.regs : Opnd → List Reg
 def Instr.uses : Instr → List Reg
   | .mov _ _ a | .un _ _ _ _ a | .cvt _ _ _ _ a | .cvta _ _ _ _ a => Opnd.regs a
   | .bin _ _ _ _ a b | .setp _ _ _ a b => Opnd.regs a ++ Opnd.regs b
-  | .fma _ _ _ a b c | .prmt _ a b c => Opnd.regs a ++ Opnd.regs b ++ Opnd.regs c
+  | .fma _ _ _ a b c | .prmt _ a b c | .dp4a _ a b c => Opnd.regs a ++ Opnd.regs b ++ Opnd.regs c
   | .selp _ _ a b p => Opnd.regs a ++ Opnd.regs b ++ Opnd.regs p
   | .ld _ _ _ _ a => Opnd.regs a.base
   | .st _ _ a v => Opnd.regs a.base ++ Opnd.regs v
@@ -103,7 +104,7 @@ def Instr.uses : Instr → List Reg
 /-- The register an instruction writes, if any. -/
 def Instr.def? : Instr → Option Reg
   | .mov _ d _ | .bin _ _ _ d _ _ | .un _ _ _ d _ | .fma _ _ d _ _ _ | .cvt _ _ _ d _
-  | .cvta _ _ _ d _ | .setp _ _ d _ _ | .selp _ d _ _ _ | .prmt d _ _ _ | .ld _ _ _ d _
+  | .cvta _ _ _ d _ | .setp _ _ d _ _ | .selp _ d _ _ _ | .prmt d _ _ _ | .dp4a d _ _ _ | .ld _ _ _ d _
   | .shfl _ d _ _ _ _ | .vote d _ _ => some d
   | _ => none
 
@@ -229,8 +230,9 @@ def plan (e : Entry) : Ren × Array (List Reg) := Id.run do
   let live := liveness body (body.size + 2)
   let tys := declTypes e
   let bd := bounds body
-  -- interference: a written register against every other register live after
-  let mut inter : Std.HashMap Reg (Std.HashSet Reg) := {}
+  -- interference: a written register against every other register live after,
+  -- as one set of pairs (both orders)
+  let mut inter : Std.HashSet (Reg × Reg) := {}
   let mut moves : Array (Reg × Reg) := #[]
   for pc in List.range body.size do
     let l := body.getD pc (.label (.blk 0))
@@ -241,8 +243,7 @@ def plan (e : Entry) : Ren × Array (List Reg) := Id.run do
         | some d =>
             for r in out do
               if r != d then
-                inter := inter.insert d ((inter.getD d {}).insert r)
-                inter := inter.insert r ((inter.getD r {}).insert d)
+                inter := (inter.insert (d, r)).insert (r, d)
             match g, i with
             | none, .mov t d' (.reg s) =>
                 -- merged only where the move, left copying a register to itself, can go
@@ -250,10 +251,9 @@ def plan (e : Entry) : Ren × Array (List Reg) := Id.run do
             | _, _ => pure ()
         | none => pure ()
     | _ => pure ()
-  -- union of classes, each class's members and the registers they meet
+  -- union of classes: two merge where no member of one meets one of the other
   let mut rep : Std.HashMap Reg Reg := {}
   let mut members : Std.HashMap Reg (List Reg) := {}
-  let mut meets : Std.HashMap Reg (Std.HashSet Reg) := {}
   let find (rep : Std.HashMap Reg Reg) (r : Reg) : Reg := rep.getD r r
   for (d, s) in moves do
     let a := find rep d
@@ -261,12 +261,9 @@ def plan (e : Entry) : Ren × Array (List Reg) := Id.run do
     if a != b && renamable a && renamable b && tys.get? a == tys.get? b && (tys.get? a).isSome then
       let ma := members.getD a [a]
       let mb := members.getD b [b]
-      let mtA := meets.getD a (inter.getD a {})
-      if !(mb.any fun x => mtA.contains x) then
-        let mtB := meets.getD b (inter.getD b {})
+      if !(mb.any fun x => ma.any fun y => inter.contains (y, x)) then
         for x in ma do rep := rep.insert x b
         members := members.insert b (mb ++ ma)
-        meets := meets.insert b (mtA.fold (fun s x => s.insert x) mtB)
   pure (rep, live)
 
 /-- No label of `body`, and no label it jumps to, is a removed move's
