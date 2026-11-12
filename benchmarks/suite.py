@@ -45,6 +45,7 @@ SUITES = {
     "hashtable": [[]],
     "analytics": [[]],
     "json": [[]],
+    "protobuf": [[]],
     # alone and without the memory cap (its engines keep ~10 GB resident)
     "llm": [[]],
     # run here, not yet in the table: their reports have no headline()
