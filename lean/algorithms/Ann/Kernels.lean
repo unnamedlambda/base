@@ -586,16 +586,20 @@ def segmentsBody : Prog V L Unit := do
     when .ne (← bor isLast differs2) (← c32 0) do
       storeI32 (← iadd i (← c32 1)) (← at4 en k)
 
+/-- Elements a thread reads a trip of `rowSelectBody`'s passes. -/
+def SEL_U : Nat := 4
+
 /-- **The `k` smallest of each row**, in no order: their column indices. A
-    block of eight warps a row of `cols` floats: four passes of an 8-bit radix
-    select over the keys' order bits find the `k`-th smallest exactly (each
-    warp counting its elements' digits into its own histogram, a digit's count
-    added by the lowest lane holding it, the eight summed per digit), then the
-    block collects the keys below it and as many equal to it as are needed, in
-    column order, each warp's place from the warps before it. Every thread
+    block of eight warps a row of `cols` floats, `SEL_U` elements a thread a
+    trip: four passes of an 8-bit radix select over the keys' order bits find
+    the `k`-th smallest exactly (each warp adding its elements' digits into its
+    own histogram by shared adds, the eight summed per digit), then one pass
+    collects the keys below it and as many equal to it as are needed, a trip's
+    in warp order, each warp's place from the warps before it. Every thread
     makes the same number of trips, so the block's barriers inside them hold.
     Shared memory: eight histograms of 256 counts, their sums, the digit found
-    and the count below it, each warp's count of a trip. `meta`: `cols`, `k`. -/
+    and the count below it, each warp's two counts of a trip. `meta`: `cols`,
+    `k`. -/
 def rowSelectBody : Prog V L Unit := do
   let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
   let row := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
@@ -607,7 +611,7 @@ def rowSelectBody : Prog V L Unit := do
   let xr ← iadd x (← ishlImm (← imul (← ext row) (← ext cols)) 2)
   let orow ← iadd out (← ishlImm (← imul (← ext row) (← ext k)) 2)
   let ltMask ← isub (← ishl (← c32 1) lane) (← c32 1)
-  let trips ← udiv (← iadd cols (← c32 255)) (← c32 256)
+  let tripsU ← udiv (← iadd cols (← c32 (256 * SEL_U - 1))) (← c32 (256 * SEL_U))
   let hist ← at4 sm (← ishlImm warp 8)
   let tot ← at_ sm (8 * 1024)
   let found ← at_ sm (9 * 1024)
@@ -620,23 +624,23 @@ def rowSelectBody : Prog V L Unit := do
       storeI32 (← c32 0) (← at4 sm (← iadd (← ishlImm tid 3) (← c32 r)))
     callLocalVoid barrier %[]
     let shift ← c32 shiftN
-    let _ ← wloop %[← c32 0] (fun cs => pure (contIfULt cs.head trips, %[], ()))
+    let one ← c32 1
+    let _ ← wloop %[← c32 0] (fun cs => pure (contIfULt cs.head tripsU, %[], ()))
       (fun cs _ => do
-        let i ← iadd (← ishlImm cs.head 8) tid
-        let inRow ← icmp .ult i cols
-        let bits ← orderBits (← loadF32 (← at4 xr (← select inRow i (← c32 0))))
-        let inPfx ← bit (← icmp .eq (← band bits pmask) pfx)
-        let active ← icmp .ne (← band (← bit inRow) inPfx) (← c32 0)
-        let d ← band (← ushr bits shift) (← c32 255)
-        -- a warp with nothing left in the prefix skips the digit's peers
-        when .ne (← callLocal ballotR %[active]) (← c32 0) do
-          let m ← peers d active
-          when .ne (← bit active) (← c32 0) do
-            when .eq (← ctz m) lane do
-              let slot ← at4 hist d
-              storeI32 (← iadd (← load32 slot) (← popcnt m)) slot
-        callLocalVoid barrier %[]
+        let i0 ← iadd (← imul cs.head (← c32 (256 * SEL_U))) tid
+        let mut elems := #[]
+        for u in List.range SEL_U do
+          let i ← iadd i0 (← c32 (256 * u))
+          let inRow ← icmp .ult i cols
+          elems := elems.push (inRow, ← loadF32 (← at4 xr (← select inRow i (← c32 0))))
+        for (inRow, x) in elems do
+          let bits ← orderBits x
+          let inPfx ← bit (← icmp .eq (← band bits pmask) pfx)
+          let active ← icmp .ne (← band (← bit inRow) inPfx) (← c32 0)
+          let d ← band (← ushr bits shift) (← c32 255)
+          when .ne (← bit active) (← c32 0) do callLocalVoid sharedAdd %[← at4 hist d, one]
         pure %[← iadd cs.head (← c32 1)])
+    callLocalVoid barrier %[]
     -- each digit's count over the eight warps
     let mut sum ← c32 0
     for w in List.range WARPS do
@@ -668,36 +672,55 @@ def rowSelectBody : Prog V L Unit := do
     pfx ← bor pfx (← ishlImm dig shiftN)
     pmask ← bor pmask (← c32 (255 * 2 ^ shiftN))
     need ← isub need below
-  -- collect: below the threshold, then `need` equal to it, in column order;
-  -- a warp's place is the block's count so far and the warps' before it
-  let collect (eqPass : Bool) (pos0 cap : V .i32) : Prog V L (V .i32) := do
-    let r ← wloop %[← c32 0, pos0, cap] (fun cs => pure (contIfULt cs.head trips, %[cs.snd], ()))
-      (fun cs _ => do
-        let i ← iadd (← ishlImm cs.head 8) tid
+  -- collect, in one pass: each key below the threshold at its place among
+  -- them, and the first `need` equal to it after those (`k - need` below); a
+  -- trip's places in warp order, a warp's keys in trip order, each warp's
+  -- place from the counts of the warps before it
+  let belowN ← isub k need
+  let _ ← wloop %[← c32 0, ← c32 0, ← c32 0] (fun cs => pure (contIfULt cs.head tripsU, %[], ()))
+    (fun cs _ => do
+      let i0 ← iadd (← imul cs.head (← c32 (256 * SEL_U))) tid
+      let mut elems := #[]
+      for u in List.range SEL_U do
+        let i ← iadd i0 (← c32 (256 * u))
         let inRow ← icmp .ult i cols
         let bits ← orderBits (← loadF32 (← at4 xr (← select inRow i (← c32 0))))
-        let hit ← if eqPass then icmp .eq bits pfx else icmp .ult bits pfx
-        let want ← icmp .ne (← band (← bit inRow) (← bit hit)) (← c32 0)
-        let m ← callLocal ballotR %[want]
-        when .eq lane (← c32 0) do
-          storeI32 (← popcnt m) (← at4 wc warp)
-        callLocalVoid barrier %[]
-        let mut before ← c32 0
-        let mut all ← c32 0
-        for w in List.range WARPS do
-          let cw ← load32 (← at4 wc (← c32 w))
-          before ← iadd before (← select (← icmp .ult (← c32 w) warp) cw (← c32 0))
-          all ← iadd all cw
-        callLocalVoid barrier %[]
-        let rank ← iadd before (← popcnt (← band m ltMask))
-        let take ← band (← bit want) (← bit (← icmp .ult rank cs.thd))
-        when .ne take (← c32 0) do
-          storeI32 i (← at4 orow (← iadd cs.snd rank))
-        let got ← umin all cs.thd
-        pure %[← iadd cs.head (← c32 1), ← iadd cs.snd got, ← isub cs.thd got])
-    pure r.head
-  let below ← collect false (← c32 0) (← c32 0x7FFFFFFF)
-  let _ ← collect true below need
+        let lt ← icmp .ne (← band (← bit inRow) (← bit (← icmp .ult bits pfx))) (← c32 0)
+        let eq ← icmp .ne (← band (← bit inRow) (← bit (← icmp .eq bits pfx))) (← c32 0)
+        elems := elems.push (i, lt, eq, ← callLocal ballotR %[lt], ← callLocal ballotR %[eq])
+      let mut nL ← c32 0
+      let mut nE ← c32 0
+      for (_, _, _, mL, mE) in elems do
+        nL ← iadd nL (← popcnt mL)
+        nE ← iadd nE (← popcnt mE)
+      when .eq lane (← c32 0) do
+        storeI32 nL (← at4 wc warp)
+        storeI32 nE (← at4 wc (← iadd warp (← c32 WARPS)))
+      callLocalVoid barrier %[]
+      let mut bL ← c32 0
+      let mut bE ← c32 0
+      let mut aL ← c32 0
+      let mut aE ← c32 0
+      for w in List.range WARPS do
+        let cl ← load32 (← at4 wc (← c32 w))
+        let ce ← load32 (← at4 wc (← c32 (WARPS + w)))
+        let before ← icmp .ult (← c32 w) warp
+        bL ← iadd bL (← select before cl (← c32 0))
+        bE ← iadd bE (← select before ce (← c32 0))
+        aL ← iadd aL cl
+        aE ← iadd aE ce
+      callLocalVoid barrier %[]
+      let mut rL ← iadd cs.snd bL
+      let mut rE ← iadd cs.thd bE
+      for (i, lt, eq, mL, mE) in elems do
+        when .ne (← bit lt) (← c32 0) do
+          storeI32 i (← at4 orow (← iadd rL (← popcnt (← band mL ltMask))))
+        let e ← iadd rE (← popcnt (← band mE ltMask))
+        when .ne (← band (← bit eq) (← bit (← icmp .ult e need))) (← c32 0) do
+          storeI32 i (← at4 orow (← iadd belowN e))
+        rL ← iadd rL (← popcnt mL)
+        rE ← iadd rE (← popcnt mE)
+      pure %[← iadd cs.head (← c32 1), ← iadd cs.snd aL, ← iadd cs.thd aE])
 
 /-- **The coarse keys in place**: `‖c‖² - 2 q·c` (L2) or `-q·c` (inner
     product) from the `n` products `q·c` at `dots`, row-major `[queries,
@@ -1345,7 +1368,7 @@ def radixHist : Kernel := k "ann_radix_hist" radixHistBody 3 1024 true
 def exScan : Kernel := k "ann_exscan" exScanBody 2 1024
 def radixScatter : Kernel := k "ann_radix_scatter" radixScatterBody 6 1024 true
 def segments : Kernel := k "ann_segments" segmentsBody 4
-def rowSelect : Kernel := k "ann_row_select" rowSelectBody 3 (9 * 1024 + 16 + 32)
+def rowSelect : Kernel := k "ann_row_select" rowSelectBody 3 (9 * 1024 + 16 + 64)
 def coarseKey (l2 : Bool) : Kernel := k s!"ann_coarse_key_{if l2 then "l2" else "ip"}" (coarseKeyBody l2) 4
 def pairFields (l2 : Bool) : Kernel := k s!"ann_pair_fields_{if l2 then "l2" else "ip"}" (pairFieldsBody l2) 7
 def coarseDirect (d : Nat) (l2 : Bool) : Kernel :=
