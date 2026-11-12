@@ -41,6 +41,9 @@ def rsqrtApprox : LocalRef [.f32] (some .f32) := { callee := .intr .rsqrtApprox 
 /-- `dp4a.s32.s32`: `c` plus the dot product of `a`'s and `b`'s signed bytes. -/
 def dp4a : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .dp4a }
 
+/-- `prmt.b32`: four bytes of `a` and `b`, picked by the nibbles of `s`. -/
+def prmtR : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .prmt }
+
 /-- An int8 `mma.sync.m8n8k16`'s even column: lane `l` gets `c` plus row
     `l / 4` of the warp's first words against column `2 · (l mod 4)` of its
     second (`Intr.mmaVal`). -/

@@ -498,12 +498,18 @@ def voidIntr : Intr → List Val → LM Unit
       emit (.redShared ad (← o x))
   | c, _ => fail s!"{c.name} without a result, on arguments it does not take"
 
+/-- The intrinsics of three words and a word: `dp4a`, `mma`, `prmt`. -/
+def word3 : Intr → Bool
+  | .dp4a | .mma | .prmt => true
+  | _ => false
+
 /-- A three-argument intrinsic with a word result, into `d`: `dp4a`, or an
     int8 `mma`'s even column. -/
 def intr3 (d : Val) (c : Intr) (a b e : Val) : LM Unit :=
   match c with
   | .dp4a => do emit (.dp4a (regOf .i32 d) (← o a) (← o b) (← o e))
   | .mma => do emit (.mma (regOf .i32 d) (← o a) (← o b) (← o e))
+  | .prmt => do emit (.prmt (regOf .i32 d) (← o a) (← o b) (← o e))
   | c => fail s!"{c.name} with three arguments"
 
 /-- One instruction that is not a terminator. -/
@@ -1063,8 +1069,8 @@ def takes (F : Ptx.Facts) : Inst → Bool
   | .call (some _) (.intr .shflBfly) [v, m] | .call (some _) (.intr .shflIdx) [v, m] =>
       isTy F v [.i32] && isTy F m [.i32]
   | .call (some _) (.intr .ballot) [v] => isTy F v [.i8]
-  | .call (some _) (.intr .dp4a) [a, b, e] | .call (some _) (.intr .mma) [a, b, e] =>
-      isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
+  | .call (some _) (.intr c) [a, b, e] =>
+      Ptx.word3 c && isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
   | .call none (.intr c) args => takesVoid F c args
   | .call d (.atomic a) args => takesAtomic F d a args
   | .call (some _) (.intr c) [v] => (Ptx.approxOp c).isSome && isTy F v [.f32]

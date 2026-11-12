@@ -53,26 +53,14 @@ variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
 
 /-- **Four codes to four int8 values**, the low sixteen bits of `cw` (code
     `k` at bits `4k`) to byte `k` of the result, each its e2m1 value doubled:
-    the nibbles spread a byte apart, a magnitude `m` maps to
-    `m + [m ≥ 4] · (m mod 4 + 2 · [m mod 4 = 3])` (so `0 1 2 3 4 6 8 12`), and a
-    byte with its sign bit is negated as `(0x80 - v) xor 0x80`, which borrows
-    from no other byte since `v ≤ 12`. All four bytes at once. -/
+    a magnitude's value from the table `0 1 2 3 4 6 8 12` and from its
+    negation, by one `prmt` each, then byte `k` from the one its sign picks. -/
 def unpack4 (cw : V .i32) : Prog V L (V .i32) := do
-  let x0 ← band cw (← c32 0xFFFF)
-  let x1 ← band (← bor x0 (← ishlImm x0 8)) (← c32 0x00FF00FF)
-  let x ← band (← bor x1 (← ishlImm x1 4)) (← c32 0x0F0F0F0F)
-  let m ← band x (← c32 0x07070707)
-  let ones ← c32 0x01010101
-  let b1 ← band (← ushrImm m 2) ones
-  let b2 ← isub (← ishlImm b1 8) b1
-  let low2 ← band m (← c32 0x03030303)
-  let both ← band (← band m (← ushrImm m 1)) ones
-  let v ← iadd m (← band (← iadd low2 (← ishlImm both 1)) b2)
-  let s1 ← band (← ushrImm x 3) ones
-  let smask ← isub (← ishlImm s1 8) s1
-  let h ← c32 0x80808080
-  let negv ← bxor (← isub h v) h
-  bor (← band negv smask) (← band v (← bxor smask (← c32 0xFFFFFFFF)))
+  let sel ← band cw (← c32 0x7777)
+  let pos : V .i32 ← callLocal prmtR %[← c32 0x03020100, ← c32 0x0C080604, sel]
+  let neg : V .i32 ← callLocal prmtR %[← c32 0xFDFEFF00, ← c32 0xF4F8FAFC, sel]
+  let pick ← bor (← ushrImm (← band cw (← c32 0x8888)) 1) (← c32 0x3210)
+  callLocal prmtR %[pos, neg, pick]
 
 /-- Words a tile row of the `mma` core occupies in shared memory: eight, and
     four more, so the eight rows (or four tokens) and four words a fragment

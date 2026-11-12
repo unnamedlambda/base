@@ -159,6 +159,7 @@ theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array B
   | sqrtApprox => rfl
   | rsqrtApprox => rfl
   | dp4a => rfl
+  | prmt => rfl
   | sharedAdd => rfl
   | mma =>
       simp only [callView, show (Intr.mma == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]

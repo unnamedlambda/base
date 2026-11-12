@@ -332,12 +332,7 @@ def exec (c : Ctx) : Instr → M Next
       setReg d (mask t.width (if pv &&& 1 == 1 then x else y)); pure .step
   | .prmt d a b s => do
       let x ← opnd c a; let y ← opnd c b; let sel ← opnd c s
-      let bytes := (List.range 4).map (fun i => (x >>> UInt64.ofNat (8 * i)) &&& 0xff) ++
-        (List.range 4).map (fun i => (y >>> UInt64.ofNat (8 * i)) &&& 0xff)
-      let r := (List.range 4).foldl (fun acc i =>
-        let k := ((sel >>> UInt64.ofNat (4 * i)) &&& 7).toNat
-        acc ||| (bytes.getD k 0 <<< UInt64.ofNat (8 * i))) 0
-      setReg d r; pure .step
+      setReg d (Intr.prmtVal x y sel); pure .step
   | .dp4a d a b e => do
       let x ← opnd c a; let y ← opnd c b; let z ← opnd c e
       setReg d (Intr.dp4aVal x y z); pure .step

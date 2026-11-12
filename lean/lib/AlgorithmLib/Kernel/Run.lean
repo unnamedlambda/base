@@ -109,7 +109,7 @@ def sharedWord (m : Mem) : List V → Bool
     a shared add by nothing, its word one of the block's shared memory (the
     laws add it at the next barrier); any other collective by the value
     `valAt` gives, zero where it holds none — an approximating intrinsic as
-    the hardware `hw` does, and `dp4a` exactly. A run whose answers the laws
+    the hardware `hw` does, and `dp4a` and `prmt` exactly. A run whose answers the laws
     do not give back is not a block's (`BlockRuns`). -/
 def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := false) : Locals := fun i vs w' =>
   match Intr.all.find? (·.slot == i) with
@@ -129,6 +129,7 @@ def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := fal
       | [.sc _ x] => .ok (some (.sc .f32 (hw.approx c x)), w')
       | [.sc _ a, .sc _ b, .sc _ e] =>
           if c = .dp4a then .ok (some (.sc .i32 (Intr.dp4aVal a b e)), w')
+          else if c = .prmt then .ok (some (.sc .i32 (Intr.prmtVal a b e)), w')
           else .error (.stuck "an approximation of something not a scalar")
       | _ => .error (.stuck "an approximation of something not a scalar")
   | none => .error (.stuck s!"calls u0:{i}, which a kernel does not have")

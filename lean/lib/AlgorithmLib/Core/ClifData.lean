@@ -785,6 +785,9 @@ inductive Intr where
       row passed first against the four the lanes of column `2 · (l mod 4)`
       passed second (`mmaVal`). -/
   | mma
+  /-- `prmt.b32`: four bytes picked from the eight of `a` then `b`, byte `i`
+      by the `i`-th nibble of `s` (`prmtVal`). -/
+  | prmt
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 namespace Intr
@@ -798,17 +801,19 @@ def sig : Intr → List ClifTy × Option ClifTy
   | .dp4a => ([.i32, .i32, .i32], some .i32)
   | .sharedAdd => ([.i64, .i32], none)
   | .mma => ([.i32, .i32, .i32], some .i32)
+  | .prmt => ([.i32, .i32, .i32], some .i32)
 
 def name : Intr → String
   | .shflBfly => "shfl.bfly" | .shflIdx => "shfl.idx" | .ballot => "ballot" | .barrier => "barrier"
   | .ex2Approx => "ex2.approx" | .rcpApprox => "rcp.approx" | .lg2Approx => "lg2.approx"
   | .sinApprox => "sin.approx" | .cosApprox => "cos.approx" | .sqrtApprox => "sqrt.approx"
   | .rsqrtApprox => "rsqrt.approx" | .dp4a => "dp4a" | .sharedAdd => "shared.add" | .mma => "mma"
+  | .prmt => "prmt"
 
 /-- Whether other threads answer it: a collective, rather than the hardware's
     arithmetic. -/
 def isColl : Intr → Bool
-  | .ex2Approx | .rcpApprox | .lg2Approx | .sinApprox | .cosApprox | .sqrtApprox | .rsqrtApprox | .dp4a => false
+  | .ex2Approx | .rcpApprox | .lg2Approx | .sinApprox | .cosApprox | .sqrtApprox | .rsqrtApprox | .dp4a | .prmt => false
   | _ => true
 
 /-- Where an intrinsic's meaning sits among the functions a run is given,
@@ -818,10 +823,10 @@ def slot : Intr → Nat
   | .ex2Approx => 2 ^ 33 + 4 | .rcpApprox => 2 ^ 33 + 5 | .lg2Approx => 2 ^ 33 + 6
   | .sinApprox => 2 ^ 33 + 7 | .cosApprox => 2 ^ 33 + 8 | .sqrtApprox => 2 ^ 33 + 9
   | .rsqrtApprox => 2 ^ 33 + 10 | .dp4a => 2 ^ 33 + 11 | .sharedAdd => 2 ^ 33 + 12
-  | .mma => 2 ^ 33 + 13
+  | .mma => 2 ^ 33 + 13 | .prmt => 2 ^ 33 + 14
 
 def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx,
-  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .mma]
+  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .mma, .prmt]
 
 /-- The low byte `i` of `x`, as a signed integer. -/
 def sbyte (x : UInt64) (i : Nat) : Int :=
@@ -833,6 +838,18 @@ def sbyte (x : UInt64) (i : Nat) : Int :=
 def dp4aVal (a b c : UInt64) : UInt64 :=
   let sum : Int := (c &&& 0xffffffff).toNat + (List.range 4).foldl (fun acc i => acc + sbyte a i * sbyte b i) 0
   UInt64.ofInt sum &&& 0xffffffff
+
+/-- **`prmt`'s value**: byte `i` is byte `k` of the eight of `a` then `b`,
+    where `k` is the low three bits of nibble `i` of `s`; where that nibble's
+    fourth bit is set, the byte is that one's sign, replicated. -/
+def prmtVal (a b s : UInt64) : UInt64 :=
+  let bytes := (List.range 4).map (fun i => (a >>> UInt64.ofNat (8 * i)) &&& 0xff) ++
+    (List.range 4).map (fun i => (b >>> UInt64.ofNat (8 * i)) &&& 0xff)
+  (List.range 4).foldl (fun acc i =>
+    let n := (s >>> UInt64.ofNat (4 * i)) &&& 0xf
+    let v := bytes.getD (n &&& 7).toNat 0
+    let v := if n &&& 8 == 0 then v else if v &&& 0x80 == 0 then 0 else 0xff
+    acc ||| (v <<< UInt64.ofNat (8 * i))) 0 &&& 0xffffffff
 
 /-- The int8 dot product of `a`'s and `b`'s four low bytes. -/
 def dot4 (a b : UInt64) : Int := (List.range 4).foldl (fun acc i => acc + sbyte a i * sbyte b i) 0

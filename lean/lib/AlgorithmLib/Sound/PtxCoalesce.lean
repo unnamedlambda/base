@@ -192,12 +192,7 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
       pure (.step, w, some (d, mask t.width (if pv &&& 1 == 1 then x else y)))
   | .prmt d a b s => do
       let x ← opndV c regs a; let y ← opndV c regs b; let sel ← opndV c regs s
-      let bytes := (List.range 4).map (fun i => (x >>> UInt64.ofNat (8 * i)) &&& 0xff) ++
-        (List.range 4).map (fun i => (y >>> UInt64.ofNat (8 * i)) &&& 0xff)
-      let r := (List.range 4).foldl (fun acc i =>
-        let k := ((sel >>> UInt64.ofNat (4 * i)) &&& 7).toNat
-        acc ||| (bytes.getD k 0 <<< UInt64.ofNat (8 * i))) 0
-      pure (.step, w, some (d, r))
+      pure (.step, w, some (d, Intr.prmtVal x y sel))
   | .dp4a d a b e => do
       let x ← opndV c regs a; let y ← opndV c regs b; let z ← opndV c regs e
       pure (.step, w, some (d, Intr.dp4aVal x y z))
