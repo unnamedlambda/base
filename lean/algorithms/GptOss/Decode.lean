@@ -448,11 +448,17 @@ def DT_CPBUF : Nat := DT_TOKBUF + 4 * TEXT_MAX
 def DT_CPBYTE : Nat := DT_CPBUF + 4 * TEXT_MAX
 def DT_OUTTOK : Nat := DT_CPBYTE + 4 * (TEXT_MAX + 1)
 def DT_GENTOK : Nat := DT_OUTTOK + 4 * TEXT_MAX
-/-- A prompt layer's expert offsets read back (`NE + 1` words), and the
-    counts staged for its buffers. -/
+/-- A prompt layer's expert offsets read back (`NE + 1` words). -/
 def DP_EOFF_OFF : Nat := DT_GENTOK + 4 * TEXT_MAX
-def DP_META_OFF : Nat := DP_EOFF_OFF + 4 * (NE + 1)
-def DMEM_SIZE : Nat := DP_META_OFF + 4 * 16 + 0x100
+/-- A prompt chunk's slot-map changes, each word the source of its own copy
+    to the device (two a miss: the expert's slot, its victim's none), with
+    their count; then the counts staged for a prompt's buffers. -/
+def DP_SLOTQ_OFF : Nat := DP_EOFF_OFF + 4 * (NE + 1)
+def DP_SLOTQN_OFF : Nat := DP_SLOTQ_OFF + 4 * (2 * NL * NE)
+def DP_META_OFF : Nat := DP_SLOTQN_OFF + 8
+/-- Where the embedding table sits in host memory, read whole at start-up. -/
+def DEMB_OFF : Nat := DP_META_OFF + 4 * 16
+def DMEM_SIZE : Nat := DEMB_OFF + 8 + 0x100
 
 def dTokMem : TokenizerCommon.TokMem :=
   { htCtx := ContextSlots.ht
@@ -500,7 +506,7 @@ def dMemMap : AlgorithmLib.Layout.RegionMap :=
         ⟨"cpByte", DT_CPBYTE, 4 * (TEXT_MAX + 1)⟩,
         ⟨"outTok", DT_OUTTOK, 4 * TEXT_MAX⟩,
         ⟨"genTok", DT_GENTOK, 4 * TEXT_MAX⟩,
-        ⟨"pEoff", DP_EOFF_OFF, 4 * (NE + 1)⟩, ⟨"pMeta", DP_META_OFF, 4 * 16⟩]
+        ⟨"pEoff", DP_EOFF_OFF, 4 * (NE + 1)⟩, ⟨"pSlotQ", DP_SLOTQ_OFF, 4 * (2 * NL * NE)⟩, ⟨"pSlotQN", DP_SLOTQN_OFF, 8⟩, ⟨"pMeta", DP_META_OFF, 4 * 16⟩, ⟨"emb", DEMB_OFF, 8⟩]
 
 theorem gptossDecodeMap_ok :
     dMemMap.okB = true ∧ dMemMap.withinB DMEM_SIZE = true := by native_decide
@@ -634,13 +640,15 @@ def dEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := d
   dEnqueueG ptr i (← iconst32 g) blk bs
 
 /-- **Expert `key` (`layer · NE + e`) into slot `slot`**: its row, one copy
-    from the pinned pool to the device pool. The caller keeps the two maps. -/
+    from the pinned pool to the device pool, in the launches' stream, so it
+    lands after every launch before it and before every one after, and the
+    host does not wait. The caller keeps the two maps. -/
 def dFillM (slot key : V .i64) : Prog V L Unit := do
   let ptr ← basePtr
   let rowB ← iconst64 ROW_BYTES
   let src ← iadd (← load64 (← iaddImm ptr DPOOL_OFF)) (← imul key rowB)
   let dst ← iadd (← load64 (← iaddImm ptr (dBindOff B_POOL))) (← imul slot rowB)
-  let _ ← ext (.cuda .memcpyHtoD) %[dst, src, rowB]
+  let _ ← ext (.cuda .memcpyHtoDAsync) %[dst, src, rowB, ← iconst64 0]
 
 /-- The slot map to the device, whole: `NL · NE` words. -/
 def dUploadSlotsM : Prog V L Unit := do
@@ -665,6 +673,12 @@ def dInitM : Prog V L Unit := do
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
   let _ ← readFileFrom pExp (← iconst64 D_PATH_FIELD) poolPtr zero64 poolBytes
+  -- the embedding table, all of it, in ordinary host memory: a token's row
+  -- is then a copy, not a read of the file
+  let embBytes ← iconst64 (VOCAB * HH * 2)
+  let emb ← ext (.c .calloc) %[embBytes, ← iconst64 1]
+  storeI64 emb (← iaddImm ptr DEMB_OFF)
+  let _ ← readFileFrom (← iaddImm dataPtr D_PEMB) (← iconst64 D_PATH_FIELD) emb zero64 embBytes
   -- a staging buffer, big enough for the widest dense tensor
   let stageBytes ← iconst64 STAGE_BYTES
   let _ ← ext (.cuda .memAllocHost) %[← iaddImm ptr DSTAGE_OFF, stageBytes]
@@ -1114,17 +1128,16 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let pos := posL.head
   -- **The embedding row, gathered here.**
   --
-  -- The table is bf16 and the first RMSNorm reads f32, so the row is read out
-  -- of the file at `token * HH * 2`, staged, uploaded as the 5.7 KiB it is,
-  -- and widened on the device. The alternative that needs no kernel is to hold
-  -- all 201088 rows in device memory, which costs 1.08 GiB — a hundred and
-  -- eighty expert slots — to save a read of under six kilobytes.
+  -- The table is bf16 and the first RMSNorm reads f32, so the row is copied
+  -- out of the host's table at `token * HH * 2`, staged, uploaded as the
+  -- 5.7 KiB it is, and widened on the device. The alternative that needs no
+  -- kernel is to hold all 201088 rows in device memory, which costs 1.08 GiB —
+  -- a hundred and eighty expert slots — to save a copy of under six kilobytes.
   let bEmb ← load64 (← iaddImm ptr (dBindOff B_EMB))
   let stagePtrT ← load64 (← iaddImm ptr DSTAGE_OFF)
   let rowB ← iconst64 (HH * 2)
   let rowOff ← imul (← uextend64 tok) rowB
-  let pEmb ← iaddImm dataPtr D_PEMB
-  let _ ← readFileFrom pEmb (← iconst64 D_PATH_FIELD) stagePtrT rowOff rowB
+  let _ ← ext (.c .memcpy) %[stagePtrT, ← iadd (← load64 (← iaddImm ptr DEMB_OFF)) rowOff, rowB]
   let _ ← ext (.cuda .memcpyHtoD) %[bEmb, stagePtrT, rowB]
   dEnqueue ptr S_WIDEN ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_EMB, B_X, B_NMH]
   -- the meta both cache depths need
@@ -1171,9 +1184,13 @@ def dPrefillMetaM (ptr : V .i64) (b : Nat) (vals : List (V .i32)) : Prog V L Uni
   let _ ← ext (.cuda .memcpyHtoD) %[id, ← iaddImm ptr DP_META_OFF, ← iconst64 (4 * vals.length)]
 
 /-- **Expert `e` of `layer` resident, for a prompt layer.** `dEnsureM`'s
-    lookup, miss and fill, its victim the first slot from the clock hand that
-    holds none of the experts this layer's chunk routed to (`DP_EOFF_OFF`: their
-    offsets), which its launches will read. -/
+    lookup, miss and fill. A prompt takes the layers in turn, so the victim is
+    an expert of a layer this chunk is done with, the misses taking those
+    layers in rotation so that what is left out is spread over them (a step
+    after the prompt meets it a little in every layer, not wholly in one);
+    failing that, of the layer whose turn is furthest off. The device's slot
+    map is changed word by word, each from a word of `DP_SLOTQ_OFF` that
+    nothing writes again before the chunk's end. -/
 def dEnsurePM (layer e : V .i32) : Prog V L Unit := do
   let ptr ← basePtr
   let four ← iconst64 4
@@ -1182,38 +1199,53 @@ def dEnsurePM (layer e : V .i32) : Prog V L Unit := do
   let slotAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul key four)
   when .eq (← load32 slotAddr) minus1 do
       let nslot ← load32 (← iaddImm ptr DNSLOT_OFF)
-      let next (c : V .i32) : Prog V L (V .i32) := do
-        let n ← iadd c (← iconst32 1)
-        pure (← ifte .uge n nslot (pure %[← iconst32 0]) (pure %[n])).head
-      -- whether slot `c` holds an expert of this layer the chunk uses
-      let busy (c : V .i32) : Prog V L (V .i64) := do
-        let k ← load32 (← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul (← uextend64 c) four))
-        let kl ← udiv k (← iconst32 NE)
-        let ke ← isub k (← imul kl (← iconst32 NE))
-        let ok ← band (← select (← icmp .ne k minus1) (← iconst64 1) (← iconst64 0))
-          (← select (← icmp .eq kl layer) (← iconst64 1) (← iconst64 0))
-        let kc ← select (← icmp .eq ok (← iconst64 1)) ke (← iconst32 0)
-        let at_ (i : V .i32) : Prog V L (V .i32) := do
-          load32 (← iadd (← iaddImm ptr DP_EOFF_OFF) (← imul (← uextend64 i) four))
-        let used ← icmp .ugt (← at_ (← iadd kc (← iconst32 1))) (← at_ kc)
-        band ok (← select used (← iconst64 1) (← iconst64 0))
-      let hand ← load32 (← iaddImm ptr DCLOCK_OFF)
-      let found ← wloop %[hand, ← iconst32 0]
+      -- the first slot holding an expert of layer `t`, or `nslot`
+      let firstOf (t : V .i32) : Prog V L (V .i32) := do
+        let r ← wloop %[← iconst32 0]
+          (fun cs => do
+            let c := cs.head
+            let k ← load32 (← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul (← uextend64 (← select (← icmp .ult c nslot) c (← iconst32 0))) four))
+            let hit ← band (← select (← icmp .ne k minus1) (← iconst64 1) (← iconst64 0))
+              (← select (← icmp .eq (← udiv k (← iconst32 NE)) t) (← iconst64 1) (← iconst64 0))
+            let more ← band (← select (← icmp .ult c nslot) (← iconst64 1) (← iconst64 0))
+              (← select (← icmp .eq hit (← iconst64 0)) (← iconst64 1) (← iconst64 0))
+            pure (contIf .ne more (← iconst64 0), %[c], ()))
+          (fun cs _ => do pure %[← iadd cs.head (← iconst32 1)])
+        pure r.head
+      -- layers back from this one, the nearest that holds a slot
+      let found ← wloop %[← iconst32 1, nslot]
         (fun cs => do
-          let more ← band (← busy cs.head) (← select (← icmp .ult cs.snd nslot) (← iconst64 1) (← iconst64 0))
+          let more ← band (← select (← icmp .uge cs.snd nslot) (← iconst64 1) (← iconst64 0))
+            (← select (← icmp .ult cs.head (← iconst32 NL)) (← iconst64 1) (← iconst64 0))
           pure (contIf .ne more (← iconst64 0), %[cs.head, cs.snd], ()))
-        (fun cs _ => do pure %[← next cs.head, ← iadd cs.snd (← iconst32 1)])
-      let clock ← select (← icmp .ult found.snd nslot) found.head hand
-      storeI32 (← next clock) (← iaddImm ptr DCLOCK_OFF)
+        (fun cs _ => do
+          let t ← urem (← iadd layer (← isub (← iconst32 NL) cs.head)) (← iconst32 NL)
+          pure %[← iadd cs.head (← iconst32 1), ← firstOf t])
+      let fallback ← select (← icmp .ult found.snd nslot) found.snd (← iconst32 0)
+      let m ← load32 (← iaddImm ptr DMISS_OFF)
+      let done ← select (← icmp .eq layer (← iconst32 0)) (← iconst32 1) layer
+      let first ← firstOf (← urem m done)
+      let clock ← select (← band (← select (← icmp .ugt layer (← iconst32 0)) (← iconst64 1) (← iconst64 0))
+        (← select (← icmp .ult first nslot) (← iconst64 1) (← iconst64 0))) first fallback
       let v64 ← uextend64 clock
       let resAddr ← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul v64 four)
       let old ← load32 resAddr
+      -- one word of the device's slot map, from the next word of the queue
+      let devMap ← load64 (← iaddImm ptr (dBindOff B_SLOTOF))
+      let tell (k : V .i64) (v : V .i32) : Prog V L Unit := do
+        let qn ← load32 (← iaddImm ptr DP_SLOTQN_OFF)
+        let src ← iadd (← iaddImm ptr DP_SLOTQ_OFF) (← imul (← uextend64 qn) four)
+        storeI32 v src
+        storeI32 (← iadd qn (← iconst32 1)) (← iaddImm ptr DP_SLOTQN_OFF)
+        let _ ← ext (.cuda .memcpyHtoDAsync) %[← iadd devMap (← imul k four), src, four, ← iconst64 0]
       when .ne old minus1 (do
         let oldAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul (← uextend64 old) four)
-        storeI32 minus1 oldAddr)
+        storeI32 minus1 oldAddr
+        tell (← uextend64 old) minus1)
       dFillM v64 key
       storeI32 clock slotAddr
       storeI32 (← ireduce32 key) resAddr
+      tell key clock
       let m ← load32 (← iaddImm ptr DMISS_OFF)
       storeI32 (← iadd m (← iconst32 1)) (← iaddImm ptr DMISS_OFF)
 
@@ -1235,14 +1267,13 @@ def dPrefillChunkM (toks T start : V .i64) : Prog V L Unit := do
   let Tp ← imul (← udiv (← iadd T32 (← iconst32 (GptOssPrefill.TT - 1))) tt) tt
   let cdiv (a : V .i32) (b : Nat) : Prog V L (V .i32) := do
     udiv (← iadd a (← iconst32 (b - 1))) (← iconst32 b)
-  -- the embedding rows, read from the file one a token, and widened
+  -- the embedding rows, copied from the table one a token, and widened
   let stage ← load64 (← iaddImm ptr DSTAGE_OFF)
   let rowB ← iconst64 (HH * 2)
-  let pEmb ← iaddImm dataPtr D_PEMB
+  let emb ← load64 (← iaddImm ptr DEMB_OFF)
   forLoop T fun i => do
     let tok ← load32 (← iadd toks (← ishlImm i 2))
-    let _ ← readFileFrom pEmb (← iconst64 D_PATH_FIELD) (← iadd stage (← imul i rowB))
-      (← imul (← uextend64 tok) rowB) rowB
+    let _ ← ext (.c .memcpy) %[← iadd stage (← imul i rowB), ← iadd emb (← imul (← uextend64 tok) rowB), rowB]
     pure ()
   let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm ptr (dBindOff B_PEMB)), stage, ← imul T rowB]
   let pairs ← imul T32 (← iconst32 (HH / 2))
@@ -1257,6 +1288,10 @@ def dPrefillChunkM (toks T start : V .i64) : Prog V L Unit := do
   dPrefillMetaM ptr B_PM_TH [← imul T32 (← iconst32 HH)]
   let start32 ← ireduce32 start
   let ctx ← load32 (← iaddImm ptr DCTX_OFF)
+  -- the slot-map queue's words free again once the last chunk's copies are done
+  when .ult (← load32 (← iaddImm ptr DNSLOT_OFF)) (← iconst32 (NL * NE)) do
+    Drv.sync
+    storeI32 (← iconst32 0) (← iaddImm ptr DP_SLOTQN_OFF)
   let tiles ← iadd (← cdiv nP GptOssPrefill.TT) (← iconst32 NE)
   let nl ← iconst64 NL
   forLoop nl fun l => do
@@ -1292,21 +1327,18 @@ def dPrefillChunkM (toks T start : V .i64) : Prog V L Unit := do
     dEnqueueG ptr S_PGROUP (← iconst32 1) NBLK [B_PCH, B_POFFS, B_PPAIR, B_PPOS, B_PM_T]
     -- **Every expert the chunk routed to, resident.** With the whole model on
     -- the card nothing is missing and the host does not wait; otherwise it
-    -- reads the layer's expert offsets, brings in what is missing, and hands
-    -- the device the corrected map.
+    -- reads the layer's expert offsets and brings in, in the launches' stream,
+    -- what is missing.
     let nslot ← load32 (← iaddImm ptr DNSLOT_OFF)
     when .ult nslot (← iconst32 (NL * NE)) do
       Drv.sync
       let bOff ← load64 (← iaddImm ptr (dBindOff B_POFFS))
       let _ ← ext (.cuda .memcpyDtoH) %[← iaddImm ptr DP_EOFF_OFF, bOff, ← iconst64 (4 * (NE + 1))]
-      let miss0 ← load32 (← iaddImm ptr DMISS_OFF)
       let ne ← iconst64 NE
       forLoop ne fun e => do
-        let e32 ← ireduce32 e
         let at_ (i : V .i64) : Prog V L (V .i32) := do
           load32 (← iadd (← iaddImm ptr DP_EOFF_OFF) (← ishlImm i 2))
-        when .ugt (← at_ (← iaddImm e 1)) (← at_ e) do dEnsurePM layer e32
-      when .ne miss0 (← load32 (← iaddImm ptr DMISS_OFF)) do dUploadSlotsM
+        when .ugt (← at_ (← iaddImm e 1)) (← at_ e) do dEnsurePM layer (← ireduce32 e)
     dEnqueueG ptr S_PGU (← imul tiles (← iconst32 (II / 64))) NBLK
       [B_POOL, B_SLOTOF, B_PM_LAYER, B_PXQ, B_PXS, B_PPAIR, B_POFFS, B_PHID]
     dEnqueueG ptr S_PQUANT (← cdiv (← imul nP (← iconst32 (II / 32))) 256) NBLK [B_PHID, B_PHQ, B_PHS, B_PM_QH]
