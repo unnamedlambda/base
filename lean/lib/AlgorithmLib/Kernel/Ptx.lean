@@ -63,8 +63,9 @@ def idParams : List ClifTy := [.i32, .i32, .i32, .i64]
 
 /-- A kernel: its body, the parameters after `idParams`, how many bytes of
     shared memory a block has, whether each block is one warp, its barrier
-    then the warp's (`bar.warp.sync`), and whether its 64-bit products of a
-    value within 32 bits by a constant are `mul.wide.u32` (`Facts.wideMul`). -/
+    then the warp's (`bar.warp.sync`), whether its 64-bit products of a
+    value within 32 bits by a constant are `mul.wide.u32` (`Facts.wideMul`),
+    and its launch bounds. -/
 structure Kernel where
   name : String
   params : List ClifTy
@@ -72,6 +73,8 @@ structure Kernel where
   smem : Nat := 0
   warp : Bool := false
   mulWide : Bool := false
+  /-- The entry's launch bounds (`PtxIr.Entry.bounds`). -/
+  bounds : Option (Nat × Nat) := none
 
 namespace Ptx
 
@@ -1146,7 +1149,7 @@ def Kernel.assemble (k : Kernel) (F : Ptx.Facts) : PtxIr.Entry :=
     | xs => some (PtxIr.RegDecl.names (decl t) (xs.map (·.1)))
   let params := k.params.zipIdx.map fun (t, i) =>
     ((if t == .f32 then .f32 else if t == .f64 then .f64 else Ptx.uTy t.width : PtxIr.Ty), s!"p{i}")
-  { name := k.name, params, regs := decls ++ extras, body := outs.flatMap (·.lines.toList) }
+  { name := k.name, params, regs := decls ++ extras, body := outs.flatMap (·.lines.toList), bounds := k.bounds }
 
 /-- **One kernel's entry**, or what the compiler does not take: its body
     compiled to blocks as the host's are, then each instruction lowered.

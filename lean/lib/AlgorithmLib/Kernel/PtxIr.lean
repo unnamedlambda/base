@@ -206,6 +206,10 @@ structure Entry where
   regs : List RegDecl
   shared : Option Shared := none
   body : List Line
+  /-- Launch bounds for the assembler (`.maxntid`, `.minnctapersm`): at most
+      this many threads a block, and registers few enough for this many
+      blocks a multiprocessor. A larger block does not launch. -/
+  bounds : Option (Nat × Nat) := none
   deriving Repr, DecidableEq, Inhabited
 
 /-- A module: the PTX version, target and address size, the shared arrays at
@@ -319,7 +323,10 @@ def Entry.text (e : Entry) : String :=
   let sh := match e.shared with
     | some s => ["\t" ++ s.text]
     | none => []
-  "\n".intercalate ([s!".visible .entry {e.name}("] ++ ps ++ [")", "{"] ++ e.regs.map RegDecl.text ++ sh ++
+  let bd := match e.bounds with
+    | some (n, m) => [s!".maxntid {n}, 1, 1", s!".minnctapersm {m}"]
+    | none => []
+  "\n".intercalate ([s!".visible .entry {e.name}("] ++ ps ++ [")"] ++ bd ++ ["{"] ++ e.regs.map RegDecl.text ++ sh ++
     e.body.map Line.text ++ ["}"])
 
 /-- The module's text: its header, its shared arrays, then its entries, a

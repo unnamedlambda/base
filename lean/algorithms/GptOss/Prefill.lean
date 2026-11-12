@@ -62,10 +62,11 @@ def unpack4 (cw : V .i32) : Prog V L (V .i32) := do
   let pick ← bor (← ushrImm (← band cw (← c32 0x8888)) 1) (← c32 0x3210)
   callLocal prmtR %[pos, neg, pick]
 
-/-- Words a tile row of the `mma` core occupies in shared memory: eight, and
-    four more, so the eight rows (or four tokens) and four words a fragment
-    load reads fall on distinct banks. -/
-def MSTRIDE : Nat := 12
+/-- Words a tile row of the `mma` core occupies in shared memory: its eight,
+    word `w` at `2 · (w mod 4) + w / 4`, so the two a lane passes a block's two
+    `mma`s (words `t` and `t + 4`) are one 64-bit load, and the four rows a
+    half-warp loads fall on distinct banks. -/
+def MSTRIDE : Nat := 8
 
 /-- How a weight matrix holds its values: MXFP4 (two codes a byte, an e8m0
     scale a block) or Q8_0 (an int8 a value, an f32 scale a block). -/
@@ -121,15 +122,19 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
     at4 (← at_ sm M_W) (← imul (← iadd (← iadd (← ishlImm wr 5) (← c32 (8 * i))) g) (← c32 MSTRIDE))
   let bBase ← (List.range 4).mapM fun j => do
     at4 (← at_ sm (M_X KS)) (← imul (← iadd (← iadd (← ishlImm wc 4) (← c32 (4 * j))) (← ushrImm g 1)) (← c32 MSTRIDE))
-  let sBase ← (List.range 4).mapM fun i => do
-    at4 (← at_ sm (M_SW KS)) (← iadd (← iadd (← ishlImm wr 5) (← c32 (8 * i))) g)
-  let xBase ← (List.range 4).mapM fun j => do
-    at4 (← at_ sm (M_SX KS)) (← iadd (← iadd (← ishlImm wc 4) (← c32 (4 * j))) t)
+  let sBase ← at4 (← at_ sm (M_SW KS)) (← iadd (← ishlImm wr 5) (← ishlImm g 2))
+  let xBase ← at4 (← at_ sm (M_SX KS)) (← iadd (← ishlImm wc 4) (← ishlImm t 2))
   -- `KS` blocks a stage: a thread's code words (eight bytes of codes each,
-  -- four a block's row), token words and scales for all of them, then one
-  -- barrier
+  -- four a block's row), token words and the raw words of their scales,
+  -- loaded a stage ahead of the one the warps multiply
   let urem' (q : V .i32) (n : Nat) : Prog V L (V .i32) := do band q (← c32 (n - 1))
-  let put (b0 : V .i32) : Prog V L Unit := do
+  -- where a row's word `w` sits
+  let wpos (w : V .i32) : Prog V L (V .i32) := do
+    iadd (← ishlImm (← band w (← c32 3)) 1) (← ushrImm w 2)
+  let nC := cRows.length
+  let NP := KS * (nC + 3)
+  let fetch (b0 : V .i32) : Prog V L (List (V .i32)) := do
+    let mut ws' : List (V .i32) := []
     for kbi in List.range KS do
       let b ← iadd b0 (← c32 kbi)
       let rowBytes := if fmt == .mx then k / 2 else k
@@ -139,41 +144,74 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
           (← iadd (← imul b (← c32 blkBytes)) (← ishlImm (← urem' q perRow) 2)))))
       let tok ← load32 (← iadd xq (← ext (← iadd (← imul xRow (← c32 k))
         (← iadd (← imul b (← c32 32)) (← ishlImm (← band tid (← c32 7)) 2)))))
+      let sw ← if fmt == .mx then
+          GptOssKernels.Body.u8 (← iadd ws (← ext (← iadd (← imul sRow (← c32 kb)) b)))
+        else load32 (← at4 ws (← iadd (← imul sRow (← c32 kb)) b))
+      let f ← load32 (← at4 xsc (← iadd (← imul sTok (← c32 kb)) b))
+      ws' := ws' ++ codes ++ [tok, sw, f]
+    pure ws'
+  let stash (raw : List (V .i32)) : Prog V L Unit := do
+    for kbi in List.range KS do
+      let part := (raw.drop (kbi * (nC + 3))).take (nC + 3)
+      let zi ← c32 0
+      let codes := part.take nC
+      let tok := part.getD nC zi
       let sw ← if fmt == .mx then do
-          let e ← GptOssKernels.Body.u8 (← iadd ws (← ext (← iadd (← imul sRow (← c32 kb)) b)))
-          fmul (← bitcast .f32 (← ishlImm e 23)) (← fconst .f32 0x3F000000)
-        else loadF32 (← at4 ws (← iadd (← imul sRow (← c32 kb)) b))
-      let f ← loadF32 (← at4 xsc (← iadd (← imul sTok (← c32 kb)) b))
+          fmul (← bitcast .f32 (← ishlImm (part.getD (nC + 1) zi) 23)) (← fconst .f32 0x3F000000)
+        else bitcast .f32 (part.getD (nC + 1) zi)
+      let f ← bitcast .f32 (part.getD (nC + 2) zi)
       let wTile ← at_ sm (M_W + kbi * WTILE)
       for (code, (q, _)) in codes.zip cRows do
         if fmt == .mx then
-          let dst ← at4 wTile (← iadd (← imul (← ushrImm q 2) (← c32 MSTRIDE)) (← ishlImm (← band q (← c32 3)) 1))
+          -- words `2c` and `2c + 1` of the row, `c = q mod 4`
+          let c ← band q (← c32 3)
+          let pos ← iadd (← ishlImm (← band c (← c32 1)) 2) (← ushrImm c 1)
+          let dst ← at4 wTile (← iadd (← imul (← ushrImm q 2) (← c32 MSTRIDE)) pos)
           storeI32 (← unpack4 code) dst
-          storeI32 (← unpack4 (← ushrImm code 16)) (← at_ dst 4)
+          storeI32 (← unpack4 (← ushrImm code 16)) (← at_ dst 8)
         else
-          storeI32 code (← at4 wTile (← iadd (← imul (← ushrImm q 3) (← c32 MSTRIDE)) (← band q (← c32 7))))
-      storeI32 tok (← at4 (← at_ sm (M_X KS + kbi * XTILE)) (← iadd (← imul (← ushrImm tid 3) (← c32 MSTRIDE)) (← band tid (← c32 7))))
+          storeI32 code (← at4 wTile (← iadd (← imul (← ushrImm q 3) (← c32 MSTRIDE)) (← wpos (← band q (← c32 7)))))
+      storeI32 tok (← at4 (← at_ sm (M_X KS + kbi * XTILE)) (← iadd (← imul (← ushrImm tid 3) (← c32 MSTRIDE)) (← wpos (← band tid (← c32 7)))))
+      -- scales lane by lane: row `32 a + 8 i + g` at `32 a + 4 g + i`, token
+      -- `16 a + 4 j + t` at `16 a + 4 t + j`
       when .ult tid (← c32 TR) do
-        store sw (← at4 (← at_ sm (M_SW KS + 4 * TR * kbi)) tid)
-      when .ult (← isub tid (← c32 TR)) (← c32 TT) do
-        store f (← at4 (← at_ sm (M_SX KS + 4 * TT * kbi)) (← isub tid (← c32 TR)))
-  let tw ← ishlImm t 2
-  let st ← wloop (Vals.append %[← c32 0] (Vals.ofFn (n := 16) fun _ => zero))
+        let at' ← bor (← band tid (← c32 (TR - 32)))
+          (← bor (← ishlImm (← band tid (← c32 7)) 2) (← band (← ushrImm tid 3) (← c32 3)))
+        store sw (← at4 (← at_ sm (M_SW KS + 4 * TR * kbi)) at')
+      let tt ← isub tid (← c32 TR)
+      when .ult tt (← c32 TT) do
+        let at' ← bor (← band tt (← c32 (TT - 16)))
+          (← bor (← ishlImm (← band tt (← c32 3)) 2) (← band (← ushrImm tt 2) (← c32 3)))
+        store f (← at4 (← at_ sm (M_SX KS + 4 * TT * kbi)) at')
+  let tw ← ishlImm t 3
+  -- the loop carries the stage, the sums' bits and the next stage's words
+  let zbits ← bitcast .i32 zero
+  let init := [← c32 0] ++ List.replicate 16 zbits ++ (← fetch (← c32 0))
+  let st ← wloop (Vals.ofFn (n := NP + 17) fun q => init.getD q.val zbits)
     (fun cs => do pure (contIfULt cs.head (← c32 kb), cs, ()))
     (fun cs _ => do
-      let b := cs.head
-      put b
+      let all := Vals.uniformToList cs
+      let b := all.getD 0 zbits
+      stash (all.drop 17)
       callLocalVoid barrier %[]
+      -- the next stage's words, or this one's again past the last
+      let nb ← iadd b (← c32 KS)
+      let pre ← fetch (← select (← icmp .ult nb (← c32 kb)) nb b)
       let zi ← c32 0
-      let mut accs := Vals.uniformToList (cs.drop 1 : Vals V (List.replicate 16 .f32))
+      let mut accs ← ((all.drop 1).take 16).mapM fun x => bitcast .f32 x
       for kbi in List.range KS do
+        let halves (x : V .i64) : Prog V L (V .i32 × V .i32) := do
+          pure (← ireduce32 x, ← ireduce32 (← ushrImm x 32))
         let frag (a : V .i64) (tile : Nat) : Prog V L (V .i32 × V .i32) := do
-          let p ← iadd (← at_ a tile) (← ext tw)
-          pure (← load32 p, ← load32 (← at_ p 16))
+          halves (← load64 (← iadd (← at_ a tile) (← ext tw)))
+        let four (a : V .i64) : Prog V L (List (V .f32)) := do
+          let (x0, x1) ← halves (← load64 a)
+          let (x2, x3) ← halves (← load64 (← at_ a 8))
+          [x0, x1, x2, x3].mapM fun x => bitcast .f32 x
         let as ← aBase.mapM fun a => frag a (kbi * WTILE)
         let bs ← bBase.mapM fun a => frag a (kbi * XTILE)
-        let sws ← sBase.mapM fun a => do loadF32 (← at_ a (4 * TR * kbi))
-        let sxs ← xBase.mapM fun a => do loadF32 (← at_ a (4 * TT * kbi))
+        let sws ← four (← at_ sBase (4 * TR * kbi))
+        let sxs ← four (← at_ xBase (4 * TT * kbi))
         let mut next : List (V .f32) := []
         for ((a0, a1), i) in as.zipIdx do
           for ((b0, b1), j) in bs.zipIdx do
@@ -183,8 +221,10 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
             next := next ++ [← fma (← fcvtFromSint .f32 p1) sc (accs.getD (4 * i + j) zero)]
         accs := next
       callLocalVoid barrier %[]
-      pure (Vals.append %[← iadd b (← c32 KS)] (Vals.ofFn (n := 16) fun q => accs.getD q.val zero)))
-  pure (Vals.uniformToList (st.drop 1 : Vals V (List.replicate 16 .f32)))
+      let bits ← accs.mapM fun x => bitcast .i32 x
+      let out := [nb] ++ bits ++ pre
+      pure (Vals.ofFn (n := NP + 17) fun q => out.getD q.val zbits))
+  ((Vals.uniformToList st).drop 1 |>.take 16).mapM fun x => bitcast .f32 x
 
 /-- Thread `tid`'s sum `4 · i + j` of `mmaCore`: its tile row and tile token. -/
 def mmaAt (tid : V .i32) (i j : Nat) : Prog V L (V .i32 × V .i32) := do
@@ -757,9 +797,13 @@ def addRowsBody : Prog V L Unit := do
 
 end
 
+/-- The `mma` kernels' launch bounds: blocks of 256 threads, two to a
+    multiprocessor, so their registers stay within 128 a thread. -/
+def MMA_BOUNDS : Option (Nat × Nat) := some (256, 2)
+
 def moeGateUp : Kernel :=
   { name := "moe_gate_up_swiglu", params := List.replicate 8 .i64,
-    code := emit moeGateUpBody (idParams ++ List.replicate 8 .i64), smem := msmem (ksOf K) }
+    code := emit moeGateUpBody (idParams ++ List.replicate 8 .i64), smem := msmem (ksOf K), bounds := MMA_BOUNDS }
 
 def quantRows : Kernel :=
   { name := "quant_rows_int8", params := List.replicate 4 .i64,
@@ -767,7 +811,7 @@ def quantRows : Kernel :=
 
 def moeDown : Kernel :=
   { name := "moe_down", params := List.replicate 7 .i64,
-    code := emit moeDownBody (idParams ++ List.replicate 7 .i64), smem := msmem (ksOf K) }
+    code := emit moeDownBody (idParams ++ List.replicate 7 .i64), smem := msmem (ksOf K), bounds := MMA_BOUNDS }
 
 def routerTopT : Kernel :=
   { name := "router_top4_tokens", params := List.replicate 4 .i64,
@@ -783,7 +827,7 @@ def combine : Kernel :=
 
 def q8Gemm (rows cols : Nat) : Kernel :=
   { name := "q8_gemm_bias", params := List.replicate 6 .i64,
-    code := emit (q8GemmBody rows cols) (idParams ++ List.replicate 6 .i64), smem := msmem (ksOf cols) }
+    code := emit (q8GemmBody rows cols) (idParams ++ List.replicate 6 .i64), smem := msmem (ksOf cols), bounds := MMA_BOUNDS }
 
 def rmsT : Kernel :=
   { name := "rms_rows", params := List.replicate 4 .i64,
