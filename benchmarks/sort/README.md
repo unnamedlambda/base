@@ -19,9 +19,10 @@ beside the median. It runs in py-base's venv (numpy, PyTorch, py_base).
 
 - **sort**: (u32 key, u32 value) pairs, stable, at 1M, 16M and 64M keys,
   for uniform keys, Zipfian (0.99 over 2^20 keys), already sorted, and 16
-  distinct keys. Engines: base (`lean/algorithms/Ann/Sort.lean`: four 8-bit
-  passes, each a histogram of the tiles, a scan of it and a scatter by tile)
-  and CUB's `DeviceRadixSort::SortPairs` called directly.
+  distinct keys. Engines: base (`lean/algorithms/Ann/Sort.lean`: one
+  histogram of the four 8-bit digits, then a one-sweep pass a digit, each tile
+  finding its prefix by looking back over the tiles before) and CUB's
+  `DeviceRadixSort::SortPairs` called directly.
 - **top-k**: the k smallest of each row of a float matrix, with their
   columns, in no order, at four (rows, columns, k). Engines: base (the ANN
   engine's row select and a gather) and PyTorch's `topk`.
