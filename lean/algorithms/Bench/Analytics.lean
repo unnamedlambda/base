@@ -223,7 +223,7 @@ def hist8Body : Prog V L Unit := do
       when .ne (← bit nz) zero do
         when .eq (← ctz m) lane do
           let slot ← at4 hist bin
-          storeI32 (← iadd (← load32 slot) (← popc32 m)) slot
+          storeI32 (← iadd (← load32 slot) (← popcnt m)) slot
       callLocalVoid barrier %[]
       pure %[← iadd cs.head stride])
   callLocalVoid barrier %[]

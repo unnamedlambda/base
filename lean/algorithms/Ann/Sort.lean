@@ -232,11 +232,11 @@ def scatterBody : Prog V L Unit := do
     let before ← ifte (jTys := [.i32]) .ne (← bit lead) (← c32 0)
       (thn := do
         let c ← load32 slot
-        storeI32 (← iadd c (← popc32 m)) slot
+        storeI32 (← iadd c (← popcnt m)) slot
         pure %[c])
       (els := do pure %[← c32 0])
     let bs ← callLocal shflIdx %[before.head, ← band (← ctz m) (← c32 31)]
-    ranks := ranks.push (← iadd bs (← popc32 (← band m ltMask)))
+    ranks := ranks.push (← iadd bs (← popcnt (← band m ltMask)))
     callLocalVoid barrier %[]
   -- each warp's counts become the counts of the warps before it, and the
   -- tile's count of each digit is their sum

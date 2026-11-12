@@ -6966,6 +6966,55 @@ theorem ctz_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d 
           ← Std.HashMap.get?_eq_getElem?]
         exact hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h)
 
+/-! ### Counting set bits
+
+`popcnt` of 32 bits lowers to `popc.b32`, which counts the set bits of the
+low 32. -/
+
+theorem inst_popcnt (d a : Val) :
+    inst (.popcnt d a) = (do emit (.un .popc none .b32 (regOf .i32 d) (← o a))) := by simp only [inst]
+
+/-- A count of set bits among `w` is at most `w`. -/
+theorem popc_count_le (x w : Nat) : ((List.range w).filter (fun i => x.testBit i)).length ≤ w := by
+  simpa using List.length_filter_le (fun i => x.testBit i) (List.range w)
+
+open PtxRun in
+/-- **A count of set bits** meets its obligation: `popc.b32` counts the low
+    32 bits as the Code's `popcnt` counts an `i32`'s. -/
+theorem popcnt_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (d a : Val)
+    (hwa : ¬ Win F a) (hwd : F.win d = false)
+    (hta : F.tys.get? a.id = some .i32) (htd : F.tys.get? d.id = some .i32) (hld : F.lits.get? d.id = none)
+    (hmo : magOk F d (.popcnt d a) = true) :
+    InstOk F lc c start0 (.popcnt d a) := by
+  have hN : ∀ x : UInt64,
+      UInt64.ofNat ((List.range 32).filter (fun i => x.toNat.testBit i)).length &&& widthMask .i32 =
+        UInt64.ofNat ((List.range 32).filter (fun i => x.toNat.testBit i)).length :=
+    fun x => small_and .i32 (Or.inl rfl) _ (Nat.le_trans (popc_count_le x.toNat 32) (by decide))
+  apply un1_ok (hmo := hmo) (hrule := fun _ _ _ _ _ hk => by simp [magRule] at hk) F lc c start0 _ d a
+    (fun _ dr xo => .un .popc none .b32 dr xo) (fun _ => .i32)
+    (fun _ x => UInt64.ofNat ((List.range 32).filter (fun i => x.toNat.testBit i)).length) (· = .i32)
+    (fun _ _ h => by cases h) rfl (by simp [Inst.uses]) hwa hwd (fun t ht => by rw [hta] at ht; cases ht; exact htd) hld
+  · intro s s1 hst _ t xa hva ht
+    rw [hta] at ht; cases ht
+    refine ⟨rfl, ?_⟩
+    have hf : (List.range 32).filter (fun i => (xa >>> UInt64.ofNat i) &&& 1 == 1) =
+        (List.range 32).filter (fun i => xa.toNat.testBit i) :=
+      List.filter_congr fun i hi => shr_bit xa i (by have := List.mem_range.mp hi; omega)
+    simp [step1, Blocks.evalInst, Blocks.evalInst.un, hva, Blocks.viaOp, evalOp, Sem.un, Sem.get, norm, ClifTy.isInt, ClifTy.width] at hst
+    rw [← hst, hf, hN]
+  · intro tag t ht
+    rw [hta] at ht; cases ht
+    rw [lower_inst F tag _ rfl, inst_popcnt]
+    simp only [runLM_bind, runLM_pure, o, emit, emitL, runLM_modify]
+  · intro t xa ht hn _ c' ts' xo dr hxo
+    subst ht
+    have hx : OpVal c' ts' xo xa := by simpa [enc, hn] using hxo
+    rw [exec_un c' ts' .popc none .b32 dr xo xa _ hx rfl]
+    simp [enc, PtxIr.Ty.width, hN]
+  · intro t xa _ _
+    exact hN xa
+
+
 theorem not_win_of (F : Facts) (v : Val) (h : F.win v = false) : ¬ Win F v := by
   intro hw; rw [(win_iff F v).mpr hw] at h; cases h
 
@@ -7959,6 +8008,16 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
       have ht : t = .i32 ∨ t = .i64 := by simpa using h2
       exact ctz_ok (hmo := hmo) F lc c start0 d a t ht (not_win_of F a (hvu a (by simp [valUses, Inst.uses]))) hside h1
         (resTy_same F _ d a rfl hty t h1) hlit
+  | popcnt d a =>
+      obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd d rfl
+      simp only [litOf] at hlit
+      simp only [defSide, Bool.not_eq_true'] at hside
+      simp only [takes] at htk'
+      obtain ⟨t, h1, h2⟩ := isTy_spec F a _ htk'
+      have ht : t = .i32 := by simpa using h2
+      subst ht
+      exact popcnt_ok (hmo := hmo) F lc c start0 d a (not_win_of F a (hvu a (by simp [valUses, Inst.uses]))) hside h1
+        (resTy_same F _ d a rfl hty .i32 h1) hlit
   | fadd d a b =>
       obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd d rfl
       simp only [litOf] at hlit

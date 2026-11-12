@@ -322,7 +322,7 @@ def resTy (ty : Val → Option ClifTy) : Inst → Option (Val × ClifTy)
   | .bxor d a _
   | .fadd d a _ | .fsub d a _ | .fmul d a _ | .fmax d a _ | .fmin d a _ | .fbin d _ a _
   | .ishl d a _ | .ushr d a _ | .ishift d _ a _ | .select d _ a _ | .fneg d a | .fun1 d _ a
-  | .fma d a _ _ | .ctz d a => (ty a).map (d, ·)
+  | .fma d a _ _ | .ctz d a | .popcnt d a => (ty a).map (d, ·)
   | .uextend64 d _ | .sextend64 d _ => some (d, .i64)
   | .ireduce32 d _ => some (d, .i32)
   | .icmp d .. | .fcmp d .. => some (d, .i8)
@@ -610,6 +610,7 @@ def inst (i : Inst) : LM Unit := do
         emit (.un .clz none .b64 q (.reg rb))
         emit (.cvt none .u64 .u32 (regOf t d) (.reg q))
       else emit (.un .clz none .b32 (regOf t d) (.reg rb))
+  | .popcnt d a => do emit (.un .popc none .b32 (regOf .i32 d) (← o a))
   | .bitcast d ty a => do emit (.mov (bTy ty.width) (regOf ty d) (← o a))
   | .load d lo a => do
       let pt : Option PtxIr.Ty := match lo.kind with
@@ -948,13 +949,14 @@ def defsOk (F : Ptx.Facts) : Bool :=
         F.lits.get? d.id == litOf F i &&
         defSide F d i && flagOf F i && magOk F d i
 
-/-- The values an instruction reads as values: not an access's address, nor a
-    sum's shared address in the window, nor an edge's arguments, which
-    `edgesTyped` takes. -/
+/-- The values an instruction reads as values: not an access's address (a
+    shared add's included), nor a sum's shared address in the window, nor an
+    edge's arguments, which `edgesTyped` takes. -/
 def valUses (F : Ptx.Facts) : Inst → List Val
   | .iadd _ a b => if F.win a then [b] else if F.win b then [a] else [a, b]
   | .load .. => []
   | .store v _ | .storeTyped _ v _ | .istore8 v _ => [v]
+  | .call none (.intr .sharedAdd) [_, x] => [x]
   | .jump .. => []
   | .brif c .. => [c]
   | i => Inst.uses i
@@ -1026,6 +1028,8 @@ def takes (F : Ptx.Facts) : Inst → Bool
   | .fneg _ a => isTy F a [.f32, .f64]
   -- `clz.b32` counts from bit 31, so a 16-bit count is not lowered
   | .ctz _ a => isTy F a [.i32, .i64]
+  -- `popc` answers 32 bits, so a count of 64 is not lowered
+  | .popcnt _ a => isTy F a [.i32]
   | .bitcast _ _ a => isTy F a [.i16, .i32, .i64, .f32, .f64]
   | .icmp _ cc a _ => isTy F a [.i16, .i32, .i64] || (isTy F a [.i8] && (cc == .eq || cc == .ne))
   -- PTX's float arithmetic is at f32

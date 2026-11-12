@@ -133,14 +133,6 @@ def blockAll (tid : V .i32) (sm : V .i64) (off warps : Nat)
 /-- `vote.sync.ballot`: bit `l` set where lane `l` passed true. -/
 def ballotR : LocalRef [.i8] (some .i32) := { callee := .intr .ballot }
 
-/-- The set bits of `x` (the PTX compiler has no `popc`): pairs, nibbles,
-    bytes, then the bytes summed by a multiply. -/
-def popc32 (x : V .i32) : Prog V L (V .i32) := do
-  let a ← isub x (← band (← ushrImm x 1) (← c32 0x55555555))
-  let b ← iadd (← band a (← c32 0x33333333)) (← band (← ushrImm a 2) (← c32 0x33333333))
-  let c ← band (← iadd b (← ushrImm b 4)) (← c32 0x0F0F0F0F)
-  ushrImm (← imul c (← c32 0x01010101)) 24
-
 /-- `1` where `c` holds, else `0`. -/
 def bit (c : V .i8) : Prog V L (V .i32) := do select c (← c32 1) (← c32 0)
 

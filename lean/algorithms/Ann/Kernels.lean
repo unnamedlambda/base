@@ -377,10 +377,10 @@ def scanBody (dw cap : Nat) (qpw : Nat := QPW) (qw : Nat := QW) (own : Option Bo
               let pass ← icmp .ne (← band (← band ok adm) (← bit (← fcmp .lt key thr))) zero
               let m ← callLocal ballotR %[pass]
               when .ne (← bit pass) zero do
-                let e ← iadd (← c32 (j * cap)) (← iadd cnt (← popc32 (← band m ltMask)))
+                let e ← iadd (← c32 (j * cap)) (← iadd cnt (← popcnt (← band m ltMask)))
                 store key (← at4 bkey e)
                 storeI32 row (← at4 bval e)
-              pure %[← iadd cnt (← popc32 m)]
+              pure %[← iadd cnt (← popcnt m)]
             let res ← if j == 0 then body else
               ifte (jTys := [.i32]) .ne (on.getD j zero) zero (thn := body) (els := pure %[cnt])
             mid := mid.push res.head
@@ -485,7 +485,7 @@ def radixHistBody : Prog V L Unit := do
       when .ne (← bit active) (← c32 0) do
         when .eq (← ctz m) lane do
           let slot ← at4 sm d
-          storeI32 (← iadd (← load32 slot) (← popc32 m)) slot
+          storeI32 (← iadd (← load32 slot) (← popcnt m)) slot
       callLocalVoid barrier %[]
       pure %[← iadd cs.head (← c32 1)])
   for r in List.range 8 do
@@ -552,13 +552,13 @@ def radixScatterBody : Prog V L Unit := do
       let slot ← at4 sm d
       let base ← load32 slot
       when .ne (← bit active) (← c32 0) do
-        let pos ← iadd base (← popc32 (← band m ltMask))
+        let pos ← iadd base (← popcnt (← band m ltMask))
         storeI32 key (← at4 kout pos)
         storeI32 val (← at4 vout pos)
       callLocalVoid barrier %[]
       when .ne (← bit active) (← c32 0) do
         when .eq (← ctz m) lane do
-          storeI32 (← iadd base (← popc32 m)) slot
+          storeI32 (← iadd base (← popcnt m)) slot
       callLocalVoid barrier %[]
       pure %[← iadd cs.head (← c32 1)])
 
@@ -634,7 +634,7 @@ def rowSelectBody : Prog V L Unit := do
           when .ne (← bit active) (← c32 0) do
             when .eq (← ctz m) lane do
               let slot ← at4 hist d
-              storeI32 (← iadd (← load32 slot) (← popc32 m)) slot
+              storeI32 (← iadd (← load32 slot) (← popcnt m)) slot
         callLocalVoid barrier %[]
         pure %[← iadd cs.head (← c32 1)])
     -- each digit's count over the eight warps
@@ -680,7 +680,7 @@ def rowSelectBody : Prog V L Unit := do
         let want ← icmp .ne (← band (← bit inRow) (← bit hit)) (← c32 0)
         let m ← callLocal ballotR %[want]
         when .eq lane (← c32 0) do
-          storeI32 (← popc32 m) (← at4 wc warp)
+          storeI32 (← popcnt m) (← at4 wc warp)
         callLocalVoid barrier %[]
         let mut before ← c32 0
         let mut all ← c32 0
@@ -689,7 +689,7 @@ def rowSelectBody : Prog V L Unit := do
           before ← iadd before (← select (← icmp .ult (← c32 w) warp) cw (← c32 0))
           all ← iadd all cw
         callLocalVoid barrier %[]
-        let rank ← iadd before (← popc32 (← band m ltMask))
+        let rank ← iadd before (← popcnt (← band m ltMask))
         let take ← band (← bit want) (← bit (← icmp .ult rank cs.thd))
         when .ne take (← c32 0) do
           storeI32 i (← at4 orow (← iadd cs.snd rank))
@@ -870,7 +870,7 @@ def admitBody : Prog V L Unit := do
       let take ← icmp .ne keep.head (← c32 0)
       let m ← callLocal ballotR %[take]
       when .eq lane (← c32 0) do
-        storeI32 (← popc32 m) (← at4 sm warp)
+        storeI32 (← popcnt m) (← at4 sm warp)
       callLocalVoid barrier %[]
       let mut before ← c32 0
       let mut all ← c32 0
@@ -880,7 +880,7 @@ def admitBody : Prog V L Unit := do
         all ← iadd all cw
       callLocalVoid barrier %[]
       when .ne (← bit take) (← c32 0) do
-        storeI32 x (← at4 adm (← iadd dst (← iadd cs.snd (← iadd before (← popc32 (← band m ltMask))))))
+        storeI32 x (← at4 adm (← iadd dst (← iadd cs.snd (← iadd before (← popcnt (← band m ltMask))))))
       pure %[← iadd cs.head (← c32 1), ← iadd cs.snd all])
   when .eq tid (← c32 0) do
     storeI32 r.head (← at4 cnt q)
