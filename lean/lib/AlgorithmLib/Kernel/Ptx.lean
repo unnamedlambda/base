@@ -498,6 +498,14 @@ def voidIntr : Intr → List Val → LM Unit
       emit (.redShared ad (← o x))
   | c, _ => fail s!"{c.name} without a result, on arguments it does not take"
 
+/-- A three-argument intrinsic with a word result, into `d`: `dp4a`, or an
+    int8 `mma`'s even column. -/
+def intr3 (d : Val) (c : Intr) (a b e : Val) : LM Unit :=
+  match c with
+  | .dp4a => do emit (.dp4a (regOf .i32 d) (← o a) (← o b) (← o e))
+  | .mma => do emit (.mma (regOf .i32 d) (← o a) (← o b) (← o e))
+  | c => fail s!"{c.name} with three arguments"
+
 /-- One instruction that is not a terminator. -/
 def inst (i : Inst) : LM Unit := do
   let bin2 (d a b : Val) (bo : PtxIr.BinOp) (rnd : Option PtxIr.Rnd) (ty : ClifTy → PtxIr.Ty) : LM Unit := do
@@ -633,7 +641,7 @@ def inst (i : Inst) : LM Unit := do
   | .call (some d) (.intr .shflIdx) [v, m] => do
       let x ← o v; emit (.shfl .idx (regOf .i32 d) x (← o m) (.imm 31) (.imm 0xffffffff))
   | .call (some d) (.intr .ballot) [v] => do emit (.vote (regOf .i32 d) (← o v) (.imm 0xffffffff))
-  | .call (some d) (.intr .dp4a) [a, b, e] => do emit (.dp4a (regOf .i32 d) (← o a) (← o b) (← o e))
+  | .call (some d) (.intr c) [a, b, e] => intr3 d c a b e
   | .call none (.intr c) args => voidIntr c args
   | .call d (.atomic a) args => atomic d a args
   | .call (some d) (.intr c) [v] =>
@@ -1055,7 +1063,8 @@ def takes (F : Ptx.Facts) : Inst → Bool
   | .call (some _) (.intr .shflBfly) [v, m] | .call (some _) (.intr .shflIdx) [v, m] =>
       isTy F v [.i32] && isTy F m [.i32]
   | .call (some _) (.intr .ballot) [v] => isTy F v [.i8]
-  | .call (some _) (.intr .dp4a) [a, b, e] => isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
+  | .call (some _) (.intr .dp4a) [a, b, e] | .call (some _) (.intr .mma) [a, b, e] =>
+      isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
   | .call none (.intr c) args => takesVoid F c args
   | .call d (.atomic a) args => takesAtomic F d a args
   | .call (some _) (.intr c) [v] => (Ptx.approxOp c).isSome && isTy F v [.f32]

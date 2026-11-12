@@ -171,6 +171,8 @@ inductive Instr where
   | redShared (a : Addr) (v : Opnd)
   | shfl (m : Shfl) (d : Reg) (a b c mask : Opnd)
   | vote (d : Reg) (p mask : Opnd)
+  /-- One `mma.sync.m8n8k16` of int8, its even output column to `d`. -/
+  | mma (d : Reg) (a b c : Opnd)
   | bar (n : Nat)
   | barWarp (mask : Opnd)
   | bra (uni : Bool) (l : Lbl)
@@ -278,15 +280,32 @@ def Instr.text : Instr → String
   | .redShared a v => s!"red.shared.add.u32 {a.text}, {v.text}"
   | .shfl m d a b c k => s!"shfl.sync.{m.name}.b32 {d.text}, {a.text}, {b.text}, {c.text}, {k.text}"
   | .vote d p k => s!"vote.sync.ballot.b32 {d.text}, {p.text}, {k.text}"
+  | .mma d a b c =>
+      -- `mma` takes registers only: a register operand as it is, any other
+      -- moved into a scratch register of the block first
+      let sel (o : Opnd) (nm : String) : String × String := match o with
+        | .reg r => (r.text, "")
+        | o => (nm, s!"mov.b32 {nm}, {o.text}; ")
+      let (ta, ma) := sel a "%mma_a"
+      let (tb, mb) := sel b "%mma_b"
+      let (tc, mc) := sel c "%mma_c"
+      s!"\{ .reg .b32 %mma_a, %mma_b, %mma_c, %mma_z, %mma_o; {ma}{mb}{mc}mov.b32 %mma_z, 0; " ++
+      s!"mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 \{{d.text}, %mma_o}, \{{ta}}, \{{tb}}, \{{tc}, %mma_z}; }"
   | .bar n => s!"bar.sync {n}"
   | .barWarp k => s!"bar.warp.sync {k.text}"
   | .bra u l => s!"bra{if u then ".uni" else ""} {l.text}"
   | .ret => "ret"
 
+/-- What ends an instruction's line: `;`, except after an `mma`, which is a
+    block of its own (its scratch registers scoped to it) and ends at `}`. -/
+def Instr.term : Instr → String
+  | .mma .. => ""
+  | _ => ";"
+
 def Line.text : Line → String
   | .label l => l.text ++ ":"
-  | .ins none i => "\t" ++ i.text ++ ";"
-  | .ins (some (neg, p)) i => s!"\t@{if neg then "!" else ""}{p.text} {i.text};"
+  | .ins none i => "\t" ++ i.text ++ i.term
+  | .ins (some (neg, p)) i => s!"\t@{if neg then "!" else ""}{p.text} {i.text}{i.term}"
 
 def RegDecl.text : RegDecl → String
   | .range t p n => s!"\t.reg .{t.name} {p}<{n}>;"

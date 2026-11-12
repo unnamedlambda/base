@@ -780,6 +780,11 @@ inductive Intr where
   /-- `red.shared.add.u32`: `x` added to the word at `p` in shared memory,
       as every thread of the block finds it after the next barrier. -/
   | sharedAdd
+  /-- `mma.sync.m8n8k16.row.col.s32.s8.s8.s32`, its even columns: lane `l`
+      gets `c` plus the int8 dot products of the four words the lanes of its
+      row passed first against the four the lanes of column `2 · (l mod 4)`
+      passed second (`mmaVal`). -/
+  | mma
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 namespace Intr
@@ -792,12 +797,13 @@ def sig : Intr → List ClifTy × Option ClifTy
       ([.f32], some .f32)
   | .dp4a => ([.i32, .i32, .i32], some .i32)
   | .sharedAdd => ([.i64, .i32], none)
+  | .mma => ([.i32, .i32, .i32], some .i32)
 
 def name : Intr → String
   | .shflBfly => "shfl.bfly" | .shflIdx => "shfl.idx" | .ballot => "ballot" | .barrier => "barrier"
   | .ex2Approx => "ex2.approx" | .rcpApprox => "rcp.approx" | .lg2Approx => "lg2.approx"
   | .sinApprox => "sin.approx" | .cosApprox => "cos.approx" | .sqrtApprox => "sqrt.approx"
-  | .rsqrtApprox => "rsqrt.approx" | .dp4a => "dp4a" | .sharedAdd => "shared.add"
+  | .rsqrtApprox => "rsqrt.approx" | .dp4a => "dp4a" | .sharedAdd => "shared.add" | .mma => "mma"
 
 /-- Whether other threads answer it: a collective, rather than the hardware's
     arithmetic. -/
@@ -812,9 +818,10 @@ def slot : Intr → Nat
   | .ex2Approx => 2 ^ 33 + 4 | .rcpApprox => 2 ^ 33 + 5 | .lg2Approx => 2 ^ 33 + 6
   | .sinApprox => 2 ^ 33 + 7 | .cosApprox => 2 ^ 33 + 8 | .sqrtApprox => 2 ^ 33 + 9
   | .rsqrtApprox => 2 ^ 33 + 10 | .dp4a => 2 ^ 33 + 11 | .sharedAdd => 2 ^ 33 + 12
+  | .mma => 2 ^ 33 + 13
 
 def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx,
-  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd]
+  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .mma]
 
 /-- The low byte `i` of `x`, as a signed integer. -/
 def sbyte (x : UInt64) (i : Nat) : Int :=
@@ -825,6 +832,15 @@ def sbyte (x : UInt64) (i : Nat) : Int :=
     bytes, in 32 bits. -/
 def dp4aVal (a b c : UInt64) : UInt64 :=
   let sum : Int := (c &&& 0xffffffff).toNat + (List.range 4).foldl (fun acc i => acc + sbyte a i * sbyte b i) 0
+  UInt64.ofInt sum &&& 0xffffffff
+
+/-- The int8 dot product of `a`'s and `b`'s four low bytes. -/
+def dot4 (a b : UInt64) : Int := (List.range 4).foldl (fun acc i => acc + sbyte a i * sbyte b i) 0
+
+/-- **An `mma` lane's value**: `c` plus the dot products of each of `as` with
+    the `bs` beside it, in 32 bits. -/
+def mmaVal (c : UInt64) (as bs : List UInt64) : UInt64 :=
+  let sum : Int := (c &&& 0xffffffff).toNat + ((as.zip bs).map fun (a, b) => dot4 a b).sum
   UInt64.ofInt sum &&& 0xffffffff
 
 /-- An intrinsic is the one of `all` at its slot. -/

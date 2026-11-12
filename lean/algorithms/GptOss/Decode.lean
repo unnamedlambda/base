@@ -9,6 +9,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import GptOss.Kernels
 meta import GptOss.Kernels
+public import GptOss.Prefill
+meta import GptOss.Prefill
 public import AlgorithmLib.Surface.Drv
 meta import AlgorithmLib.Surface.Drv
 public import Tokenizer.Pretok
@@ -171,7 +173,16 @@ def dPtx : List String :=
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.attnCombine
   , GptOssKernels.Body.moduleOf (GptOssKernels.Body.q8Gemv dQkvOut HH)
   , GptOssKernels.Body.moduleOf (GptOssKernels.Body.q8Gemv HH QO)
-  , GptOssKernels.Body.moduleOf (GptOssKernels.Body.q8Gemv VOCAB HH) ]
+  , GptOssKernels.Body.moduleOf (GptOssKernels.Body.q8Gemv VOCAB HH)
+  -- a prompt's kernels, many tokens at once (`GptOssPrefill`)
+  , GptOssKernels.Body.moduleOf GptOssPrefill.rmsT, GptOssKernels.Body.moduleOf GptOssPrefill.quantRows
+  , GptOssKernels.Body.moduleOf (GptOssPrefill.q8Gemm dQkvOut HH), GptOssKernels.Body.moduleOf GptOssPrefill.ropeT
+  , GptOssKernels.Body.moduleOf GptOssPrefill.kvNarrow, GptOssKernels.Body.moduleOf GptOssPrefill.attnT
+  , GptOssKernels.Body.moduleOf GptOssPrefill.kvStoreT, GptOssKernels.Body.moduleOf (GptOssPrefill.q8Gemm HH QO)
+  , GptOssKernels.Body.moduleOf GptOssPrefill.addRows, GptOssKernels.Body.moduleOf GptOssPrefill.routerLogits
+  , GptOssKernels.Body.moduleOf GptOssPrefill.routerTopT, GptOssKernels.Body.moduleOf GptOssPrefill.group
+  , GptOssKernels.Body.moduleOf GptOssPrefill.moeGateUp, GptOssKernels.Body.moduleOf GptOssPrefill.moeDown
+  , GptOssKernels.Body.moduleOf GptOssPrefill.combine ]
 
 def S_RMS := 0
 def S_ADD := 1
@@ -204,6 +215,22 @@ def S_ATTCOMB := 16
 def S_Q8QKV := 17
 def S_Q8O := 18
 def S_Q8LM := 19
+/-- A prompt's kernels (`dPrefillChunkM`), in the order a layer launches them. -/
+def S_PRMS := 20
+def S_PQUANT := 21
+def S_PQKV := 22
+def S_PROPE := 23
+def S_PKVN := 24
+def S_PATTN := 25
+def S_PKVS := 26
+def S_PO := 27
+def S_PADD := 28
+def S_PRLOG := 29
+def S_PRTOP := 30
+def S_PGROUP := 31
+def S_PGU := 32
+def S_PDOWN := 33
+def S_PCOMB := 34
 
 /-! ## Buffers
 
@@ -271,7 +298,48 @@ def B_SLOTOF := B_X + 22
     hidden activations likewise. -/
 def B_Y := B_X + 23
 def B_HID := B_X + 24
-def DSTORE := B_X + 25                  -- 9 x NL dense weights
+/-! A prompt's working set, `PT` tokens a chunk (`dPrefillChunkM`): the
+    residual stream and its norm, int8 rows and their scales, the packed QKV,
+    the chunk's narrowed keys and values, attention's output, the router's
+    logits, choices and gates, the expert grouping (offsets, pairs, where each
+    choice landed), the experts' hidden and output rows, the embedding rows;
+    then the counts and positions the kernels read, one buffer each. -/
+def B_PX := B_X + 25
+def B_PXN := B_X + 26
+def B_PXQ := B_X + 27
+def B_PXS := B_X + 28
+def B_PQKV := B_X + 29
+def B_PKC := B_X + 30
+def B_PVC := B_X + 31
+def B_PATT := B_X + 32
+def B_PTMP := B_X + 33
+def B_PLOG := B_X + 34
+def B_PCH := B_X + 35
+def B_PGW := B_X + 36
+def B_POFFS := B_X + 37
+def B_PPAIR := B_X + 38
+def B_PPOS := B_X + 39
+def B_PHID := B_X + 40
+def B_PHQ := B_X + 41
+def B_PHS := B_X + 42
+def B_PY := B_X + 43
+def B_PEMB := B_X + 44
+/-- `T`, `start`, `window`, `cap`, `stride` — the chunk's tokens, where it
+    starts, and this layer's key window and cache. -/
+def B_PM_T := B_X + 45
+/-- `T` rounded up to the GEMMs' token tile. -/
+def B_PM_TP := B_X + 46
+/-- Blocks of 32 each quantisation takes: the hidden rows, attention's, the
+    experts' hidden rows. -/
+def B_PM_QX := B_X + 47
+def B_PM_QA := B_X + 48
+def B_PM_QH := B_X + 49
+/-- Floats in the chunk's residual stream, and bf16 pairs in its embeddings. -/
+def B_PM_TH := B_X + 50
+def B_PM_WID := B_X + 51
+/-- The layer, for the expert launches' slot lookup. -/
+def B_PM_LAYER := B_X + 52
+def DSTORE := B_X + 53                  -- 9 x NL dense weights
 def KVSTORE := DSTORE + 9 * NL          -- 2 x NL caches
 /-- The expert pool: one allocation, `ROW_BYTES` a slot, as many slots as the
     card has room for once everything else is allocated. -/
@@ -288,6 +356,18 @@ def dStoreBuf (layer k : Nat) : Nat := DSTORE + 9 * layer + k
     the cache will be. -/
 def capOf (layer : Nat) : Nat := if layer % 2 == 0 then CAP_SWA else CAP_MAX
 
+/-- Tokens a prompt chunk holds, and routed pairs it can make. -/
+def PT : Nat := 512
+def PP : Nat := PT * TOPK
+
+/-- The prompt working set's bytes, in `B_PX …` order. -/
+def dPrefillBytes : List Nat :=
+  [ PT * HH * 4, PT * HH * 4, PT * QO, PT * (QO / 32) * 4, PT * dQkvOut * 4
+  , PT * NKV * HD * 2, PT * NKV * HD * 2, PT * QO * 4, PT * HH * 4
+  , PT * NE * 4, PT * TOPK * 4, PT * TOPK * 4, 8 * (NE + 1), PP * 4, PP * 4
+  , PP * II * 4, PP * II, PP * (II / 32) * 4, PP * HH * 4, PT * HH * 2
+  , 32, 32, 32, 32, 32, 32, 32, 32 ]
+
 def dBufBytes : List Nat :=
   (List.range 9).map (fun k => dDevBytes.getD k 0)         -- current layer: placeholders
     ++ [128, 128]
@@ -299,6 +379,7 @@ def dBufBytes : List Nat :=
        , dQkvOut * 2, 4
        , GptOssKernels.attPartialFloats * 4 * 64 * GptOssKernels.ATT_TILES_MAX
        , NL * NE * 4, TOPK * HH * 4, TOPK * II * 4 ]
+    ++ dPrefillBytes
     ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dDevBytes.getD k 0))
     ++ (List.range NL).flatMap (fun l => [8 * capOf l * 64 * 2, 8 * capOf l * 64 * 2])
     ++ [NSLOT_MAX * ROW_BYTES]
@@ -367,7 +448,11 @@ def DT_CPBUF : Nat := DT_TOKBUF + 4 * TEXT_MAX
 def DT_CPBYTE : Nat := DT_CPBUF + 4 * TEXT_MAX
 def DT_OUTTOK : Nat := DT_CPBYTE + 4 * (TEXT_MAX + 1)
 def DT_GENTOK : Nat := DT_OUTTOK + 4 * TEXT_MAX
-def DMEM_SIZE : Nat := DT_GENTOK + 4 * TEXT_MAX + 0x100
+/-- A prompt layer's expert offsets read back (`NE + 1` words), and the
+    counts staged for its buffers. -/
+def DP_EOFF_OFF : Nat := DT_GENTOK + 4 * TEXT_MAX
+def DP_META_OFF : Nat := DP_EOFF_OFF + 4 * (NE + 1)
+def DMEM_SIZE : Nat := DP_META_OFF + 4 * 16 + 0x100
 
 def dTokMem : TokenizerCommon.TokMem :=
   { htCtx := ContextSlots.ht
@@ -414,7 +499,8 @@ def dMemMap : AlgorithmLib.Layout.RegionMap :=
         ⟨"cpBuf", DT_CPBUF, 4 * TEXT_MAX⟩,
         ⟨"cpByte", DT_CPBYTE, 4 * (TEXT_MAX + 1)⟩,
         ⟨"outTok", DT_OUTTOK, 4 * TEXT_MAX⟩,
-        ⟨"genTok", DT_GENTOK, 4 * TEXT_MAX⟩]
+        ⟨"genTok", DT_GENTOK, 4 * TEXT_MAX⟩,
+        ⟨"pEoff", DP_EOFF_OFF, 4 * (NE + 1)⟩, ⟨"pMeta", DP_META_OFF, 4 * 16⟩]
 
 theorem gptossDecodeMap_ok :
     dMemMap.okB = true ∧ dMemMap.withinB DMEM_SIZE = true := by native_decide
@@ -944,6 +1030,63 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   dEnqueue ptr S_ADD (HH / 32) 32 [B_X, B_MOUT]
   dTraceM layer 1
 
+/-- **The head**, from the residual stream in `B_X` at position `pos`: the
+    final norm, `lm_head`, and the greedy token or a draw from the tempered
+    softmax, which it returns and leaves at `DT_NEXT`. -/
+def dHeadM (pos : V .i32) : Prog V L (V .i32) := do
+  let ptr ← basePtr
+  let dataPtr ← dataPtr
+  dEnqueue ptr S_RMS 1 32 [B_X, B_FNORM, B_XN]
+  dEnqueue ptr S_Q8LM (VOCAB / q8Rows) NBLK [B_LMHEAD, B_XN, B_LOGITS]
+  let zz ← iconst32 0
+  let oo ← iconst32 1
+  -- **Greedy, or a draw from the tempered softmax.**
+  --
+  -- `1/T` of zero means the caller wants the largest logit, and that goes to
+  -- the argmax kernel rather than to the sampler at an infinite temperature.
+  -- Everything else goes to `sample_logits`, which adds Gumbel noise and takes
+  -- the argmax of that — the same draw, in the same one pass.
+  --
+  -- The choice is arithmetic on the slot, not a branch around the launch:
+  -- the function handle's address is a register, so `S_ARGMAX + (sampling ?
+  -- 1 : 0)` picks the kernel and the launch itself is the same instruction
+  -- either way.
+  let invT ← load32 (← iaddImm dataPtr D_INVT)
+  storeI32 (← iconst32 VOCAB) (← iaddImm ptr (DMETA_OFF + 4 * 34))
+  -- the seed advances with the position, so a turn is reproducible from one
+  -- number and no two steps draw the same noise
+  let seed0 ← load32 (← iaddImm dataPtr D_SEED)
+  storeI32 (← iadd seed0 (← imul pos (← iconst32 0x9E3779B1)))
+    (← iaddImm ptr (DMETA_OFF + 4 * 35))
+  storeI32 invT (← iaddImm ptr (DMETA_OFF + 4 * 36))
+  storeI32 (← load32 (← iaddImm dataPtr D_LNMINP))
+    (← iaddImm ptr (DMETA_OFF + 4 * 37))
+  let bSamp ← load64 (← iaddImm ptr (dBindOff B_SAMP))
+  let n12 ← iconst64 16
+  let _ ← ext (.cuda .memcpyHtoD) %[bSamp, (← iaddImm ptr (DMETA_OFF + 4 * 34)), n12]
+  let sampling ← ifte .ne invT zz (pure %[oo]) (pure %[zz])
+  let headFn ← iadd (← iaddImm ptr (DFN_OFF + 16 * S_ARGMAX + 8))
+                    (← imul (← uextend64 (sampling.head))
+                            (← iconst64 (16 * (S_SAMPLE - S_ARGMAX))))
+  dEnqueueFn ptr headFn (← iconst32 1) GptOssKernels.Body.HEAD_T [B_LOGITS, B_TOKEN, B_SAMP]
+  Drv.sync
+  -- the token this step produced, into memory this program owns
+  let bTok ← load64 (← iaddImm ptr (dBindOff B_TOKEN))
+  let n4 ← iconst64 4
+  let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm ptr DT_NEXT), bTok, n4]
+  -- …and the whole logit row, to a fixed place in the caller's buffer.  Eight
+  -- hundred kilobytes is real traffic and it buys the only check that can
+  -- localise a fault in the head: a caller can compare against the model's own
+  -- logits instead of guessing from a token id.  A partial copy is not an
+  -- option -- the runtime asserts a transfer is the whole buffer -- so it is
+  -- all of them or none, and a single step (mode 0) or a prompt (mode 2) is
+  -- what takes them.
+  let outPtr ← outPtr
+  let mode ← load32 (← iaddImm dataPtr D_MODE)
+  when .ne mode (← iconst32 1) do
+    let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm outPtr 8), (← load64 (← iaddImm ptr (dBindOff B_LOGITS))), (← iconst64 (VOCAB * 4))]
+  load32 (← iaddImm ptr DT_NEXT)
+
 set_option maxRecDepth 8000 in
 /-- **One token, from a token and a position.**
 
@@ -1018,57 +1161,178 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let nl ← iconst64 NL
   forLoop nl fun l => do
     dLayerM (← ireduce32 l)
-  -- the head
-  dEnqueue ptr S_RMS 1 32 [B_X, B_FNORM, B_XN]
-  dEnqueue ptr S_Q8LM (VOCAB / q8Rows) NBLK [B_LMHEAD, B_XN, B_LOGITS]
-  let zz ← iconst32 0
-  let oo ← iconst32 1
-  -- **Greedy, or a draw from the tempered softmax.**
-  --
-  -- `1/T` of zero means the caller wants the largest logit, and that goes to
-  -- the argmax kernel rather than to the sampler at an infinite temperature.
-  -- Everything else goes to `sample_logits`, which adds Gumbel noise and takes
-  -- the argmax of that — the same draw, in the same one pass.
-  --
-  -- The choice is arithmetic on the slot, not a branch around the launch:
-  -- the function handle's address is a register, so `S_ARGMAX + (sampling ?
-  -- 1 : 0)` picks the kernel and the launch itself is the same instruction
-  -- either way.
-  let invT ← load32 (← iaddImm dataPtr D_INVT)
-  storeI32 (← iconst32 VOCAB) (← iaddImm ptr (DMETA_OFF + 4 * 34))
-  -- the seed advances with the position, so a turn is reproducible from one
-  -- number and no two steps draw the same noise
-  let seed0 ← load32 (← iaddImm dataPtr D_SEED)
-  storeI32 (← iadd seed0 (← imul pos (← iconst32 0x9E3779B1)))
-    (← iaddImm ptr (DMETA_OFF + 4 * 35))
-  storeI32 invT (← iaddImm ptr (DMETA_OFF + 4 * 36))
-  storeI32 (← load32 (← iaddImm dataPtr D_LNMINP))
-    (← iaddImm ptr (DMETA_OFF + 4 * 37))
-  let bSamp ← load64 (← iaddImm ptr (dBindOff B_SAMP))
-  let n12 ← iconst64 16
-  let _ ← ext (.cuda .memcpyHtoD) %[bSamp, (← iaddImm ptr (DMETA_OFF + 4 * 34)), n12]
-  let sampling ← ifte .ne invT zz (pure %[oo]) (pure %[zz])
-  let headFn ← iadd (← iaddImm ptr (DFN_OFF + 16 * S_ARGMAX + 8))
-                    (← imul (← uextend64 (sampling.head))
-                            (← iconst64 (16 * (S_SAMPLE - S_ARGMAX))))
-  dEnqueueFn ptr headFn (← iconst32 1) GptOssKernels.Body.HEAD_T [B_LOGITS, B_TOKEN, B_SAMP]
-  Drv.sync
-  -- the token this step produced, into memory this program owns
-  let bTok ← load64 (← iaddImm ptr (dBindOff B_TOKEN))
-  let n4 ← iconst64 4
-  let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm ptr DT_NEXT), bTok, n4]
-  -- …and the whole logit row, to a fixed place in the caller's buffer.  Eight
-  -- hundred kilobytes is real traffic and it buys the only check that can
-  -- localise a fault in the head: a caller can compare against the model's own
-  -- logits instead of guessing from a token id.  A partial copy is not an
-  -- option -- the runtime asserts a transfer is the whole buffer -- so it is
-  -- all of them or none, and a single step (mode 0) is what takes them.
-  let outPtr ← outPtr
-  let mode ← load32 (← iaddImm dataPtr D_MODE)
-  when .eq mode (← iconst32 0) do
-    let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm outPtr 8), (← load64 (← iaddImm ptr (dBindOff B_LOGITS))), (← iconst64 (VOCAB * 4))]
-  load32 (← iaddImm ptr DT_NEXT)
+  dHeadM pos
 
+
+/-- Words `vals` into the small device buffer `b`, through `DP_META_OFF`. -/
+def dPrefillMetaM (ptr : V .i64) (b : Nat) (vals : List (V .i32)) : Prog V L Unit := do
+  for (v, i) in vals.zipIdx do storeI32 v (← iaddImm ptr (DP_META_OFF + 4 * i))
+  let id ← load64 (← iaddImm ptr (dBindOff b))
+  let _ ← ext (.cuda .memcpyHtoD) %[id, ← iaddImm ptr DP_META_OFF, ← iconst64 (4 * vals.length)]
+
+/-- **Expert `e` of `layer` resident, for a prompt layer.** `dEnsureM`'s
+    lookup, miss and fill, its victim the first slot from the clock hand that
+    holds none of the experts this layer's chunk routed to (`DP_EOFF_OFF`: their
+    offsets), which its launches will read. -/
+def dEnsurePM (layer e : V .i32) : Prog V L Unit := do
+  let ptr ← basePtr
+  let four ← iconst64 4
+  let minus1 ← iconst32 (-1)
+  let key ← iadd (← imul (← uextend64 layer) (← iconst64 NE)) (← uextend64 e)
+  let slotAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul key four)
+  when .eq (← load32 slotAddr) minus1 do
+      let nslot ← load32 (← iaddImm ptr DNSLOT_OFF)
+      let next (c : V .i32) : Prog V L (V .i32) := do
+        let n ← iadd c (← iconst32 1)
+        pure (← ifte .uge n nslot (pure %[← iconst32 0]) (pure %[n])).head
+      -- whether slot `c` holds an expert of this layer the chunk uses
+      let busy (c : V .i32) : Prog V L (V .i64) := do
+        let k ← load32 (← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul (← uextend64 c) four))
+        let kl ← udiv k (← iconst32 NE)
+        let ke ← isub k (← imul kl (← iconst32 NE))
+        let ok ← band (← select (← icmp .ne k minus1) (← iconst64 1) (← iconst64 0))
+          (← select (← icmp .eq kl layer) (← iconst64 1) (← iconst64 0))
+        let kc ← select (← icmp .eq ok (← iconst64 1)) ke (← iconst32 0)
+        let at_ (i : V .i32) : Prog V L (V .i32) := do
+          load32 (← iadd (← iaddImm ptr DP_EOFF_OFF) (← imul (← uextend64 i) four))
+        let used ← icmp .ugt (← at_ (← iadd kc (← iconst32 1))) (← at_ kc)
+        band ok (← select used (← iconst64 1) (← iconst64 0))
+      let hand ← load32 (← iaddImm ptr DCLOCK_OFF)
+      let found ← wloop %[hand, ← iconst32 0]
+        (fun cs => do
+          let more ← band (← busy cs.head) (← select (← icmp .ult cs.snd nslot) (← iconst64 1) (← iconst64 0))
+          pure (contIf .ne more (← iconst64 0), %[cs.head, cs.snd], ()))
+        (fun cs _ => do pure %[← next cs.head, ← iadd cs.snd (← iconst32 1)])
+      let clock ← select (← icmp .ult found.snd nslot) found.head hand
+      storeI32 (← next clock) (← iaddImm ptr DCLOCK_OFF)
+      let v64 ← uextend64 clock
+      let resAddr ← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul v64 four)
+      let old ← load32 resAddr
+      when .ne old minus1 (do
+        let oldAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul (← uextend64 old) four)
+        storeI32 minus1 oldAddr)
+      dFillM v64 key
+      storeI32 clock slotAddr
+      storeI32 (← ireduce32 key) resAddr
+      let m ← load32 (← iaddImm ptr DMISS_OFF)
+      storeI32 (← iadd m (← iconst32 1)) (← iaddImm ptr DMISS_OFF)
+
+set_option maxRecDepth 8000 in
+/-- **A prompt chunk through all twenty-four layers**: the `T ≤ PT` tokens at
+    `toks` (32-bit ids), at positions `start …`, their embedding rows read and
+    widened into `B_PX`, then each layer as the prefill kernels compute it for
+    all of them at once: the norm, int8 rows, QKV, the rotation, the chunk's
+    keys and values narrowed, attention over the cache and the chunk, the keys
+    and values into the cache, `o_proj` and the residual, the norm, the
+    router, the experts grouped, made resident, and run, and their gated sum
+    into the residual. The GEMMs take `T` rounded up to their token tile; the
+    rows past `T` are computed and read by nothing. -/
+def dPrefillChunkM (toks T start : V .i64) : Prog V L Unit := do
+  let ptr ← basePtr
+  let dataPtr ← dataPtr
+  let T32 ← ireduce32 T
+  let tt ← iconst32 GptOssPrefill.TT
+  let Tp ← imul (← udiv (← iadd T32 (← iconst32 (GptOssPrefill.TT - 1))) tt) tt
+  let cdiv (a : V .i32) (b : Nat) : Prog V L (V .i32) := do
+    udiv (← iadd a (← iconst32 (b - 1))) (← iconst32 b)
+  -- the embedding rows, read from the file one a token, and widened
+  let stage ← load64 (← iaddImm ptr DSTAGE_OFF)
+  let rowB ← iconst64 (HH * 2)
+  let pEmb ← iaddImm dataPtr D_PEMB
+  forLoop T fun i => do
+    let tok ← load32 (← iadd toks (← ishlImm i 2))
+    let _ ← readFileFrom pEmb (← iconst64 D_PATH_FIELD) (← iadd stage (← imul i rowB))
+      (← imul (← uextend64 tok) rowB) rowB
+    pure ()
+  let _ ← ext (.cuda .memcpyHtoD) %[← load64 (← iaddImm ptr (dBindOff B_PEMB)), stage, ← imul T rowB]
+  let pairs ← imul T32 (← iconst32 (HH / 2))
+  dPrefillMetaM ptr B_PM_WID [pairs]
+  dEnqueueG ptr S_WIDEN (← cdiv pairs NBLK) NBLK [B_PEMB, B_PX, B_PM_WID]
+  -- the counts every layer shares
+  let nP ← imul T32 (← iconst32 TOPK)
+  dPrefillMetaM ptr B_PM_TP [Tp]
+  dPrefillMetaM ptr B_PM_QX [← imul Tp (← iconst32 (HH / 32))]
+  dPrefillMetaM ptr B_PM_QA [← imul Tp (← iconst32 (QO / 32))]
+  dPrefillMetaM ptr B_PM_QH [← imul nP (← iconst32 (II / 32))]
+  dPrefillMetaM ptr B_PM_TH [← imul T32 (← iconst32 HH)]
+  let start32 ← ireduce32 start
+  let ctx ← load32 (← iaddImm ptr DCTX_OFF)
+  let tiles ← iadd (← cdiv nP GptOssPrefill.TT) (← iconst32 NE)
+  let nl ← iconst64 NL
+  forLoop nl fun l => do
+    let layer ← ireduce32 l
+    dBindLayerM layer
+    -- a sliding layer is an even one: a 128-key window over a 128-slot ring
+    let par ← isub layer (← imul (← udiv layer (← iconst32 2)) (← iconst32 2))
+    let swa ← icmp .eq par (← iconst32 0)
+    let window ← select swa (← iconst32 CAP_SWA) (← iconst32 0)
+    let cap ← select swa (← iconst32 CAP_SWA) ctx
+    dPrefillMetaM ptr B_PM_T [T32, start32, window, cap, ← imul cap (← iconst32 HDW)]
+    dPrefillMetaM ptr B_PM_LAYER [layer]
+    let tp32 ← udiv Tp tt
+    dEnqueueG ptr S_PRMS (← cdiv T32 8) NBLK [B_PX, W_ANORM, B_PXN, B_PM_T]
+    dEnqueueG ptr S_PQUANT (← cdiv (← imul Tp (← iconst32 (HH / 32))) 256) NBLK [B_PXN, B_PXQ, B_PXS, B_PM_QX]
+    dEnqueueG ptr S_PQKV (← imul (← iconst32 (dQkvOut / GptOssPrefill.TR)) tp32) NBLK
+      [W_QKVW, B_PXQ, B_PXS, B_PQKV, W_QKVB, B_PM_TP]
+    dEnqueueG ptr S_PROPE (← cdiv (← imul T32 (← iconst32 ((NQ + NKV) * (HD / 2)))) 256) NBLK [B_PQKV, B_ROPE, B_PM_T]
+    let kvGrid ← cdiv (← imul T32 (← iconst32 (NKV * HD / 2))) 256
+    dEnqueueG ptr S_PKVN kvGrid NBLK [B_PQKV, B_PKC, B_PVC, B_PM_T]
+    dEnqueueG ptr S_PATTN (← imul (← iconst32 NKV) (← cdiv T32 GptOssPrefill.AT_TOK)) 128
+      [B_PQKV, B_PKC, B_PVC, C_KC, C_VC, W_SINKS, B_PATT, B_PM_T]
+    dEnqueueG ptr S_PKVS kvGrid NBLK [B_PKC, B_PVC, C_KC, C_VC, B_PM_T]
+    dEnqueueG ptr S_PQUANT (← cdiv (← imul Tp (← iconst32 (QO / 32))) 256) NBLK [B_PATT, B_PXQ, B_PXS, B_PM_QA]
+    dEnqueueG ptr S_PO (← imul (← iconst32 ((HH + GptOssPrefill.TR - 1) / GptOssPrefill.TR)) tp32) NBLK
+      [W_OW, B_PXQ, B_PXS, B_PTMP, W_OB, B_PM_TP]
+    let hGrid ← cdiv (← imul T32 (← iconst32 HH)) 256
+    dEnqueueG ptr S_PADD hGrid NBLK [B_PX, B_PTMP, B_PM_TH]
+    dEnqueueG ptr S_PRMS (← cdiv T32 8) NBLK [B_PX, W_MNORM, B_PXN, B_PM_T]
+    dEnqueueG ptr S_PRLOG (← cdiv (← imul T32 (← iconst32 NE)) 8) NBLK [B_PXN, W_RW, W_RB, B_PLOG, B_PM_T]
+    dEnqueueG ptr S_PQUANT (← cdiv (← imul Tp (← iconst32 (HH / 32))) 256) NBLK [B_PXN, B_PXQ, B_PXS, B_PM_QX]
+    dEnqueueG ptr S_PRTOP (← cdiv T32 256) NBLK [B_PLOG, B_PCH, B_PGW, B_PM_T]
+    dEnqueueG ptr S_PGROUP (← iconst32 1) NBLK [B_PCH, B_POFFS, B_PPAIR, B_PPOS, B_PM_T]
+    -- **Every expert the chunk routed to, resident.** With the whole model on
+    -- the card nothing is missing and the host does not wait; otherwise it
+    -- reads the layer's expert offsets, brings in what is missing, and hands
+    -- the device the corrected map.
+    let nslot ← load32 (← iaddImm ptr DNSLOT_OFF)
+    when .ult nslot (← iconst32 (NL * NE)) do
+      Drv.sync
+      let bOff ← load64 (← iaddImm ptr (dBindOff B_POFFS))
+      let _ ← ext (.cuda .memcpyDtoH) %[← iaddImm ptr DP_EOFF_OFF, bOff, ← iconst64 (4 * (NE + 1))]
+      let miss0 ← load32 (← iaddImm ptr DMISS_OFF)
+      let ne ← iconst64 NE
+      forLoop ne fun e => do
+        let e32 ← ireduce32 e
+        let at_ (i : V .i64) : Prog V L (V .i32) := do
+          load32 (← iadd (← iaddImm ptr DP_EOFF_OFF) (← ishlImm i 2))
+        when .ugt (← at_ (← iaddImm e 1)) (← at_ e) do dEnsurePM layer e32
+      when .ne miss0 (← load32 (← iaddImm ptr DMISS_OFF)) do dUploadSlotsM
+    dEnqueueG ptr S_PGU (← imul tiles (← iconst32 (II / 64))) NBLK
+      [B_POOL, B_SLOTOF, B_PM_LAYER, B_PXQ, B_PXS, B_PPAIR, B_POFFS, B_PHID]
+    dEnqueueG ptr S_PQUANT (← cdiv (← imul nP (← iconst32 (II / 32))) 256) NBLK [B_PHID, B_PHQ, B_PHS, B_PM_QH]
+    dEnqueueG ptr S_PDOWN (← imul tiles (← iconst32 ((HH + GptOssPrefill.TR - 1) / GptOssPrefill.TR))) NBLK
+      [B_POOL, B_SLOTOF, B_PM_LAYER, B_PHQ, B_PHS, B_POFFS, B_PY]
+    dEnqueueG ptr S_PCOMB hGrid NBLK [B_PX, B_PY, B_PGW, B_PPOS, B_PM_T]
+
+/-- **A prompt**: the `n` tokens at `toks` (32-bit ids), at positions
+    `start …`, through the model `PT` at a time (`dPrefillChunkM`), every
+    position's keys and values into the cache; then the last token's row to
+    `B_X`, as a step leaves it, and the head on it (`dHeadM`). Returns the token
+    that follows. -/
+def dPrefillM (toks n start : V .i64) : Prog V L (V .i32) := do
+  let ptr ← basePtr
+  let pt ← iconst64 PT
+  let nCh ← udiv (← iaddImm n (PT - 1)) pt
+  forLoop nCh fun c => do
+    let c0 ← imul c pt
+    let rem ← isub n c0
+    let T ← select (← icmp .ugt rem pt) pt rem
+    dPrefillChunkM (← iadd toks (← ishlImm c0 2)) T (← iadd start c0)
+  let lastT ← isub n (← imul (← isub nCh (← iconst64 1)) pt)
+  let rowB ← iconst64 (HH * 4)
+  let src ← iadd (← load64 (← iaddImm ptr (dBindOff B_PX))) (← imul (← isub lastT (← iconst64 1)) rowB)
+  let _ ← ext (.cuda .memcpyDtoD) %[← load64 (← iaddImm ptr (dBindOff B_X)), src, rowB]
+  dHeadM (← ireduce32 (← isub (← iadd start n) (← iconst64 1)))
 
 /-- **A whole chat turn, or one step of one.**
 
@@ -1104,6 +1368,22 @@ def dMainFn : Prog V L Unit :=
         let miss ← load32 (← iaddImm ptr DMISS_OFF)
         storeI32 miss (← iaddImm outPtr 4)
         pure %[])
+    (els := ifte .eq mode (← iconst32 2)
+    (do -- a prompt: the `D_NPRE` ids at `D_PRE`, from `D_STARTPOS`, all at
+        -- once (`dPrefillM`), as far as the cache has room
+        let start ← uload32_64 (← iaddImm dataPtr D_STARTPOS)
+        let nAsk ← uload32_64 (← iaddImm dataPtr D_NPRE)
+        let nCap ← iconst64 TMPL_MAX
+        let n1 ← select (← icmp .ugt nAsk nCap) nCap nAsk
+        let ctx ← uload32_64 (← iaddImm ptr DCTX_OFF)
+        let room ← select (← icmp .ult start ctx) (← isub ctx start) (← iconst64 0)
+        let n ← select (← icmp .ugt n1 room) room n1
+        when .ne n (← iconst64 0) do
+          let nxt ← dPrefillM (← iaddImm dataPtr D_PRE) n start
+          storeI32 nxt outPtr
+        let miss ← load32 (← iaddImm ptr DMISS_OFF)
+        storeI32 miss (← iaddImm outPtr 4)
+        pure %[])
     (do -- a turn: text in, text out
         let tlen ← uload32_64 (← iaddImm dataPtr D_TLEN)
         let stop ← load32 (← iaddImm dataPtr D_STOP)
@@ -1114,9 +1394,9 @@ def dMainFn : Prog V L Unit :=
           istore8 (← uload8_64 (← iadd src i)) (← iadd textIn i)
         storeI64 tlen (← iaddImm ptr DT_TEXTLEN)
         PretokCommon.tokenizeTextM dTokMem dPretokMem
-        -- the prompt, one position at a time.  There is no prefill kernel yet,
-        -- so this is the decode path run over the prompt: correct, and bound by
-        -- launches rather than by arithmetic.
+        -- the prompt, all at once a piece: the template's opening, the text,
+        -- the template's close, each through the prefill (`dPrefillM`), which
+        -- leaves the token after the last at `DT_NEXT`
         let nText ← load { ty := .i64 }
                       (← iaddImm ptr DT_OUTCOUNT)
         let nPre ← uload32_64 (← iaddImm dataPtr D_NPRE)
@@ -1127,20 +1407,16 @@ def dMainFn : Prog V L Unit :=
         -- The turn begins where the last one stopped, so what it prefills is
         -- what it adds. The cache still holds everything before `start`.
         let start ← uload32_64 (← iaddImm dataPtr D_STARTPOS)
-        forLoop nPre fun i => do
-          let t ← load32 (← iadd preP (← ishlImm i 2))
-          let _ ← dStepM t (← ireduce32 (← iadd start i))
-          pure ()
         let afterPre ← iadd start nPre
-        forLoop nText fun i => do
-          let t ← load32 (← iadd outTok (← ishlImm i 2))
-          let _ ← dStepM t (← ireduce32 (← iadd afterPre i))
-          pure ()
         let afterText ← iadd afterPre nText
-        forLoop nPost fun i => do
-          let t ← load32 (← iadd postP (← ishlImm i 2))
-          let _ ← dStepM t (← ireduce32 (← iadd afterText i))
-          pure ()
+        -- one prefill in a loop over the three, so its body is emitted once
+        forLoop (← iconst64 3) fun k => do
+          let pick (a b c : V .i64) : Prog V L (V .i64) := do
+            select (← icmp .eq k (← iconst64 0)) a (← select (← icmp .eq k (← iconst64 1)) b c)
+          let n ← pick nPre nText nPost
+          when .ne n (← iconst64 0) do
+            let _ ← dPrefillM (← pick preP outTok postP) n (← pick start afterPre afterText)
+            pure ()
         let nPrompt ← iadd afterText nPost
         -- …and then the model's own output, until it stops or runs out of room
         let genTok ← iaddImm ptr DT_GENTOK
@@ -1190,7 +1466,7 @@ def dMainFn : Prog V L Unit :=
         forLoop nGen fun i => do
           storeI32 (← load32 (← iadd genTok (← ishlImm i 2)))
                    (← iadd gdst (← ishlImm i 2))
-        pure %[])
+        pure %[]))
   pure ()
 
 def dShippedBodies : List Prog.Body := [ dMainFn ]

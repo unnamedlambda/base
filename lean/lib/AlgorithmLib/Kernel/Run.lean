@@ -20,8 +20,8 @@ read what every thread passed:
 
 * **warp law**: lanes `32w … 32w+31` make the same collectives in the same
   order; at its `k`-th, lane `l` gets lane `l xor m`'s 32-bit word (`shflBfly`),
-  lane `m`'s (`shflIdx`), or the mask of lanes that passed non-zero
-  (`ballot`);
+  lane `m`'s (`shflIdx`), the mask of lanes that passed non-zero
+  (`ballot`), or its entry of the int8 product of the lanes' words (`mma`);
 * **barrier law**: after a block's `b`-th barrier, shared memory is what it
   was, with every thread's shared stores before that barrier applied.
 
@@ -206,6 +206,23 @@ def lane32 : List V → V
   | .sc _ x :: _ => .sc .i32 x.toUInt32.toUInt64
   | _ => .sc .i32 0
 
+/-- The word lane `lane` of warp `warp` passed as argument `i` of its `k`-th
+    collective. -/
+def laneWord (calls : Nat → List (Intr × List V)) (warp lane k i : Nat) (c : Intr) : Except String UInt64 := do
+  match (← laneArg calls warp lane k c)[i]? with
+  | some (.sc _ x) => pure x
+  | _ => throw "an mma of other than three words"
+
+/-- **An `mma`'s answer to lane `lane`**, `acc` the word it passed third: the
+    `m8n8k16` product's row `lane / 4`, column `2 · (lane mod 4)` — the first
+    words of the four lanes of its row against the second words of the four
+    lanes of its column (`Intr.mmaVal`). -/
+def mmaLane (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Intr) (acc : UInt64) :
+    Except String UInt64 := do
+  let as ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k 0 c
+  let bs ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (8 * (lane % 4) + q) k 1 c
+  pure (Intr.mmaVal acc as bs)
+
 /-- The law's answer to one collective of lane `lane` of warp `warp`, its
     `k`-th, after `nbar` barriers. -/
 def answerStep (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
@@ -226,6 +243,9 @@ def answerStep (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray)
             | _ => throw "a ballot of other than one value") (0 : UInt32)
           pure (nbar, out.push (.val (.sc .i32 bits.toUInt64)))
       | .sharedAdd, _ => pure (nbar, out.push (.val (.sc .i32 0)))
+      | .mma, [_, _, .sc _ x] => do
+          let r ← mmaLane calls warp lane k c x
+          pure (nbar, out.push (.val (.sc .i32 r)))
       | _, _ => throw s!"{c.name} on arguments it does not take"
 
 /-- What the laws answer thread `t`'s collectives, in order. -/

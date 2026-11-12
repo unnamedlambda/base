@@ -10,8 +10,9 @@
 #    the CPU) at the deepest context, then the fastest setting that fits the card at
 #    each depth in DEPTHS (the context already held when the prompt and the
 #    decode are timed): prompt and decode tokens a second, llama-bench's own;
-# 3. base: applications/gpt-oss/bench.py at the same depths (its prompt fed
-#    a token at a time, the depth's tokens, then 128 decoded).
+# 3. base: applications/gpt-oss/bench.py at the same depths (the depth's
+#    tokens held, then a 512-token prompt through its prefill, then 128
+#    decoded after them).
 #
 # The engines' steps run alone and without the memory cap: each keeps about
 # 10 GB of experts resident in host memory (llama.cpp's mapped, base's
@@ -78,10 +79,10 @@ done
 NCMOE=$(python3 report.py --best-ncmoe "$OUT/llama-sweep.jsonl")
 step "$BENCH" -m "$MODEL" -ngl 99 -fa 1 -ncmoe "$NCMOE" -p 512 -n 128 -d "${DEPTHS// /,}" -r 3 -o jsonl > "$OUT/llama.jsonl"
 
-# base, at the same depths (its prompt fed a token at a time)
+# base, at the same depths: 512 prompt tokens after the depth's, then 128 decoded
 for d in $DEPTHS; do
     step "$ROOT/py-base/.venv/bin/python" "$ROOT/applications/gpt-oss/bench.py" build/base/gptoss_decode.cbor \
-        --bank "$BANK" --prompt-len "$d" --gen 128 > "$OUT/base-$d.txt"
+        --bank "$BANK" --depth "$d" --prompt-len 512 --gen 128 > "$OUT/base-$d.txt"
 done
 
 python3 report.py "$RUN" > "$OUT/REPORT.md"

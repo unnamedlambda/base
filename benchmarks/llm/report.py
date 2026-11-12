@@ -65,8 +65,8 @@ def main():
     print("gpt-oss-20b (MXFP4), one sequence, experts offloaded to host memory as each engine does it on")
     print("a 12 GB card. Tokens a second; llama.cpp's are llama-bench's mean over 3 runs (± its standard")
     print("deviation), at its fastest offload setting (`-ncmoe`, the layers whose experts stay on the CPU).")
-    print("Base's prompt is fed a token at a time (it has no batched prefill yet), so its prompt rate is")
-    print("its decode rate.\n")
+    print("Both prompts are 512 tokens after the context's; base decodes after its prompt, llama.cpp's")
+    print("decode starts at the context.\n")
     print("| context | measure | llama.cpp | base |")
     print("|---:|---|---:|---:|")
     for d, kind in sorted(set(L) | set(B)):

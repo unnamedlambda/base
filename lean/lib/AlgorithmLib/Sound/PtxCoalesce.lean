@@ -248,6 +248,12 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
       match r with
       | some (.sc _ v) => pure (.step, w', some (d, mask 32 v))
       | _ => .error "a ballot answered by no value"
+  | .mma d a b e => do
+      let x ← opndV c regs a; let y ← opndV c regs b; let z ← opndV c regs e
+      let (r, w') ← collV c w .mma [.sc .i32 (mask 32 x), .sc .i32 (mask 32 y), .sc .i32 (mask 32 z)]
+      match r with
+      | some (.sc _ v) => pure (.step, w', some (d, mask 32 v))
+      | _ => .error "an mma answered by no value"
   | .bar _ => do
       let (_, w') ← collV c w .barrier []
       pure (.step, w', none)
@@ -457,6 +463,19 @@ theorem exec_run (c : Ctx) (i : Instr) (ts : TS) :
               cases r with
               | none => norm
               | some v => cases v <;> norm
+  | mma d a b x =>
+      simp only [exec, stepV]; norm
+      rd opndV c ts.regs a
+      rd opndV c ts.regs b
+      rd opndV c ts.regs x
+      cases hc : collV c ts.w _ _ with
+      | error e => simp only [hc]; norm
+      | ok rw =>
+        obtain ⟨r, w'⟩ := rw
+        simp only [hc]; norm
+        cases r with
+        | none => norm
+        | some v => cases v <;> norm
   | vote d p k =>
       simp only [exec, stepV]; norm
       rd opndV c ts.regs p
@@ -648,6 +667,18 @@ theorem stepV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren
           cases r with
           | none => rfl
           | some v => cases v <;> rfl
+  | mma d a b x =>
+      rw_reads; rw [R a (by ag hag), R b (by ag hag), R x (by ag hag)]
+      cases opndV c regs a <;> try rfl
+      cases opndV c regs b <;> try rfl
+      cases opndV c regs x <;> try rfl
+      simp only [bind, Except.bind]
+      cases collV c w _ _ <;> try rfl
+      rename_i rw
+      obtain ⟨r, w'⟩ := rw
+      cases r with
+      | none => rfl
+      | some v => cases v <;> rfl
   | vote d p k =>
       rw_reads; rw [R p (by ag hag)]
       cases opndV c regs p <;> try rfl
@@ -889,6 +920,13 @@ theorem stepV_bound (c : Ctx) (hap : ∀ k x, c.hw.approx k x &&& widthMask .f32
   | vote d0 p k =>
       simp only [stepV] at h
       peel opndV c regs p as v20
+      repeat' (first | (split at h) | (cases h; done))
+      all_goals (cases h; exact PtxRun.mask32_toNat_lt _)
+  | mma d0 a b x =>
+      simp only [stepV] at h
+      peel opndV c regs a as v21
+      peel opndV c regs b as v22
+      peel opndV c regs x as v23
       repeat' (first | (split at h) | (cases h; done))
       all_goals (cases h; exact PtxRun.mask32_toNat_lt _)
   | _ => exact Nat.lt_of_lt_of_le (UInt64.toNat_lt _) (by simp [Instr.resWidth])

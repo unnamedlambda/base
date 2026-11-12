@@ -93,6 +93,13 @@ theorem laneArg_view (calls : Nat → List (Intr × List V)) (warp lane k : Nat)
         subst this; simp [hc, Except.map]
       · simp [hc, Except.map]
 
+/-- A collective other than a ballot reads its arguments through the view
+    as they were. -/
+theorem laneArg_view_of (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Intr)
+    (h : (c == .ballot) = false) : laneArg (callsView calls) warp lane k c = laneArg calls warp lane k c := by
+  rw [laneArg_view]
+  cases laneArg calls warp lane k c <;> simp [Except.map, h]
+
 theorem bit_view (v : V) : ((asBits (ballotBit v)).getD 0 != 0) = ((asBits v).getD 0 != 0) := by
   cases v with
   | sc t b => by_cases h : b = 0 <;> simp [ballotBit, asBits, h]
@@ -153,6 +160,16 @@ theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array B
   | rsqrtApprox => rfl
   | dp4a => rfl
   | sharedAdd => rfl
+  | mma =>
+      simp only [callView, show (Intr.mma == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]
+      match args with
+      | [_, _, .sc ty x] =>
+          simp only [answerStep, mmaLane, laneWord, laneArg_view_of calls warp _ k .mma rfl]
+      | [] => rfl
+      | [_] => rfl
+      | [_, _] => rfl
+      | [_, _, .vec _ _] => rfl
+      | _ :: _ :: c3 :: _ :: _ => cases c3 <;> rfl
 
 /-- The shared adds read through the view: the view changes only ballots. -/
 theorem foldl_view {β : Type} (f : β → Intr × List V → β) (hf : ∀ a x, f a (callView x) = f a x) :
@@ -251,6 +268,22 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, rfl, norm32_u32 _⟩⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨0, rfl, rfl⟩⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        rename_i r hm
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        refine ⟨_, rfl, fun v hv => ?_⟩
+        cases hv
+        unfold mmaLane at hm
+        simp only [bind, Except.bind] at hm
+        split at hm
+        · cases hm
+        split at hm
+        · cases hm
+        simp only [pure, Except.pure, Except.ok.injEq] at hm; subst hm
+        obtain ⟨x, hx⟩ := mmaVal_word _ _ _
+        exact ⟨_, rfl, by rw [hx]; exact norm32_u32 x⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   intro k v hk

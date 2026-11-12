@@ -237,6 +237,11 @@ theorem answersOf_bfly {calls : Nat → List (Intr × List V)} {snaps : Array By
         exact ⟨_, rfl, fun a ty m he => by cases he⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun a ty m he => by cases he⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun a ty m he => by cases he⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   obtain ⟨y, hy, hP⟩ := h3 k _ hk
@@ -283,6 +288,13 @@ theorem answerStep_push {calls : Nat → List (Intr × List V)} {snaps : Array B
   · simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
     exact ⟨_, by simp [show (Intr.sharedAdd == Intr.barrier) = false by decide]; rfl,
       by simp [show (Intr.sharedAdd == Intr.barrier) = false by decide]; rfl⟩
+  · simp only [bind, Except.bind] at h ⊢
+    split at h
+    · cases h
+    rename_i a ha
+    simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
+    exact ⟨_, by simp [show (Intr.mma == Intr.barrier) = false by decide]; rfl,
+      by simp [ha, show (Intr.mma == Intr.barrier) = false by decide]; rfl⟩
   · cases h
 
 theorem foldAns {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
@@ -368,6 +380,9 @@ theorem answerStep_out {calls : Nat → List (Intr × List V)} {snaps : Array By
     · rfl
     · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
   · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
+  · simp only [bind, Except.bind]; split
+    · rfl
+    · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
   · rfl
 
 theorem foldAns_of {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
@@ -445,7 +460,7 @@ theorem answerStep_congr {F F' : Nat → List (Intr × List V)} {snaps snaps' : 
   dsimp only
   split
   · rw [hs rfl]
-  all_goals simp only [hl]
+  all_goals first | rfl | simp only [hl, mmaLane, laneWord]
 
 /-- **What the laws give back stays given back** as the threads go on: where
     every thread's `k`-th call is the same, thread `t`'s calls before it are
@@ -470,6 +485,16 @@ theorem collCalls_obsStore {w : World} {st : Nat} (hs : st ≤ w.obs.length) (p 
 
 /-- Answers whose values are 32-bit words. -/
 def Words (as : List Answer) : Prop := ∀ a ∈ as, ∀ v, a = .val v → ∃ x : UInt32, v = .sc .i32 (s32 x)
+
+/-- An `mma` lane's value is a word: it is cut to 32 bits. -/
+theorem mmaVal_word (c : UInt64) (as bs : List UInt64) : ∃ x : UInt32, Intr.mmaVal c as bs = s32 x := by
+  refine ⟨(Intr.mmaVal c as bs).toUInt32, ?_⟩
+  apply UInt64.toNat_inj.mp
+  have h : (Intr.mmaVal c as bs).toNat < 2 ^ 32 := by
+    unfold Intr.mmaVal
+    rw [UInt64.toNat_and]
+    exact Nat.lt_of_le_of_lt Nat.and_le_right (by decide)
+  simp [s32, Nat.mod_eq_of_lt h]
 
 theorem lane32_word (a : List V) : ∃ x : UInt32, lane32 a = .sc .i32 (s32 x) := by
   unfold lane32; split
@@ -513,6 +538,22 @@ theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array B
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, rfl⟩⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨0, rfl⟩⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        rename_i r hm
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        refine ⟨_, rfl, fun v hv => ?_⟩
+        cases hv
+        unfold mmaLane at hm
+        simp only [bind, Except.bind] at hm
+        split at hm
+        · cases hm
+        split at hm
+        · cases hm
+        simp only [pure, Except.pure, Except.ok.injEq] at hm; subst hm
+        obtain ⟨x, hx⟩ := mmaVal_word _ _ _
+        exact ⟨x, by rw [hx]⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   intro a ha v hv
@@ -1090,6 +1131,11 @@ theorem answersOf_smem_size {calls : Nat → List (Intr × List V)} {snaps : Arr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun B hB => by cases hB⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun B hB => by cases hB⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun B hB => by cases hB⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
