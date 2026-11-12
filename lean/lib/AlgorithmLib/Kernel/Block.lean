@@ -141,7 +141,7 @@ def bit (c : V .i8) : Prog V L (V .i32) := do select c (← c32 1) (← c32 0)
 def peers (d : V .i32) (active : V .i8) : Prog V L (V .i32) := do
   let mut m ← callLocal ballotR %[active]
   for b in List.range 8 do
-    let isSet ← icmp .ne (← band (← ushrImm d b) (← c32 1)) (← c32 0)
+    let isSet ← icmp .ne (← band d (← c32 (2 ^ b))) (← c32 0)
     let bal ← callLocal ballotR %[isSet]
     m ← band m (← select isSet bal (← bxor bal (← c32 0xFFFFFFFF)))
   pure m
