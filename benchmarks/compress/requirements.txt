@@ -1,0 +1,3 @@
+cupy-cuda12x[ctk]==14.2.0
+nvidia-nvcomp-cu12==6.0.0.12
+numpy==2.5.4

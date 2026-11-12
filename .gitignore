@@ -32,3 +32,11 @@ base-build/tests/two-packages/target/
 /paper/*.log
 /paper/*.out
 /applications/shared-sum/cpp/shared_sum
+
+# The benchmark suites' runs: each suite's `results/` (every measurement, from
+# scratch) and `build/` (pinned engines and datasets), and the REPORT.md files
+# rewritten from them.
+/benchmarks/*/results/
+/benchmarks/*/build/
+/benchmarks/*/REPORT.md
+/benchmarks/REPORT.md

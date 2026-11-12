@@ -1,0 +1,9 @@
+--extra-index-url https://pypi.nvidia.com
+cuvs-cu12==26.10.0
+cupy-cuda12x[ctk]==14.2.0
+scann==1.4.2
+hnswlib==0.8.0
+h5py==3.16.0
+numpy==2.5.4
+qdrant-client==1.20.0
+grpcio==1.84.1

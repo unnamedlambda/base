@@ -8,6 +8,8 @@ which Pillow and Pillow-SIMD run as a separable convolution with an
 antialiased filter; Pillow releases the GIL while it resizes, so threads run
 at once. Run it under the interpreter of the Pillow being measured.
 """
+import json
+import os
 import sys
 import threading
 import time
@@ -27,6 +29,18 @@ def frame_bytes(w, h):
 
 
 FILTERS = [("bilinear", Image.BILINEAR), ("box", Image.BOX), ("lanczos", Image.LANCZOS)]
+# The Rust harness's name for each table, which the result lines share.
+TITLE = {"bilinear": "Bilinear", "box": "2x2 average", "lanczos": "Lanczos3"}
+
+
+def record(table, mode, engine, threads, rate):
+    """One result line, appended to the file IMAGE_RESULTS names where it is
+    set, in the Rust harness's shape."""
+    path = os.environ.get("IMAGE_RESULTS")
+    if path:
+        with open(path, "a") as f:
+            f.write(json.dumps({"table": TITLE[table], "mode": mode, "engine": engine, "threads": threads,
+                                "fps": rate}) + "\n")
 
 
 def scale(src, k, f):
@@ -82,10 +96,14 @@ def main():
         if mode == "one":
             dist = distance(scale(src, 0, f), ref)
             cells = "   ".join(f"{p} {m:3} {a:6.3f}" for p, (m, a) in zip("YUV", dist))
-            print(f"  {table:9} {name:24} same pixels? {cells}   one core {fps(src, f, 1):8.1f} frames/s")
+            rate = fps(src, f, 1)
+            print(f"  {table:9} {name:24} same pixels? {cells}   one core {rate:8.1f} frames/s")
+            record(table, "one core", name, 1, rate)
         else:
-            rates = " ".join(f"{fps(src, f, n):8.1f}" for n in (1, 2, 4, 6))
-            print(f"  {table:9} {name:24} threads 1 2 4 6: {rates}")
+            rates = [fps(src, f, n) for n in (1, 2, 4, 6)]
+            print(f"  {table:9} {name:24} threads 1 2 4 6: " + " ".join(f"{r:8.1f}" for r in rates))
+            for n, r in zip((1, 2, 4, 6), rates):
+                record(table, "threads", name, n, r)
 
 
 main()

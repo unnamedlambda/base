@@ -16,7 +16,8 @@ CORE=3
 BIN="$ROOT/target/native/release/system-bench"
 
 echo "building" >&2
-(cd "$ROOT" && RUSTFLAGS="-C target-cpu=native" cargo build --release -q -p system-bench \
+CAP=(systemd-run --user --scope -q -p MemoryMax=9G -p MemorySwapMax=0)
+(cd "$ROOT" && RUSTFLAGS="-C target-cpu=native" "${CAP[@]}" cargo build --release -q -p system-bench \
   --target-dir target/native)
 
 RAW=$(mktemp -d)

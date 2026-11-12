@@ -391,6 +391,23 @@ pub fn show_distance(name: &str, d: [(u8, f64); 3]) {
     );
 }
 
+/// One result line, appended to the file `IMAGE_RESULTS` names where it is
+/// set (`run.sh` sets it to the run's directory): a table, the mode it was
+/// measured in, an engine, its threads and its frames a second.
+pub fn record(table: &str, mode: &str, engine: &str, threads: usize, fps: f64) {
+    if let Ok(path) = std::env::var("IMAGE_RESULTS") {
+        use std::io::Write;
+        let q = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let line = format!(
+            "{{\"table\": \"{}\", \"mode\": \"{}\", \"engine\": \"{}\", \"threads\": {}, \"fps\": {}}}\n",
+            q(table), q(mode), q(engine), threads, fps
+        );
+        std::fs::OpenOptions::new().create(true).append(true).open(path)
+            .and_then(|mut f| f.write_all(line.as_bytes()))
+            .expect("IMAGE_RESULTS is writable");
+    }
+}
+
 /// Frames per second of each column at its best round, the columns taking
 /// turns; a round scales every source frame once, after one untimed frame.
 fn fps(cols: &mut [Scale], srcs: &[u8]) -> Vec<f64> {
@@ -496,6 +513,7 @@ fn one_core(title: &str, makers: &[Maker], reference: &[u8], fir_name: &str, src
     println!("{title}, one core (frames/s)");
     for ((n, _), r) in makers.iter().zip(rates) {
         println!("  {n:32} {r:8.1}");
+        record(title, "one core", n, 1, r);
     }
 }
 
@@ -512,7 +530,9 @@ fn all_cores(title: &str, makers: &[Maker], srcs: &[u8]) {
     for (name, make) in makers {
         print!("  {name:32}");
         for n in counts {
-            print!(" {:8.1}", fps_threads(make.as_ref(), srcs, n));
+            let r = fps_threads(make.as_ref(), srcs, n);
+            print!(" {r:8.1}");
+            record(title, "threads", name, n, r);
         }
         println!();
     }

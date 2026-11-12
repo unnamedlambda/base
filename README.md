@@ -108,5 +108,7 @@ cost of dispatch.
 | Decode attention, 2048 keys | 83 | 0.77 |
 | Decode attention, 128 keys | 67 | 0.22 |
 
-To reproduce, `./benchmarks/run.sh` runs both suites, and
-`./benchmarks/cpu/run.sh` runs the CPU suite alone.
+To reproduce, `python3 benchmarks/suite.py run python cpu` runs both suites
+(`benchmarks/suite.py run` runs every suite and writes
+`benchmarks/REPORT.md`), and `./benchmarks/cpu/run.sh` runs the CPU suite
+alone.

@@ -10,11 +10,14 @@ A column's time is its fastest over the runs. Ratios are Base / Rust: above 1
 means Base is slower. 'over runs' is the ratio's range when each run is taken
 on its own.
 """
+import json
 import glob
 import os
 import sys
 import textwrap
 from collections import defaultdict
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Which part of the story each workload tells.
 LEVEL = ["histogram", "mandel", "chase"]
@@ -123,6 +126,32 @@ def main():
          f"in every Base time above. Noise is the spread of a column's time between runs; "
          f"the largest here is {worst.noise * 100:.1f}%, on {worst.w}.")
 
+ENGINE = {"rust": ("rust (LLVM)", False), "clif": ("base (CLIF)", True), "asm": ("base (LLVM code it carries)", True)}
+
+
+def headline():
+    """The CPU suite's headline rows for the top-level report (../suite.py): from
+    the newest run, each workload's fastest time over the runs for Rust (LLVM's
+    code for this machine), base's CLIF entry, and base's entry calling LLVM's
+    machine code the artifact carries (where the workload has one)."""
+    runs = sorted(glob.glob(os.path.join(HERE, "results", "*", "run_1.tsv")))
+    if not runs:
+        return []
+    run = os.path.dirname(runs[-1])
+    times, order = load(run)
+    out = []
+    for (w, col), ts in times.items():
+        if w == "call" or col not in ENGINE:
+            continue
+        engine, mine = ENGINE[col]
+        out.append(dict(suite="cpu", workload=w, measure="time", unit="ns", higher=False, engine=engine,
+                        value=min(ts), base=mine, run=os.path.basename(run)))
+    return out
+
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["--headline"]:
+        for row in headline():
+            print(json.dumps(row))
+    else:
+        main()

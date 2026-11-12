@@ -295,4 +295,10 @@ pub fn run(srcs: &[u8], fir_box: &[u8], drv: &'static base::Driver) {
     println!("  {:28} {resident_batch:9.1}", "  NPP, one batched call");
     println!("  {:28} {pipeline:9.1} {base_pipeline:8.1}", "pinned host -> GPU -> host");
     println!("  {:28} {upload:9.1}   ({:.1} GB/s)", "uploads alone", upload * sb as f64 / 1e9);
+    let t = "2x2 average";
+    crate::record(t, "GPU, frames on the device", "NPP", 0, resident);
+    crate::record(t, "GPU, frames on the device", "Base", 0, base_resident);
+    crate::record(t, "GPU, frames on the device", "NPP, one batched call", 0, resident_batch);
+    crate::record(t, "GPU, pinned host to GPU to host", "NPP", 0, pipeline);
+    crate::record(t, "GPU, pinned host to GPU to host", "Base", 0, base_pipeline);
 }

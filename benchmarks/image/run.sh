@@ -13,6 +13,9 @@
 # venv under target/ the first time.
 # The one-core table runs pinned to core 3; the others use the whole machine,
 # so the numbers are only steady on an idle one.
+#
+# Each invocation is a run in results/<time>-<git rev>/: every table's lines
+# (fps.jsonl, one per engine and table) and REPORT.md, the tables printed.
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd ../.. && pwd)"
@@ -35,6 +38,10 @@ if [ ! -x "$PY" ]; then
   CC="cc -mavx2" "${CAP[@]}" "$ROOT/target/pillow-venv/bin/pip" install -q --no-cache-dir \
     --no-binary pillow-simd pillow-simd -C jpeg=disable >&2
 fi
+RUN="results/$(date +%Y-%m-%d-%H%M%S)-$(git -C "$ROOT" rev-parse --short=8 HEAD)"
+mkdir -p "$RUN"
+export IMAGE_RESULTS="$PWD/$RUN/fps.jsonl"
+exec > >(tee "$RUN/REPORT.md")
 DUMP="$ROOT/target/image-dump"
 mkdir -p "$DUMP"
 DUMP="$DUMP" "$BIN" "$ART/image_bench.cbor" dump >/dev/null

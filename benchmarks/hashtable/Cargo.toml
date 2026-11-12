@@ -1,0 +1,17 @@
+[package]
+name = "hashtable-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Its own workspace, so the tree's gate does not build the frontier's crates.
+[workspace]
+
+[dependencies]
+base = { path = "../../base" }
+hashbrown = "=0.15.5"
+
+[[bin]]
+name = "hashtable-bench"
+path = "src/main.rs"
+test = false
