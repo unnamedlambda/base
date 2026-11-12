@@ -18,9 +18,10 @@ import all Init.Data.List.Sort.Basic
 # base's sort and top-k engine
 
 `benchmarks/sort` measures these beside CUB's radix sort and PyTorch's
-`topk`, on data already on the device. The kernels are the ANN engine's own
-(`Ann.Kernels`): its radix sort's histogram, scan and scatter passes, and its
-row select; one more here gathers the selected keys.
+`topk`, on data already on the device. The sort's kernels are here: each
+pass a histogram of the tiles, a scan of it and a scatter by tile. The top-k
+is the ANN engine's row select (`Ann.Kernels`) and a gather of the selected
+keys.
 
 Its functions (the caller's data, then what each does):
 
@@ -85,9 +86,51 @@ def blockScan (tid : V .i32) (sm : V .i64) (off : Nat) (x : V .i32) : Prog V L (
   callLocalVoid barrier %[]
   pure (← iadd base (← isub inc x), all)
 
+/-- Shared memory of the histogram: a byte counter for each digit and
+    lane, `cnt[d][lane]`, and one more digit the keys past `n` count in. -/
+def HCNT : Nat := 257 * 32
+
+/-- **One pass of the sort, its histogram**: block `b` (one warp) counts the
+    digits `(key >> shift) & 255` of keys `b · E … (b+1) · E` and writes
+    count `d` at `hist[d · blocks + b]`, bin-major, as the row scan wants.
+    Each lane counts its keys in its own byte counters (a lane's `E / 32 =
+    128` keys fit a byte), then sums eight digits' counters over the lanes,
+    four bytes a word. `meta`: `n`, `shift`, `blocks`. -/
+def histBody : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let b := ps.head; let lane := ps.snd; let sm := (ps.drop 3).head
+  let keys := (ps.drop 4).head; let hist := (ps.drop 5).head; let mt := (ps.drop 6).head
+  let n ← load32 mt
+  let shift ← load32 (← at_ mt 4)
+  let blocks ← load32 (← at_ mt 8)
+  let tile ← imul b (← c32 AnnKernels.RADIX_E)
+  stridedDo lane (← c32 (HCNT / 4)) 32 fun i => do storeI32 (← c32 0) (← at4 sm i)
+  callLocalVoid barrier %[]
+  -- the lane's keys in straight-line code, so their loads run ahead of the
+  -- counting
+  for r in List.range (AnnKernels.RADIX_E / 32) do
+    let i ← iadd tile (← iadd (← c32 (32 * r)) lane)
+    let ok ← icmp .ult i n
+    let key ← load32 (← at4 keys (← select ok i (← c32 0)))
+    let d ← select ok (← band (← ushr key shift) (← c32 255)) (← c32 256)
+    let a ← iadd sm (← ext (← iadd (← ishlImm d 5) lane))
+    istore8 (← iadd (← load { kind := .uload8, ty := .i32 } a) (← c32 1)) a
+  callLocalVoid barrier %[]
+  let lo ← c32 0x00FF00FF
+  for k in List.range 8 do
+    let d ← iadd (← ishlImm lane 3) (← c32 k)
+    let row ← at4 sm (← ishlImm d 3)
+    let mut s ← c32 0
+    for q in List.range 8 do
+      let w ← load32 (← at_ row (4 * q))
+      s ← iadd s (← iadd (← band w lo) (← band (← ushrImm w 8) lo))
+    let total ← iadd (← band s (← c32 0xFFFF)) (← ushrImm s 16)
+    storeI32 total (← at4 hist (← iadd (← imul d blocks) b))
+
 /-- **One digit's row of the histogram scanned**, block `d` of 256: the
     counts `hist[d · blocks + b]` scanned exclusively along `b` into
-    `scanned`, a run of them a thread, the row's total at `tot[d]`. `meta`:
+    `scanned`, 256 of them at a time (a thread each, the block's scan and the
+    running total of those before), the row's total at `tot[d]`. `meta`:
     `blocks`. -/
 def rowScanBody : Prog V L Unit := do
   let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64])
@@ -95,20 +138,17 @@ def rowScanBody : Prog V L Unit := do
   let hist := (ps.drop 4).head; let scanned := (ps.drop 5).head; let tot := (ps.drop 6).head
   let mt := (ps.drop 7).head
   let blocks ← load32 mt
-  let per ← udiv (← iadd blocks (← c32 255)) (← c32 256)
-  let lo ← umin (← imul tid per) blocks
-  let hi ← umin (← iadd lo per) blocks
   let row ← imul d blocks
-  let sum ← wloop %[lo, ← c32 0] (fun cs => pure (contIfULt cs.head hi, %[cs.snd], ()))
-    (fun cs _ => do pure %[← iadd cs.head (← c32 1), ← iadd cs.snd (← load32 (← at4 hist (← iadd row cs.head)))])
-  let (pre, all) ← blockScan tid sm 0 sum.head
-  let _ ← wloop %[lo, pre] (fun cs => pure (contIfULt cs.head hi, %[], ()))
+  let all ← wloop %[← c32 0, ← c32 0] (fun cs => pure (contIfULt cs.head blocks, %[cs.snd], ()))
     (fun cs _ => do
-      let i ← iadd row cs.head
-      let v ← load32 (← at4 hist i)
-      storeI32 cs.snd (← at4 scanned i)
-      pure %[← iadd cs.head (← c32 1), ← iadd cs.snd v])
-  when .eq tid (← c32 0) do storeI32 all (← at4 tot d)
+      let b ← iadd cs.head tid
+      let ok ← icmp .ult b blocks
+      let i ← iadd row (← select ok b (← c32 0))
+      let v ← select ok (← load32 (← at4 hist i)) (← c32 0)
+      let (pre, sum) ← blockScan tid sm 0 v
+      when .ne (← bit ok) (← c32 0) do storeI32 (← iadd cs.snd pre) (← at4 scanned i)
+      pure %[← iadd cs.head (← c32 256), ← iadd cs.snd sum])
+  when .eq tid (← c32 0) do storeI32 all.head (← at4 tot d)
 
 /-- **The digits' bases**: `base[d]`, the totals of the digits below `d`, one
     block. -/
@@ -119,26 +159,31 @@ def baseScanBody : Prog V L Unit := do
   let (pre, _) ← blockScan tid sm 0 (← load32 (← at4 tot tid))
   storeI32 pre (← at4 base tid)
 
-/-- Shared memory of the tile scatter: the tile's keys and values in digit
-    order, each warp's count of a round's digits, each digit's running count
-    and its start in the tile, the scan's warp totals. -/
+/-- Shared memory of the tile scatter: the tile's keys, then its values, in
+    digit order, each warp's count of each digit, each digit's start in the
+    tile and its place in the output less that start, the scan's warp
+    totals. -/
 def SK : Nat := 0
-def SV : Nat := 4 * AnnKernels.RADIX_E
-def SCNT : Nat := 8 * AnnKernels.RADIX_E
-def SRUN : Nat := SCNT + 4 * 8 * 256
-def STDS : Nat := SRUN + 4 * 256
-def SSCAN : Nat := STDS + 4 * 256
+def SCNT : Nat := 4 * AnnKernels.RADIX_E
+def STDS : Nat := SCNT + 4 * 8 * 256
+def SOUT : Nat := STDS + 4 * 256
+def SSCAN : Nat := SOUT + 4 * 256
 def SCATTER_SMEM : Nat := SSCAN + 4 * 8
 
+/-- Keys a lane of the tile scatter holds: a warp's run of `32 · ITEMS`. -/
+def ITEMS : Nat := AnnKernels.RADIX_E / 256
+
 /-- **One pass of the sort, its scatter by tile**: block `b` (256 threads)
-    takes the tile of `RADIX_E` keys at `b · RADIX_E`, puts it in shared
-    memory in digit order (stable: rounds of 256 in order, a round's warps in
-    order, a warp's lanes in order, each key's place its digit's start in the
-    tile, the keys of that digit before its round, before its warp in the
-    round, and before it in its warp), then writes the tile out in that
-    order, so threads next to each other write places next to each other: a
-    key `i` places into the tile at `base[d] + scanned[d · blocks + b] + i -
-    start[d]`. `meta`: `n`, `shift`, `blocks`. -/
+    takes the tile of `RADIX_E` keys at `b · RADIX_E`, warp `w` the run of
+    `32 · ITEMS` at `w · 32 · ITEMS`, a lane its `ITEMS` keys `32` apart. It
+    puts the tile in shared memory in digit order (stable: a key's place its
+    digit's start in the tile, the keys of that digit in the warps before its
+    own, then those its warp met before it: in its earlier rounds, and before
+    it in its round), then writes the tile out in that order, so threads next
+    to each other write places next to each other: a key `i` places into the
+    tile at `base[d] + scanned[d · blocks + b] + i - start[d]`. A warp counts
+    its digits in its own counters, a round's count of a digit by its lowest
+    lane. `meta`: `n`, `shift`, `blocks`. -/
 def scatterBody : Prog V L Unit := do
   let ps ← entryParams (idParams ++ List.replicate 8 .i64)
   let b := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
@@ -154,67 +199,85 @@ def scatterBody : Prog V L Unit := do
   let ltMask ← isub (← ishl (← c32 1) lane) (← c32 1)
   let tile ← imul b (← c32 AnnKernels.RADIX_E)
   let sk ← at_ sm SK
-  let sv ← at_ sm SV
   let cnt ← at_ sm SCNT
-  let run ← at_ sm SRUN
   let tds ← at_ sm STDS
+  for k in List.range 8 do storeI32 (← c32 0) (← at4 cnt (← iadd (← c32 (256 * k)) tid))
   -- each digit's start in the tile: the tile's histogram (this block's
   -- column of `hist`), scanned
   let (start, _) ← blockScan tid sm SSCAN (← load32 (← at4 hist (← iadd (← imul tid blocks) b)))
   storeI32 start (← at4 tds tid)
-  storeI32 (← c32 0) (← at4 run tid)
+  let outAt ← at_ sm SOUT
+  storeI32 (← isub (← iadd (← load32 (← at4 base tid)) (← load32 (← at4 scanned (← iadd (← imul tid blocks) b)))) start)
+    (← at4 outAt tid)
   let digit (k : V .i32) : Prog V L (V .i32) := do band (← ushr k shift) (← c32 255)
-  -- rounds of 256 keys, into shared memory in digit order
-  let _ ← wloop %[← c32 0] (fun cs => do pure (contIfULt cs.head (← c32 (AnnKernels.RADIX_E / 256)), %[], ()))
-    (fun cs _ => do
-      for k in List.range 8 do storeI32 (← c32 0) (← at4 cnt (← iadd (← c32 (256 * k)) tid))
-      callLocalVoid barrier %[]
-      let i ← iadd (← imul cs.head (← c32 256)) tid
-      let g ← iadd tile i
-      let ok ← icmp .ult g n
-      let gc ← select ok g (← c32 0)
-      let key ← load32 (← at4 kin gc)
-      let val ← load32 (← at4 vin gc)
-      let d ← digit key
-      let m ← peers d ok
-      let wc ← at4 cnt (← iadd (← imul w (← c32 256)) d)
-      when .ne (← bit ok) (← c32 0) do
-        when .eq (← ctz m) lane do storeI32 (← popc32 m) wc
-      callLocalVoid barrier %[]
-      -- each digit's count before each warp of this round, and its running count
-      let mut acc ← load32 (← at4 run tid)
-      for k in List.range 8 do
-        let slot ← at4 cnt (← iadd (← c32 (256 * k)) tid)
-        let t ← load32 slot
-        storeI32 acc slot
-        acc ← iadd acc t
-      storeI32 acc (← at4 run tid)
-      callLocalVoid barrier %[]
-      when .ne (← bit ok) (← c32 0) do
-        let pos ← iadd (← iadd (← load32 (← at4 tds d)) (← load32 wc)) (← popc32 (← band m ltMask))
-        storeI32 key (← at4 sk pos)
-        storeI32 val (← at4 sv pos)
-      callLocalVoid barrier %[]
-      pure %[← iadd cs.head (← c32 1)])
-  -- the tile out in digit order
-  stridedDo tid (← c32 AnnKernels.RADIX_E) 256 fun i => do
-    when .ult (← iadd tile i) n do
-      let key ← load32 (← at4 sk i)
-      let d ← digit key
-      let at_ ← iadd (← iadd (← load32 (← at4 base d)) (← load32 (← at4 scanned (← iadd (← imul d blocks) b))))
-        (← isub i (← load32 (← at4 tds d)))
-      storeI32 key (← at4 kout at_)
-      storeI32 (← load32 (← at4 sv i)) (← at4 vout at_)
+  let run ← iadd tile (← iadd (← imul w (← c32 (32 * ITEMS))) lane)
+  let mut items := #[]
+  for r in List.range ITEMS do
+    let g ← iadd run (← c32 (32 * r))
+    let ok ← icmp .ult g n
+    let gc ← select ok g (← c32 0)
+    items := items.push (ok, ← load32 (← at4 kin gc), r)
+  -- each key's place among its warp's keys of its digit
+  let wcnt ← at4 cnt (← imul w (← c32 256))
+  let mut ranks := #[]
+  for (ok, key, _) in items do
+    let d ← digit key
+    let m ← peers d ok
+    let lead ← band ok (← icmp .eq (← ctz m) lane)
+    let slot ← at4 wcnt d
+    let before ← ifte (jTys := [.i32]) .ne (← bit lead) (← c32 0)
+      (thn := do
+        let c ← load32 slot
+        storeI32 (← iadd c (← popc32 m)) slot
+        pure %[c])
+      (els := do pure %[← c32 0])
+    let bs ← callLocal shflIdx %[before.head, ← band (← ctz m) (← c32 31)]
+    ranks := ranks.push (← iadd bs (← popc32 (← band m ltMask)))
+    callLocalVoid barrier %[]
+  -- each warp's counts become its keys' starts: the digit's start in the
+  -- tile and the counts of the warps before it
+  let mut acc ← load32 (← at4 tds tid)
+  for k in List.range 8 do
+    let slot ← at4 cnt (← iadd (← c32 (256 * k)) tid)
+    let t ← load32 slot
+    storeI32 acc slot
+    acc ← iadd acc t
+  callLocalVoid barrier %[]
+  let places ← (items.zip ranks).mapM fun ((ok, key, _), rank) => do
+    iadd (← load32 (← at4 wcnt (← select ok (← digit key) (← c32 0)))) rank
+  -- the values, now the ranking no longer holds registers
+  let vals ← items.mapM fun (ok, _, r) => do
+    load32 (← at4 vin (← select ok (← iadd run (← c32 (32 * r))) (← c32 0)))
+  -- the tile's keys in digit order, then out in that order (threads next to
+  -- each other writing places next to each other); then its values
+  for ((ok, key, _), pos) in items.zip places do
+    when .ne (← bit ok) (← c32 0) do storeI32 key (← at4 sk pos)
+  callLocalVoid barrier %[]
+  let mut outs := #[]
+  for r in List.range ITEMS do
+    let i ← iadd tid (← c32 (256 * r))
+    let ok ← icmp .ult (← iadd tile i) n
+    let key ← load32 (← at4 sk i)
+    let o ← iadd (← load32 (← at4 outAt (← digit key))) i
+    when .ne (← bit ok) (← c32 0) do storeI32 key (← at4 kout o)
+    outs := outs.push (ok, o)
+  callLocalVoid barrier %[]
+  for (((ok, _, _), pos), val) in (items.zip places).zip vals do
+    when .ne (← bit ok) (← c32 0) do storeI32 val (← at4 sk pos)
+  callLocalVoid barrier %[]
+  for (r, ok, o) in (List.range ITEMS).zip outs.toList do
+    when .ne (← bit ok) (← c32 0) do storeI32 (← load32 (← at4 sk (← iadd tid (← c32 (256 * r))))) (← at4 vout o)
 
 end
 
+def hist : Kernel := AnnKernels.k "sort_hist" histBody 3 HCNT true
 def gather : Kernel := AnnKernels.k "sort_gather" gatherBody 4
 def rowScan : Kernel := AnnKernels.k "sort_row_scan" rowScanBody 4 (4 * 8)
 def baseScan : Kernel := AnnKernels.k "sort_base_scan" baseScanBody 2 (4 * 8)
 def scatter : Kernel := AnnKernels.k "sort_scatter" scatterBody 8 SCATTER_SMEM
 
 /-- The kernels, each its own module, by index. -/
-def kernels : List Kernel := [AnnKernels.radixHist, AnnKernels.rowSelect, gather, rowScan, baseScan, scatter]
+def kernels : List Kernel := [hist, AnnKernels.rowSelect, gather, rowScan, baseScan, scatter]
 
 /-! ## The layout -/
 
