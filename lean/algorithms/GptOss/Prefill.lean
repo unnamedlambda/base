@@ -117,13 +117,16 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
   let xRow ← tokRow (← ushrImm tid 3)
   let sRow ← wRow (← band tid (← c32 (TR - 1)))
   let sTok ← tokRow (← band tid (← c32 (TT - 1)))
-  -- the fragments this lane reads: its rows' and its tokens' first words
-  let aBase ← (List.range 4).mapM fun i => do
-    at4 (← at_ sm M_W) (← imul (← iadd (← iadd (← ishlImm wr 5) (← c32 (8 * i))) g) (← c32 MSTRIDE))
-  let bBase ← (List.range 4).mapM fun j => do
-    at4 (← at_ sm (M_X KS)) (← imul (← iadd (← iadd (← ishlImm wc 4) (← c32 (4 * j))) (← ushrImm g 1)) (← c32 MSTRIDE))
-  let sBase ← at4 (← at_ sm (M_SW KS)) (← iadd (← ishlImm wr 5) (← ishlImm g 2))
-  let xBase ← at4 (← at_ sm (M_SX KS)) (← iadd (← ishlImm wc 4) (← ishlImm t 2))
+  -- the bytes into a stage of the words this lane reads: its rows' and its
+  -- tokens' fragments (its two words of each), its rows' and tokens' scales;
+  -- offsets, so that each address is formed from `sm` where it is read
+  let tw ← ishlImm t 3
+  let aOff ← (List.range 4).mapM fun i => do
+    iadd (← ishlImm (← imul (← iadd (← iadd (← ishlImm wr 5) (← c32 (8 * i))) g) (← c32 MSTRIDE)) 2) tw
+  let bOff ← (List.range 4).mapM fun j => do
+    iadd (← ishlImm (← imul (← iadd (← iadd (← ishlImm wc 4) (← c32 (4 * j))) (← ushrImm g 1)) (← c32 MSTRIDE)) 2) tw
+  let sOff ← ishlImm (← iadd (← ishlImm wr 5) (← ishlImm g 2)) 2
+  let xOff ← ishlImm (← iadd (← ishlImm wc 4) (← ishlImm t 2)) 2
   -- `KS` blocks a stage: a thread's code words (eight bytes of codes each,
   -- four a block's row), token words and the raw words of their scales,
   -- loaded a stage ahead of the one the warps multiply
@@ -183,7 +186,6 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
         let at' ← bor (← band tt (← c32 (TT - 16)))
           (← bor (← ishlImm (← band tt (← c32 3)) 2) (← band (← ushrImm tt 2) (← c32 3)))
         store f (← at4 (← at_ sm (M_SX KS + 4 * TT * kbi)) at')
-  let tw ← ishlImm t 3
   -- the loop carries the stage, the sums' bits and the next stage's words
   let zbits ← bitcast .i32 zero
   let init := [← c32 0] ++ List.replicate 16 zbits ++ (← fetch (← c32 0))
@@ -192,26 +194,27 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
     (fun cs _ => do
       let all := Vals.uniformToList cs
       let b := all.getD 0 zbits
-      stash (all.drop 17)
-      callLocalVoid barrier %[]
-      -- the next stage's words, or this one's again past the last
+      -- the next stage's words, or this one's again past the last, asked for
+      -- before the barrier so that they arrive while this stage multiplies
       let nb ← iadd b (← c32 KS)
       let pre ← fetch (← select (← icmp .ult nb (← c32 kb)) nb b)
+      stash (all.drop 17)
+      callLocalVoid barrier %[]
       let zi ← c32 0
       let mut accs ← ((all.drop 1).take 16).mapM fun x => bitcast .f32 x
       for kbi in List.range KS do
         let halves (x : V .i64) : Prog V L (V .i32 × V .i32) := do
           pure (← ireduce32 x, ← ireduce32 (← ushrImm x 32))
-        let frag (a : V .i64) (tile : Nat) : Prog V L (V .i32 × V .i32) := do
-          halves (← load64 (← iadd (← at_ a tile) (← ext tw)))
-        let four (a : V .i64) : Prog V L (List (V .f32)) := do
-          let (x0, x1) ← halves (← load64 a)
-          let (x2, x3) ← halves (← load64 (← at_ a 8))
+        let word2 (o : V .i32) (at' : Nat) : Prog V L (V .i64) := do
+          load64 (← at_ (← iadd sm (← ext o)) at')
+        let four (o : V .i32) (at' : Nat) : Prog V L (List (V .f32)) := do
+          let (x0, x1) ← halves (← word2 o at')
+          let (x2, x3) ← halves (← word2 o (at' + 8))
           [x0, x1, x2, x3].mapM fun x => bitcast .f32 x
-        let as ← aBase.mapM fun a => frag a (kbi * WTILE)
-        let bs ← bBase.mapM fun a => frag a (kbi * XTILE)
-        let sws ← four (← at_ sBase (4 * TR * kbi))
-        let sxs ← four (← at_ xBase (4 * TT * kbi))
+        let as ← aOff.mapM fun o => do halves (← word2 o (M_W + kbi * WTILE))
+        let bs ← bOff.mapM fun o => do halves (← word2 o (M_X KS + kbi * XTILE))
+        let sws ← four sOff (M_SW KS + 4 * TR * kbi)
+        let sxs ← four xOff (M_SX KS + 4 * TT * kbi)
         let mut next : List (V .f32) := []
         for ((a0, a1), i) in as.zipIdx do
           for ((b0, b1), j) in bs.zipIdx do
