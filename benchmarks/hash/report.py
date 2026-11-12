@@ -18,8 +18,8 @@ from speed import parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 R_DIR = os.path.join(HERE, "results")
-# base's own hash (lean/algorithms/Bench/Hash.lean, through base_hash.cpp)
-BASE = "base-rapidhash"
+# base's own hashes (lean/algorithms/Bench/Hash.lean, through base_hash.cpp)
+BASE = ("base-rapidhash", "base-gxhash64")
 
 
 def newest_run() -> str:
@@ -121,8 +121,8 @@ def headline():
     """The hashing suite's headline rows for the top-level report (../suite.py):
     from the newest run, each hash's small-key cycles per hash (1-31-byte keys,
     lower is better) and bulk bytes per cycle (256 KiB keys), for the hashes
-    whose verification value passed; base's is `BASE`, rapidhash v3 as base's
-    own CLIF."""
+    whose verification value passed; base's are `BASE`, rapidhash v3 as base's
+    own CLIF and gxhash's 64-bit form as base's own AES loop."""
     run = newest_run()
     p = os.path.join(R_DIR, run, "speed.jsonl")
     out = []
@@ -137,7 +137,7 @@ def headline():
             if r.get(key) is not None:
                 out.append(dict(suite="hash", workload="non-cryptographic hash (SMHasher3)", measure=measure,
                                 unit=unit, higher=higher, engine=r["hash"], value=r[key],
-                                base=r["hash"] == BASE, run=run))
+                                base=r["hash"] in BASE, run=run))
     return out
 
 

@@ -5,6 +5,8 @@ public import Bench.ImageAsm
 meta import Bench.ImageAsm
 public import Bench.MemopsAsm
 meta import Bench.MemopsAsm
+public import Bench.HashAsm
+meta import Bench.HashAsm
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -100,7 +102,7 @@ def vexArithNames : List String :=
    "vmulss", "vmulsd", "vmulps", "vmulpd", "vdivss", "vdivsd", "vdivps", "vdivpd",
    "vandps", "vandpd", "vorps", "vorpd", "vxorps", "vxorpd", "vpand", "vpor", "vpxor", "vpcmpeqb",
    "vpaddd", "vpaddq", "vpsubd", "vpsubq", "vpaddw", "vpsubw", "vpmullw", "vpmaddwd",
-   "vpackuswb", "vpackssdw", "vpunpcklwd", "vpunpckhwd"]
+   "vpackuswb", "vpackssdw", "vpunpcklwd", "vpunpckhwd", "vpaddb", "vpcmpgtb", "vpunpcklqdq"]
 
 def vexMoveNames : List String :=
   ["vmovups", "vmovupd", "vmovaps", "vmovapd", "vmovdqu", "vmovdqa", "vmovss", "vmovsd"]
@@ -136,7 +138,7 @@ def vectorCases : List Case := Id.run do
           one (vbroadcastss d (dword a)) :: one (vmovntdq (Mem.mk size a) d) ::
           one (vmovntps (Mem.mk size a) d) :: out
         if wide then out := one (vbroadcastsd d (qword a)) :: out
-  for mn in ["vpshufb", "vpmaddubsw", "vpmulhrsw"] do
+  for mn in ["vpshufb", "vpmaddubsw", "vpmulhrsw", "vaesenc", "vaesenclast"] do
     for wide in [false, true] do
       let regs := if wide then ys vpick else xs vpick
       for d in regs do
@@ -219,7 +221,8 @@ def shippedCases : List Case :=
    ("ImageAsm.rowpair", ImageAsm.rowpair), ("ImageAsm.boxrow", ImageAsm.boxrow),
    ("ImageAsm.lzh", ImageAsm.lzh), ("ImageAsm.lzv", ImageAsm.lzv),
    ("MemopsAsm.copy", MemopsAsm.copy), ("MemopsAsm.fill", MemopsAsm.fill),
-   ("MemopsAsm.compare", MemopsAsm.compare), ("MemopsAsm.differ", MemopsAsm.differ)]
+   ("MemopsAsm.compare", MemopsAsm.compare), ("MemopsAsm.differ", MemopsAsm.differ),
+   ("HashAsm.gx", HashAsm.gx)]
 
 /-- Bodies `assemble` must refuse, and why. -/
 def refused : List (String × Body) :=

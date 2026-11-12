@@ -4,6 +4,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import Bench.HashAsm
+meta import Bench.HashAsm
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -16,7 +18,7 @@ open AlgorithmLib.Prog
 namespace BaseHash
 
 /-!
-  # rapidhash, as base's own CLIF
+  # rapidhash and gxhash, as base's own code
 
   `benchmarks/hash` measures it in SMHasher3 beside the field's hashes. It is
   rapidhash v3 exactly (the 64-bit, unprotected variant SMHasher3 registers
@@ -28,6 +30,10 @@ namespace BaseHash
 
   * `rapidhash`: the key as the input; the output's first word holds the
     seed on entry and the hash on return (the C API has no seed argument).
+  * `gxhash`: the same, the low 64 bits of gxhash's 128-bit hash (SMHasher3's
+    `gxhash-64`), by base's own AES loop (`HashAsm.gx`), mapped the first
+    time on a CPU with AES and AVX; status 2 on one without, which gxhash's
+    x86 form needs.
 -/
 
 section
@@ -128,11 +134,77 @@ def hashBody : Prog V L (V .i64) := do
 
 end
 
+/-! ## gxhash's machine code and where it sits
+
+At `SLOT_OFF`, 0 until the code's first use, then where it was mapped or
+`UNMAPPED`; at `AES_OFF` and `AVX_OFF` the features it needs, NUL-terminated,
+for `base_cpu_has`; from `CODE_OFF`, the code. -/
+
+def SLOT_OFF : Nat := 0
+def AES_OFF : Nat := 0x10
+def AVX_OFF : Nat := 0x20
+def CODE_OFF : Nat := 0x40
+
+def gxBytes : List UInt8 :=
+  match X86.assemble HashAsm.gx with
+  | .ok bs => bs
+  | .error e => panic! e
+
+#guard (X86.assemble HashAsm.gx).isOk
+
+def MEM_SIZE : Nat := (CODE_OFF + gxBytes.length + 63) / 64 * 64
+
+def writeAt (m : List UInt8) (off : Nat) (bs : List UInt8) : List UInt8 :=
+  m.take off ++ bs ++ m.drop (off + bs.length)
+
+def initialMemory : List UInt8 :=
+  writeAt (writeAt (writeAt (zeros MEM_SIZE) AES_OFF ("aes".toUTF8.toList ++ [0]))
+    AVX_OFF ("avx".toUTF8.toList ++ [0])) CODE_OFF gxBytes
+
+/-- The slot's word when the code could not be mapped (no x86-64, no AES or
+    AVX, or the map failed). -/
+def UNMAPPED : Int := 1
+
+section
+variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
+
+/-- The code's address, mapping it the first time. -/
+def gxMapped : Prog V L (V .i64) := do
+  let base ← basePtr
+  let at_ ← iaddImm base SLOT_OFF
+  when .eq (← load64 at_) (← iconst64 0) do
+    let one ← iconst32 1
+    let has (off : Nat) : Prog V L (V .i32) := do
+      select (← icmp .eq (← cpuHas (← iaddImm base off) (← iconst64 4)) one) one (← iconst32 0)
+    let ok ← band (← select (← icmp .eq (← nativeArch) one) one (← iconst32 0)) (← band (← has AES_OFF) (← has AVX_OFF))
+    let fn ← ifte (jTys := [.i64]) .ne ok (← iconst32 0)
+      (thn := do pure %[← nativeLoad (← iaddImm base CODE_OFF) (← iconst64 gxBytes.length)])
+      (els := do pure %[← iconst64 0])
+    storeI64 (← select (← icmp .eq fn.head (← iconst64 0)) (← iconst64 UNMAPPED) fn.head) at_
+  load64 at_
+
+def gxBody : Prog V L (V .i64) := do
+  let r ← ifte (jTys := [.i64]) .uge (← outLen) (← c 8)
+    (els := do pure %[← c 1])
+    (thn := do
+      let fn ← gxMapped
+      let r2 ← ifte (jTys := [.i64]) .eq fn (← iconst64 UNMAPPED)
+        (thn := do pure %[← c 2])
+        (els := do
+          let out ← outPtr
+          storeI64 (← nativeCall fn (← dataPtr) (← dataLen) (← load64 out) (← c 0)) out
+          pure %[← c 0])
+      pure %[r2.head])
+  pure r.head
+
+end
+
 def clifIR : Except String (List FuncData) :=
-  Prog.program [Prog.entry "rapidhash" (Prog.compileProgStatus 0 hashBody)]
+  Prog.program [Prog.entry "rapidhash" (Prog.compileProgStatus 0 hashBody),
+    Prog.entry "gxhash" (Prog.compileProgStatus 1 gxBody)]
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
-  #[artifactEntry "hash" { functions := clif, required_memory := 0x100, initial_memory := [] }]
+  #[artifactEntry "hash" { functions := clif, required_memory := MEM_SIZE, initial_memory := initialMemory }]
 
 end BaseHash
 

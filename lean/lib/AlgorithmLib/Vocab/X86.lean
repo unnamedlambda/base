@@ -305,6 +305,11 @@ def vpmovmskb (a b : Opd) : Item := .ins "vpmovmskb" [a, b]
 def bsf (a b : Opd) : Item := .ins "bsf" [a, b]
 def movzx (a b : Opd) : Item := .ins "movzx" [a, b]
 def vpaddd (a b c : Opd) : Item := .ins "vpaddd" [a, b, c]
+def vpaddb (a b c : Opd) : Item := .ins "vpaddb" [a, b, c]
+def vpcmpgtb (a b c : Opd) : Item := .ins "vpcmpgtb" [a, b, c]
+def vpunpcklqdq (a b c : Opd) : Item := .ins "vpunpcklqdq" [a, b, c]
+def vaesenc (a b c : Opd) : Item := .ins "vaesenc" [a, b, c]
+def vaesenclast (a b c : Opd) : Item := .ins "vaesenclast" [a, b, c]
 def vpaddq (a b c : Opd) : Item := .ins "vpaddq" [a, b, c]
 def vpsubd (a b c : Opd) : Item := .ins "vpsubd" [a, b, c]
 def vpsubq (a b c : Opd) : Item := .ins "vpsubq" [a, b, c]
@@ -538,12 +543,15 @@ def vexArith : String → Option (Nat × UInt8 × Bool)
   | "vpmullw" => some (1, 0xD5, true) | "vpmaddwd" => some (1, 0xF5, true)
   | "vpackuswb" => some (1, 0x67, true) | "vpackssdw" => some (1, 0x6B, true)
   | "vpunpcklwd" => some (1, 0x61, true) | "vpunpckhwd" => some (1, 0x69, true)
+  | "vpaddb" => some (1, 0xFC, true) | "vpcmpgtb" => some (1, 0x64, true)
+  | "vpunpcklqdq" => some (1, 0x6C, true)
   | _ => none
 
 /-- The opcode of the three-operand packed integer instructions in the `0F38`
     map, all `66`-prefixed. -/
 def vex38Arith : String → Option UInt8
   | "vpshufb" => some 0x00 | "vpmaddubsw" => some 0x04 | "vpmulhrsw" => some 0x0B
+  | "vaesenc" => some 0xDC | "vaesenclast" => some 0xDD
   | _ => none
 
 /-- The opcode and `/digit` of the word and doubleword shifts by an immediate
