@@ -199,35 +199,55 @@ def clearBody : Prog V L Unit := do
   setW BUMP (← iconst64 HEAP)
   makeTable (← iconst64 16)
 
+/-- Keys a lookup or an insert takes together. -/
+def BATCH : Nat := 8
+
+/-- `k ↦ v` set, `h` the key's hash: its value replaced where it is there,
+    else placed at the empty bucket its probe meets, the table doubled first
+    where full (only while the next size fits the arena). -/
+def insertOne (k v h : V .i64) : Prog V L Unit := do
+  let t ← tab
+  let (b, found) ← probeH t h k
+  let _ ← ifte (jTys := []) .ne found (← iconst64 0)
+    (thn := do storeI64 v (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8); pure %[])
+    (els := do
+      let _ ← ifte (jTys := []) .eq (← getW ROOM) (← iconst64 0)
+        (thn := do
+          when .ult (← getW MASK) (← iconst64 (MAX_BUCKETS / 2)) do
+            grow
+            let t2 ← tab
+            let (b2, _) ← probeH t2 h k
+            placeAt t2 h b2 k v
+          pure %[])
+        (els := do placeAt t h b k v; pure %[])
+      pure %[])
+
 def insertBody : Prog V L Unit := do
   let dp ← dataPtr
   let n ← load64 dp
   when .ule (← iaddImm (← ishlImm n 4) 8) (← dataLen) do
     let keys ← iaddImm dp 8
     let vals ← iadd keys (← ishlImm n 3)
-    forLoop n fun i => do
-      let k ← load64 (← iadd keys (← ishlImm i 3))
-      let v ← load64 (← iadd vals (← ishlImm i 3))
-      let t ← tab
-      let h ← hash k
-      let (b, found) ← probeH t h k
-      let _ ← ifte (jTys := []) .ne found (← iconst64 0)
-        (thn := do storeI64 v (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8); pure %[])
-        (els := do
-          let _ ← ifte (jTys := []) .eq (← getW ROOM) (← iconst64 0)
-            (thn := do
-              -- doubled only while the next size fits the arena
-              when .ult (← getW MASK) (← iconst64 (MAX_BUCKETS / 2)) do
-                grow
-                let t2 ← tab
-                let (b2, _) ← probeH t2 h k
-                placeAt t2 h b2 k v
-              pure %[])
-            (els := do placeAt t h b k v; pure %[])
-          pure %[])
-
-/-- Keys a lookup takes together. -/
-def BATCH : Nat := 8
+    -- batches of `BATCH` keys: their hashes taken and home groups read
+    -- first, so their cache misses overlap, then each set in order
+    let whole ← band n (← iconst64 (-(BATCH : Int)))
+    let _ ← wloop %[← iconst64 0] (fun cs => pure (contIfULt cs.head whole, %[], ()))
+      (fun cs _ => do
+        let t ← tab
+        let mut batch := #[]
+        for j in List.range BATCH do
+          let i ← iaddImm cs.head j
+          let k ← load64 (← iadd keys (← ishlImm i 3))
+          let h ← hash k
+          let _ ← load { ty := .i8x16 } (← iadd t.ctrl (← band h t.mask))
+          batch := batch.push (k, ← load64 (← iadd vals (← ishlImm i 3)), h)
+        for (k, v, h) in batch do insertOne k v h
+        pure %[← iaddImm cs.head BATCH])
+    let _ ← wloop %[whole] (fun cs => pure (contIfULt cs.head n, %[], ()))
+      (fun cs _ => do
+        let k ← load64 (← iadd keys (← ishlImm cs.head 3))
+        insertOne k (← load64 (← iadd vals (← ishlImm cs.head 3))) (← hash k)
+        pure %[← iaddImm cs.head 1])
 
 def getBody : Prog V L Unit := do
   let dp ← dataPtr
