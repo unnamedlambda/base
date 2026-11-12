@@ -35,7 +35,8 @@ namespace HashTable
 
   Its functions (the caller's data, then what each does):
 
-  * `clear`: the table emptied to 16 buckets;
+  * `clear`: the table emptied to 16 buckets (the first, offering the
+    tables' memory huge pages);
   * `insert`: a count (`u64`), the keys, the values (`u64` each): each key
     set to its value;
   * `get`: a count, the keys: the output's first word gets the sum of the
@@ -50,6 +51,8 @@ def MASK : Nat := 0x110
 def ITEMS : Nat := 0x118
 def ROOM : Nat := 0x120
 def BUMP : Nat := 0x128
+/-- Whether the tables' memory has been offered huge pages yet. -/
+def ADVISED : Nat := 0x130
 /-- Where tables start, and the arena's size: room for every table from 16
     buckets to `2^25` (17 bytes a bucket, 16 more each). -/
 def HEAP : Nat := 0x1000
@@ -165,6 +168,12 @@ def grow : Prog V L Unit := do
       place b k (← load64 (← iaddImm slot 8))
 
 def clearBody : Prog V L Unit := do
+  -- the tables on huge pages where the system grants them, asked once: a
+  -- large table's probes otherwise land on more pages than the translation
+  -- cache holds
+  when .eq (← getW ADVISED) (← iconst64 0) do
+    let _ ← memAdviseHuge (← word HEAP) (← iconst64 (MEM - HEAP))
+    setW ADVISED (← iconst64 1)
   setW BUMP (← iconst64 HEAP)
   makeTable (← iconst64 16)
 

@@ -95,20 +95,27 @@ def initialMemory : List UInt8 :=
     the map failed): the operation stays the CLIF without trying again. -/
 def UNMAPPED : Int := 1
 
-/-- Body `slot`'s address, mapping it the first time: its slot holds 0 until
-    then, the address after, or `UNMAPPED`. -/
-def mapped (slot : Nat) (b : X86.Body) (off : Nat) : Prog V L (V .i64) := do
+/-- Body `b`'s address, mapping it the first time, for any artifact that
+    carries a body: the arena word at `slotAt` holds 0 until then, the address
+    after, or `UNMAPPED`; `"avx2"` sits at `nameAt`, the body's bytes at
+    `codeAt`. -/
+def mappedAt (slotAt nameAt codeAt : Nat) (b : X86.Body) : Prog V L (V .i64) := do
   let base ← basePtr
-  let at_ ← iaddImm base (SLOT_OFF + 8 * slot)
+  let at_ ← iaddImm base slotAt
   when .eq (← load64 at_) (← iconst64 0) do
     let one ← iconst32 1
     let ok ← band (← select (← icmp .eq (← nativeArch) one) one (← iconst32 0))
-      (← select (← icmp .eq (← cpuHas (← iaddImm base NAME_OFF) (← iconst64 5)) one) one (← iconst32 0))
+      (← select (← icmp .eq (← cpuHas (← iaddImm base nameAt) (← iconst64 5)) one) one (← iconst32 0))
     let fn ← ifte (jTys := [.i64]) .ne ok (← iconst32 0)
-      (thn := do pure %[← nativeLoad (← iaddImm base off) (← iconst64 (bodyBytes b).length)])
+      (thn := do pure %[← nativeLoad (← iaddImm base codeAt) (← iconst64 (bodyBytes b).length)])
       (els := do pure %[← iconst64 0])
     storeI64 (← select (← icmp .eq fn.head (← iconst64 0)) (← iconst64 UNMAPPED) fn.head) at_
   load64 at_
+
+/-- Body `slot`'s address, mapping it the first time (`mappedAt` at this
+    artifact's layout). -/
+def mapped (slot : Nat) (b : X86.Body) (off : Nat) : Prog V L (V .i64) :=
+  mappedAt (SLOT_OFF + 8 * slot) NAME_OFF off b
 
 /-- Where the large-size functions sit: body `slot`'s at `LARGE0 + slot`,
     after the five entries. -/
