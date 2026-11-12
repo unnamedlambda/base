@@ -2,8 +2,11 @@
 
 Non-cryptographic hashes measured the way the field measures them:
 [SMHasher3](https://gitlab.com/fwojcik/smhasher3), its Sanity and Speed
-suites on one thread, as its published results are. The hash tables of A6
-are not built yet.
+suites on one thread, as its published results are. Base's engine is rapidhash v3 as base's own CLIF
+(`lean/algorithms/Bench/Hash.lean`), registered in SMHasher3 as
+`base-rapidhash` by `base_hash.cpp` with rapidhash's verification value, so
+it is reported only if it is that function bit for bit. The hash tables are
+`../hashtable`.
 
 ## Running
 
@@ -11,8 +14,9 @@ are not built yet.
 
 One command does everything, from scratch:
 1. creates the virtual environment (cmake and ninja) if it is missing;
-2. clones SMHasher3 at its pinned commit and builds it with its documented
-   CMake build, if missing;
+2. clones SMHasher3 at its pinned commit, adds `base_hash.cpp` to its hash
+   sources and builds it with its documented CMake build, if missing;
+   builds base's library and its hash artifact;
 3. runs every hash in `speed.HASHES` (`speed.py`, one process each);
 4. writes `REPORT.md`.
 
@@ -36,8 +40,18 @@ Cycles are the time-stamp counter's; the report converts bulk to GB/s at
 the counter's rate.
 
 Hashes: XXH3 (64 and 128), rapidhash, aHash (its AES path and its fallback),
-CRC-32C, wyhash, komihash, gxhash, Abseil's hash, CityHash64, and FNV-1a-64
-as the classic baseline.
+CRC-32C, wyhash, komihash, gxhash, Abseil's hash, CityHash64, FNV-1a-64 as
+the classic baseline, and base's rapidhash. Base's is called through its C
+API (input, length, output, output length; the seed rides in the output
+word), which the small-key cycles include.
+
+## Where base stands
+
+Base's rapidhash runs at 6.5 bytes/cycle bulk against the C build's 8.8,
+and 27 cycles a small key against 22: Cranelift forms a 64x64->128 product
+as two multiplies where x86 has one, and every hash pays the C API's call.
+The frontier is a different algorithm on each measure: gxhash's AES rounds
+in bulk (23 bytes/cycle), Abseil's low-level hash on small keys (15 cycles).
 
 **Reproduction.** SMHasher3's results directory at the pinned commit gives
 every hash's published verification value and speeds; the report sets them

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The hashing benchmark, from scratch, measured as SMHasher3 measures:
-# SMHasher3 built at its pinned commit, every hash's Sanity and Speed suites,
-# then the report.
+# SMHasher3 built at its pinned commit (with base's hash added to its list),
+# every hash's Sanity and Speed suites, then the report.
 #
 #   ./run.sh            every hash in speed.HASHES (about 11 minutes)
 #
@@ -24,6 +24,14 @@ if [[ ! -x $PY ]]; then
     .venv/bin/pip install -q -r requirements.txt
 fi
 cap $PY prepare.py
+# base's hash is an input, as SMHasher3 is: its library (the C API) and its
+# artifact, written by the Lean generator
+ROOT=$(cd ../.. && pwd)
+( cd "$ROOT" && cap cargo build --release -q -p base ) || { echo "libbase did not build" >&2; exit 1; }
+( cd "$ROOT" && tools/lean_build.sh genhashbench > /dev/null ) || { echo "base's hash generator did not build" >&2; exit 1; }
+mkdir -p build/base
+cap "$ROOT/lean/.lake/build/bin/genhashbench" build/base > /dev/null
+export BASE_LIB="$ROOT/target/release/libbase.so" BASE_HASH="$PWD/build/base/hash.cbor"
 
 export HASH_RUN="$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD)"
 OUT=results/$HASH_RUN

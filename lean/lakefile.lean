@@ -138,6 +138,8 @@ lean_exe genanalyticsbench where
   root := `Main.Bench.Analytics
 lean_exe genjsonbench where
   root := `Main.Bench.Json
+lean_exe genhashbench where
+  root := `Main.Bench.Hash
 lean_exe genleanevalalgorithm where
   root := `Main.Demo.LeanEval
 lean_exe gendrawalgorithm where

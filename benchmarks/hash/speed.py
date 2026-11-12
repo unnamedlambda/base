@@ -21,6 +21,7 @@ from prepare import EXE
 HASHES = (
     "XXH3-64", "XXH3-128", "rapidhash", "rust-ahash", "rust-ahash-fb", "CRC-32C",
     "wyhash", "komihash", "gxhash", "Abseil64-llh", "CityHash-64", "FNV-1a-64",
+    "base-rapidhash",
 )
 
 

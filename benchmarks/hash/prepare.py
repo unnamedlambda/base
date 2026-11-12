@@ -17,6 +17,27 @@ BUILD = os.path.join(HERE, "build")
 SMHASHER = os.path.join(BUILD, "smhasher3")
 REPO = ("https://gitlab.com/fwojcik/smhasher3.git", "94c6395")  # main, 2026-10-08
 EXE = os.path.join(SMHASHER, "build", "SMHasher3")
+# base's hash, added to SMHasher3's own list of hash sources
+BASE_SRC = os.path.join(HERE, "base_hash.cpp")
+BASE_DST = os.path.join(SMHASHER, "hashes", "base.cpp")
+
+
+def add_base() -> bool:
+    """`base_hash.cpp` as SMHasher3's `hashes/base.cpp`, listed in its hash
+    sources; whether that changed anything (so the build is redone)."""
+    src = open(BASE_SRC).read()
+    changed = not os.path.exists(BASE_DST) or open(BASE_DST).read() != src
+    if changed:
+        with open(BASE_DST, "w") as f:
+            f.write(src)
+    cm = os.path.join(SMHASHER, "hashes", "Hashsrc.cmake")
+    text = open(cm).read()
+    if "hashes/base.cpp" not in text:
+        text = text.replace("  hashes/rapidhash.cpp\n", "  hashes/rapidhash.cpp\n  hashes/base.cpp\n", 1)
+        with open(cm, "w") as f:
+            f.write(text)
+        changed = True
+    return changed
 
 
 def smhasher() -> str:
@@ -28,7 +49,7 @@ def smhasher() -> str:
     got = subprocess.run(["git", "-C", SMHASHER, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     if not got.startswith(rev):
         raise SystemExit(f"{SMHASHER} is at {got}, not the pinned {rev}")
-    if not os.path.exists(EXE):
+    if add_base() or not os.path.exists(EXE):
         bdir = os.path.join(SMHASHER, "build")
         os.makedirs(bdir, exist_ok=True)
         venv_bin = os.path.join(HERE, ".venv", "bin")
