@@ -123,29 +123,35 @@ def main():
     import py_base
     mods = ptx_modules(py_base.Driver(open(args.artifact, "rb").read()))
 
-    # One expert, filled with plausible bytes.  Values do not matter to a timing
-    # -- there is no data-dependent branch in either kernel -- but the buffers
-    # have to be the true size or the cache hierarchy answers a different
-    # question than the one being asked.
-    gu_blocks = cu.upload(rng.integers(0, 256, 2 * I * ROW_BYTES, dtype=np.uint8))
-    gu_scales = cu.upload(rng.integers(120, 134, 2 * I * ROW_SCALES, dtype=np.uint8))
-    gu_bias = cu.upload(rng.standard_normal(2 * I).astype(np.float32))
-    dn_blocks = cu.upload(rng.integers(0, 256, H * ROW_BYTES, dtype=np.uint8))
-    dn_scales = cu.upload(rng.integers(120, 134, H * ROW_SCALES, dtype=np.uint8))
-    dn_bias = cu.upload(rng.standard_normal(H).astype(np.float32))
+    # A layer's four experts in a pool, filled with plausible bytes.  Values
+    # do not matter to a timing -- there is no data-dependent branch in either
+    # kernel -- but the buffers have to be the true size, and four distinct
+    # experts, or the cache hierarchy answers a different question than asked.
+    pool = cu.upload(np.concatenate([np.concatenate([
+        rng.integers(0, 256, 2 * I * ROW_BYTES, dtype=np.uint8),
+        rng.integers(120, 134, 2 * I * ROW_SCALES, dtype=np.uint8),
+        rng.standard_normal(2 * I).astype(np.float32).view(np.uint8),
+        rng.integers(0, 256, H * ROW_BYTES, dtype=np.uint8),
+        rng.integers(120, 134, H * ROW_SCALES, dtype=np.uint8),
+        rng.standard_normal(H).astype(np.float32).view(np.uint8)]) for _ in range(TOPK)]))
+    # layer 0's experts 0-3 in slots 0-3 (`GptOssKernels.Body.expertAt`):
+    # the slot map, the router's choice, and the meta's layer word (32)
+    slot_of = cu.upload(np.arange(NL * 32, dtype=np.int32))
+    chosen = cu.upload(np.arange(TOPK, dtype=np.int32))
+    meta = cu.upload(np.zeros(64, np.int32))
     x = cu.upload(rng.standard_normal(H).astype(np.float32))
-    hid = cu.upload(rng.standard_normal(I).astype(np.float32))
-    out_i = cu.upload(np.zeros(I, np.float32))
-    out_h = cu.upload(np.zeros(H, np.float32))
+    hid = cu.upload(rng.standard_normal(TOPK * I).astype(np.float32))
+    y = cu.upload(np.zeros(TOPK * H, np.float32))
 
     gu = cu.func(cu.module(mods[S_GATEUP]))
     dn = cu.func(cu.module(mods[S_DOWN]))
     block = WARPS * 32
-    gu_grid = I // (WARPS * ROWS_GU)
-    dn_grid = H // (WARPS * ROWS_DOWN)
+    gu_grid = TOPK * (I // (WARPS * ROWS_GU))
+    dn_grid = TOPK * (H // (WARPS * ROWS_DOWN))
 
-    t_gu = cu.time(gu, gu_grid, block, [gu_blocks, gu_scales, gu_bias, x, out_i], args.iters)
-    t_dn = cu.time(dn, dn_grid, block, [dn_blocks, dn_scales, dn_bias, hid, out_h], args.iters)
+    # one launch covers the four experts; the numbers below are per expert
+    t_gu = cu.time(gu, gu_grid, block, [pool, slot_of, chosen, meta, x, hid], args.iters) / TOPK
+    t_dn = cu.time(dn, dn_grid, block, [pool, slot_of, chosen, meta, hid, y], args.iters) / TOPK
 
     # Each kernel reads its own weights once; that is its roofline.
     gu_bytes = 2 * I * ROW_BYTES + 2 * I * ROW_SCALES + 2 * I * 4

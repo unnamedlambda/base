@@ -79,27 +79,24 @@ open GptOssKernels (warpsPerCta rowsPerWarpDown rowsPerWarpGateUp smemBytes)
 def NL : Nat := 24
 def NE : Nat := 32
 def TOPK : Nat := 4
-def PIECES : Nat := 6
 def VOCAB : Nat := 201088
 def HH : Nat := 2880
 def II : Nat := 2880
 
-/-- Slots the cache holds. A compile-time *bound*: the bind table is sized for
-    this many and the loader creates however many the card turns out to have
-    room for, which it asks at run time. -/
-def NSLOT_MAX : Nat := 640
+/-- Slots the cache holds. A compile-time *bound*, one for every expert the
+    model has: the bind table is sized for this many and the loader creates
+    however many the card turns out to have room for, which it asks at run
+    time. -/
+def NSLOT_MAX : Nat := NL * NE
 
 /-- What a caller who names no context gets: the depth this engine shipped with
     before the cache became a choice, so a driver that says nothing behaves as
     it always did. -/
 def CAP_DEFAULT : Nat := 8192
 
-/-- Bytes of each piece of an expert, in the order the converter writes them. -/
-def pieceBytes : List Nat :=
-  [ 2 * II * (HH / 2), 2 * II * (HH / 32), 2 * II * 4
-  , HH * (II / 2), HH * (II / 32), HH * 4 ]
-def ROW_BYTES : Nat := pieceBytes.foldl (· + ·) 0
-def pieceOff (t : Nat) : Nat := ((pieceBytes.take t).foldl (· + ·) 0)
+/-- One expert, all its pieces: a row of `experts.bin` and a slot of the
+    device pool alike (`GptOssKernels.expertPieces`). -/
+def ROW_BYTES : Nat := GptOssKernels.EXPERT_BYTES
 
 /-- The dense file's layout, which is regular: a fixed stride per layer and a
     fixed offset per kind inside it. Derived rather than tabulated, so a
@@ -132,22 +129,49 @@ def fileRope : Nat := fileLmHead + VOCAB * HH * 2
 def ROPE_FILE_ROWS : Nat := 131072
 def fileRopeSin : Nat := fileRope + ROPE_FILE_ROWS * HALF * 4
 
+/-- **The Q8_0 section, after the rotation tables**, which is what the decode
+    multiplies by: llama.cpp's own values for the fused QKV, `o_proj` and
+    `lm_head` (`prepare_q8.py` appends them, checked against the bf16 copies
+    above, which the reference reads). A tensor is its `rows × cols` int8
+    values and then its f32 scales, one a block of 32. -/
+def q8Bytes (rows cols : Nat) : Nat := rows * cols + rows * (cols / 32) * 4
+def fileQ8 : Nat := fileRopeSin + ROPE_FILE_ROWS * HALF * 4
+def Q8_LAYER : Nat := q8Bytes dQkvOut HH + q8Bytes HH QO
+def fileQ8Lm : Nat := fileQ8 + Q8_LAYER * NL
+/-- Where a dense kind of a layer comes from: the Q8_0 section for the two
+    projections, the bf16 layout for the rest. -/
+def fileDense (layer k : Nat) : Nat :=
+  if k == 1 then fileQ8 + Q8_LAYER * layer
+  else if k == 4 then fileQ8 + Q8_LAYER * layer + q8Bytes dQkvOut HH
+  else denseOff layer k
+/-- A dense kind's size on the device. -/
+def dDevBytes : List Nat :=
+  (dKindBytes.set 1 (q8Bytes dQkvOut HH)).set 4 (q8Bytes HH QO)
+
 /-! ## PTX slots -/
+
+/-- Where the loop parks the layer it is on: inside the meta region, past the
+    slots the kernels read, so it costs no separate mapping. -/
+def DLAYER_SLOT : Nat := 32
+
 
 def dPtx : List String :=
   [ GptOssKernels.Body.moduleOf rmsKernel, GptOssKernels.Body.moduleOf addKernel, GptOssKernels.Body.moduleOf (ropeKernel 0)
   , GptOssKernels.Body.moduleOf (ropeKernel QO)
   , GptOssKernels.Body.moduleOf (kvStoreKernel (QO / 2) HDW), GptOssKernels.Body.moduleOf (kvStoreKernel (KO / 2) HDW)
   , GptOssKernels.Body.moduleOf sinkKernel, GptOssKernels.Body.moduleOf GptOssKernels.Body.narrow
-  , GptOssKernels.Body.moduleOf GptOssKernels.Body.gateUp
-  , GptOssKernels.Body.moduleOf GptOssKernels.Body.downGemv
-  , GptOssKernels.Body.moduleOf GptOssKernels.Body.moeCombine4
+  , GptOssKernels.Body.moduleOf (GptOssKernels.Body.gateUpAllK DLAYER_SLOT)
+  , GptOssKernels.Body.moduleOf (GptOssKernels.Body.downAllK DLAYER_SLOT)
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.moeCombineAll
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.routerTop4
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.argmax
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.widen
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.sample
   , GptOssKernels.Body.moduleOf GptOssKernels.Body.attnTile
-  , GptOssKernels.Body.moduleOf GptOssKernels.Body.attnCombine ]
+  , GptOssKernels.Body.moduleOf GptOssKernels.Body.attnCombine
+  , GptOssKernels.Body.moduleOf (GptOssKernels.Body.q8Gemv dQkvOut HH)
+  , GptOssKernels.Body.moduleOf (GptOssKernels.Body.q8Gemv HH QO)
+  , GptOssKernels.Body.moduleOf (GptOssKernels.Body.q8Gemv VOCAB HH) ]
 
 def S_RMS := 0
 def S_ADD := 1
@@ -176,12 +200,17 @@ def S_SAMPLE := 14
     inserting one renumbers every launch. -/
 def S_ATTTILE := 15
 def S_ATTCOMB := 16
+/-- The Q8_0 projections: QKV, `o_proj`, `lm_head`. -/
+def S_Q8QKV := 17
+def S_Q8O := 18
+def S_Q8LM := 19
 
 /-! ## Buffers
 
     The first block is *this layer's*: nine dense weights, a key cache and a
-    value cache, and four experts of six pieces each. None of them is ever
-    allocated to hold anything — the loop points them at the store. -/
+    value cache. None of them is ever allocated to hold anything — the loop
+    points them at the store. The experts are reached through the pool and
+    `B_SLOTOF`. -/
 
 def W_ANORM := 0
 def W_QKVW := 1
@@ -194,65 +223,60 @@ def W_RW := 7
 def W_RB := 8
 def C_KC := 9
 def C_VC := 10
-def C_SLOT0 := 11                       -- 4 experts x 6 pieces
-def B_X := C_SLOT0 + PIECES * TOPK
+def B_X := 11
 def B_XN := B_X + 1
-def B_XNB := B_X + 2
-def B_QKV := B_X + 3
-def B_SC := B_X + 4
-def B_PR := B_X + 5
-def B_ATT := B_X + 6
-def B_ATTB := B_X + 7
-def B_TMP := B_X + 8
-def B_ROPE := B_X + 9
-def B_META := B_X + 10
-def B_NMH := B_X + 11
-def B_NMQ := B_X + 12
-def B_RLOG := B_X + 13
-def B_XM := B_X + 14
-def B_GATES := B_X + 15
-def B_MOUT := B_X + 16
-def B_CHOSEN := B_X + 17
-def B_LOGITS := B_X + 18
-def B_LMHEAD := B_X + 19
-def B_FNORM := B_X + 20
+def B_QKV := B_X + 2
+def B_ATT := B_X + 3
+def B_TMP := B_X + 4
+def B_ROPE := B_X + 5
+def B_META := B_X + 6
+def B_NMH := B_X + 7
+def B_RLOG := B_X + 8
+def B_XM := B_X + 9
+def B_GATES := B_X + 10
+def B_MOUT := B_X + 11
+def B_CHOSEN := B_X + 12
+def B_LOGITS := B_X + 13
+def B_LMHEAD := B_X + 14
+def B_FNORM := B_X + 15
 /-- The greedy token, alone in its own buffer.
 
     It could share `B_CHOSEN`, which has room; it must not. The runtime's
     copies assert that a transfer is the whole of a buffer, so reading four
     bytes out of sixteen is not a short read but a failure — and one that
     arrives as a panic from inside the driver rather than as a wrong answer. -/
-def B_TOKEN := B_X + 21
+def B_TOKEN := B_X + 16
 /-- The embedding row as the table stores it: bf16, 5.7 KiB, widened on the
-    device.  Its own buffer rather than a borrow of `B_XNB`, which is the same
-    size and free at that moment: the two hold different things and a reader
-    should not have to know the order of the step to see that. -/
-def B_EMB := B_X + 22
+    device. -/
+def B_EMB := B_X + 17
 /-- `[vocab, seed, 1/T as bits, ln(min_p) as bits]` for the sampling kernel. -/
-def B_SAMP := B_X + 23
+def B_SAMP := B_X + 18
 /-- The rotated q, k and v, narrowed to bf16 and packed two to a word.
 
-    The cache holds bf16, so k and v arrive already narrowed; and q has to be
-    narrowed with them because cuBLAS refuses a mixed operand pair, so the
-    contraction against a bf16 cache takes a bf16 query. One pass over all
-    three, immediately after the rotation. -/
-def B_QKVB := B_X + 24
-/-- The attention probabilities, likewise, for the contraction against a bf16
-    value cache. -/
-def B_PRB := B_X + 25
+    The cache holds bf16, so k and v arrive already narrowed; and the
+    attention tile reads the query packed the same way, a word a lane, as it
+    reads a key row. One pass over all three, immediately after the rotation. -/
+def B_QKVB := B_X + 19
 /-- How many words the first narrow covers, which is a constant: q, k and v
     together are `dQkvOut` floats however long the conversation is. -/
-def B_NMQKV := B_X + 27
+def B_NMQKV := B_X + 20
 /-- Where a tile leaves its `(m, l, acc)` for the merge, and how many tiles
     there are -- which follows the position, so the kernel is told rather than
     generated for it. -/
-def B_PART := B_X + 28
-def B_Y := B_X + 30                     -- four
-def B_HID := B_Y + TOPK                 -- four
-def DSTORE := B_HID + TOPK              -- 9 x NL dense weights
+def B_PART := B_X + 21
+/-- `(layer, expert)` to the pool slot holding it, the device's copy of
+    `DSLOTOF_OFF`, which the expert launches read (`GptOssKernels.Body.expertAt`). -/
+def B_SLOTOF := B_X + 22
+/-- The chosen experts' outputs side by side, `HH` floats each, and their
+    hidden activations likewise. -/
+def B_Y := B_X + 23
+def B_HID := B_X + 24
+def DSTORE := B_X + 25                  -- 9 x NL dense weights
 def KVSTORE := DSTORE + 9 * NL          -- 2 x NL caches
-def SLOTSTORE := KVSTORE + 2 * NL       -- NSLOT_MAX x 6 expert pieces
-def DNBUF := SLOTSTORE + PIECES * NSLOT_MAX
+/-- The expert pool: one allocation, `ROW_BYTES` a slot, as many slots as the
+    card has room for once everything else is allocated. -/
+def B_POOL := KVSTORE + 2 * NL
+def DNBUF := B_POOL + 1
 
 def dStoreBuf (layer k : Nat) : Nat := DSTORE + 9 * layer + k
 /-- The depth a layer's cache is *allowed*, which is what `dBufBytes` is about.
@@ -265,23 +289,19 @@ def dStoreBuf (layer k : Nat) : Nat := DSTORE + 9 * layer + k
 def capOf (layer : Nat) : Nat := if layer % 2 == 0 then CAP_SWA else CAP_MAX
 
 def dBufBytes : List Nat :=
-  (List.range 9).map (fun k => dKindBytes.getD k 0)        -- current layer: placeholders
+  (List.range 9).map (fun k => dDevBytes.getD k 0)         -- current layer: placeholders
     ++ [128, 128]
-    ++ List.replicate (PIECES * TOPK) 128
-    ++ [ HH * 4, HH * 4, HH * 2, dQkvOut * 4
-       , 64 * CAP_MAX * 4, 64 * CAP_MAX * 4
-       , (64 * 64) * 4, (64 * 64) * 2, HH * 4
-       , 2 * ROPE_N * HALF * 4, 64 * 4, 4, 4
+    ++ [ HH * 4, HH * 4, dQkvOut * 4
+       , (64 * 64) * 4, HH * 4
+       , 2 * ROPE_N * HALF * 4, 64 * 4, 4
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
-       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 16
-       , dQkvOut * 2, 64 * CAP_MAX * 2, 4, 4
+       , VOCAB * 4, q8Bytes VOCAB HH, HH * 4, 4, HH * 2, 16
+       , dQkvOut * 2, 4
        , GptOssKernels.attPartialFloats * 4 * 64 * GptOssKernels.ATT_TILES_MAX
-       , 4 ]
-    ++ List.replicate TOPK (HH * 4)
-    ++ List.replicate TOPK (II * 4)
-    ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dKindBytes.getD k 0))
+       , NL * NE * 4, TOPK * HH * 4, TOPK * II * 4 ]
+    ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dDevBytes.getD k 0))
     ++ (List.range NL).flatMap (fun l => [8 * capOf l * 64 * 2, 8 * capOf l * 64 * 2])
-    ++ (List.range NSLOT_MAX).flatMap (fun _ => pieceBytes)
+    ++ [NSLOT_MAX * ROW_BYTES]
 
 theorem gptoss_decode_alloc_covers :
     dBufBytes.length = DNBUF ∧ dBufBytes.all (fun n => decide (0 < n)) = true := by
@@ -318,13 +338,6 @@ def DINIT_OFF : Nat := DMISS_OFF + 4
     later step reads it from here rather than being told again. -/
 def DCTX_OFF : Nat := DINIT_OFF + 4
 def DCTXSTRIDE_OFF : Nat := DCTX_OFF + 4
-/-- A word to stage the narrow count in before it is uploaded.
-
-    Its own slot rather than `DLOCAL_OFF`, which the very next call overwrites
-    with buffer ids: the upload happens first and the copy is synchronous, so
-    sharing it would work and would be a trap for whoever reorders these two
-    lines. -/
-def DNARROWN_OFF : Nat := DCTXSTRIDE_OFF + 8
 /-! ### The tokenizer's corner
 
     A chat turn is text in and text out, so this program owns a tokenizer as
@@ -334,7 +347,7 @@ def DNARROWN_OFF : Nat := DCTXSTRIDE_OFF + 8
 /-- The longest prompt or reply this program handles, in bytes. -/
 def TEXT_MAX : Nat := 32768
 
-def DTOK_BASE : Nat := DNARROWN_OFF + 8
+def DTOK_BASE : Nat := DCTXSTRIDE_OFF + 8
 def DT_PATHPTR : Nat := DTOK_BASE
 def DT_BUFPTR : Nat := DTOK_BASE + 8
 def DT_TOKCOUNT : Nat := DTOK_BASE + 16
@@ -391,7 +404,6 @@ def dMemMap : AlgorithmLib.Layout.RegionMap :=
         ⟨"pool", DPOOL_OFF, 8⟩, ⟨"stage", DSTAGE_OFF, 8⟩,
         ⟨"miss", DMISS_OFF, 4⟩, ⟨"init", DINIT_OFF, 4⟩,
         ⟨"ctx", DCTX_OFF, 4⟩, ⟨"ctxStride", DCTXSTRIDE_OFF, 8⟩,
-        ⟨"narrowN", DNARROWN_OFF, 4⟩,
         ⟨"tokPathPtr", DT_PATHPTR, 8⟩, ⟨"tokBufPtr", DT_BUFPTR, 8⟩,
         ⟨"tokCount", DT_TOKCOUNT, 8⟩, ⟨"tokTextLen", DT_TEXTLEN, 8⟩,
         ⟨"htKey", DT_HTKEY, 8⟩, ⟨"htVal", DT_HTVAL, 8⟩,
@@ -500,6 +512,8 @@ def D_OUT_GEN : Nat := D_OUT_NGEN + 8
 def D_OUT_NTEXT : Nat := D_OUT_GEN + 4 * TEXT_MAX
 def D_OUT_TEXTTOK : Nat := D_OUT_NTEXT + 8
 def NBLK : Nat := 32 * warpsPerCta
+/-- Rows a block of the Q8_0 GEMV takes. -/
+def q8Rows : Nat := warpsPerCta * GptOssKernels.Body.rowsPerWarpQ8
 
 /-- The staging buffer: wide enough for the widest dense tensor, and every
     load that exceeds it is chunked rather than trusted to fit. -/
@@ -532,6 +546,21 @@ def dEnqueueG (ptr : V .i64) (i : Nat) (grid : V .i32) (blk : Nat) (bs : List Na
 
 def dEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
   dEnqueueG ptr i (← iconst32 g) blk bs
+
+/-- **Expert `key` (`layer · NE + e`) into slot `slot`**: its row, one copy
+    from the pinned pool to the device pool. The caller keeps the two maps. -/
+def dFillM (slot key : V .i64) : Prog V L Unit := do
+  let ptr ← basePtr
+  let rowB ← iconst64 ROW_BYTES
+  let src ← iadd (← load64 (← iaddImm ptr DPOOL_OFF)) (← imul key rowB)
+  let dst ← iadd (← load64 (← iaddImm ptr (dBindOff B_POOL))) (← imul slot rowB)
+  let _ ← ext (.cuda .memcpyHtoD) %[dst, src, rowB]
+
+/-- The slot map to the device, whole: `NL · NE` words. -/
+def dUploadSlotsM : Prog V L Unit := do
+  let ptr ← basePtr
+  let b ← load64 (← iaddImm ptr (dBindOff B_SLOTOF))
+  let _ ← ext (.cuda .memcpyHtoD) %[b, (← iaddImm ptr DSLOTOF_OFF), (← iconst64 (4 * NL * NE))]
 
 /-- **Start-up.** Pin the expert file, take whatever device memory is going,
     and put the dense weights where they will stay. -/
@@ -572,28 +601,17 @@ def dInitM : Prog V L Unit := do
   -- their size is the context, and a full layer's is what was just chosen.
   -- The caches hold bf16: two bytes an element, which is the whole point of
   -- narrowing before the store.
-  -- one key row of slack on each cache: the fused attention loads the next key
-  -- while it works on the current one, so the last iteration reads one row past
-  -- the keys that exist. Cheaper than a guard inside the loop.
-  let slack ← iconst64 (8 * HD * 2)
-  let swaBytes ← iadd (← iconst64 (8 * CAP_SWA * HD * 2)) slack
-  let fullBytes ← iadd (← imul ctxStride (← iconst64 (8 * 2))) slack
-  -- one row of scores per query head per key, and the same again for the
-  -- probabilities the softmax writes -- those stay f32, because the softmax is
-  -- where the precision is worth keeping
-  let scoreBytes ← imul ctx (← iconst64 (64 * 4))
-  let probBf16Bytes ← imul ctx (← iconst64 (64 * 2))
+  let swaBytes ← iconst64 (8 * CAP_SWA * HD * 2)
+  let fullBytes ← imul ctxStride (← iconst64 (8 * 2))
   -- one `(m, l, acc)` a query head a tile.  A fixed size, because the tile
   -- size is chosen at run time so that the tile *count* never exceeds
   -- `ATT_TILES_MAX` however long the context is.
   let partBytes ← iconst64
     (GptOssKernels.attPartialFloats * 4 * NQ * GptOssKernels.ATT_TILES_MAX)
-  for (i, nb) in (List.range SLOTSTORE).zip dBufBytes do
+  for (i, nb) in (List.range B_POOL).zip dBufBytes do
     let sz ←
-      if KVSTORE ≤ i && i < SLOTSTORE then
+      if KVSTORE ≤ i && i < B_POOL then
         pure (if (i - KVSTORE) / 2 % 2 == 0 then swaBytes else fullBytes)
-      else if i == B_SC || i == B_PR then pure scoreBytes
-      else if i == B_PRB then pure probBf16Bytes
       else if i == B_PART then pure partBytes
       else iconst64 nb
     let _ ← ext (.cuda .memAlloc) %[← iaddImm ptr (dBindOff i), sz]
@@ -609,33 +627,25 @@ def dInitM : Prog V L Unit := do
   let nslotL ← ifte .ugt want cap (pure %[cap]) (pure %[want])
   let nslot := nslotL.head
   storeI32 (← ireduce32 nslot) (← iaddImm ptr DNSLOT_OFF)
-  let six ← iconst64 PIECES
-  let eight ← iconst64 8
-  forLoop nslot fun i => do
-    let base6 ← imul i six
-    for t in List.range PIECES do
-      let sz ← iconst64 (pieceBytes.getD t 0)
-      let ix ← iaddImm base6 (SLOTSTORE + t)
-      let off ← imul ix eight
-      let _ ← ext (.cuda .memAlloc) %[← iadd (← iaddImm ptr DBIND_OFF) off, sz]
+  let _ ← ext (.cuda .memAlloc) %[← iaddImm ptr (dBindOff B_POOL), ← imul nslot rowB]
   -- the dense weights: read from the file, opened once, staged, uploaded, and
   -- resident
   let pDen ← iaddImm dataPtr D_PDEN
   let _ ← withFile pDen (← iconst64 D_PATH_FIELD) fsModeRead fun fDen => do
     for l in List.range NL do
       for k in List.range 9 do
-        let n := dKindBytes.getD k 0
-        let fo ← iconst64 (denseOff l k)
+        let n := dDevBytes.getD k 0
+        let fo ← iconst64 (fileDense l k)
         let nb ← iconst64 n
         let _ ← ext (.fs .read) %[fDen, stagePtr, nb, fo]
         let id ← load64 (← iaddImm ptr (dBindOff (dStoreBuf l k)))
         let _ ← ext (.cuda .memcpyHtoD) %[id, stagePtr, nb]
-    -- `lm_head` is 1.08 GiB and the staging buffer is 29.5 MiB, so it goes over
+    -- `lm_head` is 0.61 GiB and the staging buffer is 29.5 MiB, so it goes over
     -- in pieces.  Reading it in one call would write a gigabyte past the end of
     -- a pinned allocation -- not a wrong answer but a corrupted heap, and the
     -- expert pool is what sits next to it.
     for (off, n, b) in [(fileFinalNorm, HH * 4, B_FNORM),
-                        (fileLmHead, VOCAB * HH * 2, B_LMHEAD)] do
+                        (fileQ8Lm, q8Bytes VOCAB HH, B_LMHEAD)] do
       let id ← load64 (← iaddImm ptr (dBindOff b))
       let chunks := (n + STAGE_BYTES - 1) / STAGE_BYTES
       for c in List.range chunks do
@@ -661,29 +671,28 @@ def dInitM : Prog V L Unit := do
       let _ ← ext (.cuda .memcpyHtoD) %[← iadd bRope b, stagePtr, nb]
     iconst64 0
   -- the narrow kernel's two counts
-  for (b, v) in [(B_NMH, HH / 2), (B_NMQ, (64 * 64) / 2),
-                 (B_NMQKV, dQkvOut / 2)] do
+  for (b, v) in [(B_NMH, HH / 2), (B_NMQKV, dQkvOut / 2)] do
     storeI32 (← iconst32 v) (← iaddImm ptr DMETA_OFF)
     let id ← load64 (← iaddImm ptr (dBindOff b))
     let n4 ← iconst64 4
     let _ ← ext (.cuda .memcpyHtoD) %[id, (← iaddImm ptr DMETA_OFF), n4]
-  -- an empty cache: nothing is anywhere
+  -- a full cache: expert `i` in slot `i` for every slot there is, so a card
+  -- with room for them all starts with the whole model resident, and the
+  -- rest of the experts are nowhere
   let minus1 ← iconst32 (-1)
   let four ← iconst64 4
   let nCache ← iconst64 (NL * NE)
   forLoop nCache fun i => do
     let off ← imul i four
-    storeI32 minus1 (← iadd (← iaddImm ptr DSLOTOF_OFF) off)
-  let nMax ← iconst64 NSLOT_MAX
-  forLoop nMax fun i => do
-    let off ← imul i four
-    storeI32 minus1 (← iadd (← iaddImm ptr DRESIDENT_OFF) off)
+    let here ← ifte .ult i nslot (pure %[← ireduce32 i]) (pure %[minus1])
+    storeI32 here.head (← iadd (← iaddImm ptr DSLOTOF_OFF) off)
+    storeI32 here.head (← iadd (← iaddImm ptr DRESIDENT_OFF) off)
+  forLoop nslot fun i => do dFillM i i
+  dUploadSlotsM
+  -- every slot is taken, so the hand starts at the first
   storeI32 (← iconst32 0) (← iaddImm ptr DCLOCK_OFF)
   storeI32 (← iconst32 0) (← iaddImm ptr DMISS_OFF)
 
-/-- Where the loop parks the layer it is on: inside the meta region, past the
-    slots the kernels read, so it costs no separate mapping. -/
-def DLAYER_SLOT : Nat := 32
 
 /-- **Point this layer's eleven buffers at this layer's weights.**
 
@@ -713,14 +722,14 @@ def dBindLayerM (layer : V .i32) : Prog V L Unit := do
     nowhere, the victim is whoever the clock hand is pointing at — round-robin,
     not least-recently-used, because at nine-tenths residency the two differ
     little and a scan of six hundred slots per miss would cost more than it
-    saves. The six pieces come over from the pinned pool, both tables are
+    saves, skipping the slots of this layer's other choices, which the
+    launches will read. The row comes over from the pinned pool, both tables are
     corrected, and the miss is counted so the caller can see the rate.
 
     The transfer is the only thing in a decode step that touches the bus. -/
 def dEnsureM (j : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let four ← iconst64 4
-  let six ← iconst64 PIECES
   let minus1 ← iconst32 (-1)
   let layer ← load32 (← iaddImm ptr (DMETA_OFF + 4 * DLAYER_SLOT))
   let e ← load32 (← iaddImm ptr (DCHOSEN_OFF + 4 * j))
@@ -728,14 +737,30 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
   let key ← iadd (← imul (← uextend64 layer) ne64) (← uextend64 e)
   let slotAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul key four)
   let slot0 ← load32 slotAddr
-  let res ← ifte .eq slot0 minus1
-    (do
-      -- the victim, and the hand moved on
-      let clock ← load32 (← iaddImm ptr DCLOCK_OFF)
+  when .eq slot0 minus1 do
+      -- the victim, and the hand moved on: the first slot from the hand that
+      -- holds none of this layer's choices, which the launches will read
+      -- (one lap at most: a card with no such slot takes the hand's)
       let nslot ← load32 (← iaddImm ptr DNSLOT_OFF)
-      let nxt ← iadd clock (← iconst32 1)
-      let wrapped ← ifte .uge nxt nslot (pure %[← iconst32 0]) (pure %[nxt])
-      storeI32 (wrapped.head) (← iaddImm ptr DCLOCK_OFF)
+      let next (c : V .i32) : Prog V L (V .i32) := do
+        let n ← iadd c (← iconst32 1)
+        pure (← ifte .uge n nslot (pure %[← iconst32 0]) (pure %[n])).head
+      let chosenHere (c : V .i32) : Prog V L (V .i64) := do
+        let k ← load32 (← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul (← uextend64 c) four))
+        let mut hit ← iconst64 0
+        for i in List.range TOPK do
+          let ki ← iadd (← imul layer (← iconst32 NE)) (← load32 (← iaddImm ptr (DCHOSEN_OFF + 4 * i)))
+          hit ← bor hit (← select (← icmp .eq k ki) (← iconst64 1) (← iconst64 0))
+        pure hit
+      let hand ← load32 (← iaddImm ptr DCLOCK_OFF)
+      let found ← wloop %[hand, ← iconst32 0]
+        (fun cs => do
+          let busy ← chosenHere cs.head
+          let more ← band busy (← select (← icmp .ult cs.snd nslot) (← iconst64 1) (← iconst64 0))
+          pure (contIf .ne more (← iconst64 0), %[cs.head, cs.snd], ()))
+        (fun cs _ => do pure %[← next cs.head, ← iadd cs.snd (← iconst32 1)])
+      let clock ← select (← icmp .ult found.snd nslot) found.head hand
+      storeI32 (← next clock) (← iaddImm ptr DCLOCK_OFF)
       let v64 ← uextend64 clock
       -- whoever was there is no longer anywhere
       let resAddr ← iadd (← iaddImm ptr DRESIDENT_OFF) (← imul v64 four)
@@ -743,30 +768,11 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
       when .ne old minus1 (do
         let oldAddr ← iadd (← iaddImm ptr DSLOTOF_OFF) (← imul (← uextend64 old) four)
         storeI32 minus1 oldAddr)
-      -- the transfer: six pieces, pinned host to device
-      let poolPtr ← load64 (← iaddImm ptr DPOOL_OFF)
-      let rowBase ← imul key (← iconst64 ROW_BYTES)
-      let base6 ← imul v64 six
-      for t in List.range PIECES do
-        let len ← iconst64 (pieceBytes.getD t 0)
-        let srcOff ← iaddImm rowBase (pieceOff t)
-        let src ← iadd poolPtr srcOff
-        let ix ← iaddImm base6 (SLOTSTORE + t)
-        let id ← load64 (← iadd (← iaddImm ptr DBIND_OFF) (← imul ix (← iconst64 8)))
-        let _ ← ext (.cuda .memcpyHtoD) %[id, src, len]
+      dFillM v64 key
       storeI32 clock slotAddr
       storeI32 (← ireduce32 key) resAddr
       let m ← load32 (← iaddImm ptr DMISS_OFF)
       storeI32 (← iadd m (← iconst32 1)) (← iaddImm ptr DMISS_OFF)
-      pure %[clock])
-    (pure %[slot0])
-  -- whichever it is, the four slots the kernels read now name its pieces
-  let slot ← uextend64 (res.head)
-  let sBase ← imul slot six
-  for t in List.range PIECES do
-    let ix ← iaddImm sBase (SLOTSTORE + t)
-    let id ← load64 (← iadd (← iaddImm ptr DBIND_OFF) (← imul ix (← iconst64 8)))
-    storeI64 id (← iaddImm ptr (dBindOff (C_SLOT0 + PIECES * j + t)))
 
 /-- **The residual stream, mid-layer and end-of-layer, to the caller.**
 
@@ -781,16 +787,20 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
     itself — the token and the logits are downstream of all twenty-four layers
     and report only that something, somewhere, was wrong.
 
-    `half` is 0 after attention and 1 after the mixture. -/
+    `half` is 0 after attention and 1 after the mixture. A single step (mode
+    0) returns it; a turn does not, because each row is a wait for the device
+    in the middle of a layer. -/
 def dTraceM (layer : V .i32) (half : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let outPtr ← outPtr
-  let bX ← load64 (← iaddImm ptr (dBindOff B_X))
-  let row ← iadd (← imul (← uextend64 layer) (← iconst64 2)) (← iconst64 half)
-  let dst ← iadd outPtr
-    (← iadd (← iconst64 (8 + VOCAB * 4)) (← imul row (← iconst64 (HH * 4))))
-  Drv.sync
-  let _ ← ext (.cuda .memcpyDtoH) %[dst, bX, (← iconst64 (HH * 4))]
+  let mode ← load32 (← iaddImm (← dataPtr) D_MODE)
+  when .eq mode (← iconst32 0) do
+    let bX ← load64 (← iaddImm ptr (dBindOff B_X))
+    let row ← iadd (← imul (← uextend64 layer) (← iconst64 2)) (← iconst64 half)
+    let dst ← iadd outPtr
+      (← iadd (← iconst64 (8 + VOCAB * 4)) (← imul row (← iconst64 (HH * 4))))
+    Drv.sync
+    let _ ← ext (.cuda .memcpyDtoH) %[dst, bX, (← iconst64 (HH * 4))]
 
 set_option maxRecDepth 8000 in
 /-- **One layer, whichever layer it is.** -/
@@ -862,34 +872,20 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   storeI32 (← imul capV (← iconst32 HDW)) (← iaddImm ptr (DMETA_OFF + 4 * M_KVSTRIDE))
   let bMetaL ← load64 (← iaddImm ptr (dBindOff B_META))
   let _ ← ext (.cuda .memcpyHtoD) %[bMetaL, (← iaddImm ptr DMETA_OFF), (← iconst64 (64 * 4))]
-  let bKC ← load64 (← iaddImm ptr (dBindOff C_KC))
-  let bVC ← load64 (← iaddImm ptr (dBindOff C_VC))
-  let bQKV ← load64 (← iaddImm ptr (dBindOff B_QKV))
-  let bSC ← load64 (← iaddImm ptr (dBindOff B_SC))
-  let bPR ← load64 (← iaddImm ptr (dBindOff B_PR))
-  let bATT ← load64 (← iaddImm ptr (dBindOff B_ATT))
-  let bXNB ← load64 (← iaddImm ptr (dBindOff B_XNB))
-  let bATTB ← load64 (← iaddImm ptr (dBindOff B_ATTB))
-  let bQKVW ← load64 (← iaddImm ptr (dBindOff W_QKVW))
-  let bOW ← load64 (← iaddImm ptr (dBindOff W_OW))
-  let bTMP ← load64 (← iaddImm ptr (dBindOff B_TMP))
   let bRW ← load64 (← iaddImm ptr (dBindOff W_RW))
   let bXM ← load64 (← iaddImm ptr (dBindOff B_XM))
   let bRLOG ← load64 (← iaddImm ptr (dBindOff B_RLOG))
   dEnqueue ptr S_RMS 1 32 [B_X, W_ANORM, B_XN]
-  dEnqueue ptr S_NARROW ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_XN, B_XNB, B_NMH]
-  let mQKV ← iconst32 dQkvOut
+  dEnqueue ptr S_Q8QKV (dQkvOut / q8Rows) NBLK [W_QKVW, B_XN, B_QKV]
   let kH ← iconst32 HH
-  Drv.gemmBf16 h 1 0 mQKV one32 kH oneF bQKVW bXNB zeroF bQKV
   dEnqueue ptr S_ADD (dQkvOut / 32) 32 [B_QKV, W_QKVB]
   dEnqueue ptr S_ROPEQ NQ 32 [B_QKV, B_META, B_ROPE]
   dEnqueue ptr S_ROPEK NKV 32 [B_QKV, B_META, B_ROPE]
   -- **Narrow once, and everything downstream is bf16.**
   --
   -- The cache holds bf16, so k and v have to be narrowed before they are
-  -- stored; and q has to be narrowed with them, because cuBLAS refuses a mixed
-  -- operand pair and the contraction is against that cache. One pass over all
-  -- three rather than two passes and an exception.
+  -- stored; and q is narrowed with them, because the attention tile reads it
+  -- as it reads the cache. One pass over all three.
   dEnqueue ptr S_NARROW ((dQkvOut / 2 + NBLK - 1) / NBLK) NBLK
     [B_QKV, B_QKVB, B_NMQKV]
   -- One store kernel per operand, whatever kind of layer this is: the depth it
@@ -910,15 +906,12 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   -- carries a running maximum and sum through it. What the four-kernel path
   -- spent most of its time on at depth was a scores buffer of `NQ * seqLen`
   -- floats that existed only because the stages were separate kernels.
-  dEnqueueG ptr S_ATTTILE nTiles NBLK
+  dEnqueueG ptr S_ATTTILE nTiles GptOssKernels.Body.ATT_THREADS
     [C_KC, C_VC, B_QKVB, B_PART, B_META]
   -- the merge is one warp a query head, and the sink joins here: it belongs to
   -- the head, and a tile that applied it would have it counted once per tile
   dEnqueue ptr S_ATTCOMB NQ 32 [B_PART, W_SINKS, B_ATT, B_META]
-  dEnqueue ptr S_NARROW (((64 * 64) / 2 + NBLK - 1) / NBLK) NBLK [B_ATT, B_ATTB, B_NMQ]
-  let mH ← iconst32 HH
-  let kQO ← iconst32 (64 * 64)
-  Drv.gemmBf16 h 1 0 mH one32 kQO oneF bOW bATTB zeroF bTMP
+  dEnqueue ptr S_Q8O (HH / q8Rows) NBLK [W_OW, B_ATT, B_TMP]
   dEnqueue ptr S_ADD (HH / 32) 32 [B_TMP, W_OB]
   dEnqueue ptr S_ADD (HH / 32) 32 [B_X, B_TMP]
   dTraceM layer 0
@@ -928,22 +921,26 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   let _ ← ext (.cublas .sgemv) %[h, one32, kH, ne32, oneF, bRW, kH, bXM, one32, zeroF, bRLOG, one32]
   dEnqueue ptr S_ADD 1 32 [B_RLOG, W_RB]
   dEnqueue ptr S_TOP4 1 32 [B_RLOG, B_GATES, B_CHOSEN]
-  Drv.sync
-  let bCh ← load64 (← iaddImm ptr (dBindOff B_CHOSEN))
-  let n16 ← iconst64 (TOPK * 4)
-  let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm ptr DCHOSEN_OFF), bCh, n16]
-  -- the cache, four times, and then the mixture
-  for j in List.range TOPK do
-    dEnsureM j
-  for j in List.range TOPK do
-    dEnqueue ptr S_GATEUP (II / (warpsPerCta * rowsPerWarpGateUp)) NBLK
-      [C_SLOT0 + PIECES * j, C_SLOT0 + PIECES * j + 1, C_SLOT0 + PIECES * j + 2,
-       B_XM, B_HID + j]
-    dEnqueue ptr S_DOWN (HH / (warpsPerCta * rowsPerWarpDown)) NBLK
-      [C_SLOT0 + PIECES * j + 3, C_SLOT0 + PIECES * j + 4, C_SLOT0 + PIECES * j + 5,
-       B_HID + j, B_Y + j]
+  -- **The cache, when it can miss.** With every expert resident the launches
+  -- find their slots on the device and the host does not wait for the router;
+  -- otherwise it reads the choice, brings in what is missing, and hands the
+  -- device the corrected map.
+  let nslot ← load32 (← iaddImm ptr DNSLOT_OFF)
+  when .ult nslot (← iconst32 (NL * NE)) do
+    Drv.sync
+    let bCh ← load64 (← iaddImm ptr (dBindOff B_CHOSEN))
+    let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm ptr DCHOSEN_OFF), bCh, (← iconst64 (TOPK * 4))]
+    let miss0 ← load32 (← iaddImm ptr DMISS_OFF)
+    for j in List.range TOPK do
+      dEnsureM j
+    when .ne miss0 (← load32 (← iaddImm ptr DMISS_OFF)) do dUploadSlotsM
+  -- one launch for all four gate/ups and one for all four downs
+  dEnqueue ptr S_GATEUP (TOPK * (II / (warpsPerCta * rowsPerWarpGateUp))) NBLK
+    [B_POOL, B_SLOTOF, B_CHOSEN, B_META, B_XM, B_HID]
+  dEnqueue ptr S_DOWN (TOPK * (HH / (warpsPerCta * rowsPerWarpDown))) NBLK
+    [B_POOL, B_SLOTOF, B_CHOSEN, B_META, B_HID, B_Y]
   dEnqueue ptr S_COMBINE ((HH + NBLK - 1) / NBLK) NBLK
-    [B_Y, B_Y + 1, B_Y + 2, B_Y + 3, B_GATES, B_MOUT]
+    [B_Y, B_GATES, B_MOUT]
   dEnqueue ptr S_ADD (HH / 32) 32 [B_X, B_MOUT]
   dTraceM layer 1
 
@@ -1023,22 +1020,9 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
     dLayerM (← ireduce32 l)
   -- the head
   dEnqueue ptr S_RMS 1 32 [B_X, B_FNORM, B_XN]
-  dEnqueue ptr S_NARROW ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_XN, B_XNB, B_NMH]
-  let bLM ← load64 (← iaddImm ptr (dBindOff B_LMHEAD))
-  let bXNB ← load64 (← iaddImm ptr (dBindOff B_XNB))
-  let bLog ← load64 (← iaddImm ptr (dBindOff B_LOGITS))
-  let h ← load64 (← iaddImm ptr DBLAS_OFF)
-  let oneF ← iaddImm ptr DONE_OFF
-  let zeroF ← iaddImm ptr DZERO_OFF
+  dEnqueue ptr S_Q8LM (VOCAB / q8Rows) NBLK [B_LMHEAD, B_XN, B_LOGITS]
   let zz ← iconst32 0
   let oo ← iconst32 1
-  let mV ← iconst32 VOCAB
-  let kH ← iconst32 HH
-  Drv.gemmBf16 h 1 0 mV oo kH oneF bLM bXNB zeroF bLog
-  storeI32 (← iconst32 VOCAB) (← iaddImm ptr (DMETA_OFF + 4 * 33))
-  let bNM ← load64 (← iaddImm ptr (dBindOff B_NMQ))
-  let n4 ← iconst64 4
-  let _ ← ext (.cuda .memcpyHtoD) %[bNM, (← iaddImm ptr (DMETA_OFF + 4 * 33)), n4]
   -- **Greedy, or a draw from the tempered softmax.**
   --
   -- `1/T` of zero means the caller wants the largest logit, and that goes to
@@ -1067,22 +1051,22 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let headFn ← iadd (← iaddImm ptr (DFN_OFF + 16 * S_ARGMAX + 8))
                     (← imul (← uextend64 (sampling.head))
                             (← iconst64 (16 * (S_SAMPLE - S_ARGMAX))))
-  dEnqueueFn ptr headFn (← iconst32 1) 32 [B_LOGITS, B_TOKEN, B_SAMP]
+  dEnqueueFn ptr headFn (← iconst32 1) GptOssKernels.Body.HEAD_T [B_LOGITS, B_TOKEN, B_SAMP]
   Drv.sync
-  -- back to the narrow count, so the next token's projection is right again
-  storeI32 (← iconst32 ((64 * 64) / 2)) (← iaddImm ptr (DMETA_OFF + 4 * 33))
-  let _ ← ext (.cuda .memcpyHtoD) %[bNM, (← iaddImm ptr (DMETA_OFF + 4 * 33)), n4]
   -- the token this step produced, into memory this program owns
   let bTok ← load64 (← iaddImm ptr (dBindOff B_TOKEN))
+  let n4 ← iconst64 4
   let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm ptr DT_NEXT), bTok, n4]
   -- …and the whole logit row, to a fixed place in the caller's buffer.  Eight
   -- hundred kilobytes is real traffic and it buys the only check that can
   -- localise a fault in the head: a caller can compare against the model's own
   -- logits instead of guessing from a token id.  A partial copy is not an
   -- option -- the runtime asserts a transfer is the whole buffer -- so it is
-  -- all of them or none.
+  -- all of them or none, and a single step (mode 0) is what takes them.
   let outPtr ← outPtr
-  let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm outPtr 8), bLog, (← iconst64 (VOCAB * 4))]
+  let mode ← load32 (← iaddImm dataPtr D_MODE)
+  when .eq mode (← iconst32 0) do
+    let _ ← ext (.cuda .memcpyDtoH) %[(← iaddImm outPtr 8), (← load64 (← iaddImm ptr (dBindOff B_LOGITS))), (← iconst64 (VOCAB * 4))]
   load32 (← iaddImm ptr DT_NEXT)
 
 

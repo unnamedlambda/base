@@ -86,6 +86,10 @@ def swiglu(gate, up, alpha, limit):
     return (g * sig) * (u + 1.0)
 
 
+def q8_bytes(rows, cols):
+    return rows * cols + rows * (cols // 32) * 4
+
+
 class Bank:
     """The converted checkpoint, mapped rather than loaded."""
 
@@ -110,6 +114,35 @@ class Bank:
     def bf16(self, off, shape):
         return bf16_to_f32(self._at(off, np.uint16, shape))
 
+    def q8_start(self):
+        """Where the Q8_0 section `prepare_q8.py` appends begins: the end of
+        the bf16 layout, past the sine table."""
+        m = self.meta
+        return m["dense"]["rope_sin"] + m["max_position"] * (self.HD // 2) * 4
+
+    def q8(self, off, rows, cols):
+        """The Q8_0 tensor at `off`, dequantised: `rows × cols` int8 values, then
+        an f32 scale a block of 32."""
+        q = self._at(off, np.int8, (rows, cols // 32, 32)).astype(np.float32)
+        d = self._at(off + rows * cols, np.float32, (rows, cols // 32))
+        return (q * d[:, :, None]).reshape(rows, cols)
+
+    def q8_dense(self, layer):
+        """Layer `layer`'s QKV and o_proj, as the decode multiplies by them."""
+        H, QKV, QO = self.H, (self.NQ + 2 * self.NKV) * self.HD, self.NQ * self.HD
+        a, b = q8_bytes(QKV, H), q8_bytes(H, QO)
+        off = self.q8_start() + (a + b) * layer
+        return self.q8(off, QKV, H), self.q8(off + a, H, QO)
+
+    def q8_lm_head(self, r, n):
+        """Rows `r … r + n` of lm_head, likewise."""
+        H, QKV, QO = self.H, (self.NQ + 2 * self.NKV) * self.HD, self.NQ * self.HD
+        start = self.q8_start() + (q8_bytes(QKV, H) + q8_bytes(H, QO)) * self.L
+        V = self.meta["vocab"]
+        q = self._at(start + r * H, np.int8, (n, H // 32, 32)).astype(np.float32)
+        d = self._at(start + V * H + r * (H // 32) * 4, np.float32, (n, H // 32))
+        return (q * d[:, :, None]).reshape(n, H)
+
     def expert(self, layer, e):
         """One expert's six pieces, dequantised. This is the row a cache miss
         moves, read exactly as the engine reads it."""
@@ -132,9 +165,12 @@ def forward(bank, tokens, trace=None, acts="f32"):
 
     No KV cache: this is the reference, and recomputing is what makes it one.
 
+    QKV, o_proj and lm_head are llama.cpp's Q8_0 values, as the decode
+    multiplies by them, fed f32.
+
     `acts` selects the activation precision at the matmuls the engine feeds from
-    bf16 buffers -- qkv, o-proj, lm_head, and both halves of attention, whose
-    operands are the key cache and a query narrowed to meet it.  "f32" is the
+    bf16 buffers -- both halves of attention, whose operands are the key cache
+    and a query narrowed to meet it.  "f32" is the
     idealisation; "bf16" is what the released model and our engine both actually
     compute in.  Comparing against both is how a precision gap is told from a
     defect, and the engine holding its cache at the precision the checkpoint was
@@ -152,8 +188,8 @@ def forward(bank, tokens, trace=None, acts="f32"):
     for l, ent in enumerate(m["dense"]["layers"]):
         # ---- attention ----
         h = rms_norm(x, bank.f32(ent["attn_norm"], (H,)), m["rms_eps"])
-        qkv_w = bank.bf16(ent["qkv_w"], (NQ * HD + 2 * NKV * HD, H))
-        qkv = narrow(h) @ qkv_w.T + bank.f32(ent["qkv_b"], (NQ * HD + 2 * NKV * HD,))
+        qkv_w, o_w = bank.q8_dense(l)
+        qkv = h @ qkv_w.T + bank.f32(ent["qkv_b"], (NQ * HD + 2 * NKV * HD,))
         q = qkv[:, :NQ * HD].reshape(T, NQ, HD)
         k = qkv[:, NQ * HD:NQ * HD + NKV * HD].reshape(T, NKV, HD)
         v = qkv[:, NQ * HD + NKV * HD:].reshape(T, NKV, HD)
@@ -190,7 +226,7 @@ def forward(bank, tokens, trace=None, acts="f32"):
         # value cache.  The softmax itself stays f32: that is where the
         # precision is worth keeping, and where the engine keeps it too.
         o = np.einsum("hqk,khd->qhd", narrow(p), vx).reshape(T, NQ * HD)
-        x = x + (narrow(o) @ bank.bf16(ent["o_w"], (H, NQ * HD)).T
+        x = x + (o @ o_w.T
                  + bank.f32(ent["o_b"], (H,)))
         if trace is not None:
             trace.setdefault("attn_out", {})[l] = x[-1].copy()
@@ -218,14 +254,14 @@ def forward(bank, tokens, trace=None, acts="f32"):
         print(f"    layer {l+1}/{bank.L}", end="\r", flush=True)
 
     x = rms_norm(x, bank.f32(m["dense"]["final_norm"], (H,)), m["rms_eps"])
-    # lm_head is vocab x H bf16 -- 1.08 GiB on disk, 2.3 GiB widened.  Widening it
-    # whole is what makes this box swap, so it goes a slice at a time.
-    xf = narrow(x[-1])
+    # lm_head is 0.61 GiB on disk and 2.3 GiB widened.  Widening it whole is
+    # what makes this box swap, so it goes a slice at a time.
+    xf = x[-1]
     out = np.empty(m["vocab"], np.float32)
     step = 8192
     for i in range(0, m["vocab"], step):
         n = min(step, m["vocab"] - i)
-        w = bank.bf16(m["dense"]["lm_head"] + i * H * 2, (n, H))
+        w = bank.q8_lm_head(i, n)
         out[i:i + n] = w @ xf
     return out
 

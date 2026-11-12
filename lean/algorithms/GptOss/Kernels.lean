@@ -88,6 +88,15 @@ def rowScalesH : Nat := H / G
 def rowBytesI : Nat := I / 2
 def rowScalesI : Nat := I / G
 
+/-- An expert's six pieces, in the order the converter writes a row of
+    `experts.bin` and a slot of the device pool holds them: gate/up's blocks,
+    scales and bias, then down's. -/
+def expertPieces : List Nat :=
+  [ 2 * I * rowBytesH, 2 * I * rowScalesH, 2 * I * 4
+  , H * rowBytesI, H * rowScalesI, H * 4 ]
+def EXPERT_BYTES : Nat := expertPieces.foldl (· + ·) 0
+def expertPieceOff (t : Nat) : Nat := ((expertPieces.take t).foldl (· + ·) 0)
+
 /-- Warps to a block, each taking one output row.
 
     One warp per block leaves the card two thirds idle: sm_86 will hold 48
@@ -336,16 +345,25 @@ def dotRows (sm xs : V .i64) (lane : V .i32) (rows : List (V .i64 × V .i64)) (n
     rowBases.mapM fun (wb, _) => do load32 (← at_ wb (c * 128))
   let scaleB ← (List.range nChunks).mapM fun c =>
     rowBases.mapM fun (_, sb) => do u8 (← at_ sb (c * 8))
+  -- a lane's eight codes share a block, so their products are summed first
+  -- and the block's scale applied once; and code `j`'s table offset,
+  -- `nibble · 128`, is one shift and one mask of the word
+  let tabAt (pw : V .i32) (j : Nat) : Prog V L (V .f32) := do
+    let sh ← if 4 * j ≥ 7 then ushrImm pw (4 * j - 7) else ishlImm pw (7 - 4 * j)
+    loadF32 (← iadd tab (← ext (← band sh (← c32 0x780))))
   for (pws, c) in packed.zipIdx do
     let scs ← (scaleB.getD c []).mapM e8m0
+    let mut parts : List (V .f32) := pws.map fun _ => zero
     for j in [0, 1, 2, 3, 4, 5, 6, 7] do
       let xv ← loadF32 (← at_ xBase0 (c * 264 * 4 + 4 * j))
       let mut next : List (V .f32) := []
-      for ((pw, acc), r) in (pws.zip accs).zipIdx do
-        let nib ← band (← ushrImm pw (4 * j)) (← c32 0xF)
-        let w ← fmul (← lookup nib) (scs.getD r xv)
-        next := next ++ [← fma w xv acc]
-      accs := next
+      for (pw, part) in pws.zip parts do
+        next := next ++ [← fma (← tabAt pw j) xv part]
+      parts := next
+    let mut next : List (V .f32) := []
+    for ((part, acc), r) in (parts.zip accs).zipIdx do
+      next := next ++ [← fma part (scs.getD r zero) acc]
+    accs := next
   -- the tail: whole blocks one at a time
   let tailStart := nChunks * 8
   if tailStart < nBlocks then do
@@ -389,11 +407,7 @@ def rowAt (blocks scales : V .i64) (rowBytes rowScales : Nat) (r : V .i32) :
 /-- **The down projection, plus its bias.** One CTA of `warpsPerCta` warps,
     each taking `rowsPerWarpDown` consecutive output rows `r < H` and
     contracting over `I`; lane 0 adds the bias. -/
-def downGemvBias : Prog V L Unit := do
-  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64])
-  let cta := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
-  let blocks := (ps.drop 4).head; let scales := (ps.drop 5).head
-  let bias := (ps.drop 6).head; let hv := (ps.drop 7).head; let out := (ps.drop 8).head
+def downCore (cta tid : V .i32) (sm blocks scales bias hv out : V .i64) : Prog V L Unit := do
   let wid ← ushrImm tid 5
   let lane ← band tid (← c32 31)
   let xs ← stage tid sm hv I
@@ -408,6 +422,44 @@ def downGemvBias : Prog V L Unit := do
       let bv ← loadF32 (← iadd bias off)
       store (← fadd s bv) (← iadd out off)
 
+/-- **Where a launch over all `TOPK` experts finds its expert.** CTA `cta`
+    takes the router's `j = cta / per`th choice and is CTA `cta - j·per` of
+    it; expert `e = chosen[j]` of layer `mt[layerWord]` sits in slot
+    `slotOf[layer · NE + e]` of the device pool, `EXPERT_BYTES` a slot, so its
+    piece `t` is at `pool + slot·EXPERT_BYTES + expertPieceOff t`. One launch
+    of `TOPK · per` CTAs rather than `TOPK` of `per`: four times the CTAs in
+    flight, and a launch's fixed costs paid once. Everything the lookup needs
+    is on the device, so the host need not wait for the router to launch it;
+    the weights are reached from the pool parameter, so their loads are
+    read-only global ones. -/
+def expertAt (pool slotOf chosen mt : V .i64) (layerWord : Nat) (cta : V .i32) (per : Nat) :
+    Prog V L (V .i32 × V .i32 × V .i64) := do
+  let j ← udiv cta (← c32 per)
+  let jc ← isub cta (← imul j (← c32 per))
+  let e ← load32 (← iadd chosen (← ext (← ishlImm j 2)))
+  let layer ← load32 (← at_ mt (4 * layerWord))
+  let key ← iadd (← imul layer (← c32 NE)) e
+  let slot ← load32 (← iadd slotOf (← ext (← ishlImm key 2)))
+  pure (jc, j, ← iadd pool (← imul (← ext slot) (← c64n EXPERT_BYTES)))
+
+/-- The down projection of one launch's experts: entry params
+    `(pool, slotOf, chosen, meta, hid, y)` (`expertAt`), expert `j`'s input at
+    `hid + 4·I·j` and its output at `y + 4·H·j`. -/
+def downAll (layerWord : Nat) : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64, .i64])
+  let (cta, j, row) ← expertAt (ps.drop 4).head (ps.drop 5).head (ps.drop 6).head
+    (ps.drop 7).head layerWord ps.head (H / (warpsPerCta * rowsPerWarpDown))
+  let slice (b : V .i64) (n : Nat) : Prog V L (V .i64) := do
+    iadd b (← ext (← imul j (← c32 n)))
+  downCore cta ps.snd (ps.drop 3).head (← iaddImm row (expertPieceOff 3))
+    (← iaddImm row (expertPieceOff 4)) (← iaddImm row (expertPieceOff 5))
+    (← slice (ps.drop 8).head (4 * I)) (← slice (ps.drop 9).head (4 * H))
+
+def downGemvBias : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64])
+  downCore ps.head ps.snd (ps.drop 3).head (ps.drop 4).head (ps.drop 5).head
+    (ps.drop 6).head (ps.drop 7).head (ps.drop 8).head
+
 /-- **Gate and up, contracted and combined in one launch.** Each warp takes
     `rowsPerWarpGateUp` output rows `g < I`; row `g` of the weights is the
     gate and row `I + g` the up projection, both contracted in one traversal
@@ -415,11 +467,7 @@ def downGemvBias : Prog V L Unit := do
     SwiGLU: the gate clamped above at `limit`, the linear branch to
     `[-limit, limit]` and offset by one, and the sigmoid of `alpha·gate` as
     `1 / (1 + 2^(-alpha·gate·log2 e))` by the hardware's approximations. -/
-def gateUpSwiglu : Prog V L Unit := do
-  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64])
-  let cta := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
-  let blocks := (ps.drop 4).head; let scales := (ps.drop 5).head
-  let bias := (ps.drop 6).head; let hv := (ps.drop 7).head; let out := (ps.drop 8).head
+def gateUpCore (cta tid : V .i32) (sm blocks scales bias hv out : V .i64) : Prog V L Unit := do
   let wid ← ushrImm tid 5
   let lane ← band tid (← c32 31)
   let xs ← stage tid sm hv H
@@ -443,6 +491,21 @@ def gateUpSwiglu : Prog V L Unit := do
       let sig ← callLocal rcpApprox %[← fadd e (← f oneBits)]
       let y ← fmul (← fmul g sig) (← fadd u (← f oneBits))
       store y (← iadd out (← ext (← ishlImm gRow 2)))
+
+def gateUpSwiglu : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64])
+  gateUpCore ps.head ps.snd (ps.drop 3).head (ps.drop 4).head (ps.drop 5).head
+    (ps.drop 6).head (ps.drop 7).head (ps.drop 8).head
+
+/-- Gate and up of one launch's experts: entry params `(pool, slotOf, chosen,
+    meta, x, hid)` (`expertAt`), expert `j`'s output at `hid + 4·I·j`. -/
+def gateUpAll (layerWord : Nat) : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64, .i64])
+  let (cta, j, row) ← expertAt (ps.drop 4).head (ps.drop 5).head (ps.drop 6).head
+    (ps.drop 7).head layerWord ps.head (I / (warpsPerCta * rowsPerWarpGateUp))
+  gateUpCore cta ps.snd (ps.drop 3).head row (← iaddImm row (expertPieceOff 1))
+    (← iaddImm row (expertPieceOff 2)) (ps.drop 8).head
+    (← iadd (ps.drop 9).head (← ext (← imul j (← c32 (4 * I)))))
 
 /-- The thread's index in the grid, blocks of `32 · warpsPerCta`. -/
 def gidx (cta tid : V .i32) : Prog V L (V .i32) := do
@@ -547,8 +610,11 @@ def better (i : V .i32) (v best : V .f32) (bi : V .i32) : Prog V L (Vals V [.f32
   let gt ← fcmp .gt v best
   pure %[← fmax best v, ← select gt i bi]
 
-/-- One lane's stride over `i = tid, tid + 32, … < n`, carrying a best value
-    and its index from `(-∞, 0)` through `step`. -/
+/-- Threads of the head's kernels (the argmax and the sampler): one block. -/
+def HEAD_T : Nat := 1024
+
+/-- One thread's stride over `i = tid, tid + HEAD_T, … < n`, carrying a best
+    value and its index from `(-∞, 0)` through `step`. -/
 def laneMax (tid n : V .i32) (step : V .i32 → V .f32 → V .i32 → Prog V L (Vals V [.f32, .i32])) :
     Prog V L (Vals V [.f32, .i32]) := do
   let b0 ← f32c negInfBits
@@ -556,28 +622,57 @@ def laneMax (tid n : V .i32) (step : V .i32 → V .f32 → V .i32 → Prog V L (
   wloop %[tid, b0, i0] (fun cs => pure (contIfULt cs.head n, %[cs.snd, cs.thd], ()))
     (fun cs _ => do
       let r ← step cs.head cs.snd cs.thd
-      pure %[← iadd cs.head (← c32 32), r.head, r.snd])
+      pure %[← iadd cs.head (← c32 HEAD_T), r.head, r.snd])
 
-/-- The 32 lanes' bests to shared memory (value at `4·tid`, index at
-    `128 + 4·tid`), and lane 0 writes the index of the largest, the lowest
-    lane's on a tie. -/
+/-- The best `(value, index)` across a warp, by butterfly: the larger value,
+    the lower index when they are equal. Every lane ends with it. -/
+def warpBest (r : Vals V [.f32, .i32]) : Prog V L (Vals V [.f32, .i32]) := do
+  let mut v := r.head; let mut ix := r.snd
+  for m in [16, 8, 4, 2, 1] do
+    let ov ← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 v, ← c32 m])
+    let oi ← callLocal shflBfly %[ix, ← c32 m]
+    let gt ← fcmp .gt ov v
+    let eq ← fcmp .eq ov v
+    let low ← select (← icmp .ult oi ix) oi ix
+    ix ← select gt oi (← select eq low ix)
+    v ← fmax v ov
+  pure %[v, ix]
+
+/-- The largest value across the block's `HEAD_T` threads, to every thread:
+    a butterfly a warp, the warps' through shared memory at `sm`. -/
+def blockMaxF (tid : V .i32) (sm : V .i64) (x : V .f32) : Prog V L (V .f32) := do
+  let mut v := x
+  for m in [16, 8, 4, 2, 1] do
+    v ← fmax v (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 v, ← c32 m]))
+  when .eq (← band tid (← c32 31)) (← c32 0) do
+    store v (← iadd sm (← ext (← ishlImm (← ushrImm tid 5) 2)))
+  callLocalVoid barrier %[]
+  let mut w ← loadF32 sm
+  for k in List.range' 1 (HEAD_T / 32 - 1) do
+    w ← fmax w (← loadF32 (← at_ sm (4 * k)))
+  callLocalVoid barrier %[]
+  pure w
+
+/-- The block's best: each warp's (`warpBest`) to shared memory (value at
+    `4·warp`, index at `128 + 4·warp`), then the first warp's over those, and
+    thread 0 writes the index of the largest, the lowest index on a tie. -/
 def pickLanes (tid : V .i32) (sm : V .i64) (r : Vals V [.f32, .i32]) (out : V .i64) :
     Prog V L Unit := do
-  let va ← iadd sm (← ext (← ishlImm tid 2))
-  store r.head va
-  storeI32 r.snd (← at_ va 128)
+  let w ← warpBest r
+  let lane ← band tid (← c32 31)
+  when .eq lane (← c32 0) do
+    let va ← iadd sm (← ext (← ishlImm (← ushrImm tid 5) 2))
+    store w.head va
+    storeI32 w.snd (← at_ va 128)
   callLocalVoid barrier %[]
-  when .eq tid (← c32 0) do
-    let mut bv ← loadF32 sm
-    let mut bx ← load32 (← at_ sm 128)
-    for k in List.range' 1 31 do
-      let b ← better (← load32 (← at_ sm (128 + 4 * k))) (← loadF32 (← at_ sm (4 * k))) bv bx
-      bv := b.head; bx := b.snd
-    storeI32 bx out
+  when .ult tid (← c32 32) do
+    let va ← iadd sm (← ext (← ishlImm lane 2))
+    let b ← warpBest %[← loadF32 va, ← load32 (← at_ va 128)]
+    when .eq tid (← c32 0) do storeI32 b.snd out
 
 /-- **The greedy token**: the index of the largest of the `n` logits, `n` the
-    word at `meta`, the lowest index on a tie. One warp: each lane strides the
-    row keeping its best, and lane 0 picks among the thirty-two. -/
+    word at `meta`, the lowest index on a tie. One block of `HEAD_T`: each
+    thread strides the row keeping its best, and `pickLanes` reduces them. -/
 def argmaxBody : Prog V L Unit := do
   let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
   let tid := ps.snd; let sm := (ps.drop 3).head
@@ -611,13 +706,8 @@ def sampleBody : Prog V L Unit := do
   -- the largest tempered logit
   let ninf ← f32c negInfBits
   let mx ← wloop %[tid, ninf] (fun cs => pure (contIfULt cs.head n, %[cs.snd], ()))
-    (fun cs _ => do pure %[← iadd cs.head (← c32 32), ← fmax cs.snd (← tempered cs.head)])
-  store mx.head (← iadd sm (← ext (← ishlImm tid 2)))
-  callLocalVoid barrier %[]
-  let mut vmax := ninf
-  for k in List.range 32 do
-    vmax ← fmax vmax (← loadF32 (← at_ sm (4 * k)))
-  callLocalVoid barrier %[]
+    (fun cs _ => do pure %[← iadd cs.head (← c32 HEAD_T), ← fmax cs.snd (← tempered cs.head)])
+  let vmax ← blockMaxF tid sm mx.head
   let thresh ← fadd vmax lnMinP
   let ln2 ← fconst .f32 0x3F317218
   let r ← laneMax tid n fun i best bi => do
@@ -637,7 +727,6 @@ def sampleBody : Prog V L Unit := do
         let g ← fneg (← fmul l2 ln2)
         better i (← fadd v g) best bi)
       (pure %[best, bi])
-  callLocalVoid barrier %[]
   pickLanes tid sm r out
 
 /-- An FP4 (E2M1) code's float, from its low four bits: the sign bit 3, the
@@ -692,17 +781,51 @@ def bflyAdd (a : V .f32) (mask : Nat) : Prog V L (V .f32) := do
   let o ← callLocal shflBfly %[← bitcast .i32 a, ← c32 mask]
   fadd a (← bitcast .f32 o)
 
+/-- Threads of a tile's block: a warp a key head. -/
+def ATT_THREADS : Nat := 32 * NKV_K
+
+/-- Keys a tile is walked in, `2 ^ ATT_SUB_LOG` at a time, so a sub-tile's
+    scores are that many dot products spread over the warp. -/
+def ATT_SUB_LOG : Nat := 3
+def ATT_SUB : Nat := 2 ^ ATT_SUB_LOG
+/-- The butterfly masks that split a sub-tile's sums across the warp, and the
+    ones that finish each sum within the lanes that then share a key. -/
+def subMasks : List Nat := [16, 8, 4, 2, 1].take ATT_SUB_LOG
+def restMasks : List Nat := [16, 8, 4, 2, 1].drop ATT_SUB_LOG
+
+/-- **`ATT_SUB` sums across the warp, a group of lanes to each.** Each of `vs`
+    is one lane's share of a dot product; a butterfly step at each of
+    `subMasks` keeps half the values and sends the other half (`bits` are the
+    lane's bits at those masks), so lane `L` ends with value
+    `L >> (5 - ATT_SUB_LOG)` summed over the lanes that share `L`'s low bits,
+    and `restMasks` finish it: `ATT_SUB - 1` shuffles and one a remaining mask,
+    rather than five a sum. -/
+def reduceScatter (bits : List (V .i8)) (vs : List (V .f32)) : Prog V L (V .f32) := do
+  let mut cur := vs
+  for (m, b) in subMasks.zip bits do
+    let half := cur.length / 2
+    let mut next : List (V .f32) := []
+    for (x, y) in (cur.take half).zip (cur.drop half) do
+      let send ← select b x y
+      let keep ← select b y x
+      let r ← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 send, ← c32 m])
+      next := next ++ [← fadd keep r]
+    cur := next
+  let mut v := cur.headD (vs.headD (← fconst .f32 0))
+  for m in restMasks do v ← bflyAdd v m
+  pure v
+
 /-- **One tile of the sequence, one key head, scores never stored.**
 
-    Grid is one CTA per tile, block is `NKV_K` warps, and warp `w` takes key
+    Grid is one CTA per tile, block is `ATT_THREADS`, and warp `w` takes key
     head `w`. A lane owns two elements of the head -- `2L` and `2L+1` -- so the
     key row is one coalesced word per lane.
 
-    Per key: form the eight scores this head serves (each a dot over the head,
-    so a butterfly across the warp), fold them into the running `(m, l)`, and
-    accumulate the value row. The next key's words are loaded before this
-    one's are used, which keeps two rows in flight on a serial walk; the read
-    one past the last key lands in the row of slack the caches carry.
+    `ATT_SUB` keys at a time: their rows are loaded together, each of the
+    eight queries this head serves gets the sub-tile's scores by one
+    `reduceScatter` (each group of lanes holding one key's), the running
+    `(m, l)` is folded once a sub-tile, and the value rows are accumulated
+    against the scores broadcast a key at a time.
 
     Writes `(m, l, acc[HD_K])` per `(tile, head, query)` for the combine pass;
     the sink belongs to the head and is applied there, once. -/
@@ -724,56 +847,57 @@ def attnTileBody : Prog V L Unit := do
   let qBase ← iadd qp (← imul (← ext qWord) (← c64n 4))
   let qs ← (List.range GQA_K).mapM fun g => do
     unpack (← load32 (← at_ qBase (g * (HD_K / 2) * 4)))
-  -- the walk's addresses advance by one key row a step
-  let kWord ← iadd (← iadd (← imul wid kvStride) lane) (← imul s0 (← c32 (HD_K / 2)))
-  let kOff ← imul (← ext kWord) (← c64n 4)
-  let kAddr0 ← iadd kp kOff
-  let vAddr0 ← iadd vp kOff
-  let kw0 ← load32 kAddr0
-  let vw0 ← load32 vAddr0
+  -- key `s`'s word for this lane, in either cache
+  let row0 ← imul (← ext (← iadd (← imul wid kvStride) lane)) (← c64n 4)
+  let kB ← iadd kp row0
+  let vB ← iadd vp row0
+  let lastKey ← isub sEnd (← c32 1)
+  -- the key of a sub-tile whose score a lane ends up holding
+  let own ← ushrImm lane (5 - ATT_SUB_LOG)
+  let bits ← subMasks.mapM fun m => do icmp .ne (← band lane (← c32 m)) (← c32 0)
   let ninf ← fconst .f32 0xFF800000
   let zero ← fconst .f32 0
+  let scale ← fconst .f32 attScaleBits.toUInt64
   -- running (m, l, a0, a1) a query, four floats to a query
   let st0 : List (V .f32) := (List.range GQA_K).flatMap fun _ => [ninf, zero, zero, zero]
-  let carry0 := Vals.append %[s0, kAddr0, vAddr0, kw0, vw0]
-    (Vals.ofFn (n := 4 * GQA_K) fun i => st0.getD i.val zero)
+  let carry0 := Vals.append %[s0] (Vals.ofFn (n := 4 * GQA_K) fun i => st0.getD i.val zero)
   let fin ← wloop carry0 (fun cs => pure (contIfULt cs.head sEnd, cs, ()))
     (fun cs _ => do
-      let sIx := cs.head; let kAddr := cs.snd; let vAddr := cs.thd
-      let kw := cs.fth; let vw := cs.fif
-      let st := Vals.uniformToList (cs.drop 5 : Vals V (List.replicate (4 * GQA_K) .f32))
-      let (k0, k1) ← unpack kw
-      let (v0, v1) ← unpack vw
-      let kAddr' ← at_ kAddr (HD_K / 2 * 4)
-      let vAddr' ← at_ vAddr (HD_K / 2 * 4)
-      let kw' ← load32 kAddr'
-      let vw' ← load32 vAddr'
-      -- one partial dot a query, then one butterfly for all of them
-      let mut dots : List (V .f32) := []
-      for (q0, q1) in qs do
-        dots := dots ++ [← fma q1 k1 (← fmul q0 k0)]
-      for mask in [16, 8, 4, 2, 1] do
-        let mut next : List (V .f32) := []
-        for d in dots do
-          next := next ++ [← bflyAdd d mask]
-        dots := next
-      -- fold each score into its running (m, l) and rescale the accumulator
-      let scale ← fconst .f32 attScaleBits.toUInt64
+      let sb := cs.head
+      let st := Vals.uniformToList (cs.drop 1 : Vals V (List.replicate (4 * GQA_K) .f32))
+      -- the sub-tile's rows, a key past the tile read as its last key and
+      -- weighted zero
+      let rows ← (List.range ATT_SUB).mapM fun i => do
+        let off ← imul (← ext (← umin (← iadd sb (← c32 i)) lastKey)) (← c64n (HD_K / 2 * 4))
+        pure (← load32 (← iadd kB off), ← load32 (← iadd vB off))
+      let ks ← rows.mapM fun (kw, _) => unpack kw
+      let vs ← rows.mapM fun (_, vw) => unpack vw
+      let valid ← icmp .ult (← iadd sb own) sEnd
       let mut st' : List (V .f32) := []
-      for (sc0, g) in dots.zipIdx do
+      for ((q0, q1), g) in qs.zipIdx do
+        -- the sub-tile's scores for query `g`: lane `L` ends with key `own`'s
+        let parts ← ks.mapM fun (k0, k1) => do fma q1 k1 (← fmul q0 k0)
+        let sc ← reduceScatter bits parts
+        let x ← select valid (← fmul sc scale) ninf
+        let mut tm := x
+        for mask in subMasks do
+          tm ← fmax tm (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 tm, ← c32 mask]))
         let m := st.getD (4 * g) zero; let l := st.getD (4 * g + 1) zero
-        let a0 := st.getD (4 * g + 2) zero; let a1 := st.getD (4 * g + 3) zero
-        let sc ← fmul sc0 scale
-        let mNew ← fmax m sc
+        let mNew ← fmax m tm
         let corr ← expA (← fsub m mNew)
-        let pr ← expA (← fsub sc mNew)
-        let l' ← fma l corr pr
-        let a0' ← fma pr v0 (← fmul a0 corr)
-        let a1' ← fma pr v1 (← fmul a1 corr)
-        st' := st' ++ [mNew, l', a0', a1']
-      pure (Vals.append %[← iadd sIx (← c32 1), kAddr', vAddr', kw', vw']
+        let pr ← expA (← fsub x mNew)
+        let mut psum := pr
+        for mask in subMasks do psum ← bflyAdd psum mask
+        let mut a0 ← fmul (st.getD (4 * g + 2) zero) corr
+        let mut a1 ← fmul (st.getD (4 * g + 3) zero) corr
+        for ((v0, v1), i) in vs.zipIdx do
+          let pi ← bitcast .f32 (← callLocal shflIdx %[← bitcast .i32 pr, ← c32 (i * 2 ^ (5 - ATT_SUB_LOG))])
+          a0 ← fma pi v0 a0
+          a1 ← fma pi v1 a1
+        st' := st' ++ [mNew, ← fma l corr psum, a0, a1]
+      pure (Vals.append %[← iadd sb (← c32 ATT_SUB)]
         (Vals.ofFn (n := 4 * GQA_K) fun i => st'.getD i.val zero)))
-  let st := Vals.uniformToList (fin.drop 5 : Vals V (List.replicate (4 * GQA_K) .f32))
+  let st := Vals.uniformToList (fin.drop 1 : Vals V (List.replicate (4 * GQA_K) .f32))
   -- this warp's partials: one block of `attPartialFloats` a query
   let pBlk ← imul (← iadd (← imul cta (← c32 NKV_K)) wid) (← c32 GQA_K)
   for g in List.range GQA_K do
@@ -834,10 +958,90 @@ def attnCombineBody : Prog V L Unit := do
 
 end
 
+/-- Rows a warp of the Q8_0 GEMV computes: the activation's words are loaded
+    once for all of them. -/
+def rowsPerWarpQ8 : Nat := 2
+
+/-- **A Q8_0 matrix-vector product**: `out[r] = Σ_k W[r, k] · x[k]`, `W`'s
+    int8 values row by row and its f32 scales one a block of 32 (llama.cpp's
+    Q8_0, repacked aligned by `prepare_q8.py`), `x` and `out` f32, for a width
+    `cols` fixed when the kernel is made. A warp takes `rowsPerWarpQ8` rows;
+    lane `l` takes the words `l, l + 32, …` of each (four values a word, so a
+    warp step reads 128 bytes a row, side by side), the trips unrolled, then
+    a butterfly sums the lanes. `w` holds the `rows × cols` values and then,
+    straight after them, the scales, as `prepare_q8.py` lays a tensor out. -/
+def q8GemvBody (rows cols : Nat) : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let cta := ps.head; let tid := ps.snd
+  let w := (ps.drop 4).head; let x := (ps.drop 5).head; let out := (ps.drop 6).head
+  let sc ← iaddImm w (rows * cols)
+  let rows ← c32 rows
+  let lane ← band tid (← c32 31)
+  let warp ← iadd (← imul cta (← c32 warpsPerCta)) (← ushrImm tid 5)
+  let r0 ← imul warp (← c32 rowsPerWarpQ8)
+  let words := cols / 4
+  let zero ← f32c 0
+  -- each row's start, clamped to a real row (a row past the end is computed and not written)
+  let rowsAt ← (List.range rowsPerWarpQ8).mapM fun k => do
+    let r ← iadd r0 (← c32 k)
+    let rc ← select (← icmp .ult r rows) r (← c32 0)
+    pure (r, ← iadd w (← ext (← imul rc (← c32 cols))), ← iadd sc (← ext (← ishlImm (← imul rc (← c32 (cols / 32))) 2)))
+  let mut accs : List (V .f32) := List.replicate rowsPerWarpQ8 zero
+  for t in List.range ((words + 31) / 32) do
+    let j ← iadd lane (← c32 (32 * t))
+    let live ← icmp .ult j (← c32 words)
+    let jc ← select live j (← c32 0)
+    let xa ← iadd x (← ext (← ishlImm jc 4))
+    let xs ← (List.range 4).mapM fun i => do loadF32 (← at_ xa (4 * i))
+    let mut next : List (V .f32) := []
+    for ((_, wr, sr), acc) in rowsAt.zip accs do
+      let q ← load32 (← iadd wr (← ext (← ishlImm jc 2)))
+      let s ← loadF32 (← iadd sr (← ext (← ishlImm (← ushrImm jc 3) 2)))
+      let mut dot ← f32c 0
+      for (i, xi) in (List.range 4).zip xs do
+        let b ← sshr (← ishlImm q (24 - 8 * i)) (← c32 24)
+        dot ← fma (← fcvtFromSint .f32 b) xi dot
+      next := next ++ [← fadd acc (← select live (← fmul s dot) zero)]
+    accs := next
+  for ((r, _, _), acc) in rowsAt.zip accs do
+    let mut v := acc
+    for m in [16, 8, 4, 2, 1] do v ← bflyAdd v m
+    when .eq lane (← c32 0) do
+      when .ult r rows do store v (← iadd out (← ext (← ishlImm r 2)))
+
 /-- **The down projection, plus its bias**, as a kernel. -/
 def downGemv : Kernel :=
   { name := "mxfp4_down_gemv_bias", params := [.i64, .i64, .i64, .i64, .i64],
     code := emit downGemvBias (idParams ++ [.i64, .i64, .i64, .i64, .i64]), smem := smemBytes }
+
+/-- **The down projection of all `TOPK` experts**, one launch; the layer is
+    meta word `layerWord`. -/
+def downAllK (layerWord : Nat) : Kernel :=
+  { name := "mxfp4_down_gemv_bias_all", params := List.replicate 6 .i64,
+    code := emit (downAll layerWord) (idParams ++ List.replicate 6 .i64), smem := smemBytes }
+
+/-- **Gate and up of all `TOPK` experts**, one launch; the layer is meta word
+    `layerWord`. -/
+def gateUpAllK (layerWord : Nat) : Kernel :=
+  { name := "mxfp4_gate_up_swiglu_gemv_all", params := List.replicate 6 .i64,
+    code := emit (gateUpAll layerWord) (idParams ++ List.replicate 6 .i64), smem := smemBytes }
+
+/-- **The gated sum of the chosen experts**, their outputs side by side:
+    entry params `(y, gates, out)`, expert `j`'s at `y + 4·H·j`. -/
+def moeCombineAllBody : Prog V L Unit := do
+  let ps ← entryParams (idParams ++ [.i64, .i64, .i64])
+  let y := (ps.drop 4).head; let gates := (ps.drop 5).head; let out := (ps.drop 6).head
+  let i ← gidx ps.head ps.snd
+  when .ult i (← c32 H) do
+    let off ← ext (← ishlImm i 2)
+    let mut acc ← fconst .f32 0
+    for j in List.range TOPK do
+      acc ← fma (← loadF32 (← at_ (← iadd y off) (4 * H * j))) (← loadF32 (← at_ gates (4 * j))) acc
+    store acc (← iadd out off)
+
+def moeCombineAll : Kernel :=
+  { name := "mxfp4_moe_combine_all", params := [.i64, .i64, .i64],
+    code := emit moeCombineAllBody (idParams ++ [.i64, .i64, .i64]) }
 
 /-- **Gate and up with the clamped SwiGLU**, as a kernel. -/
 def gateUp : Kernel :=
@@ -847,6 +1051,12 @@ def gateUp : Kernel :=
 def moeCombine4 : Kernel :=
   { name := "mxfp4_moe_combine4", params := [.i64, .i64, .i64, .i64, .i64, .i64],
     code := emit moeCombine (idParams ++ [.i64, .i64, .i64, .i64, .i64, .i64]) }
+
+/-- **The Q8_0 matrix-vector product** of a `rows × cols` matrix, as a kernel:
+    `rows / (warpsPerCta · rowsPerWarpQ8)` blocks of `32 · warpsPerCta`. -/
+def q8Gemv (rows cols : Nat) : Kernel :=
+  { name := s!"q8_0_gemv_{rows}x{cols}", params := [.i64, .i64, .i64],
+    code := emit (q8GemvBody rows cols) (idParams ++ [.i64, .i64, .i64]) }
 
 def narrow : Kernel :=
   { name := "narrow_bf16", params := [.i64, .i64, .i64],
