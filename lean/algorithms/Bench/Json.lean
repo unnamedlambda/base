@@ -144,27 +144,39 @@ def isWs (b : V .i64) : Prog V L (V .i64) := do
     (← bor (← b2i (← icmp .eq b (← ch '\r'))) (← b2i (← icmp .eq b (← ch '\t'))))
 
 /-- `p` past JSON's whitespace, at most `e`: 16 bytes at a time while 16
-    remain, then a byte at a time. -/
+    remain, up to the first byte not a space or a newline (indentation is
+    those), which ends it where it is past a space; then, or where fewer
+    than 16 remain, a byte at a time. -/
 def skipWsRun (p e : V .i64) : Prog V L (V .i64) := do
   let r ← wloopL %[p]
     (head := fun _ cs => do pure (contIfULt cs.head e, %[cs.head], ()))
     (body := fun out cs _ => do
-      when .ule (← iaddImm cs.head 16) e do
-        let v ← load { ty := .i8x16 } cs.head
-        let other ← bxor (← anyOf v [' ', '\n', '\r', '\t']) (← c 0xFFFF)
-        when .eq other (← c 0) do continueWith out %[← iaddImm cs.head 16]
-        brk out %[← iadd cs.head (← ctz other)]
-      when .eq (← isWs (← uload8_64 cs.head)) (← c 0) do brk out %[cs.head]
-      pure %[← iaddImm cs.head 1])
+      let q ← ifte (jTys := [.i64]) .ule (← iaddImm cs.head 16) e
+        (thn := do
+          let v ← load { ty := .i8x16 } cs.head
+          let other ← bxor (← anyOf v [' ', '\n']) (← c 0xFFFF)
+          when .eq other (← c 0) do continueWith out %[← iaddImm cs.head 16]
+          let q ← iadd cs.head (← ctz other)
+          when .ugt (← uload8_64 q) (← ch ' ') do brk out %[q]
+          pure %[q])
+        (els := do pure %[cs.head])
+      when .eq (← isWs (← uload8_64 q.head)) (← c 0) do brk out %[q.head]
+      pure %[← iaddImm q.head 1])
   pure r.head
 
 /-- `p` past JSON's whitespace, at most `e`: unmoved where the byte there is
-    past a space (the usual case, tested alone), else `skipWsRun`. -/
+    past a space (the usual case, tested alone); one on where it is a lone
+    space (after a comma or a colon, the next commonest); else `skipWsRun`. -/
 def skipWs (p e : V .i64) : Prog V L (V .i64) := do
   let r ← ifte (jTys := [.i64]) .ult p e
     (thn := do
-      let near ← icmp .ugt (← uload8_64 p) (← ch ' ')
-      ifte .ne (← b2i near) (← c 0) (thn := do pure %[p]) (els := do pure %[← skipWsRun p e]))
+      let b ← uload8_64 p
+      ifte .ugt b (← ch ' ') (thn := do pure %[p]) (els := do
+        let p1 ← iaddImm p 1
+        let lone ← band (← b2i (← icmp .eq b (← ch ' '))) (← b2i (← icmp .ult p1 e))
+        let next ← uload8_64 (← select (← icmp .ne lone (← c 0)) p1 p)
+        let skip1 ← band lone (← b2i (← icmp .ugt next (← ch ' ')))
+        ifte .ne skip1 (← c 0) (thn := do pure %[p1]) (els := do pure %[← skipWsRun p e])))
     (els := do pure %[p])
   pure r.head
 
@@ -240,7 +252,7 @@ def string (p e sp : V .i64) : Prog V L (V .i64 × V .i64 × V .i64) := do
       -- (copied whole: the buffer has room past its end)
       when .ule (← iaddImm q 16) e do
         let v ← load { ty := .i8x16 } q
-        let ctl ← uextend64 (← vhighBits (← icmp .ult v (← splat8 0x20)))
+        let ctl ← uextend64 (← vhighBits (← icmp .ule v (← splat8 0x1F)))
         let m ← bor (← anyOf v ['"', '\\']) ctl
         storeUnaligned v o
         when .eq m zero do continueWith out %[← iaddImm q 16, ← iaddImm o 16]
