@@ -68,12 +68,11 @@ def word (i : Nat) : Prog V L (V .i64) := do iaddImm (← basePtr) i
 def getW (i : Nat) : Prog V L (V .i64) := do load64 (← word i)
 def setW (i : Nat) (v : V .i64) : Prog V L Unit := do storeI64 v (← word i)
 
-/-- foldhash's folded multiply of `k` with a fixed seed: the high and low
-    words of the 128-bit product, exclusive-ored. -/
+/-- Fibonacci hashing: `k` times an odd constant (2^64 over the golden
+    ratio), its top bits the ones a table reads (`homeOf`, `tagOf`), each of
+    them depending on every bit of the key. -/
 def hash (k : V .i64) : Prog V L (V .i64) := do
-  let x ← bxor k (← iconst64 0x243F6A8885A308D3)
-  let c ← iconst64 0x13198A2E03707344
-  bxor (← umulhi x c) (← imul x c)
+  imul k (← iconst64 (0x9E3779B97F4A7C15 - 2 ^ 64))
 
 /-- A table of `buckets` (a power of two, at least 16) made at the bump
     pointer: control bytes all empty, slots after them. -/
@@ -103,17 +102,26 @@ def tab : Prog V L (Tab V) := do
   let base ← basePtr
   pure ⟨← iadd base (← getW CTRL), ← iadd base (← getW SLOTS), ← getW MASK⟩
 
+/-- The home bucket of hash `h` in table `t`: its top bits, as many as the
+    table's buckets take. -/
+def homeOf (t : Tab V) (h : V .i64) : Prog V L (V .i64) := do
+  ushr h (← clz t.mask)
+
+/-- The 7-bit tag of hash `h` in table `t`: the bits just below its home's. -/
+def tagOf (t : Tab V) (h : V .i64) : Prog V L (V .i64) := do
+  band (← ushr h (← iaddImm (← clz t.mask) (-7))) (← iconst64 0x7F)
+
 /-- The bucket of `k` in table `t`: where it is, or the first empty one its
     probe meets, and whether it was found (`1`) or not (`0`). A group's tag
     matches are checked in turn, leaving the probe at the first key equal to
     `k`; a group with an empty byte ends it; otherwise the next group, a
     triangular step on. -/
 def probeH (t : Tab V) (h k : V .i64) : Prog V L (V .i64 × V .i64) := do
-  let tag ← splat .i8x16 (← ireduce .i8 (← ushrImm h 57))
+  let tag ← splat .i8x16 (← ireduce .i8 (← tagOf t h))
   let zero ← iconst64 0
   let one ← iconst64 1
   -- a loop left only by `brk`: its head always goes on
-  let r ← wloopL %[← band h t.mask, zero]
+  let r ← wloopL %[← homeOf t h, zero]
     (head := fun _ _ => pure (contIf .eq zero zero, %[zero, zero], ()))
     (body := fun out cs _ => do
       let pos := cs.head
@@ -139,7 +147,7 @@ def probe (t : Tab V) (k : V .i64) : Prog V L (V .i64 × V .i64) := do probeH t 
     key's hash: its tag, mirrored past the end where `b < 16`. The caller
     counts it. -/
 def placeAt (t : Tab V) (h b k v : V .i64) : Prog V L Unit := do
-  let tag ← ushrImm h 57
+  let tag ← tagOf t h
   istore8 tag (← iadd t.ctrl b)
   when .ult b (← iconst64 16) do istore8 tag (← iadd (← iadd t.ctrl (← iaddImm t.mask 1)) b)
   let slot ← iadd t.slots (← ishlImm b 4)
@@ -149,7 +157,7 @@ def placeAt (t : Tab V) (h b k v : V .i64) : Prog V L Unit := do
 /-- The first empty bucket of the probe from hash `h` in table `t`. -/
 def firstEmpty (t : Tab V) (h : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
-  let r ← wloopL %[← band h t.mask, zero]
+  let r ← wloopL %[← homeOf t h, zero]
     (head := fun _ _ => pure (contIf .eq zero zero, %[zero], ()))
     (body := fun out cs _ => do
       let pos := cs.head
@@ -187,7 +195,7 @@ def grow : Prog V L Unit := do
         let k ← load64 slot
         let h ← hash k
         let b ← firstEmpty t h
-        let tag ← ushrImm h 57
+        let tag ← tagOf t h
         istore8 tag (← iadd t.ctrl b)
         when .ult b (← iconst64 16) do istore8 tag (← iadd top b)
         let dst ← iadd t.slots (← ishlImm b 4)
@@ -268,7 +276,7 @@ def insertBody : Prog V L Unit := do
           let i ← iaddImm cs.head j
           let k ← load64 (← iadd keys (← ishlImm i 3))
           let h ← hash k
-          let _ ← load { ty := .i8x16 } (← iadd t.ctrl (← band h t.mask))
+          let _ ← load { ty := .i8x16 } (← iadd t.ctrl (← homeOf t h))
           batch := batch.push (k, ← load64 (← iadd vals (← ishlImm i 3)), h)
         for (k, v, h) in batch do
           let r ← insertOne t room k v h
@@ -306,12 +314,12 @@ def lookups (t : Tab V) (keys : V .i64) (b : Nat) (i e sum cnt : V .i64) :
       for j in List.range b do
         let k ← load64 (← iadd keys (← ishlImm (← iaddImm cs.head j) 3))
         let h ← hash k
-        let pos ← band h t.mask
+        let pos ← homeOf t h
         home := home.push (k, h, pos, ← load { ty := .i8x16 } (← iadd t.ctrl pos))
       let mut sum := cs.snd
       let mut cnt := cs.thd
       for (k, h, pos, g) in home do
-        let hits ← uextend64 (← vhighBits (← icmp .eq g (← splat .i8x16 (← ireduce .i8 (← ushrImm h 57)))))
+        let hits ← uextend64 (← vhighBits (← icmp .eq g (← splat .i8x16 (← ireduce .i8 (← tagOf t h)))))
         let r ← ifte (jTys := [.i64, .i64]) .ne hits zero
           (thn := do
             let slot ← iadd t.slots (← ishlImm (← band (← iadd pos (← ctz hits)) t.mask) 4)

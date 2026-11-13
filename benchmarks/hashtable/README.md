@@ -23,8 +23,9 @@ At 1K, 64K, 1M and 16M entries, nanoseconds an operation of:
 - **zipf**: n lookups Zipfian (0.99) over the table's keys.
 
 Engines: base (a SwissTable in CLIF: 16 control bytes probed by one vector
-compare, the width hashbrown probes at on x86; tables in its arena, doubled
-at 7/8 full) and hashbrown 0.15 with its default hasher (foldhash). Every
+compare, the width hashbrown probes at on x86; Fibonacci hashing, the key
+times an odd constant with the bucket and tag from the product's top bits;
+tables in its arena, doubled at 7/8 full) and hashbrown 0.15 with its default hasher (foldhash). Every
 lookup pass's sum and count are checked equal across the engines.
 
 ## Not built
