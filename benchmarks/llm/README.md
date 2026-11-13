@@ -37,7 +37,7 @@ never the two at once. Builds run under the cap.
 
 ## Where base stands, and why
 
-Base decodes at 1.03x of llama.cpp at 512 and 0.96x at 8192 (its decode
+Base decodes at 1.00x of llama.cpp at 512 and 0.93x at 8192 (its decode
 512 tokens deeper than llama.cpp's). What is left at depth:
 - **attention**, the fused tile kernel at about 140 GB/s against the
   card's 333;
@@ -47,17 +47,14 @@ Base decodes at 1.03x of llama.cpp at 512 and 0.96x at 8192 (its decode
 - **the experts** at about 68% of the card's bandwidth
   (`applications/gpt-oss/kernel_bench.py`).
 
-Base's prompt runs at 0.93x of llama.cpp at 512 and 0.60x at 8192. The
+Base's prompt runs at 0.98x of llama.cpp at 512 and 0.62x at 8192. The
 prefill (`lean/algorithms/GptOss/Prefill.lean`) puts a chunk of up to 512
 tokens through each layer at once, its projections and experts on the int8
-tensor cores (`mma`, MXFP4 and Q8_0 weights against activations quantized
-per 32-block). Against llama.cpp's own kernels (ncu on llama-bench): its
-expert GEMMs take 5.9 ms a layer to base's 9.8, its Q8 projections 0.7 ms to
-base's 2.8, and its attention 0.17 ms a layer at depth 0 and 31 ms in all at
-8192 to base's ~200 ms there. Its kernels give each lane four sums an `mma`
-(m16n8k32) and run attention on f16 tensor cores; base's model answers a
-collective with one 32-bit word, so its `mma` gives a lane one sum, and its
-attention is fp32 on the CUDA cores.
+tensor cores (the wide `mma`, m16n8k32, MXFP4 and Q8_0 weights against
+activations quantized per 32-block). What is left is attention at depth:
+llama.cpp's flash attention runs on f16 tensor cores, 31 ms in all for a
+prompt at 8192 (ncu on llama-bench), where base's runs in fp32 on the CUDA
+cores, about ten times that.
 
 ## Not built
 
