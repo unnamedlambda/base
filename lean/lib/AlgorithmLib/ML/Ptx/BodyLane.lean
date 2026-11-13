@@ -1822,7 +1822,7 @@ theorem code_ballot (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d :
     obtain rfl := (Option.some.inj hr).symm
     simp only [Body.stmt, Body.stmtT, Body.leaf]
     refine wpE_bind (wpE_ipred hE hS p (Extends.refl _) fun pv Γ1 hx1 hp => ?_)
-    refine wpE_bind (wpE_coll1 hA (c := .ballot) rfl AlgorithmLib.Kernel.Block.ballotR rfl hp hs rfl (valAt_words hW _) ?_)
+    refine wpE_bind (wpE_coll1 hA (c := .ballot) rfl AlgorithmLib.Kernel.Block.ballotR rfl hp hs rfl (fitAt_words hW rfl _) ?_)
     refine wpE_bind (wpE_uext32 (get_push_size) fun v Γ2 hx2 hv => ?_)
     have hx := hx1.trans ((Extends.push _ _).trans hx2)
     have hlt := ansW_lt x.ans (collCalls st.w x.start).length
@@ -1843,7 +1843,7 @@ theorem code_shflIdx (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d 
     refine wpE_bind ((wpE_exp hE hS v).2 (Extends.refl _) fun vv Γ1 hx1 hvv => ?_)
     refine wpE_bind ((wpE_exp hE hS sr).2 hx1 fun vs Γ2 hx2 hvs => ?_)
     refine wpE_bind (wpE_coll2 hA (c := .shflIdx) rfl AlgorithmLib.Kernel.Block.shflIdx rfl (hx2.get hvv) hvs hs rfl
-      (valAt_words hW _) ?_)
+      (fitAt_words hW rfl _) ?_)
     refine wpE_bind (wpE_uext32 (get_push_size) fun o Γ3 hx3 ho => ?_)
     have hx := hx1.trans (hx2.trans ((Extends.push _ _).trans hx3))
     have hlt := ansW_lt x.ans (collCalls st.w x.start).length
@@ -1895,7 +1895,7 @@ theorem code_shflXor (hA : AnswersFrom x.ans x.start cfg) (hW : Words x.ans) (d 
     refine wpE_bind (wpE_bitcastI32 hss ?_)
     refine wpE_bind (wpE_iconst32u (by simp only [Int.ofNat_eq_natCast]; constructor <;> omega) ?_)
     refine wpE_bind (wpE_coll2 hA (c := .shflBfly) rfl Kernel.Block.shflBfly rfl (get_push (get_push_size))
-      (get_push_size) hs (k := (collCalls st.w x.start).length) rfl (valAt_words hW _) ?_)
+      (get_push_size) hs (k := (collCalls st.w x.start).length) rfl (fitAt_words hW rfl _) ?_)
     refine wpE_bind (wpE_bitcastF32 (get_push_size) ?_)
     have hwe : obsCall st.w (.intr .shflBfly) [.sc .i32 (s32 (st.f sr).bits.toUInt32),
         .sc .i32 (s32 (UInt32.ofNat (Int.ofNat m).toNat))] =

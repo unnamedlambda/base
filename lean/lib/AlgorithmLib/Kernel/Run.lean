@@ -86,6 +86,19 @@ def valAt (ans : List Answer) (k : Nat) : V :=
   | some (.val v) => v
   | _ => .sc .i32 0
 
+/-- **An answer as its call takes it**: a scalar cut to the call's result type
+    (so a law may answer more bits than a call keeps, and a word whatever it
+    answers). -/
+def fitTo (c : Intr) (v : V) : V :=
+  match c.sig.2, v with
+  | some ty, .sc _ x => .sc ty (x &&& widthMask ty)
+  | _, v => v
+
+/-- A word already within a word's width, to a call of a word, is itself. -/
+theorem fitTo_word {c : Intr} (hc : c.sig.2 = some .i32) {ty : ClifTy} {x : UInt64}
+    (hx : x &&& widthMask .i32 = x) : fitTo c (.sc ty x) = .sc .i32 x := by
+  simp [fitTo, hc, hx]
+
 /-- The shared memory a thread's `k`-th collective is answered, empty where
     it is not shared memory. -/
 def smemAt (ans : List Answer) (k : Nat) : ByteArray :=
@@ -108,7 +121,7 @@ def sharedWord (m : Mem) : List V → Bool
     finding the answers (`provisional`), when it leaves shared memory alone;
     a shared add by nothing, its word one of the block's shared memory (the
     laws add it at the next barrier); any other collective by the value
-    `valAt` gives, zero where it holds none — an approximating intrinsic as
+    `valAt` gives, cut to the call's type (`fitTo`), zero where it holds none — an approximating intrinsic as
     the hardware `hw` does, and `dp4a` and `prmt` exactly. A run whose answers the laws
     do not give back is not a block's (`BlockRuns`). -/
 def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := false) : Locals := fun i vs w' =>
@@ -123,7 +136,7 @@ def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := fal
       else if c = .sharedAdd then
         if sharedWord w'.mem vs then .ok (none, w')
         else .error (.stuck "a shared add other than to a word of shared memory")
-      else .ok (some (valAt ans ((collCalls w' start).length - 1)), w')
+      else .ok (some (fitTo c (valAt ans ((collCalls w' start).length - 1))), w')
     else
       match vs with
       | [.sc _ x] => .ok (some (.sc .f32 (hw.approx c x)), w')

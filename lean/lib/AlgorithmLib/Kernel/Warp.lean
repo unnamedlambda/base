@@ -42,12 +42,13 @@ open AlgorithmLib.HProg.Contracts AlgorithmLib.LibSpec AlgorithmLib.Prog
 
 
 /-- Locals that answer collectives as a thread answered from `ans` does: any
-    collective but a barrier or a shared add the value `valAt` gives, leaving the world as it
+    collective but a barrier or a shared add the value `valAt` gives, cut to its type
+    (`fitTo`), leaving the world as it
     is; a barrier, where it answers, the shared memory `ans` holds, put in
     place. -/
 structure AnswersFrom (ans : List Answer) (start : Nat) (cfg : Cfg) : Prop where
   val : ∀ (c : Intr) (vs : List V) (w : World), c.isColl = true → c ≠ .barrier → c ≠ .sharedAdd →
-    cfg.locals c.slot vs w = .ok (some (valAt ans ((collCalls w start).length - 1)), w)
+    cfg.locals c.slot vs w = .ok (some (fitTo c (valAt ans ((collCalls w start).length - 1))), w)
   smem : ∀ (vs : List V) (w w' : World) (r : Option V), cfg.locals Intr.barrier.slot vs w = .ok (r, w') →
     r = none ∧ ∃ b, w' = { w with mem := { w.mem with arena := b } } ∧
       ans[(collCalls w start).length - 1]? = some (.smem b)
@@ -702,6 +703,20 @@ theorem valAt_words {ans : List Answer} (hw : Words ans) (j : Nat) :
       obtain ⟨x, rfl⟩ := hw _ (List.mem_of_getElem? h) v rfl
       simp [s32]
 
+/-- A word widened is within a word's width. -/
+theorem s32_mask (x : UInt32) : s32 x &&& widthMask .i32 = s32 x := by
+  apply UInt64.toNat_inj.mp
+  rw [UInt64.toNat_and]
+  show x.toUInt64.toNat &&& 4294967295 = x.toUInt64.toNat
+  rw [show (4294967295 : Nat) = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
+  simp [Nat.mod_eq_of_lt x.toNat_lt]
+
+/-- Where the answers are words, a collective of a word is answered its word. -/
+theorem fitAt_words {ans : List Answer} (hw : Words ans) {c : Intr} (hc : c.sig.2 = some .i32) (j : Nat) :
+    fitTo c (valAt ans j) = .sc .i32 (s32 (wordAt ans j)) := by
+  rw [valAt_words hw j]
+  simp only [fitTo, hc, s32_mask]
+
 section Steps
 
 /-- A two-argument collective: what it gives back is its answer. -/
@@ -709,7 +724,7 @@ theorem wp_coll2 {ans : List Answer} {start : Nat} (hA : AnswersFrom ans start c
     {c : Intr} (hc : c.isColl = true) (r : LocalRef [.i32, .i32] (some .i32)) (hr : r.callee = .intr c)
     {a b : Slot .i32} {x y : V} (ha : Γ[a]? = some x) (hb : Γ[b]? = some y)
     (hs : start ≤ w.obs.length) {k : Nat} (hk : (collCalls w start).length = k)
-    {v0 : V} (hv : valAt ans k = v0)
+    {v0 : V} (hv : fitTo c (valAt ans k) = v0)
     {Q : Slot .i32 → Env → World → Prop}
     (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x, y])) (hcb : c ≠ .barrier := by decide)
     (hcs : c ≠ .sharedAdd := by decide) :
@@ -776,7 +791,7 @@ theorem wpE_coll2 {Γ : Env} {w : World} {ans : List Answer} {start : Nat} (hA :
     {c : Intr} (hc : c.isColl = true) (r : LocalRef [.i32, .i32] (some .i32)) (hr : r.callee = .intr c)
     {a b : Slot .i32} {x y : V} (ha : Γ[a]? = some x) (hb : Γ[b]? = some y)
     (hs : start ≤ w.obs.length) {k : Nat} (hk : (collCalls w start).length = k)
-    {v0 : V} (hv : valAt ans k = v0) {Q : Slot .i32 → Env → World → Prop}
+    {v0 : V} (hv : fitTo c (valAt ans k) = v0) {Q : Slot .i32 → Env → World → Prop}
     (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x, y])) (hcb : c ≠ .barrier := by decide)
     (hcs : c ≠ .sharedAdd := by decide) :
     wpE cfg (AlgorithmLib.Prog.callLocal r %[a, b]) Q Γ w := by
@@ -793,7 +808,7 @@ theorem wpE_coll1 {Γ : Env} {w : World} {ans : List Answer} {start : Nat} (hA :
     {c : Intr} (hc : c.isColl = true) {ty : ClifTy} (r : LocalRef [ty] (some .i32)) (hr : r.callee = .intr c)
     {a : Slot ty} {x : V} (ha : Γ[a]? = some x)
     (hs : start ≤ w.obs.length) {k : Nat} (hk : (collCalls w start).length = k)
-    {v0 : V} (hv : valAt ans k = v0) {Q : Slot .i32 → Env → World → Prop}
+    {v0 : V} (hv : fitTo c (valAt ans k) = v0) {Q : Slot .i32 → Env → World → Prop}
     (h : Q Γ.size (Γ.push v0) (obsCall w (.intr c) [x])) (hcb : c ≠ .barrier := by decide)
     (hcs : c ≠ .sharedAdd := by decide) :
     wpE cfg (AlgorithmLib.Prog.callLocal r %[a]) Q Γ w := by

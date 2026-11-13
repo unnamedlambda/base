@@ -64,7 +64,7 @@ abbrev outAddr (po : UInt64) (i : UInt32) : UInt64 := po + (s32 i >>> (c64 5 % 6
     the last at `out[i / 32]`. -/
 theorem thread_wp (cfg : Cfg) (w : World) (b t bd : UInt32) (px po sm : UInt64) (ans : List Answer)
     (hA : AnswersFrom ans w.obs.length cfg) (o : Nat → UInt32)
-    (ho : ∀ j, valAt ans j = .sc .i32 (s32 (o j))) (X : UInt32) (m : Mem)
+    (ho : ∀ j, fitTo .shflBfly (valAt ans j) = .sc .i32 (s32 (o j))) (X : UInt32) (m : Mem)
     (hx : w.mem.load (px + (s32 (b * bd + t) <<< (c64 2 % 64))) 4 = some (s32 X))
     (hs : (b * bd + t) &&& 31 = 0 → w.mem.store (outAddr po (b * bd + t)) 4 (s32 (sums w.mem.nan X o 5)) = some m) :
     wp cfg 0 { ok := fun _ _ => True, faultOk := false } (fnBody (idParams ++ params) KernelCorpus.warpSum)
@@ -207,7 +207,7 @@ theorem thread_spec (b t bd : UInt32) (px po sm : UInt64) (w u : World) (ans : L
       (wp_sound cfg 0 _ (fnBody (idParams ++ params) KernelCorpus.warpSum) _)
       (fun Γ' w' h => by
         rw [h.1, h.2]
-        exact thread_wp cfg w b t bd px po sm ans hA _ (valAt_words hw) X m hx hs)
+        exact thread_wp cfg w b t bd px po sm ans hA _ (fitAt_words hw rfl) X m hx hs)
       (fun _ _ _ h => h)) fine (fun Γ' w' h => ⟨by rw [h.1]; rfl, h⟩)
   exact h1
 

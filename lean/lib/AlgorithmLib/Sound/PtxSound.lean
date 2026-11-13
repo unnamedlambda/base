@@ -5596,6 +5596,7 @@ theorem shfl_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     have hnb' : i ≠ .barrier := by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
     have hns' : i ≠ .sharedAdd := by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
     simp [Except.toOption, hnb', hns', hx] at hst
+    rw [fitTo_word (by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl) hxn] at hst
     exact hst.symm
   subst hs1
   -- the lines
@@ -5701,6 +5702,7 @@ theorem mma_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
     rw [hk, hx] at hst
     simp [Except.toOption, show Intr.mma ≠ .barrier by decide, show Intr.mma ≠ .sharedAdd by decide] at hst
+    rw [fitTo_word rfl hxn] at hst
     exact hst.symm
   subst hs1
   -- the lines: the three words', then one `mma`
@@ -5799,6 +5801,7 @@ theorem ballot_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.an
     have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
     rw [hk, hx] at hst
     simp [Except.toOption, show Intr.ballot ≠ .barrier by decide, show Intr.ballot ≠ .sharedAdd by decide, hx] at hst
+    rw [fitTo_word rfl hxn] at hst
     exact hst.symm
   subst hs1
   -- the lines: the flag's predicate, then one `vote`
