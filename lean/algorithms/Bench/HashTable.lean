@@ -136,7 +136,8 @@ def probeH (t : Tab V) (h k : V .i64) : Prog V L (V .i64 × V .i64) := do
 def probe (t : Tab V) (k : V .i64) : Prog V L (V .i64 × V .i64) := do probeH t (← hash k) k
 
 /-- `k ↦ v` placed in bucket `b` of table `t` (empty, from `probe`), `h` the
-    key's hash: its tag, mirrored past the end where `b < 16`. -/
+    key's hash: its tag, mirrored past the end where `b < 16`. The caller
+    counts it. -/
 def placeAt (t : Tab V) (h b k v : V .i64) : Prog V L Unit := do
   let tag ← ushrImm h 57
   istore8 tag (← iadd t.ctrl b)
@@ -144,8 +145,6 @@ def placeAt (t : Tab V) (h b k v : V .i64) : Prog V L Unit := do
   let slot ← iadd t.slots (← ishlImm b 4)
   storeI64 k slot
   storeI64 v (← iaddImm slot 8)
-  setW ITEMS (← iaddImm (← getW ITEMS) 1)
-  setW ROOM (← iaddImm (← getW ROOM) (-1))
 
 /-- The first empty bucket of the probe from hash `h` in table `t`. -/
 def firstEmpty (t : Tab V) (h : V .i64) : Prog V L (V .i64) := do
@@ -173,19 +172,28 @@ def grow : Prog V L Unit := do
   makeTable (← ishlImm buckets 1)
   let t ← tab
   let top ← iadd t.ctrl (← iadd t.mask (← iconst64 1))
-  forLoop buckets fun i => do
-    let c ← uload8_64 (← iadd base (← iadd oldCtrl i))
-    when .ult c (← iconst64 EMPTY) do
-      let slot ← iadd base (← iadd oldSlots (← ishlImm i 4))
-      let k ← load64 slot
-      let h ← hash k
-      let b ← firstEmpty t h
-      let tag ← ushrImm h 57
-      istore8 tag (← iadd t.ctrl b)
-      when .ult b (← iconst64 16) do istore8 tag (← iadd top b)
-      let dst ← iadd t.slots (← ishlImm b 4)
-      storeI64 k dst
-      storeI64 (← load64 (← iaddImm slot 8)) (← iaddImm dst 8)
+  let zero ← iconst64 0
+  -- a group of 16 old buckets at a time, its full ones by their high bits
+  forLoop (← ushrImm buckets 4) fun gi => do
+    let g0 ← ishlImm gi 4
+    let full ← bxor (← uextend64 (← vhighBits (← load { ty := .i8x16 }
+      (← iadd base (← iadd oldCtrl g0))))) (← iconst64 0xFFFF)
+    let _ ← wloopL %[full]
+      (head := fun _ ms => pure (exitIfEq ms.head zero, %[], ()))
+      (body := fun _ ms _ => do
+        let m := ms.head
+        let i ← iadd g0 (← ctz m)
+        let slot ← iadd base (← iadd oldSlots (← ishlImm i 4))
+        let k ← load64 slot
+        let h ← hash k
+        let b ← firstEmpty t h
+        let tag ← ushrImm h 57
+        istore8 tag (← iadd t.ctrl b)
+        when .ult b (← iconst64 16) do istore8 tag (← iadd top b)
+        let dst ← iadd t.slots (← ishlImm b 4)
+        storeI64 k dst
+        storeI64 (← load64 (← iaddImm slot 8)) (← iaddImm dst 8)
+        pure %[← band m (← iaddImm m (-1))])
   setW ITEMS items
   setW ROOM (← isub (← getW ROOM) items)
 
@@ -202,25 +210,42 @@ def clearBody : Prog V L Unit := do
 /-- Keys a lookup or an insert takes together. -/
 def BATCH : Nat := 8
 
-/-- `k ↦ v` set, `h` the key's hash: its value replaced where it is there,
-    else placed at the empty bucket its probe meets, the table doubled first
-    where full (only while the next size fits the arena). -/
-def insertOne (k v h : V .i64) : Prog V L Unit := do
-  let t ← tab
+/-- The fewest buckets at which lookups go in batches: 64 Ki buckets' slots
+    and control bytes are past the second-level cache. -/
+def SMALL_BUCKETS : Nat := 65536
+
+/-- The table's counts back in memory from `room`, the buckets it still has
+    before it is 7/8 full: `ITEMS` is the rest of those 7/8. -/
+def putRoom (t : Tab V) (room : V .i64) : Prog V L Unit := do
+  let buckets ← iaddImm t.mask 1
+  setW ITEMS (← isub (← isub buckets (← ushrImm buckets 3)) room)
+  setW ROOM room
+
+/-- `k ↦ v` set in table `t` with `room` left, `h` the key's hash: its value
+    replaced where it is there, else placed at the empty bucket its probe
+    meets, the table doubled first where full (only while the next size fits
+    the arena); the table and the room after. -/
+def insertOne (t : Tab V) (room k v h : V .i64) : Prog V L (Vals V [.i64, .i64, .i64, .i64]) := do
   let (b, found) ← probeH t h k
-  let _ ← ifte (jTys := []) .ne found (← iconst64 0)
-    (thn := do storeI64 v (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8); pure %[])
-    (els := do
-      let _ ← ifte (jTys := []) .eq (← getW ROOM) (← iconst64 0)
-        (thn := do
-          when .ult (← getW MASK) (← iconst64 (MAX_BUCKETS / 2)) do
+  ifte (jTys := [.i64, .i64, .i64, .i64]) .ne found (← iconst64 0)
+    (thn := do
+      storeI64 v (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8)
+      pure %[t.ctrl, t.slots, t.mask, room])
+    (els := ifte .eq room (← iconst64 0)
+      (thn := do
+        let r ← ifte (jTys := [.i64, .i64, .i64, .i64]) .ult t.mask (← iconst64 (MAX_BUCKETS / 2))
+          (thn := do
+            putRoom t room
             grow
             let t2 ← tab
             let (b2, _) ← probeH t2 h k
             placeAt t2 h b2 k v
-          pure %[])
-        (els := do placeAt t h b k v; pure %[])
-      pure %[])
+            pure %[t2.ctrl, t2.slots, t2.mask, ← iaddImm (← getW ROOM) (-1)])
+          (els := do pure %[t.ctrl, t.slots, t.mask, room])
+        pure %[r.head, r.snd, r.thd, r.fth])
+      (els := do
+        placeAt t h b k v
+        pure %[t.ctrl, t.slots, t.mask, ← iaddImm room (-1)]))
 
 def insertBody : Prog V L Unit := do
   let dp ← dataPtr
@@ -231,9 +256,13 @@ def insertBody : Prog V L Unit := do
     -- batches of `BATCH` keys: their hashes taken and home groups read
     -- first, so their cache misses overlap, then each set in order
     let whole ← band n (← iconst64 (-(BATCH : Int)))
-    let _ ← wloop %[← iconst64 0] (fun cs => pure (contIfULt cs.head whole, %[], ()))
+    -- the table and its room kept in registers, in memory again at the end
+    let t0 ← tab
+    let st0 := %[← iconst64 0, t0.ctrl, t0.slots, t0.mask, ← getW ROOM]
+    let st1 ← wloop st0 (fun cs => pure (contIfULt cs.head whole, (cs.drop 1 : Vals V _), ()))
       (fun cs _ => do
-        let t ← tab
+        let mut t : Tab V := ⟨(cs.drop 1).head, (cs.drop 2).head, (cs.drop 3).head⟩
+        let mut room := (cs.drop 4).head
         let mut batch := #[]
         for j in List.range BATCH do
           let i ← iaddImm cs.head j
@@ -241,13 +270,61 @@ def insertBody : Prog V L Unit := do
           let h ← hash k
           let _ ← load { ty := .i8x16 } (← iadd t.ctrl (← band h t.mask))
           batch := batch.push (k, ← load64 (← iadd vals (← ishlImm i 3)), h)
-        for (k, v, h) in batch do insertOne k v h
-        pure %[← iaddImm cs.head BATCH])
-    let _ ← wloop %[whole] (fun cs => pure (contIfULt cs.head n, %[], ()))
+        for (k, v, h) in batch do
+          let r ← insertOne t room k v h
+          t := ⟨r.head, r.snd, r.thd⟩
+          room := r.fth
+        pure %[← iaddImm cs.head BATCH, t.ctrl, t.slots, t.mask, room])
+    let st2 ← wloop (Vals.append %[whole] st1) (fun cs => pure (contIfULt cs.head n, (cs.drop 1 : Vals V _), ()))
       (fun cs _ => do
+        let t : Tab V := ⟨(cs.drop 1).head, (cs.drop 2).head, (cs.drop 3).head⟩
         let k ← load64 (← iadd keys (← ishlImm cs.head 3))
-        insertOne k (← load64 (← iadd vals (← ishlImm cs.head 3))) (← hash k)
-        pure %[← iaddImm cs.head 1])
+        let r ← insertOne t (cs.drop 4).head k (← load64 (← iadd vals (← ishlImm cs.head 3))) (← hash k)
+        pure %[← iaddImm cs.head 1, r.head, r.snd, r.thd, r.fth])
+    putRoom ⟨st2.head, st2.snd, st2.thd⟩ st2.fth
+
+/-- Keys `[i, e)` of `keys` looked up in table `t`, `b` at a time, `sum` and
+    `cnt` carried: the values found added to the one, their number to the
+    other. A batch's hashes and home groups are read first, so its cache
+    misses are under way together; then each key's group matched: the first
+    tag match holding the key, or no match and an empty byte, settle it;
+    anything else takes the full probe. -/
+def lookups (t : Tab V) (keys : V .i64) (b : Nat) (i e sum cnt : V .i64) :
+    Prog V L (Vals V [.i64, .i64]) := do
+  let zero ← iconst64 0
+  let one ← iconst64 1
+  -- the value read only where the full probe found the key
+  let slow (k : V .i64) : Prog V L (Vals V [.i64, .i64]) := do
+    let (b, found) ← probe t k
+    let v ← ifte (jTys := [.i64]) .ne found zero
+      (thn := do pure %[← load64 (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8)])
+      (els := pure %[zero])
+    pure %[v.head, found]
+  wloop %[i, sum, cnt] (fun cs => pure (contIfULt cs.head e, %[cs.snd, cs.thd], ()))
+    (fun cs _ => do
+      let mut home := #[]
+      for j in List.range b do
+        let k ← load64 (← iadd keys (← ishlImm (← iaddImm cs.head j) 3))
+        let h ← hash k
+        let pos ← band h t.mask
+        home := home.push (k, h, pos, ← load { ty := .i8x16 } (← iadd t.ctrl pos))
+      let mut sum := cs.snd
+      let mut cnt := cs.thd
+      for (k, h, pos, g) in home do
+        let hits ← uextend64 (← vhighBits (← icmp .eq g (← splat .i8x16 (← ireduce .i8 (← ushrImm h 57)))))
+        let r ← ifte (jTys := [.i64, .i64]) .ne hits zero
+          (thn := do
+            let slot ← iadd t.slots (← ishlImm (← band (← iadd pos (← ctz hits)) t.mask) 4)
+            ifte .eq (← load64 slot) k
+              (thn := do pure %[← load64 (← iaddImm slot 8), one])
+              (els := slow k))
+          (els := do
+            ifte .ne (← uextend64 (← vhighBits g)) zero
+              (thn := do pure %[zero, zero])
+              (els := slow k))
+        sum ← iadd sum r.head
+        cnt ← iadd cnt r.snd
+      pure %[← iaddImm cs.head b, sum, cnt])
 
 def getBody : Prog V L Unit := do
   let dp ← dataPtr
@@ -256,59 +333,16 @@ def getBody : Prog V L Unit := do
     when .uge (← outLen) (← iconst64 16) do
       let keys ← iaddImm dp 8
       let zero ← iconst64 0
-      let one ← iconst64 1
       let t ← tab
-      -- batches of `BATCH` keys: their hashes and home groups read first, so
-      -- the batch's cache misses are under way together, then each key's
-      -- group matched: the first tag match holding the key, or no match and
-      -- an empty byte, settle it; anything else takes the full probe
-      let whole ← band n (← iconst64 (-(BATCH : Int)))
-      let rb ← wloop %[zero, zero, zero] (fun cs => pure (contIfULt cs.head whole, %[cs.snd, cs.thd], ()))
-        (fun cs _ => do
-          let mut home := #[]
-          for j in List.range BATCH do
-            let k ← load64 (← iadd keys (← ishlImm (← iaddImm cs.head j) 3))
-            let h ← hash k
-            let pos ← band h t.mask
-            home := home.push (k, h, pos, ← load { ty := .i8x16 } (← iadd t.ctrl pos))
-          let mut sum := cs.snd
-          let mut cnt := cs.thd
-          for (k, h, pos, g) in home do
-            let hits ← uextend64 (← vhighBits (← icmp .eq g (← splat .i8x16 (← ireduce .i8 (← ushrImm h 57)))))
-            let r ← ifte (jTys := [.i64, .i64]) .ne hits zero
-              (thn := do
-                let slot ← iadd t.slots (← ishlImm (← band (← iadd pos (← ctz hits)) t.mask) 4)
-                let first ← ifte (jTys := [.i64, .i64]) .eq (← load64 slot) k
-                  (thn := do pure %[← load64 (← iaddImm slot 8), one])
-                  (els := do
-                    let (b, found) ← probe t k
-                    let v ← ifte (jTys := [.i64]) .ne found zero
-                      (thn := do pure %[← load64 (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8)])
-                      (els := pure %[zero])
-                    pure %[v.head, found])
-                pure %[first.head, first.snd])
-              (els := do
-                let full ← ifte (jTys := [.i64, .i64]) .ne (← uextend64 (← vhighBits g)) zero
-                  (thn := do pure %[zero, zero])
-                  (els := do
-                    let (b, found) ← probe t k
-                    let v ← ifte (jTys := [.i64]) .ne found zero
-                      (thn := do pure %[← load64 (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8)])
-                      (els := pure %[zero])
-                    pure %[v.head, found])
-                pure %[full.head, full.snd])
-            sum ← iadd sum r.head
-            cnt ← iadd cnt r.snd
-          pure %[← iaddImm cs.head BATCH, sum, cnt])
-      let r ← wloop %[whole, rb.head, rb.snd] (fun cs => pure (contIfULt cs.head n, %[cs.snd, cs.thd], ()))
-        (fun cs _ => do
-          let k ← load64 (← iadd keys (← ishlImm cs.head 3))
-          let (b, found) ← probe t k
-          -- the value read only where the key was found
-          let v ← ifte (jTys := [.i64]) .ne found zero
-            (thn := do pure %[← load64 (← iaddImm (← iadd t.slots (← ishlImm b 4)) 8)])
-            (els := pure %[zero])
-          pure %[← iaddImm cs.head 1, ← iadd cs.snd v.head, ← iadd cs.thd found])
+      -- a table past the cache in batches of `BATCH`, the misses of more
+      -- keys overlapped; one that fits it in batches of 4, fewer registers
+      -- held across the batch; the last few keys one at a time
+      let big ← icmp .uge t.mask (← iconst64 (SMALL_BUCKETS - 1))
+      let w8 ← select big (← band n (← iconst64 (-(BATCH : Int)))) zero
+      let w4 ← band n (← iconst64 (-4))
+      let r8 ← lookups t keys BATCH zero w8 zero zero
+      let r4 ← lookups t keys 4 w8 w4 r8.head r8.snd
+      let r ← lookups t keys 1 w4 n r4.head r4.snd
       storeI64 r.head (← outPtr)
       storeI64 r.snd (← iaddImm (← outPtr) 8)
 
