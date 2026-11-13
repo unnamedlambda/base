@@ -593,15 +593,6 @@ structure Scan (V : ClifTy → Type) where
   bad : V .i64
   ov : V .i64
 
-abbrev SCAN : List ClifTy := [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
-
-def Scan.toVals {V} (s : Scan V) : Vals V SCAN :=
-  %[s.neg, s.w, s.nd, s.frac, s.isInt, s.ev, s.mEnd, s.fin, s.bad, s.ov]
-
-def Scan.ofVals {V} : Vals V SCAN → Scan V
-  | .cons a (.cons b (.cons c (.cons d (.cons e (.cons f (.cons g (.cons h (.cons i (.cons j .nil))))))))) =>
-    ⟨a, b, c, d, e, f, g, h, i, j⟩
-
 /-- The 8 bytes `x` read as decimal digits: how many lead it (0 to 8; fast_float's
     SWAR, a byte `0x33` exactly where a digit is, no carry reaching a byte
     before the first that is not one). -/
@@ -748,22 +739,12 @@ def scanShort (p : V .i64) : Prog V L (Scan V × V .i64) := do
   let ok ← b2i (← icmp .eq (← bor (← bor no r.fth) hasE) zero)
   pure (⟨neg, r.head, ← iadd k1 r.snd, r.snd, ← b2i (← icmp .eq dot zero), zero, fin, fin, zero, zero⟩, ok)
 
-/-- **A number** at `p` (a digit or `-`): its tag word and value word, where
-    the text resumes, and 0, or 1 where it is not a JSON number or cannot be
+/-- A number read by `scanNumber`: its tag word and value word, where the
+    text resumes, and 0, or 1 where it is not a JSON number or cannot be
     parsed here. -/
-def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := do
+def numberGeneral (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := do
   let zero ← c 0
-  let room ← icmp .ule (← iaddImm p 40) e
-  -- the short scan where there is room, its answer kept where it read the number
-  let f ← ifte (jTys := .i64 :: SCAN) .ne (← b2i room) zero
-    (thn := do
-      let (sc, ok) ← scanShort p
-      pure (ok ::ᵥ sc.toVals))
-    (els := do pure %[zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero])
-  let sc ← ifte (jTys := SCAN) .ne f.head zero
-    (thn := do pure f.tail)
-    (els := do pure (← scanNumber p e).toVals)
-  let ⟨neg, w, nd, fracDigits, isInt, ev, mEnd, fin, bad, ov⟩ := Scan.ofVals sc
+  let ⟨neg, w, nd, fracDigits, isInt, ev, mEnd, fin, bad, ov⟩ ← scanNumber p e
   let p0 ← iadd p neg
   let r ← ifte (jTys := [.i64, .i64, .i64]) .ne isInt zero
     (thn := do
@@ -809,6 +790,46 @@ def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := d
         (els := do pure %[d.head])
       pure %[← word 'd' zero, v.head, zero])
   pure (r.head, r.snd, fin, ← bor bad r.thd)
+
+/-- A number `scanShort` read, its value where that is quick: an integer
+    (at most 15 digits, so an `int64`); a double of at most 19 digits, by
+    Clinger's division where its digits are at most `2^53` (its power of ten
+    is at most 15, so exact), else Eisel–Lemire. 1 then, its tag word, value
+    word and end; or 0 (more digits, or a product Eisel–Lemire cannot round). -/
+def shortValue (sc : Scan V) : Prog V L (Vals V [.i64, .i64, .i64, .i64]) := do
+  let zero ← c 0
+  let one ← c 1
+  ifte .ne sc.isInt zero
+    (thn := do pure %[one, ← word 'l' zero, ← select (← icmp .ne sc.neg zero) (← isub zero sc.w) sc.w, sc.fin])
+    (els := do
+      let sign ← ishlImm sc.neg 63
+      let fits ← b2i (← icmp .ule sc.nd (← c 19))
+      let d ← ifte (jTys := [.i64, .i64]) .ule sc.w (← c (2 ^ 53))
+        (thn := do
+          let pw ← load { ty := .f64 } (← iadd (← at_ POW10) (← ishlImm sc.frac 3))
+          pure %[← bitcast .i64 (← fdiv (← fcvtFromSint .f64 sc.w) pw), fits])
+        (els := do
+          let b ← eiselLemire sc.w (← isub zero sc.frac)
+          pure %[b, ← band fits (← b2i (← icmp .ne b (← c (-1))))])
+      pure %[d.snd, ← word 'd' zero, ← bor sign d.head, sc.fin])
+
+/-- **A number** at `p` (a digit or `-`): its tag word and value word, where
+    the text resumes, and 0, or 1 where it is not a JSON number or cannot be
+    parsed here. The commonest, where 40 bytes remain, by `scanShort` and
+    `shortValue`; the rest by `numberGeneral`. -/
+def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := do
+  let zero ← c 0
+  let f ← ifte (jTys := [.i64, .i64, .i64, .i64]) .ule (← iaddImm p 40) e
+    (thn := do
+      let (sc, ok) ← scanShort p
+      ifte .ne ok zero (thn := shortValue sc) (els := do pure %[zero, zero, zero, zero]))
+    (els := do pure %[zero, zero, zero, zero])
+  let r ← ifte (jTys := [.i64, .i64, .i64, .i64]) .ne f.head zero
+    (thn := do pure %[f.snd, f.thd, f.fth, zero])
+    (els := do
+      let (tag, v, fin, err) ← numberGeneral p e
+      pure %[tag, v, fin, err])
+  pure (r.head, r.snd, r.thd, r.fth)
 
 /-- The literal `lit` at `p`: 1 where the text has it. -/
 def literal (p e : V .i64) (lit : String) : Prog V L (V .i64) := do
