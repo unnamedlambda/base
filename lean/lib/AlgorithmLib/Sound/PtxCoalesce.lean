@@ -259,6 +259,8 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
       match r with
       | some (.sc _ v) => pure (.step, w', some (d, v))
       | _ => .error "a bf16 mma answered by no value"
+  -- a line writing two registers is in no renamed body (`Coalesce.fresh`)
+  | .mmaB2 .. => .error "an mma writing both halves is not renamed"
   | .bar _ => do
       let (_, w') ← collV c w .barrier []
       pure (.step, w', none)
@@ -353,8 +355,9 @@ local macro "norm" : tactic => `(tactic| (try simp only [run_bind', run_sbind, r
 -- Split on a read and reduce.
 local macro "rd " x:term : tactic => `(tactic| (cases hh : $x <;> (try simp only [hh]) <;> norm))
 
-/-- **An instruction's run is its step.** -/
-theorem exec_run (c : Ctx) (i : Instr) (ts : TS) :
+/-- **An instruction's run is its step**, where it writes one register at
+    most. -/
+theorem exec_run (c : Ctx) (i : Instr) (ts : TS) (h2 : Coalesce.Instr.two i = false) :
     (exec c i).run ts = (stepV c ts.regs ts.w i).map (after ts) := by
   cases i with
   | mov t d a => simp only [exec, stepV]; norm; rd opndV c ts.regs a
@@ -485,7 +488,7 @@ theorem exec_run (c : Ctx) (i : Instr) (ts : TS) :
         | none => norm
         | some v => cases v <;> norm
   | mmaB hi d a0 a1 a2 a3 b0 b1 e =>
-      simp only [exec, stepV]; norm
+      simp only [exec, mmaBStep, stepV]; norm
       rd opndV c ts.regs a0
       rd opndV c ts.regs a1
       rd opndV c ts.regs a2
@@ -524,6 +527,7 @@ theorem exec_run (c : Ctx) (i : Instr) (ts : TS) :
       simp only [exec, stepV]
       cases hl : c.labels.get? l <;> simp only [hl] <;> norm
   | ret => rfl
+  | mmaB2 dl dh a0 a1 a2 a3 b0 b1 cl ch => simp [Coalesce.Instr.two] at h2
 
 
 /-! ## The renamed step -/
@@ -748,6 +752,7 @@ theorem stepV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren
       rw [hl u l rfl]
       cases c.labels.get? l <;> rfl
   | ret => rfl
+  | mmaB2 dl dh a0 a1 a2 a3 b0 b1 cl ch => rfl
 
 
 /-! ## What a step writes fits its result width -/
@@ -1270,7 +1275,7 @@ def cont (c : Ctx) (fuel pc : Nat) (ts : TS) : Next × World × Option (Reg × U
     | .done => .ok ((), ts1)
 
 theorem go_ins (c : Ctx) (fuel pc : Nat) (ts : TS) (g : Option (Bool × Reg)) (i : Instr)
-    (h : c.body[pc]? = some (.ins g i)) :
+    (h : c.body[pc]? = some (.ins g i)) (h2 : Coalesce.Instr.two i = false) :
     (go c (fuel + 1) pc).run ts =
       if guardV c ts.regs g then
         match stepV c ts.regs ts.w i with
@@ -1281,7 +1286,7 @@ theorem go_ins (c : Ctx) (fuel pc : Nat) (ts : TS) (g : Option (Bool × Reg)) (i
   simp only [h, run_bind', run_sbind, guard_run]
   cases hg : guardV c ts.regs g
   · simp only [if_false, Bool.false_eq_true]
-  · simp only [if_true, run_bind', exec_run]
+  · simp only [if_true, run_bind', exec_run c i _ h2]
     cases hs : stepV c ts.regs ts.w i with
     | error e => rfl
     | ok r =>
@@ -1359,6 +1364,17 @@ theorem fresh_bra (body : List Line) (hf : fresh body = true) (g : Option (Bool 
   have := hf _ hm
   simp at this
 
+/-- No line of a fresh body writes two registers. -/
+theorem fresh_two (body : List Line) (hf : fresh body = true) (g : Option (Bool × Reg)) (i : Instr)
+    (hm : Line.ins g i ∈ body) : Coalesce.Instr.two i = false := by
+  simp only [fresh, List.all_eq_true] at hf
+  have := hf _ hm
+  revert this
+  cases i <;> simp [Coalesce.Instr.two]
+
+theorem two_ren (ρ : Ren) (i : Instr) : Coalesce.Instr.two (Instr.ren ρ i) = Coalesce.Instr.two i := by
+  cases i <;> rfl
+
 /-- **A run of the renamed body ends as the run of the body does**, from
     states agreeing on the registers live into the line. -/
 theorem go_sim (e : Entry) (ρ : Ren) (live : Array (List Reg))
@@ -1399,7 +1415,8 @@ theorem go_sim (e : Entry) (ρ : Ren) (live : Array (List Reg))
     | ins g i =>
         obtain ⟨huses, hout, hint⟩ := valid_ins _ ρ live hv pc hpc g i hl0
         rw [hL] at hout hint
-        rw [go_ins c fuel pc ts g i hcl]
+        have h2 := fresh_two e.body hf g i hmem
+        rw [go_ins c fuel pc ts g i hcl h2]
         rcases renLine_ins ρ bd pc g i with ⟨hr, t, d, s, rfl, rfl, hds, hdr, hsr, hbs⟩ | hr
         · -- a move the renaming removed: the shared register already holds its value
           rw [go_label c' fuel pc ts' (.gone pc) (by rw [hb', hcl]; simp [hr])]
@@ -1427,7 +1444,7 @@ theorem go_sim (e : Entry) (ρ : Ren) (live : Array (List Reg))
             · exact ha r hin hp
             · simp [Instr.def?] at hdef; exact absurd hdef.symm he
         · rw [go_ins c' fuel pc ts' (g.map fun (n, p) => (n, Reg.ren ρ p)) (Instr.ren ρ i)
-            (by rw [hb', hcl]; simp [hr, Line.ren])]
+            (by rw [hb', hcl]; simp [hr, Line.ren]) (by rw [two_ren]; exact h2)]
           have hgv : guardV c' ts'.regs (g.map fun (n, p) => (n, Reg.ren ρ p)) = guardV c ts.regs g := by
             have := guardV_ren c ρ g ts.regs ts'.regs (ha.mono fun r hr => huses r (by
               cases g with

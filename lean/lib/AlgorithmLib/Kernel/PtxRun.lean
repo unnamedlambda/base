@@ -302,6 +302,17 @@ def lift {α} (e : Except String α) : M α := match e with
   | .ok a => pure a
   | .error m => throw m
 
+/-- A bf16 `mma`'s half (`hi`: row `l / 4 + 8`) into `d`: the collective,
+    its six words and accumulator recorded, its answer written. -/
+def mmaBStep (c : Ctx) (hi : Bool) (d : Reg) (a0 a1 a2 a3 b0 b1 e : Opnd) : M Next := do
+    let x0 ← opnd c a0; let x1 ← opnd c a1; let x2 ← opnd c a2
+    let x3 ← opnd c a3; let x4 ← opnd c b0; let x5 ← opnd c b1; let x6 ← opnd c e
+    let r ← coll c (if hi then .mmaBfHi else .mmaBfLo) [.sc .i32 (mask 32 x0), .sc .i32 (mask 32 x1),
+      .sc .i32 (mask 32 x2), .sc .i32 (mask 32 x3), .sc .i32 (mask 32 x4), .sc .i32 (mask 32 x5), .sc .i64 x6]
+    match r with
+    | some (.sc _ v) => setReg d v; pure .step
+    | _ => throw "a bf16 mma answered by no value"
+
 /-- One instruction, and what it leaves to do next. -/
 def exec (c : Ctx) : Instr → M Next
   | .mov t d a => do setReg d (mask t.width (← opnd c a)); pure .step
@@ -367,14 +378,11 @@ def exec (c : Ctx) : Instr → M Next
       match r with
       | some (.sc _ v) => setReg d v; pure .step
       | _ => throw "a wide mma answered by no value"
-  | .mmaB hi d a0 a1 a2 a3 b0 b1 e => do
-      let x0 ← opnd c a0; let x1 ← opnd c a1; let x2 ← opnd c a2
-      let x3 ← opnd c a3; let x4 ← opnd c b0; let x5 ← opnd c b1; let x6 ← opnd c e
-      let r ← coll c (if hi then .mmaBfHi else .mmaBfLo) [.sc .i32 (mask 32 x0), .sc .i32 (mask 32 x1),
-        .sc .i32 (mask 32 x2), .sc .i32 (mask 32 x3), .sc .i32 (mask 32 x4), .sc .i32 (mask 32 x5), .sc .i64 x6]
-      match r with
-      | some (.sc _ v) => setReg d v; pure .step
-      | _ => throw "a bf16 mma answered by no value"
+  | .mmaB hi d a0 a1 a2 a3 b0 b1 e => mmaBStep c hi d a0 a1 a2 a3 b0 b1 e
+  | .mmaB2 dLo dHi a0 a1 a2 a3 b0 b1 eLo eHi => do
+      -- the two halves, each the step its own instruction is, in order
+      let _ ← mmaBStep c false dLo a0 a1 a2 a3 b0 b1 eLo
+      mmaBStep c true dHi a0 a1 a2 a3 b0 b1 eHi
   | .bar _ => do let _ ← coll c .barrier []; pure .step
   | .barWarp _ =>
       -- the warp's barrier is the block's where the block is one warp

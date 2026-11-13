@@ -80,6 +80,9 @@ def Instr.ren (ρ : Ren) : Instr → Instr
       (Opnd.ren ρ a3) (Opnd.ren ρ b0) (Opnd.ren ρ b1)
   | .mmaB hi d a0 a1 a2 a3 b0 b1 c => .mmaB hi (Reg.ren ρ d) (Opnd.ren ρ a0) (Opnd.ren ρ a1) (Opnd.ren ρ a2)
       (Opnd.ren ρ a3) (Opnd.ren ρ b0) (Opnd.ren ρ b1) (Opnd.ren ρ c)
+  | .mmaB2 dl dh a0 a1 a2 a3 b0 b1 cl ch => .mmaB2 (Reg.ren ρ dl) (Reg.ren ρ dh) (Opnd.ren ρ a0)
+      (Opnd.ren ρ a1) (Opnd.ren ρ a2) (Opnd.ren ρ a3) (Opnd.ren ρ b0) (Opnd.ren ρ b1) (Opnd.ren ρ cl)
+      (Opnd.ren ρ ch)
   | .bar n => .bar n
   | .barWarp k => .barWarp (Opnd.ren ρ k)
   | .bra u l => .bra u l
@@ -103,6 +106,8 @@ def Instr.uses : Instr → List Reg
       Opnd.regs b0 ++ Opnd.regs b1
   | .mmaB _ _ a0 a1 a2 a3 b0 b1 c => Opnd.regs a0 ++ Opnd.regs a1 ++ Opnd.regs a2 ++ Opnd.regs a3 ++
       Opnd.regs b0 ++ Opnd.regs b1 ++ Opnd.regs c
+  | .mmaB2 _ _ a0 a1 a2 a3 b0 b1 cl ch => Opnd.regs a0 ++ Opnd.regs a1 ++ Opnd.regs a2 ++ Opnd.regs a3 ++
+      Opnd.regs b0 ++ Opnd.regs b1 ++ Opnd.regs cl ++ Opnd.regs ch
   | .selp _ _ a b p => Opnd.regs a ++ Opnd.regs b ++ Opnd.regs p
   | .ld _ _ _ _ a => Opnd.regs a.base
   | .st _ _ a v | .atom _ _ _ _ _ a v | .redShared a v => Opnd.regs a.base ++ Opnd.regs v
@@ -111,7 +116,13 @@ def Instr.uses : Instr → List Reg
   | .barWarp k => Opnd.regs k
   | .bar _ | .bra _ _ | .ret => []
 
-/-- The register an instruction writes, if any. -/
+/-- Whether an instruction writes two registers. -/
+def Instr.two : Instr → Bool
+  | .mmaB2 .. => true
+  | _ => false
+
+/-- The register an instruction writes, if any. An instruction writing two
+    (`mmaB2`) has none here: a body with one is never renamed (`fresh`). -/
 def Instr.def? : Instr → Option Reg
   | .mov _ d _ | .bin _ _ _ d _ _ | .un _ _ _ d _ | .fma _ _ d _ _ _ | .cvt _ _ _ d _
   | .cvta _ _ _ d _ | .setp _ _ d _ _ | .selp _ d _ _ _ | .prmt d _ _ _ | .dp4a d _ _ _ | .ld _ _ _ d _
@@ -279,10 +290,12 @@ def plan (e : Entry) : Ren × Array (List Reg) := Id.run do
 
 /-- No label of `body`, and no label it jumps to, is a removed move's
     (`Lbl.gone`) or a named one, so the labels removed moves leave are
-    distinct from every other, by value and as text. -/
+    distinct from every other, by value and as text; and no line writes two
+    registers (`mmaB2`), which renaming does not take. -/
 def fresh (body : List Line) : Bool :=
   body.all fun l => match l with
     | .label (.gone _) | .label (.name _) | .ins _ (.bra _ (.gone _)) | .ins _ (.bra _ (.name _)) => false
+    | .ins _ i => !(Instr.two i)
     | _ => true
 
 /-- **The coalesced entry**: its registers renamed as planned where the plan

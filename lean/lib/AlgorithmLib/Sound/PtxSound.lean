@@ -6017,7 +6017,7 @@ theorem mmaB_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     have hif : (if hi then Intr.mmaBfHi else Intr.mmaBfLo) = i := by
       rcases hih with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;> rfl
     have hib : (i == Intr.barrier) = false := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl
-    simp [core, exec, coll, opnd, getReg_plain _ _ hns0, getReg_plain _ _ hns1, getReg_plain _ _ hns2,
+    simp [core, exec, mmaBStep, coll, opnd, getReg_plain _ _ hns0, getReg_plain _ _ hns1, getReg_plain _ _ hns2,
       getReg_plain _ _ hns3, getReg_plain _ _ hns4, getReg_plain _ _ hns5, getReg_plain _ _ hns6, h0, h1, h2, h3, h4,
       h5, h6, hif, hib,
       hx, hm32 x0 hn0, hm32 x1 hn1, hm32 x2 hn2, hm32 x3 hn3, hm32 x4 hn4, hm32 x5 hn5,

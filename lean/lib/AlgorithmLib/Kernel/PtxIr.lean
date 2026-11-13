@@ -178,6 +178,9 @@ inductive Instr where
       `hi`, eight past) at its two columns from the accumulator pair `c`, the
       first low. -/
   | mmaB (hi : Bool) (d : Reg) (a0 a1 a2 a3 b0 b1 c : Opnd)
+  /-- Both halves of one bf16 `mma.sync.m16n8k16`: to `dLo` row `l / 4` from
+      the accumulator pair `cLo`, to `dHi` row `l / 4 + 8` from `cHi`. -/
+  | mmaB2 (dLo dHi : Reg) (a0 a1 a2 a3 b0 b1 cLo cHi : Opnd)
   | bar (n : Nat)
   | barWarp (mask : Opnd)
   | bra (uni : Bool) (l : Lbl)
@@ -320,6 +323,24 @@ def Instr.text : Instr → String
       s!"mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 \{%mb_o0, %mb_o1, %mb_o2, %mb_o3}, " ++
       s!"\{{t 0}, {t 1}, {t 2}, {t 3}}, \{{t 4}, {t 5}}, \{%mb_c0, %mb_c1, %mb_c2, %mb_c3}; " ++
       s!"mov.b64 {d.text}, \{{if hi then "%mb_o2, %mb_o3" else "%mb_o0, %mb_o1"}}; }"
+  | .mmaB2 dLo dHi a0 a1 a2 a3 b0 b1 cLo cHi =>
+      let sel (o : Opnd) (nm : String) : String × String := match o with
+        | .reg r => (r.text, "")
+        | o => (nm, s!"mov.b32 {nm}, {o.text}; ")
+      let ops := [(a0, "%mb_a0"), (a1, "%mb_a1"), (a2, "%mb_a2"), (a3, "%mb_a3"), (b0, "%mb_b0"),
+        (b1, "%mb_b1")].map fun (o, nm) => sel o nm
+      let t (i : Nat) : String := (ops.getD i ("", "")).1
+      let acc (c : Opnd) (nm : String) : String × String := match c with
+        | .reg r => (r.text, "")
+        | o => (nm, s!"mov.b64 {nm}, {o.text}; ")
+      let (tl, ml) := acc cLo "%mb_cl"
+      let (th, mh) := acc cHi "%mb_ch"
+      s!"\{ .reg .b32 %mb_a0, %mb_a1, %mb_a2, %mb_a3, %mb_b0, %mb_b1; .reg .b64 %mb_cl, %mb_ch; " ++
+      s!".reg .f32 %mb_c<4>, %mb_o<4>; " ++ String.join (ops.map (·.2)) ++ ml ++ mh ++
+      s!"mov.b64 \{%mb_c0, %mb_c1}, {tl}; mov.b64 \{%mb_c2, %mb_c3}, {th}; " ++
+      s!"mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 \{%mb_o0, %mb_o1, %mb_o2, %mb_o3}, " ++
+      s!"\{{t 0}, {t 1}, {t 2}, {t 3}}, \{{t 4}, {t 5}}, \{%mb_c0, %mb_c1, %mb_c2, %mb_c3}; " ++
+      s!"mov.b64 {dLo.text}, \{%mb_o0, %mb_o1}; mov.b64 {dHi.text}, \{%mb_o2, %mb_o3}; }"
   | .bar n => s!"bar.sync {n}"
   | .barWarp k => s!"bar.warp.sync {k.text}"
   | .bra u l => s!"bra{if u then ".uni" else ""} {l.text}"
@@ -328,7 +349,7 @@ def Instr.text : Instr → String
 /-- What ends an instruction's line: `;`, except after an `mma`, which is a
     block of its own (its scratch registers scoped to it) and ends at `}`. -/
 def Instr.term : Instr → String
-  | .mmaW .. | .mmaB .. => ""
+  | .mmaW .. | .mmaB .. | .mmaB2 .. => ""
   | _ => ";"
 
 def Line.text : Line → String
