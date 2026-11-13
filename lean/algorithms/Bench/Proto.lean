@@ -23,9 +23,9 @@ namespace Proto
   `benchmarks/protobuf` measures it beside protobuf C++ and upb on
   HyperProtoBench. The generator reads a proto2 schema (messages, nested
   messages and enums, `optional` and `repeated` fields of the scalar, string,
-  bytes, enum and message types) and writes one artifact: one decoder, which
-  reads a table of each message's fields, and an encoder for every message
-  type, over base's own layout of a message.
+  bytes, enum and message types) and writes one artifact: a decoder and an
+  encoder, which read a table of each message's fields, over base's own
+  layout of a message.
 
   **The layout.** A message is a record in the arena: its encoded size (cached
   by the encoder), a presence word for every 64 fields, then eight bytes a
@@ -40,7 +40,8 @@ namespace Proto
   * `decode`: messages framed as `(type u32, length u32, bytes)`, the type an
     index into the schema's top-level messages: each decoded into the arena
     (emptied first). The status 0, or 1 where a message is not that type's
-    wire format or the arena is full.
+    wire format, nests records deeper than 100 (as protobuf and upb refuse),
+    or the arena is full.
   * `encode`: the decoded messages, framed the same way, to the output; the
     status 0, or 1 where the output is too small.
 -/
@@ -180,13 +181,19 @@ def COPY_SLOT : Nat := 0x110
 def COPY_NAME : Nat := 0x118
 /-- Whether the heap has been offered huge pages yet. -/
 def ADVISED : Nat := 0x120
+/-- The decoder's depth of records, at most `MAX_DEPTH` (protobuf's and
+    upb's limit). -/
+def DEPTH : Nat := 0x130
+def MAX_DEPTH : Nat := 100
 def TOP : Nat := 0x200
 def MAX_TOP : Nat := 4096
 def COPY_CODE : Nat := TOP + 16 * MAX_TOP
 /-- The decoder's tables (`tableBytes`), in at most `TABLE_BYTES`. -/
 def TABLES : Nat := Memops.align64 (COPY_CODE + (Memops.bodyBytes MemopsAsm.copy).length)
 def TABLE_BYTES : Nat := 1 <<< 20
-def HEAP : Nat := TABLES + TABLE_BYTES
+/-- The encoder's frames (`walk`), 64 bytes a record of the depth. -/
+def ESTACK : Nat := TABLES + TABLE_BYTES
+def HEAP : Nat := ESTACK + 64 * (MAX_DEPTH + 1)
 def MEM : Nat := HEAP + (1 <<< 28)
 
 /-- A record's bytes: its cached size, its presence words, eight bytes a field. -/
@@ -330,9 +337,10 @@ def writeVarint (o v : V .i64) : Prog V L (V .i64) := do
 
 /-- The bytes of `v` as a varint. -/
 def varintSize (v : V .i64) : Prog V L (V .i64) := do
-  -- 1 + floor(bits / 7), bits the position of the top set bit (1 for 0)
-  let lz ← clz (← bor v (← c 1))
-  iaddImm (← udiv (← isub (← c 63) lz) (← c 7)) 1
+  -- 1 + floor((bits - 1) / 7), bits the width of `v` (1 for 0), which is
+  -- (9 · bits + 64) / 64 for every width to 64
+  let bits ← isub (← c 64) (← clz (← bor v (← c 1)))
+  ushrImm (← iaddImm (← imul bits (← c 9)) 64) 6
 
 end
 
@@ -340,25 +348,23 @@ end
 
     Function `k` of the program: the two entries at 0 and 1; the shared
     helpers (a varint's general case, a string's copy, a list's append, a
-    record's allocation, a packed run) at 2 to 6; the decoder at 7; message
-    `i`'s sizer at `8 + 2i`, its writer at `9 + 2i`. One decoder over tables,
-    and one copy of each helper rather than one a field, keep a parse's code
-    small enough to stay in the caches, whatever the schema. -/
+    record's allocation, a packed run) at 2 to 6; the decoder, the sizer and
+    the writer at 7, 8 and 9, each over the message tables. One function of
+    each over tables, and one copy of each helper rather than one a field,
+    keep the code small enough to stay in the caches, whatever the schema. -/
 
 def COPY_IX : Nat := 3
 def APPEND_IX : Nat := 4
 def ALLOC_IX : Nat := 5
 def PACKED_IX : Nat := 6
 def DEC_IX : Nat := 7
-def sizeIx (i : Nat) : Nat := 8 + 2 * i
-def writeIx (i : Nat) : Nat := 9 + 2 * i
+def SIZE_IX : Nat := 8
+def WRITE_IX : Nat := 9
 
 /-- Every generated function takes four words, as an entry does, so the
     arena's base reaches it the way it reaches an entry (`basePtr`); the
     words a function does not use are 0. -/
 def P4 : List ClifTy := [.i64, .i64, .i64, .i64]
-def sizeRef (i : Nat) : LocalRef P4 (some .i64) := ⟨.local (sizeIx i)⟩
-def writeRef (i : Nat) : LocalRef P4 (some .i64) := ⟨.local (writeIx i)⟩
 
 def wireType : Kind → Nat
   | .varint => 0 | .fixed64 => 1 | .len => 2 | .msg _ => 2 | .fixed32 => 5
@@ -375,22 +381,36 @@ def kindCode : Kind → Nat
 /-- `x`'s `n` bytes, little-endian. -/
 def le (x n : Nat) : List UInt8 := (List.range n).map fun i => UInt8.ofNat (x / 256 ^ i % 256)
 
-/-- The decoder's tables, at `TABLES`: 16 bytes a message (its fields' table
-    as an arena offset, their count, its record's bytes), then 16 bytes a
+/-- A field's table entry's bytes, and its shift. -/
+def ENTRY : Nat := 32
+def ENTRY_SHIFT : Nat := 5
+
+/-- `v` as a varint. -/
+def varintBytes (v : Nat) : List UInt8 :=
+  if v < 0x80 then [UInt8.ofNat v] else UInt8.ofNat (v % 128 + 128) :: varintBytes (v / 128)
+termination_by v
+decreasing_by omega
+
+/-- The codec's tables, at `TABLES`: 16 bytes a message (its fields' table
+    as an arena offset, their count, its record's bytes), then 32 bytes a
     field, a message's in schema order: its number; its slot's offset in the
     record; its presence word's offset and bit; its kind (`kindCode`); a
     message field's message; 1 if it repeats; the wire type it is written
-    with. -/
+    with; at 16 its tag's bytes as a varint, at 24 their count, at 25 that
+    count plus a fixed field's 4 or 8 bytes. -/
 def tableBytes (msgs : Array Message) : List UInt8 :=
   let ms := msgs.toList
   let starts := ms.foldl (fun (acc : List Nat × Nat) m => (acc.1 ++ [acc.2], acc.2 + m.fields.length)) ([], 0) |>.1
   let fields0 := TABLES + 16 * ms.length
   let hdrs := (ms.zip starts).flatMap fun (m, k) =>
-    le (fields0 + 16 * k) 4 ++ le m.fields.length 4 ++ le (recordBytes m) 4 ++ le 0 4
+    le (fields0 + ENTRY * k) 4 ++ le m.fields.length 4 ++ le (recordBytes m) 4 ++ le 0 4
   let ents := ms.flatMap fun m => m.fields.zipIdx.flatMap fun (f, i) =>
     let sub := match f.kind with | .msg j => j | _ => 0
     le f.number 4 ++ le (slotOff m i) 4 ++ le (presenceOff (i / 64)) 2 ++ le (i % 64) 1 ++ le (kindCode f.kind) 1 ++
-      le sub 2 ++ le (if f.repeated then 1 else 0) 1 ++ le (wireType f.kind) 1
+      le sub 2 ++ le (if f.repeated then 1 else 0) 1 ++ le (wireType f.kind) 1 ++
+      let tag := varintBytes (f.number * 8 + wireType f.kind)
+      let fixed := match f.kind with | .fixed32 => 4 | .fixed64 => 8 | _ => 0
+      tag ++ zeros (8 - tag.length) ++ le tag.length 1 ++ le (tag.length + fixed) 1 ++ zeros 6
   hdrs ++ ents
 
 section
@@ -444,12 +464,12 @@ def decodeBody : Prog V L (V .i64) := do
       let found ← wloopL %[cs.snd, nf]
         (head := fun _ fs => do pure (contIf .ne fs.snd zero, %[nf], ()))
         (body := fun inner fs _ => do
-          when .eq (← uload32_64 (← at_ (← iadd fa (← ishlImm fs.head 4)))) num do brk inner %[fs.head]
+          when .eq (← uload32_64 (← at_ (← iadd fa (← ishlImm fs.head ENTRY_SHIFT)))) num do brk inner %[fs.head]
           let k ← iaddImm fs.head 1
           pure %[← select (← icmp .eq k nf) zero k, ← iaddImm fs.snd (-1)])
       let idx := found.head
       when .ne idx nf do
-        let ent ← at_ (← iadd fa (← ishlImm idx 4))
+        let ent ← at_ (← iadd fa (← ishlImm idx ENTRY_SHIFT))
         let slot ← iadd recA (← uload32_64 (← iaddImm ent 4))
         let pw ← iadd recA (← uload16_64 (← iaddImm ent 8))
         let bit ← ishl (← c 1) (← uload8_64 (← iaddImm ent 10))
@@ -494,9 +514,14 @@ def decodeBody : Prog V L (V .i64) := do
                         let bytes ← uload32_64 (← at_ (← iaddImm (← ishlImm sub 4) (TABLES + 8)))
                         pure %[← callLocal (⟨.local ALLOC_IX⟩ : LocalRef [.i64, .i64, .i64, .i64] (some .i64)) %[bytes, zero, zero, zero]])
                     let sr := fresh.head
-                    let res ← ifte (jTys := [.i64]) .eq sr zero (thn := do pure %[zero]) (els := do
+                    let dp ← at_ (← c DEPTH)
+                    let d ← load64 dp
+                    let ok ← band (← b2i (← icmp .ne sr zero)) (← b2i (← icmp .ult d (← c MAX_DEPTH)))
+                    let res ← ifte (jTys := [.i64]) .eq ok zero (thn := do pure %[zero]) (els := do
                       let end_ ← iadd q2 n
+                      storeI64 (← iaddImm d 1) dp
                       let got ← callLocal (⟨.local DEC_IX⟩ : LocalRef P4 (some .i64)) %[q2, end_, sr, sub]
+                      storeI64 d dp
                       pure %[← select (← icmp .eq got end_) end_ zero])
                     pure %[res.head, sr]))))
           when .eq v.head zero do brk out %[zero]
@@ -541,91 +566,174 @@ def decodeBody : Prog V L (V .i64) := do
       pure %[skip.head, cs.snd])
   pure r.head
 
-/-- A tag's bytes, as a constant: field `n`, wire type `wt`. -/
-def tagOf (n wt : Nat) : Nat := n * 8 + wt
-def natVarintBytes (v : Nat) : Nat := if v < 0x80 then 1 else 1 + natVarintBytes (v / 128)
-termination_by v
-decreasing_by omega
+/-- A field's table entry (`tableBytes`) as the encoder reads it, each
+    part loaded where it is used: the entry and the record. -/
+structure Entry (V : ClifTy → Type) where
+  ent : V .i64
+  recA : V .i64
 
-/-- The bytes field `f` of a record takes, its value `v` (a submessage's
-    record for `.msg`, whose size its sizer has cached). -/
-def fieldBytes (f : Field) (v : V .i64) : Prog V L (V .i64) := do
-  let tb := natVarintBytes (tagOf f.number (wireType f.kind))
-  match f.kind with
-  | .varint => iaddImm (← varintSize v) tb
-  | .fixed32 => c (tb + 4)
-  | .fixed64 => c (tb + 8)
-  | .len => do
-      let n ← ushrImm v 32
-      iaddImm (← iadd (← varintSize n) n) tb
-  | .msg sub => do
-      let z ← c 0
-      let n ← callLocal (sizeRef sub) %[v, z, z, z]
-      iaddImm (← iadd (← varintSize n) n) tb
+/-- Entry `k` of the table at `fa`, for record `recA`. -/
+def entryAt (fa recA k : V .i64) : Prog V L (Entry V) := do
+  pure { ent := ← at_ (← iadd fa (← ishlImm k ENTRY_SHIFT)), recA }
 
-/-- **Message `mi`'s sizer**: param `rec`; its encoded bytes, cached in the
-    record (and its submessages'). -/
-def sizeBody (msgs : Array Message) (mi : Nat) : Prog V L (V .i64) := do
-  let m := msgs[mi]!
+/-- The record's slot of the field, its kind, its message, 1 if it repeats,
+    its tag's bytes and their count, and the bytes of its tag and fixed
+    value. -/
+def Entry.slot (f : Entry V) : Prog V L (V .i64) := do iadd f.recA (← uload32_64 (← iaddImm f.ent 4))
+def Entry.kind (f : Entry V) : Prog V L (V .i64) := do uload8_64 (← iaddImm f.ent 11)
+def Entry.sub (f : Entry V) : Prog V L (V .i64) := do uload16_64 (← iaddImm f.ent 12)
+def Entry.rep (f : Entry V) : Prog V L (V .i64) := do uload8_64 (← iaddImm f.ent 14)
+def Entry.tagW (f : Entry V) : Prog V L (V .i64) := do load64 (← iaddImm f.ent 16)
+def Entry.tagN (f : Entry V) : Prog V L (V .i64) := do uload8_64 (← iaddImm f.ent 24)
+def Entry.sizeConst (f : Entry V) : Prog V L (V .i64) := do uload8_64 (← iaddImm f.ent 25)
+
+/-- Message `mi`'s field table's address and count. -/
+def tableOf (mi : V .i64) : Prog V L (V .i64 × V .i64) := do
+  let hdr ← at_ (← iaddImm (← ishlImm mi 4) TABLES)
+  pure (← uload32_64 hdr, ← uload32_64 (← iaddImm hdr 4))
+
+/-- Message `mi`'s record at `rec`: its address, its table and field count,
+    and its first presence word (0 with no fields). -/
+def openRec (rec mi : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := do
+  let recA ← at_ rec
+  let (fa, nf) ← tableOf mi
+  let none_ ← icmp .eq nf (← c 0)
+  let w ← load64 (← select none_ recA (← iaddImm recA (presenceOff 0)))
+  pure (recA, fa, nf, ← select none_ (← c 0) w)
+
+/-- **The encoder's walk** of record `rec` of message `mi` and each record
+    under it: a record's present fields in number order, a repeated field's
+    values in arrival order, from `acc0`, with no calls. Each record of the
+    depth has a frame at `ESTACK`: its address, table, field count and
+    presence word's index, then, while a submessage's record is walked, where
+    its own walk resumes (the decoder refuses records nested deeper than
+    `MAX_DEPTH`). `scalar f kind v acc`, a value that is not a message; `enter f v
+    acc`, a submessage's record `v`: the acc its walk starts from, and the acc
+    this record keeps meanwhile; `leave recA acc`, a record's fields done;
+    `resume f kept acc`, the acc after the submessage under field `f`. -/
+def walk (rec mi acc0 : V .i64)
+    (scalar : Entry V → V .i64 → V .i64 → V .i64 → Prog V L (V .i64))
+    (enter : Entry V → V .i64 → V .i64 → Prog V L (V .i64 × V .i64))
+    (leave : V .i64 → V .i64 → Prog V L Unit)
+    (resume : Entry V → V .i64 → V .i64 → Prog V L (V .i64)) : Prog V L (V .i64) := do
+  let zero ← c 0
+  let stk ← at_ (← c ESTACK)
+  -- record `r` of message `m` opened in the frame at `fp`: its first presence word
+  let open_ (fp r m : V .i64) : Prog V L (V .i64) := do
+    let (recA, fa, nf, w) ← openRec r m
+    for (x, k) in [recA, fa, nf, zero].zipIdx do storeI64 x (← iaddImm fp (8 * k))
+    pure w
+  let w0 ← open_ stk rec mi
+  -- carried: the frame, what is left of the presence word, the acc, the next
+  -- value of the list being walked (0 for none) and its field
+  let r ← wloopL %[stk, w0, acc0, zero, zero]
+    (head := fun _ _ => do pure (contIf .eq zero zero, %[zero], ()))
+    (body := fun out cs _ => do
+      let fp := cs.head; let w := cs.snd; let acc := cs.thd; let node := cs.fth; let i := (cs.drop 4).head
+      let recA ← load64 fp
+      let fa ← load64 (← iaddImm fp 8)
+      -- value `v` of field `i` (entry `f`), the walk going on from `w'`, `node'`
+      let visit (f : Entry V) (i v w' node' : V .i64) : Prog V L Unit := do
+        let kind ← f.kind
+        when .eq kind (← c KIND_MSG) do
+          let (inner, kept) ← enter f v acc
+          for (x, k) in [w', kept, node', i].zipIdx do storeI64 x (← iaddImm fp (32 + 8 * k))
+          let fp2 ← iaddImm fp 64
+          continueWith out %[fp2, ← open_ fp2 v (← f.sub), inner, zero, zero]
+        continueWith out %[fp, w', ← scalar f kind v acc, node', i]
+      -- the list's next value
+      when .ne node zero do
+        let nd ← at_ node
+        visit (← entryAt fa recA i) i (← load64 nd) w (← uload32_64 (← iaddImm nd 8))
+      -- the next present field
+      let wi ← load64 (← iaddImm fp 24)
+      when .ne w zero do
+        let i2 ← iadd (← ishlImm wi 6) (← ctz w)
+        let w2 ← band w (← iaddImm w (-1))
+        let f ← entryAt fa recA i2
+        let slot ← f.slot
+        when .ne (← f.rep) zero do
+          let nd ← at_ (← uload32_64 slot)
+          visit f i2 (← load64 nd) w2 (← uload32_64 (← iaddImm nd 8))
+        visit f i2 (← load64 slot) w2 zero
+      -- the next presence word
+      let wi2 ← iaddImm wi 1
+      when .ult (← ishlImm wi2 6) (← load64 (← iaddImm fp 16)) do
+        storeI64 wi2 (← iaddImm fp 24)
+        continueWith out %[fp, ← load64 (← iadd recA (← iaddImm (← ishlImm wi2 3) (presenceOff 0))), acc, zero, zero]
+      -- the record done: the walk of the record it is under resumed
+      leave recA acc
+      when .eq fp stk do brk out %[acc]
+      let pf ← iaddImm fp (-64)
+      let ld (k : Nat) : Prog V L (V .i64) := do load64 (← iaddImm pf (8 * k))
+      let pi ← ld 7
+      let pe ← entryAt (← ld 1) (← ld 0) pi
+      pure %[pf, ← ld 4, ← resume pe (← ld 5) acc, ← ld 6, pi])
+  pure r.head
+
+/-- The bytes a value `v` of entry `f`, of kind `kind`, not a message,
+    takes, tag first. -/
+def scalarBytes (f : Entry V) (kind v : V .i64) : Prog V L (V .i64) := do
+  let k ← f.sizeConst
+  let r ← ifte (jTys := [.i64]) .eq kind (← c KIND_VARINT) (thn := do pure %[← varintSize v])
+    (els := ifte .eq kind (← c KIND_LEN)
+      (thn := do
+        let n ← ushrImm v 32
+        pure %[← iadd (← varintSize n) n])
+      (els := do pure %[← c 0]))
+  iadd k r.head
+
+/-- **The sizer**: params `(rec, mi)`; message `mi`'s encoded bytes, cached
+    in the record (and each record's under it). -/
+def sizeBody : Prog V L (V .i64) := do
   let ps ← entryParams P4
-  let recA ← at_ ps.head
-  let mut total ← c 0
-  for (f, i) in m.fields.zipIdx do
-    let slot ← iaddImm recA (slotOff m i)
-    let pw ← iaddImm recA (presenceOff (i / 64))
-    let present ← band (← ushrImm (← load64 pw) (i % 64)) (← c 1)
-    let add ← ifte (jTys := [.i64]) .eq present (← c 0) (thn := do pure %[← c 0]) (els := do
-      if f.repeated then
-        let r ← wloop %[← uload32_64 slot, ← c 0] (fun cs => do pure (contIf .ne cs.head (← c 0), %[cs.snd], ()))
-          (fun cs _ => do
-            let node ← at_ cs.head
-            pure %[← uload32_64 (← iaddImm node 8), ← iadd cs.snd (← fieldBytes f (← load64 node))])
-        pure %[r.head]
-      else
-        pure %[← fieldBytes f (← load64 slot)])
-    total ← iadd total add.head
-  storeI64 total recA
-  pure total
+  walk ps.head ps.snd (← c 0)
+    (scalar := fun f kind v t => do iadd t (← scalarBytes f kind v))
+    (enter := fun _ _ t => do pure (← c 0, t))
+    (leave := fun recA t => storeI64 t recA)
+    (resume := fun f kept t => do iadd kept (← iadd (← f.tagN) (← iadd (← varintSize t) t)))
 
-/-- Field `f`'s value `v` written at `o`, tag first; where it ends. -/
-def writeField (f : Field) (o v : V .i64) : Prog V L (V .i64) := do
-  let o1 ← writeVarint o (← c (tagOf f.number (wireType f.kind)))
-  match f.kind with
-  | .varint => writeVarint o1 v
-  | .fixed32 => do storeI32 (← ireduce32 v) o1; iaddImm o1 4
-  | .fixed64 => do storeI64 v o1; iaddImm o1 8
-  | .len => do
-      let n ← ushrImm v 32
-      let src ← at_ (← band v (← c 0xFFFFFFFF))
-      let o2 ← writeVarint o1 n
-      copyN src o2 n
-      iadd o2 n
-  | .msg sub => do
-      let o2 ← writeVarint o1 (← load64 (← at_ v))
-      callLocal (writeRef sub) %[v, o2, ← c 0, ← c 0]
+/-- Entry `f`'s tag at `o`, before `oe`: its bytes' word, with 8 bytes
+    before `oe`, else each byte; where it ends. -/
+def writeTag (f : Entry V) (o oe : V .i64) : Prog V L (V .i64) := do
+  let tw ← f.tagW
+  let tn ← f.tagN
+  let _ ← ifte (jTys := []) .ule (← iaddImm o 8) oe
+    (thn := do storeI64 tw o; pure %[])
+    (els := do
+      forLoop tn fun i => do istore8 (← ushr tw (← ishlImm i 3)) (← iadd o i)
+      pure %[])
+  iadd o tn
 
-/-- **Message `mi`'s writer**: params `(rec, o)`, its sizes cached; its fields
-    at `o`, in number order; where they end. -/
-def writeBody (msgs : Array Message) (mi : Nat) : Prog V L (V .i64) := do
-  let m := msgs[mi]!
+/-- A value `v` of entry `f`, of kind `kind`, not a message, written at `o`
+    before `oe`, tag first; where it ends. -/
+def writeScalar (f : Entry V) (kind o v oe : V .i64) : Prog V L (V .i64) := do
+  let o1 ← writeTag f o oe
+  let r ← ifte (jTys := [.i64]) .eq kind (← c KIND_VARINT) (thn := do pure %[← writeVarint o1 v])
+    (els := ifte .eq kind (← c KIND_LEN)
+      (thn := do
+        let n ← ushrImm v 32
+        let src ← at_ (← band v (← c 0xFFFFFFFF))
+        let o2 ← writeVarint o1 n
+        copyN src o2 n
+        pure %[← iadd o2 n])
+      (els := ifte .eq kind (← c KIND_FIXED32) (thn := do storeI32 (← ireduce32 v) o1; pure %[← iaddImm o1 4])
+        (els := do storeI64 v o1; pure %[← iaddImm o1 8])))
+  pure r.head
+
+/-- **The writer**: params `(rec, o, mi, oe)`, the sizes cached and room
+    for them before `oe`; message `mi`'s fields at `o`, in number order;
+    where they end. -/
+def writeBody : Prog V L (V .i64) := do
   let ps ← entryParams P4
-  let recA ← at_ ps.head
-  let mut o := ps.snd
-  for (f, i) in m.fields.zipIdx do
-    let slot ← iaddImm recA (slotOff m i)
-    let pw ← iaddImm recA (presenceOff (i / 64))
-    let present ← band (← ushrImm (← load64 pw) (i % 64)) (← c 1)
-    let o' ← ifte (jTys := [.i64]) .eq present (← c 0) (thn := do pure %[o]) (els := do
-      if f.repeated then
-        let r ← wloop %[← uload32_64 slot, o] (fun cs => do pure (contIf .ne cs.head (← c 0), %[cs.snd], ()))
-          (fun cs _ => do
-            let node ← at_ cs.head
-            pure %[← uload32_64 (← iaddImm node 8), ← writeField f cs.snd (← load64 node)])
-        pure %[r.head]
-      else
-        pure %[← writeField f o (← load64 slot)])
-    o := o'.head
-  pure o
+  let oe := ps.fth
+  walk ps.head ps.thd ps.snd
+    (scalar := fun f kind v o => writeScalar f kind o v oe)
+    (enter := fun f v o => do
+      let o1 ← writeTag f o oe
+      pure (← writeVarint o1 (← load64 (← at_ v)), ← c 0))
+    (leave := fun _ _ => pure ())
+    (resume := fun _ _ o => pure o)
 
 /-- **`decode`**: the framed messages, each into a fresh record; the arena
     emptied first (and, on the first call, offered huge pages). -/
@@ -640,6 +748,7 @@ def decodeEntry (msgs : Array Message) (tops : List Nat) : Prog V L (V .i64) := 
     storeI64 (← c 1) (← iaddImm base ADVISED)
   storeI64 (← c HEAP) (← iaddImm base BUMP)
   storeI64 zero (← iaddImm base NTOP)
+  storeI64 zero (← iaddImm base DEPTH)
   let p0 ← dataPtr
   let e ← iadd p0 (← dataLen)
   let r ← wloopL %[p0, zero]
@@ -689,13 +798,13 @@ def encodeEntry (tops : List Nat) : Prog V L (V .i64) := do
       let mut o := cs.snd
       for (mi, t) in tops.zipIdx do
         let res ← ifte (jTys := [.i64]) .eq ty (← c t) (thn := do
-          let n ← callLocal (sizeRef mi) %[rec_, zero, zero, zero]
+          let n ← callLocal (⟨.local SIZE_IX⟩ : LocalRef P4 (some .i64)) %[rec_, ← c mi, zero, zero]
           let fits ← icmp .ule (← iaddImm (← iadd o n) 8) oe
           ifte (jTys := [.i64]) .ne (← b2i fits) zero
             (thn := do
               storeI32 (← ireduce32 ty) o
               storeI32 (← ireduce32 n) (← iaddImm o 4)
-              pure %[← callLocal (writeRef mi) %[rec_, ← iaddImm o 8, zero, zero]])
+              pure %[← callLocal (⟨.local WRITE_IX⟩ : LocalRef P4 (some .i64)) %[rec_, ← iaddImm o 8, ← c mi, oe]])
             (els := do pure %[zero]))
           (els := do pure %[o])
         o := res.head
@@ -757,8 +866,8 @@ def packedHelper : Prog V L (V .i64) := do
 
 end
 
-/-- The program: the two entries, the helpers, the decoder, then each
-    message's sizer and writer. -/
+/-- The program: the two entries, the helpers, the decoder, the sizer and
+    the writer. -/
 def clifIR (msgs : Array Message) (tops : List Nat) : Except String (List FuncData) := do
   -- a table entry keeps a message's index in 16 bits
   if msgs.size > 65536 ∨ (tableBytes msgs).length > TABLE_BYTES then
@@ -771,10 +880,9 @@ def clifIR (msgs : Array Message) (tops : List Nat) : Except String (List FuncDa
      Prog.compileProgStatus APPEND_IX appendHelper P4,
      Prog.compileProgStatus ALLOC_IX allocHelper P4,
      Prog.compileProgStatus PACKED_IX packedHelper P4,
-     Prog.compileProgStatus DEC_IX decodeBody P4] ++
-    (List.range msgs.size).flatMap fun i =>
-      [Prog.compileProgStatus (sizeIx i) (sizeBody msgs i) P4,
-       Prog.compileProgStatus (writeIx i) (writeBody msgs i) P4]
+     Prog.compileProgStatus DEC_IX decodeBody P4,
+     Prog.compileProgStatus SIZE_IX sizeBody P4,
+     Prog.compileProgStatus WRITE_IX writeBody P4]
 
 /-- The arena's image: the copy's CPU test name and its bytes, the decoder's
     tables. -/

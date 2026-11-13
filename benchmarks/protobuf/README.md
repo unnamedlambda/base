@@ -38,21 +38,23 @@ which protobuf has since renamed `Arena::Create`.
 
 The generator reads proto2 (messages, nested messages and enums, `optional`
 and `repeated` fields of every scalar type, strings, bytes, enums and
-messages) and writes a decoder, a sizer and a writer for each message type. A
-message is a record in base's arena that keeps each field's wire value, so the
-encoder writes back exactly what the wire said, in field-number order as
-protobuf does; strings and bytes are copied into the arena, as protobuf and
-upb copy them by default.
+messages) and writes one decoder, one sizer and one writer, which read a table
+of each message type's fields. A message is a record in base's arena that
+keeps each field's wire value, so the encoder writes back exactly what the
+wire said, in field-number order as protobuf does; strings and bytes are
+copied into the arena, as protobuf and upb copy them by default. Records nest
+at most 100 deep, protobuf's and upb's limit.
 
 ## Where base stands
 
 Every corpus is nearly all string bytes, so a parse or a serialize is mostly
 copies: base copies a string of 128 bytes or more with its own AVX2 loop
 (`MemopsAsm.copy`) into 64-byte-aligned arena space, and asks for huge pages
-under its arena once. One decoder serves every message type, reading each
-message's table of fields, so a parse's code stays a few kilobytes however
-large the schema (bench2 is 310 message types). Base parses every benchmark
-faster than the best other engine.
+under its arena once. The codec's code stays a few kilobytes however large
+the schema (bench2 is 310 message types), and the sizer and writer walk a
+record and the records under it without calls, a frame in the arena for each
+level. Base parses every benchmark faster than the best other engine and
+serializes five faster; bench1's serialize is level with protobuf's.
 
 ## Not built
 
