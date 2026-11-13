@@ -37,26 +37,27 @@ never the two at once. Builds run under the cap.
 
 ## Where base stands, and why
 
-Base decodes at 0.98x of llama.cpp at 512 and 0.95x at 8192 (its decode
+Base decodes at 1.03x of llama.cpp at 512 and 0.96x at 8192 (its decode
 512 tokens deeper than llama.cpp's). What is left at depth:
 - **attention**, the fused tile kernel at about 140 GB/s against the
   card's 333;
 - **a few misses a token**: beside the 8K cache the card holds 754 of the
   768 experts, so the host waits on the router each layer to keep its cache
-  and a miss crosses the bus (at 512 everything is resident, and the expert
-  launches find their slots on the device without the host waiting);
+  and a miss crosses the bus;
 - **the experts** at about 68% of the card's bandwidth
   (`applications/gpt-oss/kernel_bench.py`).
 
-Base's prompt runs at 0.53x of llama.cpp at 512 and 0.44x at 8192: the
+Base's prompt runs at 0.93x of llama.cpp at 512 and 0.60x at 8192. The
 prefill (`lean/algorithms/GptOss/Prefill.lean`) puts a chunk of up to 512
-tokens through each layer at once, its projections and experts on the
-tensor cores (int8 `mma`, MXFP4 and Q8_0 weights against activations
-quantized per 32-block). Its matrix kernel issues about 6.5 TMAC/s against
-the card's ~50: each `mma` waits on scalar loads, nibble unpacking and
-per-block scaling, which vector and matrix loads (`ld.v4`, `ldmatrix`) and
-asynchronous copies would take off the issue path. At 8192 its attention
-(one tile of keys at a time, no split over the context) is the rest.
+tokens through each layer at once, its projections and experts on the int8
+tensor cores (`mma`, MXFP4 and Q8_0 weights against activations quantized
+per 32-block). Against llama.cpp's own kernels (ncu on llama-bench): its
+expert GEMMs take 5.9 ms a layer to base's 9.8, its Q8 projections 0.7 ms to
+base's 2.8, and its attention 0.17 ms a layer at depth 0 and 31 ms in all at
+8192 to base's ~200 ms there. Its kernels give each lane four sums an `mma`
+(m16n8k32) and run attention on f16 tensor cores; base's model answers a
+collective with one 32-bit word, so its `mma` gives a lane one sum, and its
+attention is fp32 on the CUDA cores.
 
 ## Not built
 
