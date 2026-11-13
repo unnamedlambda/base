@@ -139,18 +139,18 @@ def baseBody : Prog V L Unit := do
     storeI32 pre (← at4 base v)
 
 /-- Keys a lane of the tile scatter holds: a warp's run of `32 · ITEMS`. -/
-def ITEMS : Nat := 12
+def ITEMS : Nat := 24
 
 /-- Keys a tile of the scatter holds: its 256 threads' items. -/
 def TILE : Nat := 256 * ITEMS
 
-/-- Shared memory of the tile scatter: the tile's keys, then its values, in
-    digit order, each warp's count of each digit, each digit's start in the
-    tile and its place in the output less that start, the scan's warp
-    totals, the tile's number. -/
+/-- Shared memory of the tile scatter: each warp's count of each digit, until
+    the keys' places are known, then the tile's keys, then its values, in
+    digit order; each digit's start in the tile and its place in the output
+    less that start; the scan's warp totals; the tile's number. -/
 def SK : Nat := 0
-def SCNT : Nat := 4 * TILE
-def STDS : Nat := SCNT + 4 * 8 * 256
+def SCNT : Nat := 0
+def STDS : Nat := max (4 * TILE) (4 * 8 * 256)
 def SOUT : Nat := STDS + 4 * 256
 def SSCAN : Nat := SOUT + 4 * 256
 def STILE : Nat := SSCAN + 4 * 8
@@ -197,110 +197,128 @@ def scatterBody : Prog V L Unit := do
   callLocalVoid barrier %[]
   let b ← load32 (← at_ sm STILE)
   let tile ← imul b (← c32 TILE)
-  let digit (k : V .i32) : Prog V L (V .i32) := do band (← ushr k shift) (← c32 255)
-  let run ← iadd tile (← iadd (← imul w (← c32 (32 * ITEMS))) lane)
-  let mut items := #[]
-  for r in List.range ITEMS do
-    let g ← iadd run (← c32 (32 * r))
-    let ok ← icmp .ult g n
-    let gc ← select ok g (← c32 0)
-    items := items.push (ok, ← load32 (← at4 kin gc), r)
-  -- the tile's count of each digit, by shared adds, published before the
-  -- ranking, so a tile after looking back finds it there. A status is the
-  -- count under the pass's tag (`2 · tag + 1`, this tile's count; `2 · tag +
-  -- 2`, every count up to it), so what an earlier pass or sort left is not
-  -- mistaken for this pass's.
-  let one ← c32 1
-  for (ok, key, _) in items do
-    when .ne (← bit ok) (← c32 0) do callLocalVoid sharedAdd %[← at4 thist (← digit key), one]
-  callLocalVoid barrier %[]
-  let tcount ← load32 (← at4 thist tid)
-  let stat (j : V .i32) : Prog V L (V .i64) := do
-    iadd look (← ext (← ishlImm (← iadd (← ishlImm j 8) tid) 3))
-  let aggTag ← iadd (← ishlImm tag 1) (← c32 1)
-  let prefTag ← iadd (← ishlImm tag 1) (← c32 2)
-  let status (tg x : V .i32) : Prog V L (V .i64) := do bor (← ishlImm (← ext tg) 32) (← ext x)
-  atomicStore (← status (← select (← icmp .eq b (← c32 0)) prefTag aggTag) tcount) (← stat b) .relaxed
-  -- each key's place among its warp's keys of its digit
-  let wcnt ← at4 cnt (← imul w (← c32 256))
-  let mut ranks := #[]
-  for (ok, key, _) in items do
-    let d ← digit key
-    let m ← peers d ok
-    let lead ← band ok (← icmp .eq (← ctz m) lane)
-    let slot ← at4 wcnt d
-    let before ← ifte (jTys := [.i32]) .ne (← bit lead) (← c32 0)
-      (thn := do
-        let c ← load32 slot
-        storeI32 (← iadd c (← popcnt m)) slot
-        pure %[c])
-      (els := do pure %[← c32 0])
-    let bs ← callLocal shflIdx %[before.head, ← band (← ctz m) (← c32 31)]
-    ranks := ranks.push (← iadd bs (← popcnt (← band m ltMask)))
+  -- the rest twice: for a full tile, every key in the array (no key's test,
+  -- its words at fixed offsets), and for the last, partial one; the choice
+  -- is the block's alike
+  let go (full : Bool) : Prog V L Unit := do
+    let digit (k : V .i32) : Prog V L (V .i32) := do band (← ushr k shift) (← c32 255)
+    let run ← iadd tile (← iadd (← imul w (← c32 (32 * ITEMS))) lane)
+    let yes ← icmp .eq (← c32 0) (← c32 0)
+    -- `body` where the key is in the array (always, in a full tile)
+    let whenOk (ok : V .i8) (body : Prog V L Unit) : Prog V L Unit := do
+      if full then body else when .ne (← bit ok) (← c32 0) body
+    -- item `r`'s word of `arr`: in a full tile at a fixed offset from the run's
+    let itemAt (arr : V .i64) (ok : V .i8) (r : Nat) : Prog V L (V .i64) := do
+      if full then at_ (← at4 arr run) (4 * 32 * r)
+      else at4 arr (← select ok (← iadd run (← c32 (32 * r))) (← c32 0))
+    let mut items := #[]
+    for r in List.range ITEMS do
+      let ok ← if full then pure yes else icmp .ult (← iadd run (← c32 (32 * r))) n
+      items := items.push (ok, ← load32 (← itemAt kin ok r), r)
+    -- the tile's count of each digit, by shared adds, published before the
+    -- ranking, so a tile after looking back finds it there. A status is a
+    -- word: the count in its low 29 bits, above them `2p + 1` for this tile's
+    -- count or `2p + 2` for every count up to it, `p` the parity of the pass's
+    -- tag; a status the pass before left has the other parity, and one older
+    -- than that the pass before overwrote (the statuses are cleared when the
+    -- keys are loaded), so none is mistaken for this pass's.
+    let one ← c32 1
+    for (ok, key, _) in items do
+      whenOk ok do callLocalVoid sharedAdd %[← at4 thist (← digit key), one]
     callLocalVoid barrier %[]
-  -- each warp's counts become the counts of the warps before it, and the
-  -- tile's count of each digit is their sum
-  let mut acc ← c32 0
-  for k in List.range 8 do
-    let slot ← at4 cnt (← iadd (← c32 (256 * k)) tid)
-    let t ← load32 slot
-    storeI32 acc slot
-    acc ← iadd acc t
-  -- each digit's start in the tile
-  let (start, _) ← blockScan tid sm SSCAN acc
-  storeI32 start (← at4 tds tid)
-  callLocalVoid barrier %[]
-  let places ← (items.zip ranks).mapM fun ((ok, key, _), rank) => do
-    let d ← select ok (← digit key) (← c32 0)
-    iadd (← iadd (← load32 (← at4 tds d)) (← load32 (← at4 wcnt d))) rank
-  -- the values, now the ranking no longer holds registers
-  let vals ← items.mapM fun (ok, _, r) => do
-    load32 (← at4 vin (← select ok (← iadd run (← c32 (32 * r))) (← c32 0)))
-  -- the tile's keys in digit order, then out in that order (threads next to
-  -- each other writing places next to each other)
-  for ((ok, key, _), pos) in items.zip places do
-    when .ne (← bit ok) (← c32 0) do storeI32 key (← at4 sk pos)
-  -- the digit's keys in the tiles before, looked back for once the values'
-  -- loads are under way and the keys are in place (the tiles before have
-  -- published their counts by then): each status waited for, its count
-  -- added, until one that has all before it
-  let excl ← ifte (jTys := [.i32]) .eq b (← c32 0)
-    (thn := do pure %[← c32 0])
-    (els := do
-      let r ← wloopL %[← isub b (← c32 1), ← c32 0]
-        (fun _ c => pure (contIfULt c.head b, %[c.snd], ()))
-        (fun lbl c _ => do
-          let v ← atomicLoad .i64 (← stat c.head) .relaxed
-          let hi ← ireduce32 (← ushrImm v 32)
-          let sum ← iadd c.snd (← ireduce32 v)
-          when .eq hi prefTag do brk lbl %[sum]
-          let isAgg ← icmp .eq hi aggTag
-          pure %[← select isAgg (← isub c.head (← c32 1)) c.head, ← select isAgg sum c.snd])
-      pure %[r.head])
-  atomicStore (← status prefTag (← iadd excl.head tcount)) (← stat b) .relaxed
-  storeI32 (← isub (← iadd (← load32 (← at4 base tid)) excl.head) start) (← at4 outAt tid)
-  callLocalVoid barrier %[]
-  let mut outs := #[]
-  for r in List.range ITEMS do
-    let i ← iadd tid (← c32 (256 * r))
-    let ok ← icmp .ult (← iadd tile i) n
-    let key ← load32 (← at4 sk i)
-    let o ← iadd (← load32 (← at4 outAt (← digit key))) i
-    when .ne (← bit ok) (← c32 0) do storeI32 key (← at4 kout o)
-    outs := outs.push (ok, o)
-  callLocalVoid barrier %[]
-  for (((ok, _, _), pos), val) in (items.zip places).zip vals do
-    when .ne (← bit ok) (← c32 0) do storeI32 val (← at4 sk pos)
-  callLocalVoid barrier %[]
-  for (r, ok, o) in (List.range ITEMS).zip outs.toList do
-    when .ne (← bit ok) (← c32 0) do storeI32 (← load32 (← at4 sk (← iadd tid (← c32 (256 * r))))) (← at4 vout o)
+    let tcount ← load32 (← at4 thist tid)
+    let stat (j : V .i32) : Prog V L (V .i64) := do at4 look (← iadd (← ishlImm j 8) tid)
+    let par ← ishlImm (← band tag (← c32 1)) 1
+    let aggTag ← iadd par (← c32 1)
+    let prefTag ← iadd par (← c32 2)
+    let status (tg x : V .i32) : Prog V L (V .i32) := do bor (← ishlImm tg 29) x
+    atomicStore (← status (← select (← icmp .eq b (← c32 0)) prefTag aggTag) tcount) (← stat b) .relaxed
+    -- each key's place among its warp's keys of its digit
+    let wcnt ← at4 cnt (← imul w (← c32 256))
+    let mut ranks := #[]
+    for (ok, key, _) in items do
+      let d ← digit key
+      let m ← peers d ok
+      let lead ← band ok (← icmp .eq (← ctz m) lane)
+      let slot ← at4 wcnt d
+      let before ← ifte (jTys := [.i32]) .ne (← bit lead) (← c32 0)
+        (thn := do
+          let c ← load32 slot
+          storeI32 (← iadd c (← popcnt m)) slot
+          pure %[c])
+        (els := do pure %[← c32 0])
+      let bs ← callLocal shflIdx %[before.head, ← band (← ctz m) (← c32 31)]
+      ranks := ranks.push (← iadd bs (← popcnt (← band m ltMask)))
+      callLocalVoid barrier %[]
+    -- each warp's counts become the counts of the warps before it, and the
+    -- tile's count of each digit is their sum
+    let mut acc ← c32 0
+    for k in List.range 8 do
+      let slot ← at4 cnt (← iadd (← c32 (256 * k)) tid)
+      let t ← load32 slot
+      storeI32 acc slot
+      acc ← iadd acc t
+    -- each digit's start in the tile
+    let (start, _) ← blockScan tid sm SSCAN acc
+    storeI32 start (← at4 tds tid)
+    callLocalVoid barrier %[]
+    let places ← (items.zip ranks).mapM fun ((ok, key, _), rank) => do
+      let d ← if full then digit key else select ok (← digit key) (← c32 0)
+      iadd (← iadd (← load32 (← at4 tds d)) (← load32 (← at4 wcnt d))) rank
+    -- the values, now the ranking no longer holds registers
+    let vals ← items.mapM fun (ok, _, r) => do load32 (← itemAt vin ok r)
+    -- the counts read, their space is the keys'
+    callLocalVoid barrier %[]
+    -- the tile's keys in digit order, then out in that order (threads next to
+    -- each other writing places next to each other)
+    for ((ok, key, _), pos) in items.zip places do
+      whenOk ok do storeI32 key (← at4 sk pos)
+    -- the digit's keys in the tiles before, looked back for once the values'
+    -- loads are under way and the keys are in place (the tiles before have
+    -- published their counts by then): each status waited for, its count
+    -- added, until one that has all before it
+    let excl ← ifte (jTys := [.i32]) .eq b (← c32 0)
+      (thn := do pure %[← c32 0])
+      (els := do
+        let r ← wloopL %[← isub b (← c32 1), ← c32 0]
+          (fun _ c => pure (contIfULt c.head b, %[c.snd], ()))
+          (fun lbl c _ => do
+            let v ← atomicLoad .i32 (← stat c.head) .relaxed
+            let hi ← ushrImm v 29
+            let sum ← iadd c.snd (← band v (← c32 (2 ^ 29 - 1)))
+            when .eq hi prefTag do brk lbl %[sum]
+            let isAgg ← icmp .eq hi aggTag
+            pure %[← select isAgg (← isub c.head (← c32 1)) c.head, ← select isAgg sum c.snd])
+        pure %[r.head])
+    atomicStore (← status prefTag (← iadd excl.head tcount)) (← stat b) .relaxed
+    storeI32 (← isub (← iadd (← load32 (← at4 base tid)) excl.head) start) (← at4 outAt tid)
+    callLocalVoid barrier %[]
+    let mut outs := #[]
+    for r in List.range ITEMS do
+      let i ← iadd tid (← c32 (256 * r))
+      let ok ← if full then pure yes else icmp .ult (← iadd tile i) n
+      let key ← load32 (← at4 sk i)
+      let o ← iadd (← load32 (← at4 outAt (← digit key))) i
+      whenOk ok do storeI32 key (← at4 kout o)
+      outs := outs.push (ok, o)
+    callLocalVoid barrier %[]
+    for (((ok, _, _), pos), val) in (items.zip places).zip vals do
+      whenOk ok do storeI32 val (← at4 sk pos)
+    callLocalVoid barrier %[]
+    for (r, ok, o) in (List.range ITEMS).zip outs.toList do
+      whenOk ok do storeI32 (← load32 (← at4 sk (← iadd tid (← c32 (256 * r))))) (← at4 vout o)
 
+  let full ← bit (← icmp .ule (← iadd tile (← c32 TILE)) n)
+  let _ ← ifte (jTys := []) .ne full (← c32 0)
+    (thn := do go true; pure %[])
+    (els := do go false; pure %[])
 end
 
 def hist : Kernel := AnnKernels.k "sort_hist" histBody 3 (4 * 1024)
 def gather : Kernel := AnnKernels.k "sort_gather" gatherBody 4
 def bases : Kernel := AnnKernels.k "sort_bases" baseBody 2 (4 * 8)
-def scatter : Kernel := AnnKernels.k "sort_scatter" scatterBody 7 SCATTER_SMEM
+def scatter : Kernel :=
+  { AnnKernels.k "sort_scatter" scatterBody 7 SCATTER_SMEM with bounds := some (256, 3) }
 
 /-- The kernels, each its own module, by index. -/
 def kernels : List Kernel := [hist, AnnKernels.rowSelect, gather, bases, scatter]
@@ -414,11 +432,11 @@ def loadCode : Prog V L (V .i64) := do
   let base ← basePtr
   up a base
   let dp ← dataPtr
-  -- taken only where the input holds `n` and its keys and values, `n` in the
-  -- kernels' 32 bits
+  -- taken only where the input holds `n` and its keys and values, `n` below
+  -- 2^29 (a count in a tile's status)
   let n ← ifte (jTys := [.i64]) .uge (← dataLen) (← iconst64 8)
     (thn := do pure %[← load64 dp]) (els := do pure %[← iconst64 (-1)])
-  let ok ← band (← select (← icmp .ult n.head (← iconst64 (2 ^ 31))) (← iconst64 1) (← iconst64 0))
+  let ok ← band (← select (← icmp .ult n.head (← iconst64 (2 ^ 29))) (← iconst64 1) (← iconst64 0))
     (← select (← icmp .ule (← iaddImm (← ishlImm n.head 3) 8) (← dataLen)) (← iconst64 1) (← iconst64 0))
   let st ← ifte (jTys := [.i64]) .ne ok (← iconst64 0)
     (thn := do
@@ -429,7 +447,7 @@ def loadCode : Prog V L (V .i64) := do
       ensure a base BASE (← iconst64 4096)
       -- the tiles' statuses, cleared once so none reads as a pass's own
       let lb ← imul (← umax (← udiv (← iaddImm n (TILE - 1)) (← iconst64 TILE))
-        (← iconst64 1)) (← iconst64 2048)
+        (← iconst64 1)) (← iconst64 1024)
       ensure a base LOOK lb
       let _ ← ext (.cuda .memsetD8) %[← ptrOf a base LOOK, ← iconst32 0, lb]
       rebindAll a base
@@ -449,12 +467,12 @@ def sortCode : Prog V L (V .i64) := do
   let chunks ← cdiv n HKEYS
   let grid ← umin chunks (← iconst32 UPG)
   metaW base kHIST 0 n32; metaW base kHIST 1 chunks; metaW base kHIST 2 grid
-  -- each pass's tag, below 2^30 so its statuses' tags fit 32 bits; its ticket
-  -- starts at nought with the meta block's copy
+  -- each pass's tag, one more than the pass before's; its ticket starts at
+  -- nought with the meta block's copy
   let sorts ← getW base S_SORTS
   setW base S_SORTS (← iaddImm sorts 1)
   for p in List.range 4 do
-    let tag ← band (← lo32 (← iaddImm (← ishlImm sorts 2) (p + 1))) (← iconst32 0x3FFFFFFF)
+    let tag ← lo32 (← iaddImm (← ishlImm sorts 2) (p + 1))
     metaW base (kSCAT p) 0 n32; metaW base (kSCAT p) 1 (← iconst32 (8 * p)); metaW base (kSCAT p) 2 tag
     metaW base (kSCAT p) 3 (← iconst32 0)
   upMetaAll a base
