@@ -793,26 +793,38 @@ def attnFBody : Prog V L Unit := do
         let chunkT ← select fromCache (← c32 0) (← isub jc start)
         let kIx ← iadd (← imul (← iadd (← imul chunkT (← c32 NKV)) kh) (← c32 (HD / 2))) wd
         load32 (← select fromCache (← at4 cache cIx) (← at4 chunk kIx))
-      -- the keys, row by row
-      for rep in List.range (AT_KEYS * HD / 2 / 256) do
-        let wi ← iadd tid (← c32 (256 * rep))
-        let kj ← ushrImm wi 5
-        let wd ← band wi (← c32 31)
-        let wv ← kvWord kcache kc (← iadd j0 kj) wd
-        storeI32 wv (← at4 sm (← iadd (← imul kj (← c32 KSTR)) wd))
-      -- the values, dimension by dimension: two keys' words, transposed
-      for rep in List.range (AT_KEYS / 2 * HD / 2 / 256) do
-        let ci ← iadd tid (← c32 (256 * rep))
-        let m ← ushrImm ci 5
-        let dp ← band ci (← c32 31)
-        let j ← iadd j0 (← ishlImm m 1)
-        let w0 ← kvWord vcache vc j dp
-        let w1 ← kvWord vcache vc (← iadd j (← c32 1)) dp
-        let lo ← bor (← band w0 (← c32 0xFFFF)) (← ishlImm w1 16)
-        let hi ← bor (← ushrImm w0 16) (← band w1 (← c32 0xFFFF0000))
-        let at0 ← iadd (← c32 (AT_KEYS * KSTR)) (← iadd (← imul (← ishlImm dp 1) (← c32 VSTR)) m)
-        storeI32 lo (← at4 sm at0)
-        storeI32 hi (← at4 sm (← iadd at0 (← c32 VSTR)))
+      -- the tile staged, each key's word fetched by `word`
+      let stage (word : V .i64 → V .i64 → V .i32 → V .i32 → Prog V L (V .i32)) : Prog V L Unit := do
+        -- the keys, row by row
+        for rep in List.range (AT_KEYS * HD / 2 / 256) do
+          let wi ← iadd tid (← c32 (256 * rep))
+          let kj ← ushrImm wi 5
+          let wd ← band wi (← c32 31)
+          let wv ← word kcache kc (← iadd j0 kj) wd
+          storeI32 wv (← at4 sm (← iadd (← imul kj (← c32 KSTR)) wd))
+        -- the values, dimension by dimension: two keys' words, transposed
+        for rep in List.range (AT_KEYS / 2 * HD / 2 / 256) do
+          let ci ← iadd tid (← c32 (256 * rep))
+          let m ← ushrImm ci 5
+          let dp ← band ci (← c32 31)
+          let j ← iadd j0 (← ishlImm m 1)
+          let w0 ← word vcache vc j dp
+          let w1 ← word vcache vc (← iadd j (← c32 1)) dp
+          let lo ← bor (← band w0 (← c32 0xFFFF)) (← ishlImm w1 16)
+          let hi ← bor (← ushrImm w0 16) (← band w1 (← c32 0xFFFF0000))
+          let at0 ← iadd (← c32 (AT_KEYS * KSTR)) (← iadd (← imul (← ishlImm dp 1) (← c32 VSTR)) m)
+          storeI32 lo (← at4 sm at0)
+          storeI32 hi (← at4 sm (← iadd at0 (← c32 VSTR)))
+      -- a tile wholly before the chunk, in slots that do not wrap, read
+      -- straight from the cache; any other through `kvWord`
+      let inCache (cache _chunk : V .i64) (j wd : V .i32) : Prog V L (V .i32) := do
+        load32 (← at4 cache (← iadd (← imul kh stride) (← iadd (← imul j (← c32 (HD / 2))) wd)))
+      let past ← iadd j0 (← c32 AT_KEYS)
+      let plain ← band (← select (← icmp .ule past start) (← c32 1) (← c32 0))
+        (← select (← icmp .ule past cap) (← c32 1) (← c32 0))
+      let _ ← ifte (jTys := []) .ne plain (← c32 0)
+        (thn := do stage inCache; pure %[])
+        (els := do stage kvWord; pure %[])
       callLocalVoid barrier %[]
       -- the scores, eight keys a group, sixteen dimensions an `mma`
       let mut sA : List (V .f32) := []
@@ -831,20 +843,24 @@ def attnFBody : Prog V L Unit := do
           accB ← callLocal mmaBfHiR %[q0, q1, q2, q3, b0, b1, accB]
         sA := sA ++ [← lo32 accA, ← hi32 accA]
         sB := sB ++ [← lo32 accB, ← hi32 accB]
-      -- the keys each row sees, the rest `-inf`
-      let seen (p lo : V .i32) (i : Nat) : Prog V L (V .i32) := do
-        let j ← iadd j0 (← iadd (← c32 (8 * (i / 2) + i % 2)) tw)
-        band (← band (← select (← icmp .ult j hi0) (← c32 1) (← c32 0))
-          (← select (← icmp .uge j lo) (← c32 1) (← c32 0))) (← select (← icmp .ule j p) (← c32 1) (← c32 0))
-      let maskRow (sv : List (V .f32)) (p lo : V .i32) : Prog V L (List (V .f32) × List (V .i32)) := do
-        let vs ← (List.range sv.length).mapM fun i => seen p lo i
-        let ms ← (sv.zip vs).mapM fun (x, v) => do select (← icmp .ne v (← c32 0)) x ninf
-        pure (ms, vs)
-      let (sA', vA) ← maskRow sA pA loA
-      let (sB', vB) ← maskRow sB pB loB
+      -- the keys each row sees, the rest `-inf`: key `j0 + tw + k` (`k` its
+      -- place in the lane's scores' pattern) where `lo ≤ j ≤ p` and `j < hi0`,
+      -- two comparisons of `k` against the row's bounds, signed (a bound may
+      -- fall before the tile)
+      let maskRow (sv : List (V .f32)) (p lo : V .i32) : Prog V L (List (V .f32)) := do
+        let base ← iadd j0 tw
+        let top ← isub (← select (← icmp .ult p hi0) p (← isub hi0 (← c32 1))) base
+        let bot ← isub lo base
+        (List.range sv.length).zip sv |>.mapM fun (i, x) => do
+          let k ← c32 (8 * (i / 2) + i % 2)
+          let inr ← band (← select (← icmp .sle k top) (← c32 1) (← c32 0))
+            (← select (← icmp .sge k bot) (← c32 1) (← c32 0))
+          select (← icmp .ne inr (← c32 0)) x ninf
+      let sA' ← maskRow sA pA loA
+      let sB' ← maskRow sB pB loB
       -- the online softmax of a row: its new maximum, the old sum's factor,
       -- the tile's probabilities and the new sum
-      let soft (sv : List (V .f32)) (vs : List (V .i32)) (m l : V .f32) :
+      let soft (sv : List (V .f32)) (m l : V .f32) :
           Prog V L (V .f32 × V .f32 × List (V .f32) × V .f32) := do
         let mut tmax := ninf
         for x in sv do tmax ← fmax tmax x
@@ -853,14 +869,14 @@ def attnFBody : Prog V L Unit := do
         let dead ← fcmp .eq mNew ninf
         let alive ← fcmp .ne mNew ninf
         let corr ← select dead one (← expA (← fsub m mNew))
-        let pr ← (sv.zip vs).mapM fun (x, v) => do
-          select (← band (← icmp .ne v (← c32 0)) alive) (← expA (← fsub x mNew)) zero
+        -- a key the row does not see scores `-inf`, its probability `exp(-inf) = 0`
+        let pr ← sv.mapM fun x => do select alive (← expA (← fsub x mNew)) zero
         let mut tsum := zero
         for x in pr do tsum ← fadd tsum x
         let rsum ← quad tsum fadd
         pure (mNew, corr, pr, ← fma l corr rsum)
-      let (mA', corrA, prA, lA') ← soft sA' vA mA lA
-      let (mB', corrB, prB, lB') ← soft sB' vB mB lB
+      let (mA', corrA, prA, lA') ← soft sA' mA lA
+      let (mB', corrB, prB, lB') ← soft sB' mB lB
       -- the sums so far, scaled by their factor, then the tile's values
       let mut os' : List (V .i64) := []
       for (o, idx) in os.zipIdx do
