@@ -424,6 +424,13 @@ theorem runLM_r_lit (F : Facts) (tag : Nat) (s : Out) (v : Val) (t : ClifTy) (l 
   simp only [Win, Std.HashMap.get?_eq_getElem?] at *
   simp [r, rw, isWin, Facts.win, tyOf, facts?, hw, ht, hl, own, emit, emitL]
 
+/-- An operand's register is no other value's. -/
+theorem r_ne_val (F : Facts) (tag : Nat) (s : Out) (v : Val) (t : ClifTy) (c' : String) (n : Nat)
+    (hw : ¬ Win F v) (ht : F.tys.get? v.id = some t) (hn : v.id ≠ n) : (runLM (r v) F tag s).1 ≠ .val c' n := by
+  cases hl : F.lits.get? v.id with
+  | none => rw [runLM_r_plain F tag s v t hw ht hl]; simp [regOf]; exact fun _ => hn
+  | some l => rw [runLM_r_lit F tag s v t l hw ht hl]; simp
+
 open PtxRun in
 /-- `mov` of an integer literal writes it cut to the type's width. -/
 theorem exec_mov_imm (c : PtxRun.Ctx) (ts : PtxRun.TS) (ty : PtxIr.Ty) (d : PtxIr.Reg) (v : Int) :
@@ -1313,6 +1320,28 @@ def InstOk (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start : Nat) (i : Ins
     ∃ ts1, (steps c (instrsOf (lower F tag i).lines)).run ts = .ok ((), ts1) ∧
       Sim F (extD D i) s1.vals ts1.regs ∧ WRel start c.start s1.world ts1.w
 
+/-- **The obligation a pair of instructions meets**, low half `lo` and high
+    half `hi` lowered together: the low half's lowering is straight-line, the
+    high half's is empty, and the low half's lines run to registers holding
+    the values after both steps, both results now defined, the worlds still
+    related. -/
+def PairOk (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start : Nat) (lo hi : Inst) : Prop :=
+  ∀ (tag : Nat) (D : Nat → Prop) (s s1 s2 : Blocks.BSt) (ts : PtxRun.TS),
+    step1 lc s lo = some s1 → step1 lc s1 hi = some s2 →
+    (∀ v ∈ Inst.uses lo, D v.id) → (∀ v ∈ Inst.uses hi, extD D lo v.id) →
+    Sim F D s.vals ts.regs → WRel start c.start s.world ts.w →
+    (lower F tag lo).err = none → MemOk c ts.w.mem →
+    Straight (lower F tag lo).lines ∧ (lower F (tag + 1) hi).lines = #[] ∧
+    ∃ ts2, (steps c (instrsOf (lower F tag lo).lines)).run ts = .ok ((), ts2) ∧
+      Sim F (extD (extD D lo) hi) s2.vals ts2.regs ∧ WRel start c.start s2.world ts2.w
+
+/-- The high half of a pair is a call, not a terminator. -/
+theorem pairMatch_term (F : Facts) (lo hi : Inst) (h : pairMatch F lo hi = true) : isTerm hi = false := by
+  unfold pairMatch at h
+  cases hl : pairLoOf F lo <;> cases hp : Ptx.mmaPair lo hi <;> simp [hl, hp] at h
+  unfold Ptx.mmaPair at hp
+  split at hp <;> simp_all [isTerm]
+
 /-- Lines `ls` sit in the body from line `pc` on. -/
 def At (c : PtxRun.Ctx) (pc : Nat) (ls : List PtxIr.Line) : Prop :=
   ∀ k (h : k < ls.length), c.body[pc + k]? = some ls[k]
@@ -1340,7 +1369,9 @@ theorem prefix_go (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) 
     (hinv : MemInv c (MemOk c)) :
     ∀ (is : List Inst) (start pc : Nat) (D : Nat → Prop) (s : Blocks.BSt) (ts : PtxRun.TS)
       (r : Blocks.BSt × Blocks.Next) (w : World),
-      (∀ i ∈ is, isTerm i = false → InstOk F lc c start0 i) →
+      (∀ i ∈ is, isTerm i = false → Fused F i = false → InstOk F lc c start0 i) →
+      (∀ lo ∈ is, ∀ hi ∈ is, pairMatch F lo hi = true → PairOk F lc c start0 lo hi) →
+      pairsOkL F is = true →
       (∀ j (hj : j < is.length), (lower F (start + j) is[j]).err = none) →
       DefFrom D is → TargetsFrom inOf D is →
       Blocks.runInsts lc s is = .ok r w →
@@ -1353,21 +1384,73 @@ theorem prefix_go (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) 
         DefFrom D' (is.drop k) ∧ TargetsFrom inOf D' (is.drop k) ∧ Sim F D' s'.vals ts'.regs ∧
         WRel start0 c.start s'.world ts'.w ∧ MemOk c ts'.w.mem ∧
         ∀ fuel, (PtxRun.go c (fuel + K) pc).run ts = (PtxRun.go c fuel (pc + K)).run ts'
-  | [], _, _, _, _, _, _, _, _, _, _, _, h, _, _, _, _ => by simp [Blocks.runInsts] at h
-  | i :: rest, start, pc, D, s, ts, r, w, hok, hlow, hdef, htar, h, hat, hS, hW, hN => by
+  | [], _, _, _, _, _, _, _, _, _, _, _, _, _, h, _, _, _, _ => by simp [Blocks.runInsts] at h
+  | i :: rest, start, pc, D, s, ts, r, w, hok, hpr, hpl, hlow, hdef, htar, h, hat, hS, hW, hN => by
       cases ht : isTerm i with
       | true => exact ⟨0, D, s, ts, 0, h, by simp [ht], by simpa using hat, hdef, htar, hS, hW, hN, fun _ => rfl⟩
       | false =>
+        by_cases hp : (pairLoOf F i).isSome = true
+        · -- a pair: the low half's lines run both halves; the high half's are none
+          cases rest with
+          | nil =>
+              simp only [pairsOkL, Bool.and_eq_true] at hpl
+              cases hq : pairLoOf F i <;> simp_all
+          | cons j rest' =>
+          have hm : pairMatch F i j = true ∧ pairsOkL F rest' = true := by
+            simpa [pairsOkL, hp] using hpl
+          have htj := pairMatch_term F i j hm.1
+          obtain ⟨s1, hs1, hrest1⟩ := runInsts_step lc s i (j :: rest') r w ht h
+          obtain ⟨s2, hs2, hrest2⟩ := runInsts_step lc s1 j rest' r w htj hrest1
+          have herr := hlow 0 (by simp)
+          simp only [Nat.add_zero, List.getElem_cons_zero] at herr
+          obtain ⟨hst, hemp, ts2, hrun, hS2, hW2⟩ :=
+            hpr i List.mem_cons_self j (List.mem_cons_of_mem _ List.mem_cons_self) hm.1 start D s s1 s2 ts
+              hs1 hs2 hdef.1 hdef.2.1 hS hW herr hN
+          simp only [linesOf, hemp, Array.toList_empty, List.nil_append] at hat
+          have hL := hat.left
+          obtain ⟨k, D', s', ts', K, h1, h2, h3, h0, h0', h4, h5, h5n, h6⟩ := prefix_go F lc c start0 inOf hinv rest'
+            (start + 1 + 1) (pc + (lower F start i).lines.toList.length) (extD (extD D i) j) s2 ts2 r w
+            (fun i' hi' => hok i' (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hi')))
+            (fun lo hlo hi hhi => hpr lo (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hlo))
+              hi (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hhi)))
+            hm.2
+            (fun j' hj => by have := hlow (j' + 2) (by simp; omega); simpa [Nat.add_assoc, Nat.add_comm 2 j'] using this)
+            hdef.2.2 htar.2.2 hrest2 hat.right hS2 hW2 (steps_keeps hinv _ ts () ts2 hrun hN)
+          refine ⟨k + 2, D', s', ts', (lower F start i).lines.toList.length + K, by simpa using h1,
+            by simpa using h2, ?_, by simpa using h0, by simpa using h0', h4, h5, h5n, ?_⟩
+          · have hd : (i :: j :: rest').drop (k + 2) = rest'.drop k := by simp
+            rw [hd, show start + (k + 2) = start + 1 + 1 + k by omega, ← Nat.add_assoc]; exact h3
+          · intro fuel
+            have hlen : (lower F start i).lines.toList.length = (instrsOf (lower F start i).lines).length := by
+              rw [hst]; simp
+            have hgo := go_steps c (instrsOf (lower F start i).lines) pc (fuel + K) ts ts2
+              (fun k' hk' => by
+                have := hL k' (by rw [hlen]; exact hk')
+                rw [this, ← List.getElem?_eq_getElem, hst, List.getElem?_map, List.getElem?_eq_getElem hk']
+                rfl) hrun
+            rw [← hlen] at hgo
+            rw [show fuel + ((lower F start i).lines.toList.length + K) =
+                fuel + K + (lower F start i).lines.toList.length by omega, hgo, h6,
+              Nat.add_assoc]
+        · -- alone
+          have hfu : Fused F i = false ∧ pairsOkL F rest = true := by
+            cases rest with
+            | nil => simp only [pairsOkL, Bool.and_eq_true, Bool.not_eq_true'] at hpl; simp [Fused, hp, hpl.2, pairsOkL]
+            | cons j rest' =>
+                simp only [pairsOkL, hp, if_false, Bool.and_eq_true, Bool.not_eq_true', Bool.false_eq_true] at hpl
+                simp [Fused, hp, hpl.1, hpl.2]
           obtain ⟨s1, hs1, hrest⟩ := runInsts_step lc s i rest r w ht h
           have herr := hlow 0 (by simp)
           simp only [Nat.add_zero, List.getElem_cons_zero] at herr
           obtain ⟨hst, ts1, hrun, hS1, hW1⟩ :=
-            hok i List.mem_cons_self ht start D s s1 ts hs1 hdef.1 hS hW herr hN
+            hok i List.mem_cons_self ht hfu.1 start D s s1 ts hs1 hdef.1 hS hW herr hN
           simp only [linesOf] at hat
           have hL := hat.left
           obtain ⟨k, D', s', ts', K, h1, h2, h3, h0, h0', h4, h5, h5n, h6⟩ := prefix_go F lc c start0 inOf hinv rest (start + 1)
             (pc + (lower F start i).lines.toList.length) (extD D i) s1 ts1 r w
             (fun i' hi' => hok i' (List.mem_cons_of_mem _ hi'))
+            (fun lo hlo hi hhi => hpr lo (List.mem_cons_of_mem _ hlo) hi (List.mem_cons_of_mem _ hhi))
+            hfu.2
             (fun j hj => by have := hlow (j + 1) (by simp; omega); simpa [Nat.add_assoc, Nat.add_comm 1 j] using this)
             hdef.2 htar.2 hrest hat.right hS1 hW1 (steps_keeps hinv _ ts () ts1 hrun hN)
           refine ⟨k + 1, D', s', ts', (lower F start i).lines.toList.length + K, by simpa using h1,
@@ -2020,7 +2103,9 @@ structure Layout (F : Facts) (c : PtxRun.Ctx) (pos start : Nat → Nat) : Prop w
 structure Good (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (pos start : Nat → Nat)
     (inOf : Std.HashMap Nat (Std.HashSet Nat)) : Prop where
   lay : Layout F c pos start
-  ok : ∀ b ∈ F.blocks, ∀ i ∈ b.insts, isTerm i = false → InstOk F lc c start0 i
+  ok : ∀ b ∈ F.blocks, ∀ i ∈ b.insts, isTerm i = false → Fused F i = false → InstOk F lc c start0 i
+  pair : ∀ b ∈ F.blocks, ∀ lo ∈ b.insts, ∀ hi ∈ b.insts, pairMatch F lo hi = true → PairOk F lc c start0 lo hi
+  pairs : pairsOk F = true
   low : ∀ b ∈ F.blocks, ∀ j (hj : j < b.insts.length), (lower F (start b.ref.id + j) b.insts[j]).err = none
   inn : ∀ b ∈ F.blocks, ∃ inn, inOf.get? b.ref.id = some inn ∧ blockOk inOf inn b = true
   params : paramsOk F = true
@@ -2080,6 +2165,8 @@ theorem run_sim (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat) (p
       obtain ⟨k, D', s', ts', K, h1, h2, h3, h4, h4', h5, h6, h6n, h7⟩ := prefix_go F lc c start0 inOf hinv bd.insts
         (start bd.ref.id) (pos bd.ref.id + 1) D { st with vals := bindParams st.vals bd.params args } ts (s1, nx) w1
         (fun i hi ht => hG.ok bd hb i hi ht)
+        (fun lo hlo hi hhi => hG.pair bd hb lo hlo hi hhi)
+        (by have := hG.pairs; simp only [pairsOk, List.all_eq_true] at this; exact this bd hb)
         (fun j hj => hG.low bd hb j hj) hdef htar hri' hatb hS hW hN
       cases hdk : bd.insts.drop k with
       | nil => rw [hdk] at h1; simp [Blocks.runInsts] at h1
@@ -5852,9 +5939,11 @@ theorem mmaW_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
         k3 _ (fun ⟨p, k, _, h⟩ => by cases h), k2 _ (fun ⟨p, k, _, h⟩ => by cases h),
         k1 _ (fun ⟨p, k, _, h⟩ => by cases h), hkeep0 _ (fun ⟨p, k, _, h⟩ => by cases h)]
 
-/-- A bf16 `mma` lowers to its seven arguments' lines, then the `mma`. -/
+/-- A bf16 `mma` lowered alone lowers to its seven arguments' lines, then the
+    `mma`. -/
 theorem lower_mmaB (F : Facts) (tag : Nat) (i : Intr) (hi : Bool)
-    (hih : (i = .mmaBfLo ∧ hi = false) ∨ (i = .mmaBfHi ∧ hi = true)) (d a0 a1 a2 a3 b0 b1 e : Val) :
+    (hih : (i = .mmaBfLo ∧ hi = false) ∨ (i = .mmaBfHi ∧ hi = true)) (d a0 a1 a2 a3 b0 b1 e : Val)
+    (hnf : Fused F (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) = false) :
     (lower F tag (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e])).lines =
       ((runLM (r e) F tag (runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag
         (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).2).2.lines).push
@@ -5869,7 +5958,127 @@ theorem lower_mmaB (F : Facts) (tag : Nat) (i : Intr) (hi : Bool)
           (.reg (runLM (r e) F tag (runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag
             (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).2).1))) := by
   rw [lower_inst F tag _ rfl, inst]
-  rcases hih with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;> simp [intrN, intr7, o, emit, emitL]
+  rcases hih with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;>
+    simp [Fused, pairLoOf, isPairHi] at hnf <;> simp [intrN, intr7, o, emit, emitL, facts?, hnf]
+
+/-- A bf16 `mma`'s low half the facts pair lowers to its six words', its
+    accumulator's and the high half's accumulator's lines, then one `mma`
+    for both halves. -/
+theorem lower_mmaB2 (F : Facts) (tag : Nat) (d d' a0 a1 a2 a3 b0 b1 e e' : Val)
+    (hpl : F.pairLo.get? d.id = some (d', e')) :
+    (lower F tag (.call (some d) (.intr .mmaBfLo) [a0, a1, a2, a3, b0, b1, e])).lines =
+      ((runLM (r e') F tag (runLM (r e) F tag (runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag
+        (runLM (r a2) F tag (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).2).2).2.lines).push
+        (.ins none (.mmaB2 (regOf .i64 d) (regOf .i64 d') (.reg (runLM (r a0) F tag {}).1)
+          (.reg (runLM (r a1) F tag (runLM (r a0) F tag {}).2).1)
+          (.reg (runLM (r a2) F tag (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).1)
+          (.reg (runLM (r a3) F tag (runLM (r a2) F tag (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).1)
+          (.reg (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag (runLM (r a1) F tag
+            (runLM (r a0) F tag {}).2).2).2).2).1)
+          (.reg (runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag
+            (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).1)
+          (.reg (runLM (r e) F tag (runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag
+            (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).2).1)
+          (.reg (runLM (r e') F tag (runLM (r e) F tag (runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag
+            (runLM (r a2) F tag (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).2).2).1))) := by
+  rw [lower_inst F tag _ rfl, inst]
+  simp only [Std.HashMap.get?_eq_getElem?] at hpl
+  simp [intrN, intr7, o, emit, emitL, facts?, hpl]
+
+/-- A bf16 `mma`'s high half the facts pair lowers to nothing. -/
+theorem lower_mmaB2_hi (F : Facts) (tag : Nat) (d' a0 a1 a2 a3 b0 b1 e' : Val)
+    (hph : (F.pairHi.get? d'.id).isSome = true) :
+    lower F tag (.call (some d') (.intr .mmaBfHi) [a0, a1, a2, a3, b0, b1, e']) = {} := by
+  rw [lower_inst F tag _ rfl, inst]
+  simp only [Std.HashMap.get?_eq_getElem?] at hph
+  have hm : d'.id ∈ F.pairHi := by
+    rw [Std.HashMap.mem_iff_isSome_getElem?]; exact hph
+  simp [intrN, intr7, facts?, hm]
+
+open PtxRun in
+/-- **A bf16 `mma`'s half, stepped**: from registers holding its six words and
+    accumulator, the half's step records the collective the block semantics
+    records, writes the answer to its result's register, and keeps the
+    relation, the result now defined, and the worlds related. -/
+theorem mmaBStep_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans) (i : Intr) (hi : Bool)
+    (hih : (i = .mmaBfLo ∧ hi = false) ∨ (i = .mmaBfHi ∧ hi = true))
+    (d a0 a1 a2 a3 b0 b1 e : Val) (hwd : F.win d = false)
+    (htd : F.tys.get? d.id = some .i64) (hld : F.lits.get? d.id = none)
+    (hmo : magOk F d (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) = true)
+    (D : Nat → Prop) (s s1 : Blocks.BSt) (ts : PtxRun.TS) (x0 x1 x2 x3 x4 x5 x6 : UInt64)
+    (hv0 : Blocks.getV s.vals a0 = some (.sc .i32 x0)) (hv1 : Blocks.getV s.vals a1 = some (.sc .i32 x1))
+    (hv2 : Blocks.getV s.vals a2 = some (.sc .i32 x2)) (hv3 : Blocks.getV s.vals a3 = some (.sc .i32 x3))
+    (hv4 : Blocks.getV s.vals b0 = some (.sc .i32 x4)) (hv5 : Blocks.getV s.vals b1 = some (.sc .i32 x5))
+    (hv6 : Blocks.getV s.vals e = some (.sc .i64 x6))
+    (hn0 : x0 &&& widthMask .i32 = x0) (hn1 : x1 &&& widthMask .i32 = x1) (hn2 : x2 &&& widthMask .i32 = x2)
+    (hn3 : x3 &&& widthMask .i32 = x3) (hn4 : x4 &&& widthMask .i32 = x4) (hn5 : x5 &&& widthMask .i32 = x5)
+    (R0 R1 R2 R3 R4 R5 R6 : PtxIr.Reg)
+    (hns0 : ∀ s, R0 ≠ .special s) (hns1 : ∀ s, R1 ≠ .special s) (hns2 : ∀ s, R2 ≠ .special s)
+    (hns3 : ∀ s, R3 ≠ .special s) (hns4 : ∀ s, R4 ≠ .special s) (hns5 : ∀ s, R5 ≠ .special s)
+    (hns6 : ∀ s, R6 ≠ .special s)
+    (h0 : ts.regs[R0]? = some x0) (h1 : ts.regs[R1]? = some x1) (h2 : ts.regs[R2]? = some x2)
+    (h3 : ts.regs[R3]? = some x3) (h4 : ts.regs[R4]? = some x4) (h5 : ts.regs[R5]? = some x5)
+    (h6 : ts.regs[R6]? = some x6)
+    (hst : step1 (threadLocals c.ans start0 c.hw c.provisional) s
+      (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) = some s1)
+    (hS : Sim F D s.vals ts.regs) (hW : WRel start0 c.start s.world ts.w) :
+    ∃ y ts1, (mmaBStep c hi (regOf .i64 d) (.reg R0) (.reg R1) (.reg R2) (.reg R3) (.reg R4) (.reg R5)
+        (.reg R6)).run ts = .ok (.step, ts1) ∧ ts1.regs = ts.regs.insert (regOf .i64 d) y ∧
+      s1.vals = Blocks.setV s.vals d (.sc .i64 y) ∧
+      Sim F (extD D (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e])) s1.vals ts1.regs ∧
+      WRel start0 c.start s1.world ts1.w := by
+  have hlen := collCalls_wrel start0 _ s.world ts.w hW
+  have hle : start0 ≤ s.world.obs.reverse.length := by simpa using hW.2.1
+  let o : Obs := .call (.intr i) [.sc .i32 x0, .sc .i32 x1, .sc .i32 x2, .sc .i32 x3, .sc .i32 x4, .sc .i32 x5,
+    .sc .i64 x6]
+  obtain ⟨ty0, y, hx⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  have hfit : fitTo i (.sc ty0 y) = .sc .i64 y := by
+    rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> simp only [fitTo, Intr.sig, HProg.Sem.and_wide64]
+  have hcoll : i.isColl = true := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl
+  have hnb : i ≠ .barrier := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
+  have hns : i ≠ .sharedAdd := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
+  have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i64 y), world := { s.world with obs := o :: s.world.obs } } := by
+    simp only [step1, List.mapM_cons, List.mapM_nil, hv0, hv1, hv2, hv3, hv4, hv5, hv6, bind, Option.bind, pure,
+      callOf, obsCall, callWords, List.append_nil, threadLocals, Intr.find_slot, hcoll, if_true] at hst
+    simp only [collCalls, List.reverse_cons, List.drop_append_of_le_length hle, List.filterMap_append, collOf,
+      hcoll, if_true, List.filterMap_cons, List.filterMap_nil, List.length_append, List.length_singleton,
+      Nat.add_sub_cancel] at hst
+    have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
+    rw [hk, hx] at hst
+    simp [Except.toOption, hnb, hns] at hst
+    rw [hfit] at hst
+    exact hst.symm
+  subst hs1
+  have hm32 : ∀ z : UInt64, z &&& widthMask .i32 = z → PtxRun.mask 32 z = z := fun z hz => by
+    rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp [IntT]), hz]
+  have he : (mmaBStep c hi (regOf .i64 d) (.reg R0) (.reg R1) (.reg R2) (.reg R3) (.reg R4) (.reg R5)
+        (.reg R6)).run ts =
+      .ok (.step, { ts with regs := ts.regs.insert (regOf .i64 d) y, w := { ts.w with obs := o :: ts.w.obs } }) := by
+    have hif : (if hi then Intr.mmaBfHi else Intr.mmaBfLo) = i := by
+      rcases hih with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;> rfl
+    have hib : (i == Intr.barrier) = false := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl
+    simp [mmaBStep, coll, opnd, getReg_plain _ _ hns0, getReg_plain _ _ hns1, getReg_plain _ _ hns2,
+      getReg_plain _ _ hns3, getReg_plain _ _ hns4, getReg_plain _ _ hns5, getReg_plain _ _ hns6, h0, h1, h2, h3, h4,
+      h5, h6, hif, hib,
+      hx, hm32 x0 hn0, hm32 x1 hn1, hm32 x2 hn2, hm32 x3 hn3, hm32 x4 hn4, hm32 x5 hn5,
+      MonadState.get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set, setReg, pure,
+      StateT.pure, Except.pure, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, o,
+      StateT.bind, StateT.run, bind, Except.bind]
+  have hxn : y &&& widthMask .i64 = y := HProg.Sem.and_wide64 y
+  refine ⟨y, { ts with regs := ts.regs.insert (regOf .i64 d) y, w := { ts.w with obs := o :: ts.w.obs } }, he, rfl,
+    rfl, ?_, wrel_step start0 _ s.world ts.w _ _ o o hW rfl rfl rfl (by simpa using hW.1)⟩
+  apply sim_set (hmo := hmo) (hrule := fun _ hk => by simp [magRule] at hk) F D s.vals ts.regs _
+    (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) d .i64 y rfl hS htd hxn
+  · intro _ _
+    simp [Std.HashMap.get?_eq_getElem?, enc, hxn]
+  · intro l hl; rw [hld] at hl; cases hl
+  · intro hw; rw [(win_iff F d).mpr hw] at hwd; cases hwd
+  · intro h8; cases h8
+  · intro h8; cases h8
+  · intro c' n hn
+    have hne' : PtxIr.Reg.val c' n ≠ regOf .i64 d := by simp [regOf]; omega
+    rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hne'),
+      ← Std.HashMap.get?_eq_getElem?]
 
 open PtxRun in
 /-- **A bf16 `mma`** meets its obligation: both semantics record it with the
@@ -5883,7 +6092,8 @@ theorem mmaB_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     (ht3 : F.tys.get? a3.id = some .i32) (ht4 : F.tys.get? b0.id = some .i32) (ht5 : F.tys.get? b1.id = some .i32)
     (ht6 : F.tys.get? e.id = some .i64)
     (htd : F.tys.get? d.id = some .i64) (hld : F.lits.get? d.id = none)
-    (hmo : magOk F d (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) = true) :
+    (hmo : magOk F d (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) = true)
+    (hnf : Fused F (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) = false) :
     InstOk F (threadLocals c.ans start0 c.hw c.provisional) c start0
       (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) := by
   intro tag D s s1 ts hst huses hS hW _ _hnan
@@ -5910,29 +6120,6 @@ theorem mmaB_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
   have hn4 := hS.normd b0 .i32 x4 (hu b0 (by simp)) hv4
   have hn5 := hS.normd b1 .i32 x5 (hu b1 (by simp)) hv5
   have hn6 := hS.normd e .i64 x6 (hu e (by simp)) hv6
-  have hlen := collCalls_wrel start0 _ s.world ts.w hW
-  have hle : start0 ≤ s.world.obs.reverse.length := by simpa using hW.2.1
-  -- the block semantics' step
-  let o : Obs := .call (.intr i) [.sc .i32 x0, .sc .i32 x1, .sc .i32 x2, .sc .i32 x3, .sc .i32 x4, .sc .i32 x5,
-    .sc .i64 x6]
-  obtain ⟨ty0, y, hx⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
-  have hfit : fitTo i (.sc ty0 y) = .sc .i64 y := by
-    rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> simp only [fitTo, Intr.sig, HProg.Sem.and_wide64]
-  have hcoll : i.isColl = true := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl
-  have hnb : i ≠ .barrier := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
-  have hns : i ≠ .sharedAdd := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
-  have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i64 y), world := { s.world with obs := o :: s.world.obs } } := by
-    simp only [step1, List.mapM_cons, List.mapM_nil, hv0, hv1, hv2, hv3, hv4, hv5, hv6, bind, Option.bind, pure,
-      callOf, obsCall, callWords, List.append_nil, threadLocals, Intr.find_slot, hcoll, if_true] at hst
-    simp only [collCalls, List.reverse_cons, List.drop_append_of_le_length hle, List.filterMap_append, collOf,
-      hcoll, if_true, List.filterMap_cons, List.filterMap_nil, List.length_append, List.length_singleton,
-      Nat.add_sub_cancel] at hst
-    have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
-    rw [hk, hx] at hst
-    simp [Except.toOption, hnb, hns] at hst
-    rw [hfit] at hst
-    exact hst.symm
-  subst hs1
   -- the lines: the six words', then one `mma`
   let s0 := (runLM (r a0) F tag {}).2
   let s1' := (runLM (r a1) F tag s0).2
@@ -5972,7 +6159,7 @@ theorem mmaB_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     (.reg (runLM (r b1) F tag s4).1) (.reg (runLM (r e) F tag s5).1)
   have hlist : (lower F tag (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e])).lines =
       ((L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5 ++ L6 ++ [core]).map (PtxIr.Line.ins none)).toArray := by
-    rw [lower_mmaB F tag i hi hih d a0 a1 a2 a3 b0 b1 e, hL6]
+    rw [lower_mmaB F tag i hi hih d a0 a1 a2 a3 b0 b1 e hnf, hL6]
     show (s5.lines ++ _).push _ = _
     rw [hL5]
     show ((s4.lines ++ _) ++ _).push _ = _
@@ -5986,8 +6173,6 @@ theorem mmaB_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     show ((((((s0.lines ++ _) ++ _) ++ _) ++ _) ++ _) ++ _).push _ = _
     rw [hL0]; simp [core, s0, s1', s2, s3, s4, s5]
   refine ⟨by rw [hlist]; exact straight_map _, ?_⟩
-  have hm32 : ∀ z : UInt64, z &&& widthMask .i32 = z → PtxRun.mask 32 z = z := fun z hz => by
-    rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp [IntT]), hz]
   have k6 : ∀ R, ¬ Fresh tag s5.n R → regs6.get? R = regs5.get? R := hkeep6
   have k5 : ∀ R, ¬ Fresh tag s4.n R → regs5.get? R = regs4.get? R := hkeep5
   have k4 : ∀ R, ¬ Fresh tag s3.n R → regs4.get? R = regs3.get? R := hkeep4
@@ -6012,51 +6197,300 @@ theorem mmaB_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     rw [← Std.HashMap.get?_eq_getElem?, k6 _ hnf5]; exact hreg5
   have h6 : regs6[(runLM (r e) F tag s5).1]? = some x6 := by
     rw [← Std.HashMap.get?_eq_getElem?]; exact hreg6
-  have he : (exec c core).run { ts with regs := regs6 } =
-      .ok (.step, { ts with regs := regs6.insert (regOf .i64 d) y, w := { ts.w with obs := o :: ts.w.obs } }) := by
-    have hif : (if hi then Intr.mmaBfHi else Intr.mmaBfLo) = i := by
-      rcases hih with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;> rfl
-    have hib : (i == Intr.barrier) = false := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl
-    simp [core, exec, mmaBStep, coll, opnd, getReg_plain _ _ hns0, getReg_plain _ _ hns1, getReg_plain _ _ hns2,
-      getReg_plain _ _ hns3, getReg_plain _ _ hns4, getReg_plain _ _ hns5, getReg_plain _ _ hns6, h0, h1, h2, h3, h4,
-      h5, h6, hif, hib,
-      hx, hm32 x0 hn0, hm32 x1 hn1, hm32 x2 hn2, hm32 x3 hn3, hm32 x4 hn4, hm32 x5 hn5,
-      MonadState.get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set, setReg, pure,
-      StateT.pure, Except.pure, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, o,
-      StateT.bind, StateT.run, bind, Except.bind]
-  have hxn : y &&& widthMask .i64 = y := HProg.Sem.and_wide64 y
-  refine ⟨{ ts with regs := regs6.insert (regOf .i64 d) y, w := { ts.w with obs := o :: ts.w.obs } }, ?_, ?_,
-    wrel_step start0 _ s.world ts.w _ _ o o hW rfl rfl rfl (by simpa using hW.1)⟩
-  · have r1 : (steps c (L0 ++ L1)).run ts = .ok ((), { ts with regs := regs1 }) := by
-      rw [steps_append c _ _ ts _ hrun0]; exact hrun1
-    have r2 : (steps c (L0 ++ L1 ++ L2)).run ts = .ok ((), { ts with regs := regs2 }) := by
-      rw [steps_append c _ _ ts _ r1]; exact hrun2
-    have r3 : (steps c (L0 ++ L1 ++ L2 ++ L3)).run ts = .ok ((), { ts with regs := regs3 }) := by
-      rw [steps_append c _ _ ts _ r2]; exact hrun3
-    have r4 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4)).run ts = .ok ((), { ts with regs := regs4 }) := by
-      rw [steps_append c _ _ ts _ r3]; exact hrun4
-    have r5 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5)).run ts = .ok ((), { ts with regs := regs5 }) := by
-      rw [steps_append c _ _ ts _ r4]; exact hrun5
-    have r6 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5 ++ L6)).run ts = .ok ((), { ts with regs := regs6 }) := by
-      rw [steps_append c _ _ ts _ r5]; exact hrun6
-    rw [hlist, instrsOf_map, steps_append c _ _ ts _ r6]
-    simp only [StateT.run] at he
-    simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
-  · apply sim_set (hmo := hmo) (hrule := fun _ hk => by simp [magRule] at hk) F D s.vals ts.regs _
-      (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1, e]) d .i64 y rfl hS htd hxn
-    · intro _ _
-      simp [Std.HashMap.get?_eq_getElem?, enc, hxn]
-    · intro l hl; rw [hld] at hl; cases hl
-    · intro hw; rw [(win_iff F d).mpr hw] at hwd; cases hwd
-    · intro h8; cases h8
-    · intro h8; cases h8
-    · intro c' n hn
-      have hne' : PtxIr.Reg.val c' n ≠ regOf .i64 d := by simp [regOf]; omega
-      rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hne'),
-        ← Std.HashMap.get?_eq_getElem?]
-      rw [k6 _ (fun ⟨p, k, _, h⟩ => by cases h), k5 _ (fun ⟨p, k, _, h⟩ => by cases h), k4 _ (fun ⟨p, k, _, h⟩ => by cases h),
-        k3 _ (fun ⟨p, k, _, h⟩ => by cases h), k2 _ (fun ⟨p, k, _, h⟩ => by cases h),
-        k1 _ (fun ⟨p, k, _, h⟩ => by cases h), hkeep0 _ (fun ⟨p, k, _, h⟩ => by cases h)]
+  have hS6 : Sim F D s.vals regs6 := hS5.frame (fun c' n => hkeep6 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨y, ts7, hrun7, -, -, hS7, hW7⟩ :=
+    mmaBStep_ok F c start0 hans i hi hih d a0 a1 a2 a3 b0 b1 e hwd htd hld hmo D s s1 { ts with regs := regs6 }
+      x0 x1 x2 x3 x4 x5 x6 hv0 hv1 hv2 hv3 hv4 hv5 hv6 hn0 hn1 hn2 hn3 hn4 hn5 _ _ _ _ _ _ _
+      hns0 hns1 hns2 hns3 hns4 hns5 hns6 h0 h1 h2 h3 h4 h5 h6 hst hS6 hW
+  have he : (exec c core).run { ts with regs := regs6 } = .ok (.step, ts7) := hrun7
+  refine ⟨ts7, ?_, hS7, hW7⟩
+  have r1 : (steps c (L0 ++ L1)).run ts = .ok ((), { ts with regs := regs1 }) := by
+    rw [steps_append c _ _ ts _ hrun0]; exact hrun1
+  have r2 : (steps c (L0 ++ L1 ++ L2)).run ts = .ok ((), { ts with regs := regs2 }) := by
+    rw [steps_append c _ _ ts _ r1]; exact hrun2
+  have r3 : (steps c (L0 ++ L1 ++ L2 ++ L3)).run ts = .ok ((), { ts with regs := regs3 }) := by
+    rw [steps_append c _ _ ts _ r2]; exact hrun3
+  have r4 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4)).run ts = .ok ((), { ts with regs := regs4 }) := by
+    rw [steps_append c _ _ ts _ r3]; exact hrun4
+  have r5 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5)).run ts = .ok ((), { ts with regs := regs5 }) := by
+    rw [steps_append c _ _ ts _ r4]; exact hrun5
+  have r6 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5 ++ L6)).run ts = .ok ((), { ts with regs := regs6 }) := by
+    rw [steps_append c _ _ ts _ r5]; exact hrun6
+  rw [hlist, instrsOf_map, steps_append c _ _ ts _ r6]
+  simp only [StateT.run] at he
+  simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+
+open PtxRun in
+/-- **A bf16 `mma`'s two halves lowered together** meet their obligation: the
+    low half's lines read the six words and both accumulators, and the one
+    `mma` steps the low half, then the high half, as the block semantics
+    does (`mmaBStep_ok`, twice); the low half's result is none of the high
+    half's operands. -/
+theorem mmaB2_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
+    (d d' a0 a1 a2 a3 b0 b1 e e' : Val) (hw0 : ¬ Win F a0) (hw1 : ¬ Win F a1) (hw2 : ¬ Win F a2)
+    (hw3 : ¬ Win F a3) (hw4 : ¬ Win F b0) (hw5 : ¬ Win F b1) (hw6 : ¬ Win F e) (hw7 : ¬ Win F e')
+    (hwd : F.win d = false) (hwd' : F.win d' = false)
+    (ht0 : F.tys.get? a0.id = some .i32) (ht1 : F.tys.get? a1.id = some .i32) (ht2 : F.tys.get? a2.id = some .i32)
+    (ht3 : F.tys.get? a3.id = some .i32) (ht4 : F.tys.get? b0.id = some .i32) (ht5 : F.tys.get? b1.id = some .i32)
+    (ht6 : F.tys.get? e.id = some .i64) (ht7 : F.tys.get? e'.id = some .i64)
+    (htd : F.tys.get? d.id = some .i64) (hld : F.lits.get? d.id = none)
+    (htd' : F.tys.get? d'.id = some .i64) (hld' : F.lits.get? d'.id = none)
+    (hmo : magOk F d (.call (some d) (.intr .mmaBfLo) [a0, a1, a2, a3, b0, b1, e]) = true)
+    (hmo' : magOk F d' (.call (some d') (.intr .mmaBfHi) [a0, a1, a2, a3, b0, b1, e']) = true)
+    (hpl : F.pairLo.get? d.id = some (d', e')) (hph : (F.pairHi.get? d'.id).isSome = true)
+    (hna : ∀ v ∈ [a0, a1, a2, a3, b0, b1], v.id ≠ d.id) (hne : e'.id ≠ d.id) :
+    PairOk F (threadLocals c.ans start0 c.hw c.provisional) c start0
+      (.call (some d) (.intr .mmaBfLo) [a0, a1, a2, a3, b0, b1, e])
+      (.call (some d') (.intr .mmaBfHi) [a0, a1, a2, a3, b0, b1, e']) := by
+  intro tag D s s1 s2 ts hst1 hst2 hu1 hu2 hS hW _herr _hnan
+  have hu : ∀ x ∈ [a0, a1, a2, a3, b0, b1, e], D x.id := fun x hx =>
+    hu1 x (by simp only [Inst.uses]; exact hx)
+  have hue' : D e'.id := by
+    have h := hu2 e' (by simp [Inst.uses])
+    simp only [extD, Inst.dst?, Option.any_some, beq_iff_eq] at h
+    rcases h with h | h
+    · exact h
+    · exact absurd h.symm hne
+  obtain ⟨t0, x0, hv0, ht0'⟩ := hS.pres a0 (hu a0 (by simp))
+  rw [ht0] at ht0'; cases ht0'
+  obtain ⟨t1, x1, hv1, ht1'⟩ := hS.pres a1 (hu a1 (by simp))
+  rw [ht1] at ht1'; cases ht1'
+  obtain ⟨t2, x2, hv2, ht2'⟩ := hS.pres a2 (hu a2 (by simp))
+  rw [ht2] at ht2'; cases ht2'
+  obtain ⟨t3, x3, hv3, ht3'⟩ := hS.pres a3 (hu a3 (by simp))
+  rw [ht3] at ht3'; cases ht3'
+  obtain ⟨t4, x4, hv4, ht4'⟩ := hS.pres b0 (hu b0 (by simp))
+  rw [ht4] at ht4'; cases ht4'
+  obtain ⟨t5, x5, hv5, ht5'⟩ := hS.pres b1 (hu b1 (by simp))
+  rw [ht5] at ht5'; cases ht5'
+  obtain ⟨t6, x6, hv6, ht6'⟩ := hS.pres e (hu e (by simp))
+  rw [ht6] at ht6'; cases ht6'
+  obtain ⟨t7, x7, hv7, ht7'⟩ := hS.pres e' hue'
+  rw [ht7] at ht7'; cases ht7'
+  have hn0 := hS.normd a0 .i32 x0 (hu a0 (by simp)) hv0
+  have hn1 := hS.normd a1 .i32 x1 (hu a1 (by simp)) hv1
+  have hn2 := hS.normd a2 .i32 x2 (hu a2 (by simp)) hv2
+  have hn3 := hS.normd a3 .i32 x3 (hu a3 (by simp)) hv3
+  have hn4 := hS.normd b0 .i32 x4 (hu b0 (by simp)) hv4
+  have hn5 := hS.normd b1 .i32 x5 (hu b1 (by simp)) hv5
+  have hn6 := hS.normd e .i64 x6 (hu e (by simp)) hv6
+  have hn7 := hS.normd e' .i64 x7 hue' hv7
+  -- the lines: the six words', both accumulators', then one `mma`
+  let s0 := (runLM (r a0) F tag {}).2
+  let s1' := (runLM (r a1) F tag s0).2
+  let s2' := (runLM (r a2) F tag s1').2
+  let s3 := (runLM (r a3) F tag s2').2
+  let s4 := (runLM (r b0) F tag s3).2
+  let s5 := (runLM (r b1) F tag s4).2
+  let s6 := (runLM (r e) F tag s5).2
+  obtain ⟨L0, hL0, hm0, hnf0, hns0, regs0, hrun0, hreg0, hkeep0⟩ :=
+    r_sound F tag {} s.vals c ts a0 .i32 x0 D hS (hu a0 (by simp)) hv0 ht0 hw0
+  have hS0 : Sim F D s.vals regs0 := hS.frame (fun c' n => hkeep0 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L1, hL1, hm1, hnf1, hns1, regs1, hrun1, hreg1, hkeep1⟩ :=
+    r_sound F tag s0 s.vals c { ts with regs := regs0 } a1 .i32 x1 D hS0 (hu a1 (by simp)) hv1 ht1 hw1
+  have hS1 : Sim F D s.vals regs1 := hS0.frame (fun c' n => hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L2, hL2, hm2, hnf2, hns2, regs2, hrun2, hreg2, hkeep2⟩ :=
+    r_sound F tag s1' s.vals c { ts with regs := regs1 } a2 .i32 x2 D hS1 (hu a2 (by simp)) hv2 ht2 hw2
+  have hS2 : Sim F D s.vals regs2 := hS1.frame (fun c' n => hkeep2 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L3, hL3, hm3, hnf3, hns3, regs3, hrun3, hreg3, hkeep3⟩ :=
+    r_sound F tag s2' s.vals c { ts with regs := regs2 } a3 .i32 x3 D hS2 (hu a3 (by simp)) hv3 ht3 hw3
+  have hS3 : Sim F D s.vals regs3 := hS2.frame (fun c' n => hkeep3 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L4, hL4, hm4, hnf4, hns4, regs4, hrun4, hreg4, hkeep4⟩ :=
+    r_sound F tag s3 s.vals c { ts with regs := regs3 } b0 .i32 x4 D hS3 (hu b0 (by simp)) hv4 ht4 hw4
+  have hS4 : Sim F D s.vals regs4 := hS3.frame (fun c' n => hkeep4 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L5, hL5, hm5, hnf5, hns5, regs5, hrun5, hreg5, hkeep5⟩ :=
+    r_sound F tag s4 s.vals c { ts with regs := regs4 } b1 .i32 x5 D hS4 (hu b1 (by simp)) hv5 ht5 hw5
+  have hS5 : Sim F D s.vals regs5 := hS4.frame (fun c' n => hkeep5 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L6, hL6, hm6, hnf6, hns6, regs6, hrun6, hreg6, hkeep6⟩ :=
+    r_sound F tag s5 s.vals c { ts with regs := regs5 } e .i64 x6 D hS5 (hu e (by simp)) hv6 ht6 hw6
+  have hS6 : Sim F D s.vals regs6 := hS5.frame (fun c' n => hkeep6 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L7, hL7, hm7, hnf7, hns7, regs7, hrun7, hreg7, hkeep7⟩ :=
+    r_sound F tag s6 s.vals c { ts with regs := regs6 } e' .i64 x7 D hS6 hue' hv7 ht7 hw7
+  have hS7 : Sim F D s.vals regs7 := hS6.frame (fun c' n => hkeep7 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn0] at hreg0
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn1] at hreg1
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn2] at hreg2
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn3] at hreg3
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn4] at hreg4
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn5] at hreg5
+  simp only [enc, show ClifTy.i64 ≠ .i8 by decide, if_false, hn6] at hreg6
+  simp only [enc, show ClifTy.i64 ≠ .i8 by decide, if_false, hn7] at hreg7
+  let R0 := (runLM (r a0) F tag {}).1
+  let R1 := (runLM (r a1) F tag s0).1
+  let R2 := (runLM (r a2) F tag s1').1
+  let R3 := (runLM (r a3) F tag s2').1
+  let R4 := (runLM (r b0) F tag s3).1
+  let R5 := (runLM (r b1) F tag s4).1
+  let R6 := (runLM (r e) F tag s5).1
+  let R7 := (runLM (r e') F tag s6).1
+  let core : PtxIr.Instr := .mmaB2 (regOf .i64 d) (regOf .i64 d') (.reg R0) (.reg R1) (.reg R2) (.reg R3)
+    (.reg R4) (.reg R5) (.reg R6) (.reg R7)
+  have hlist : (lower F tag (.call (some d) (.intr .mmaBfLo) [a0, a1, a2, a3, b0, b1, e])).lines =
+      ((L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5 ++ L6 ++ L7 ++ [core]).map (PtxIr.Line.ins none)).toArray := by
+    rw [lower_mmaB2 F tag d d' a0 a1 a2 a3 b0 b1 e e' hpl, hL7]
+    show (s6.lines ++ _).push _ = _
+    rw [hL6]
+    show ((s5.lines ++ _) ++ _).push _ = _
+    rw [hL5]
+    show (((s4.lines ++ _) ++ _) ++ _).push _ = _
+    rw [hL4]
+    show ((((s3.lines ++ _) ++ _) ++ _) ++ _).push _ = _
+    rw [hL3]
+    show (((((s2'.lines ++ _) ++ _) ++ _) ++ _) ++ _).push _ = _
+    rw [hL2]
+    show ((((((s1'.lines ++ _) ++ _) ++ _) ++ _) ++ _) ++ _).push _ = _
+    rw [hL1]
+    show (((((((s0.lines ++ _) ++ _) ++ _) ++ _) ++ _) ++ _) ++ _).push _ = _
+    rw [hL0]; simp [core, R0, R1, R2, R3, R4, R5, R6, R7, s0, s1', s2', s3, s4, s5, s6]
+  have k7 : ∀ R, ¬ Fresh tag s6.n R → regs7.get? R = regs6.get? R := hkeep7
+  have k6 : ∀ R, ¬ Fresh tag s5.n R → regs6.get? R = regs5.get? R := hkeep6
+  have k5 : ∀ R, ¬ Fresh tag s4.n R → regs5.get? R = regs4.get? R := hkeep5
+  have k4 : ∀ R, ¬ Fresh tag s3.n R → regs4.get? R = regs3.get? R := hkeep4
+  have k3 : ∀ R, ¬ Fresh tag s2'.n R → regs3.get? R = regs2.get? R := hkeep3
+  have k2 : ∀ R, ¬ Fresh tag s1'.n R → regs2.get? R = regs1.get? R := hkeep2
+  have k1 : ∀ R, ¬ Fresh tag s0.n R → regs1.get? R = regs0.get? R := hkeep1
+  have h0 : regs7[R0]? = some x0 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k7 _ (not_fresh_mono (Nat.le_trans hm1 (Nat.le_trans hm2 (Nat.le_trans hm3 (Nat.le_trans hm4 (Nat.le_trans hm5 hm6))))) hnf0),
+      k6 _ (not_fresh_mono (Nat.le_trans hm1 (Nat.le_trans hm2 (Nat.le_trans hm3 (Nat.le_trans hm4 hm5)))) hnf0),
+      k5 _ (not_fresh_mono (Nat.le_trans hm1 (Nat.le_trans hm2 (Nat.le_trans hm3 hm4))) hnf0),
+      k4 _ (not_fresh_mono (Nat.le_trans hm1 (Nat.le_trans hm2 hm3)) hnf0),
+      k3 _ (not_fresh_mono (Nat.le_trans hm1 hm2) hnf0),
+      k2 _ (not_fresh_mono hm1 hnf0),
+      k1 _ hnf0]
+    exact hreg0
+  have h1 : regs7[R1]? = some x1 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k7 _ (not_fresh_mono (Nat.le_trans hm2 (Nat.le_trans hm3 (Nat.le_trans hm4 (Nat.le_trans hm5 hm6)))) hnf1),
+      k6 _ (not_fresh_mono (Nat.le_trans hm2 (Nat.le_trans hm3 (Nat.le_trans hm4 hm5))) hnf1),
+      k5 _ (not_fresh_mono (Nat.le_trans hm2 (Nat.le_trans hm3 hm4)) hnf1),
+      k4 _ (not_fresh_mono (Nat.le_trans hm2 hm3) hnf1),
+      k3 _ (not_fresh_mono hm2 hnf1),
+      k2 _ hnf1]
+    exact hreg1
+  have h2 : regs7[R2]? = some x2 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k7 _ (not_fresh_mono (Nat.le_trans hm3 (Nat.le_trans hm4 (Nat.le_trans hm5 hm6))) hnf2),
+      k6 _ (not_fresh_mono (Nat.le_trans hm3 (Nat.le_trans hm4 hm5)) hnf2),
+      k5 _ (not_fresh_mono (Nat.le_trans hm3 hm4) hnf2),
+      k4 _ (not_fresh_mono hm3 hnf2),
+      k3 _ hnf2]
+    exact hreg2
+  have h3 : regs7[R3]? = some x3 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k7 _ (not_fresh_mono (Nat.le_trans hm4 (Nat.le_trans hm5 hm6)) hnf3),
+      k6 _ (not_fresh_mono (Nat.le_trans hm4 hm5) hnf3),
+      k5 _ (not_fresh_mono hm4 hnf3),
+      k4 _ hnf3]
+    exact hreg3
+  have h4 : regs7[R4]? = some x4 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k7 _ (not_fresh_mono (Nat.le_trans hm5 hm6) hnf4),
+      k6 _ (not_fresh_mono hm5 hnf4),
+      k5 _ hnf4]
+    exact hreg4
+  have h5 : regs7[R5]? = some x5 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k7 _ (not_fresh_mono hm6 hnf5),
+      k6 _ hnf5]
+    exact hreg5
+  have h6 : regs7[R6]? = some x6 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k7 _ hnf6]
+    exact hreg6
+  have h7 : regs7[R7]? = some x7 := by
+    rw [← Std.HashMap.get?_eq_getElem?]; exact hreg7
+  -- the low half
+  obtain ⟨y1, ts8, hrun8, hregs8, hvals1, hS8, hW8⟩ :=
+    mmaBStep_ok F c start0 hans .mmaBfLo false (.inl ⟨rfl, rfl⟩) d a0 a1 a2 a3 b0 b1 e hwd htd hld hmo D s s1
+      { ts with regs := regs7 } x0 x1 x2 x3 x4 x5 x6 hv0 hv1 hv2 hv3 hv4 hv5 hv6 hn0 hn1 hn2 hn3 hn4 hn5
+      R0 R1 R2 R3 R4 R5 R6 hns0 hns1 hns2 hns3 hns4 hns5 hns6 h0 h1 h2 h3 h4 h5 h6 hst1 hS7 hW
+  -- the high half: its operands hold the same, the low half's result none of them
+  have hvs : ∀ v x, v.id ≠ d.id → Blocks.getV s.vals v = some x → Blocks.getV s1.vals v = some x := by
+    intro v x hv hx
+    rw [hvals1, getV_setV_ne s.vals d v _ hv (by rw [hx]; rfl)]; exact hx
+  have hrs : ∀ (R : PtxIr.Reg) (x : UInt64), R ≠ regOf .i64 d → regs7[R]? = some x → ts8.regs[R]? = some x := by
+    intro R x hR hx
+    rw [hregs8, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hR)]; exact hx
+  have hd : regOf .i64 d = .val (cls .i64) d.id := rfl
+  obtain ⟨y2, ts9, hrun9, hregs9, -, hS9, hW9⟩ :=
+    mmaBStep_ok F c start0 hans .mmaBfHi true (.inr ⟨rfl, rfl⟩) d' a0 a1 a2 a3 b0 b1 e' hwd' htd' hld' hmo'
+      (extD D (.call (some d) (.intr .mmaBfLo) [a0, a1, a2, a3, b0, b1, e])) s1 s2 ts8 x0 x1 x2 x3 x4 x5 x7
+      (hvs a0 _ (hna a0 (by simp)) hv0) (hvs a1 _ (hna a1 (by simp)) hv1) (hvs a2 _ (hna a2 (by simp)) hv2)
+      (hvs a3 _ (hna a3 (by simp)) hv3) (hvs b0 _ (hna b0 (by simp)) hv4) (hvs b1 _ (hna b1 (by simp)) hv5)
+      (hvs e' _ hne hv7) hn0 hn1 hn2 hn3 hn4 hn5
+      R0 R1 R2 R3 R4 R5 R7 hns0 hns1 hns2 hns3 hns4 hns5 hns7
+      (hrs R0 x0 (by rw [hd]; exact r_ne_val F tag {} a0 .i32 _ _ hw0 ht0 (hna a0 (by simp))) h0)
+      (hrs R1 x1 (by rw [hd]; exact r_ne_val F tag s0 a1 .i32 _ _ hw1 ht1 (hna a1 (by simp))) h1)
+      (hrs R2 x2 (by rw [hd]; exact r_ne_val F tag s1' a2 .i32 _ _ hw2 ht2 (hna a2 (by simp))) h2)
+      (hrs R3 x3 (by rw [hd]; exact r_ne_val F tag s2' a3 .i32 _ _ hw3 ht3 (hna a3 (by simp))) h3)
+      (hrs R4 x4 (by rw [hd]; exact r_ne_val F tag s3 b0 .i32 _ _ hw4 ht4 (hna b0 (by simp))) h4)
+      (hrs R5 x5 (by rw [hd]; exact r_ne_val F tag s4 b1 .i32 _ _ hw5 ht5 (hna b1 (by simp))) h5)
+      (hrs R7 x7 (by rw [hd]; exact r_ne_val F tag s6 e' .i64 _ _ hw7 ht7 hne) h7)
+      hst2 hS8 hW8
+  refine ⟨by rw [hlist]; exact straight_map _,
+    by rw [lower_mmaB2_hi F (tag + 1) d' a0 a1 a2 a3 b0 b1 e' hph], ts9, ?_, hS9, hW9⟩
+  have r1 : (steps c (L0 ++ L1)).run ts = .ok ((), { ts with regs := regs1 }) := by
+    rw [steps_append c _ _ ts _ hrun0]; exact hrun1
+  have r2 : (steps c (L0 ++ L1 ++ L2)).run ts = .ok ((), { ts with regs := regs2 }) := by
+    rw [steps_append c _ _ ts _ r1]; exact hrun2
+  have r3 : (steps c (L0 ++ L1 ++ L2 ++ L3)).run ts = .ok ((), { ts with regs := regs3 }) := by
+    rw [steps_append c _ _ ts _ r2]; exact hrun3
+  have r4 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4)).run ts = .ok ((), { ts with regs := regs4 }) := by
+    rw [steps_append c _ _ ts _ r3]; exact hrun4
+  have r5 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5)).run ts = .ok ((), { ts with regs := regs5 }) := by
+    rw [steps_append c _ _ ts _ r4]; exact hrun5
+  have r6 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5 ++ L6)).run ts = .ok ((), { ts with regs := regs6 }) := by
+    rw [steps_append c _ _ ts _ r5]; exact hrun6
+  have r7 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5 ++ L6 ++ L7)).run ts =
+      .ok ((), { ts with regs := regs7 }) := by
+    rw [steps_append c _ _ ts _ r6]; exact hrun7
+  have he : (exec c core).run { ts with regs := regs7 } = .ok (.step, ts9) := by
+    simp only [StateT.run] at hrun8 hrun9 ⊢
+    simp only [core, exec, bind, StateT.bind, hrun8]
+    exact hrun9
+  rw [hlist, instrsOf_map, steps_append c _ _ ts _ r7]
+  simp only [StateT.run] at he
+  simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+
+/-- **What a pair is**: a low half and the high half of its six words, the
+    facts naming the high half's result and accumulator, the low half's
+    result none of the high half's operands. -/
+theorem pairMatch_shape (F : Facts) (lo hi : Inst) (hm : pairMatch F lo hi = true) :
+    ∃ d d' a0 a1 a2 a3 b0 b1 e e', lo = .call (some d) (.intr .mmaBfLo) [a0, a1, a2, a3, b0, b1, e] ∧
+      hi = .call (some d') (.intr .mmaBfHi) [a0, a1, a2, a3, b0, b1, e'] ∧
+      F.pairLo.get? d.id = some (d', e') ∧ (F.pairHi.get? d'.id).isSome = true ∧
+      (∀ v ∈ [a0, a1, a2, a3, b0, b1], v.id ≠ d.id) ∧ e'.id ≠ d.id := by
+  unfold pairMatch at hm
+  cases hl : pairLoOf F lo with
+  | none => simp [hl] at hm
+  | some p =>
+  obtain ⟨dp, ep⟩ := p
+  cases hp : Ptx.mmaPair lo hi with
+  | none => simp [hl, hp] at hm
+  | some q =>
+  obtain ⟨q1, q2, q3⟩ := q
+  simp only [hl, hp, Bool.and_eq_true, beq_iff_eq] at hm
+  obtain ⟨⟨hd2, he2⟩, hph⟩ := hm
+  unfold Ptx.mmaPair at hp
+  split at hp
+  · rename_i d a0 a1 a2 a3 b0 b1 x d' a0' a1' a2' a3' b0' b1' e'
+    split at hp
+    · rename_i hc
+      simp only [Bool.and_eq_true] at hc
+      obtain ⟨⟨⟨hargs, hne⟩, -⟩, hna⟩ := hc
+      have hargs' := beq_iff_eq.mp hargs
+      simp only [List.map_cons, List.map_nil, List.cons.injEq, and_true] at hargs'
+      obtain ⟨h0, h1, h2, h3, h4, h5⟩ := hargs'
+      have hne : e'.id ≠ d.id := by simpa using hne
+      have hna : ∀ v ∈ [a0, a1, a2, a3, b0, b1], v.id ≠ d.id := by
+        intro v hv; have := List.all_eq_true.mp hna v hv; simpa using this
+      have hv : ∀ u v : Val, u.id = v.id → u = v := fun u v h => by cases u; cases v; simp_all
+      obtain rfl := hv _ _ h0; obtain rfl := hv _ _ h1; obtain rfl := hv _ _ h2
+      obtain rfl := hv _ _ h3; obtain rfl := hv _ _ h4; obtain rfl := hv _ _ h5
+      simp only [Option.some.injEq, Prod.mk.injEq] at hp
+      obtain ⟨rfl, rfl, rfl⟩ := hp
+      simp only [pairLoOf] at hl
+      have hdp : dp = d' := by cases dp; cases d'; simp_all
+      have hep : ep = e' := by cases ep; cases e'; simp_all
+      subst hdp; subst hep
+      refine ⟨d, dp, a0, a1, a2, a3, b0, b1, x, ep, rfl, rfl, hl, ?_, fun v hv => hna v hv, hne⟩
+      simpa [isPairHi] using hph
+    · cases hp
+  · cases hp
 
 /-- A ballot lowers to its argument's lines, whether it is not zero into a
     predicate of its own, then a vote on that predicate. -/
@@ -7988,13 +8422,54 @@ theorem takes_call_none (F : Facts) (d : Option Val) (cal : Callee) (args : List
     split <;> simp_all [Option.isSome_iff_exists]
 
 open PtxRun in
+/-- **Every pair of a body the checks passed meets its obligation**: the
+    facts of both halves as the checks say, then `mmaB2_ok`. -/
+theorem pairs_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
+    (hdefs : defsOk F = true) (hwin : winOk F = true) (htk : takesAll F = true)
+    (hlc : lc = threadLocals c.ans start0 c.hw c.provisional) (hans : AnsOk c.ans) :
+    ∀ b ∈ F.blocks, ∀ lo ∈ b.insts, ∀ hi ∈ b.insts, pairMatch F lo hi = true → PairOk F lc c start0 lo hi := by
+  intro b hb lo hlo hi hhi hm
+  obtain ⟨d, d', a0, a1, a2, a3, b0, b1, e, e', rfl, rfl, hpl, hph, hna, hne⟩ := pairMatch_shape F lo hi hm
+  have htk1 := takes_inst F htk b hb _ hlo
+  obtain ⟨hvu1, -⟩ := winOk_inst F hwin b hb _ hlo
+  obtain ⟨hty1, -, hlit1, hside1, -, hmo1⟩ := defsOk_inst F hdefs b hb _ hlo d rfl
+  have htk2 := takes_inst F htk b hb _ hhi
+  obtain ⟨hvu2, -⟩ := winOk_inst F hwin b hb _ hhi
+  obtain ⟨hty2, -, hlit2, hside2, -, hmo2⟩ := defsOk_inst F hdefs b hb _ hhi d' rfl
+  simp only [defSide, Bool.not_eq_true'] at hside1 hside2
+  simp only [takes, takesN, Bool.and_eq_true] at htk1 htk2
+  obtain ⟨⟨⟨⟨⟨⟨⟨-, h0⟩, h1⟩, h2⟩, h3⟩, h4⟩, h5⟩, h6⟩ := htk1
+  obtain ⟨⟨⟨⟨⟨⟨⟨-, -⟩, -⟩, -⟩, -⟩, -⟩, -⟩, h7⟩ := htk2
+  obtain ⟨t0, ht0, ht0'⟩ := isTy_spec F a0 _ h0
+  obtain ⟨t1, ht1, ht1'⟩ := isTy_spec F a1 _ h1
+  obtain ⟨t2, ht2, ht2'⟩ := isTy_spec F a2 _ h2
+  obtain ⟨t3, ht3, ht3'⟩ := isTy_spec F a3 _ h3
+  obtain ⟨t4, ht4, ht4'⟩ := isTy_spec F b0 _ h4
+  obtain ⟨t5, ht5, ht5'⟩ := isTy_spec F b1 _ h5
+  obtain ⟨t6, ht6, ht6'⟩ := isTy_spec F e _ h6
+  obtain ⟨t7, ht7, ht7'⟩ := isTy_spec F e' _ h7
+  simp at ht0' ht1' ht2' ht3' ht4' ht5' ht6' ht7'
+  subst ht0'; subst ht1'; subst ht2'; subst ht3'; subst ht4'; subst ht5'; subst ht6'; subst ht7'
+  rw [hlc]
+  exact mmaB2_ok F c start0 hans d d' a0 a1 a2 a3 b0 b1 e e'
+    (not_win_of F a0 (hvu1 a0 (by simp [valUses, Inst.uses])))
+    (not_win_of F a1 (hvu1 a1 (by simp [valUses, Inst.uses])))
+    (not_win_of F a2 (hvu1 a2 (by simp [valUses, Inst.uses])))
+    (not_win_of F a3 (hvu1 a3 (by simp [valUses, Inst.uses])))
+    (not_win_of F b0 (hvu1 b0 (by simp [valUses, Inst.uses])))
+    (not_win_of F b1 (hvu1 b1 (by simp [valUses, Inst.uses])))
+    (not_win_of F e (hvu1 e (by simp [valUses, Inst.uses])))
+    (not_win_of F e' (hvu2 e' (by simp [valUses, Inst.uses]))) hside1 hside2
+    ht0 ht1 ht2 ht3 ht4 ht5 ht6 ht7 (by simpa [resTy, Intr.sig] using hty1) hlit1
+    (by simpa [resTy, Intr.sig] using hty2) hlit2 hmo1 hmo2 hpl hph hna hne
+
 /-- **Every instruction the compiler takes meets its obligation.** -/
 theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
     (hdefs : defsOk F = true) (hwin : winOk F = true) (htys : tysOk F = true) (htk : takesAll F = true)
     (hlc : lc = threadLocals c.ans start0 c.hw c.provisional) (hans : AnsOk c.ans)
     (hhw : HwOk c.hw) (hwarp : F.warp = true → (c.special.lookup "ntid.x").getD 0 ≤ 32) :
-    ∀ b ∈ F.blocks, ∀ i ∈ b.insts, isTerm i = false → InstOk F lc c start0 i := by
-  intro b hb i hi hterm
+    ∀ b ∈ F.blocks, ∀ i ∈ b.insts, isTerm i = false → Fused F i = false → InstOk F lc c start0 i := by
+  intro b hb i hi hterm hfu
   have htk' := takes_inst F htk b hb i hi
   obtain ⟨hvu, hw64⟩ := winOk_inst F hwin b hb i hi
   have hd := fun d (h : Inst.dst? i = some d) => defsOk_inst F hdefs b hb i hi d h
@@ -8441,7 +8916,7 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
         simp at ht0' ht1' ht2' ht3' ht4' ht5' ht6'
         subst ht0'; subst ht1'; subst ht2'; subst ht3'; subst ht4'; subst ht5'; subst ht6'
         rw [hlc]
-        exact mmaB_ok (hmo := hmo) F c start0 hans ic hb hw dv a0 a1 a2 a3 b0 b1 e
+        exact mmaB_ok (hmo := hmo) (hnf := hfu) F c start0 hans ic hb hw dv a0 a1 a2 a3 b0 b1 e
           (not_win_of F a0 (hvu a0 (by simp [valUses, Inst.uses])))
           (not_win_of F a1 (hvu a1 (by simp [valUses, Inst.uses])))
           (not_win_of F a2 (hvu a2 (by simp [valUses, Inst.uses])))
@@ -9078,7 +9553,8 @@ theorem entry_facts (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) :
       (f.blocks.map (·.ref.id)).Nodup ∧ definedOk f (definedIn f) = true ∧
       edgesTyped (k.factsOf f) = true ∧ winOk (k.factsOf f) = true ∧ tysOk (k.factsOf f) = true ∧
       takesAll (k.factsOf f) = true ∧ entryOk (k.factsOf f) k.params = true ∧
-      paramsOk (k.factsOf f) = true ∧ condsOk (k.factsOf f) = true ∧ defsOk (k.factsOf f) = true ∧
+      paramsOk (k.factsOf f) = true ∧ condsOk (k.factsOf f) = true ∧ pairsOk (k.factsOf f) = true ∧
+      defsOk (k.factsOf f) = true ∧
       (∀ o ∈ Ptx.body (k.factsOf f) k.params, o.err = none) ∧
       (labelsIn ((Ptx.body (k.factsOf f) k.params).flatMap (·.lines.toList))).Nodup ∧
       (k.params.zipIdx.map fun (_, i) => s!"p{i}").Nodup ∧
@@ -9108,10 +9584,11 @@ theorem entry_facts (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) :
   have c7 := hall (paramsOk (k.factsOf f), "a block parameter is not plain") (by simp [Kernel.checks])
   have c8 := hall (condsOk (k.factsOf f), "a branch tests what is not a flag") (by simp [Kernel.checks])
   have c9 := hall (defsOk (k.factsOf f), "a value is not as the facts say") (by simp [Kernel.checks])
+  have c12 := hall (pairsOk (k.factsOf f), "an mma's halves are not paired as the facts say") (by simp [Kernel.checks])
   have c10 := hall (decide (k.params.zipIdx.map fun (_, i) => s!"p{i}").Nodup, "two parameters have one name")
     (by simp [Kernel.checks])
   have c11 := hall (decide (k.smem < 2 ^ 32), "more shared memory than a GPU addresses") (by simp [Kernel.checks])
-  refine ⟨f, hf, by simpa using c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, fun o ho => ?_, ?_, by simpa using c10, rfl,
+  refine ⟨f, hf, by simpa using c0, c1, c2, c3, c4, c5, c6, c7, c8, c12, c9, fun o ho => ?_, ?_, by simpa using c10, rfl,
     by simpa using c11⟩
   · exact List.findSome?_eq_none_iff.mp herr o ho
   · by_cases hn : (labelsIn ((Ptx.body (k.factsOf f) k.params).flatMap (·.lines.toList))).Nodup

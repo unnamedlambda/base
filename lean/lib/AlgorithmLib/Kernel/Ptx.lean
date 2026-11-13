@@ -290,6 +290,12 @@ structure Facts where
   warp : Bool := false
   /-- Whether a product `Facts.wideMul` admits is `mul.wide.u32`. -/
   mulWide : Bool := false
+  /-- A bf16 `mma`'s low half lowered with the high half after it, one
+      `mma` for both (`mmaB2`): the low half's result to the high half's
+      result and accumulator. -/
+  pairLo : Std.HashMap Nat (Val × Val) := {}
+  /-- The high halves lowered with their low half: they lower to nothing. -/
+  pairHi : Std.HashMap Nat Unit := {}
 
 /-- Whether `v` is a shared address held in the window. -/
 def Facts.win (F : Facts) (v : Val) : Bool := F.window && F.origin.get? v.id == some .shared
@@ -334,6 +340,27 @@ def resTy (ty : Val → Option ClifTy) : Inst → Option (Val × ClifTy)
   | .call (some d) (.atomic a) _ => (atomicRes a).map (d, ·)
   | _ => none
 
+/-- A bf16 `mma`'s low half and the high half right after it, of the same
+    six words, neither those nor the high half's accumulator the low half's
+    result: the low half's result, the high half's, and the high half's
+    accumulator. -/
+def mmaPair : Inst → Inst → Option (Val × Val × Val)
+  | .call (some d) (.intr .mmaBfLo) [a0, a1, a2, a3, b0, b1, _],
+    .call (some d') (.intr .mmaBfHi) [a0', a1', a2', a3', b0', b1', e'] =>
+      if [a0, a1, a2, a3, b0, b1].map (·.id) == [a0', a1', a2', a3', b0', b1'].map (·.id) && e'.id != d.id &&
+          d'.id != d.id &&
+          [a0, a1, a2, a3, b0, b1].all (·.id != d.id) then
+        some (d, d', e')
+      else none
+  | _, _ => none
+
+/-- The pairs of a block's instructions, taken left to right. -/
+def pairsOf : List Inst → List (Val × Val × Val)
+  | i :: j :: rest => match mmaPair i j with
+    | some p => p :: pairsOf rest
+    | none => pairsOf (j :: rest)
+  | _ => []
+
 /-- The facts of a body's blocks, `k0` the kernel's own parameters. -/
 def facts (f : FuncData) (k0 : List ClifTy) (window : Bool) : Facts := Id.run do
   let insts := f.blocks.flatMap (·.insts)
@@ -362,7 +389,10 @@ def facts (f : FuncData) (k0 : List ClifTy) (window : Bool) : Facts := Id.run do
     | _ => none
   let ro := if stores.any (·.isNone) then [] else
     (List.range k0.length).filter fun p => !stores.any (· == some (.global p))
-  return { blocks := f.blocks, tys, origin, mag, lits, defs, ro, window }
+  let pairs := f.blocks.flatMap (pairsOf ·.insts)
+  let pairLo := pairs.foldl (fun m (d, d', e') => m.insert d.id (d', e')) {}
+  let pairHi := pairs.foldl (fun m (_, d', _) => m.insert d'.id ()) {}
+  return { blocks := f.blocks, tys, origin, mag, lits, defs, ro, window, pairLo, pairHi }
 
 /-- What lowering one instruction gives: its lines, the registers of its own
     it declares, and what it could not take. -/
@@ -536,9 +566,15 @@ def word7 : Intr → Bool
 def intr7 (d : Val) (c : Intr) (a0 a1 a2 a3 b0 b1 e : Val) : LM Unit :=
   match c with
   | .mmaBfLo => do
-      emit (.mmaB false (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
+      match (← facts?).pairLo.get? d.id with
+      | some (d', e') =>
+          emit (.mmaB2 (regOf .i64 d) (regOf .i64 d') (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1)
+            (← o e) (← o e'))
+      | none => emit (.mmaB false (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
   | .mmaBfHi => do
-      emit (.mmaB true (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
+      -- one lowered with its low half is that half's
+      if ((← facts?).pairHi.get? d.id).isNone then
+        emit (.mmaB true (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
   | c => fail s!"{c.name} with seven arguments"
 
 /-- An intrinsic of three words or more, into `d`: three (`intr3`), six
@@ -938,6 +974,39 @@ def paramsOk (F : Ptx.Facts) : Bool :=
     (b.ref.id == 0 || b.params.all fun (v, _) => F.mag.get? v.id == none && F.origin.get? v.id != some .shared) &&
     b.insts.all fun i => !(jumpsTo i).contains 0
 
+/-- The high half and accumulator a low half `i` is lowered with, where the
+    facts pair it. -/
+def pairLoOf (F : Ptx.Facts) : Inst → Option (Val × Val)
+  | .call (some d) (.intr .mmaBfLo) _ => F.pairLo.get? d.id
+  | _ => none
+
+/-- Whether `i` is a high half lowered with its low half. -/
+def isPairHi (F : Ptx.Facts) : Inst → Bool
+  | .call (some d) (.intr .mmaBfHi) _ => (F.pairHi.get? d.id).isSome
+  | _ => false
+
+/-- Whether `hi` is the high half the facts pair low half `lo` with: of its six
+    words (`mmaPair`), the result and accumulator the facts name. -/
+def pairMatch (F : Ptx.Facts) (lo hi : Inst) : Bool :=
+  match pairLoOf F lo, Ptx.mmaPair lo hi with
+  | some (d', e'), some (_, d'', e'') => d''.id == d'.id && e''.id == e'.id && isPairHi F hi
+  | _, _ => false
+
+/-- Whether instruction `i` is lowered as half of a pair. -/
+def Fused (F : Ptx.Facts) (i : Inst) : Bool := (pairLoOf F i).isSome || isPairHi F i
+
+/-- A block's instructions as the facts pair them: each low half they pair
+    followed by its high half, of the same six words (`mmaPair`), and no high
+    half they pair anywhere else. -/
+def pairsOkL (F : Ptx.Facts) : List Inst → Bool
+  | [] => true
+  | [i] => (pairLoOf F i).isNone && !isPairHi F i
+  | i :: j :: rest =>
+      if (pairLoOf F i).isSome then pairMatch F i j && pairsOkL F rest
+      else !isPairHi F i && pairsOkL F (j :: rest)
+
+def pairsOk (F : Ptx.Facts) : Bool := F.blocks.all fun b => pairsOkL F b.insts
+
 /-- **Branches test flags**: each conditional branch's condition is an `i8`,
     neither a constant nor a windowed shared address. -/
 def condsOk (F : Ptx.Facts) : Bool :=
@@ -1163,6 +1232,7 @@ def Kernel.checks (k : Kernel) (f : FuncData) : List (Bool × String) :=
    (entryOk F k.params, "the entry block is not the thread's"),
    (paramsOk F, "a block parameter is not plain"),
    (condsOk F, "a branch tests what is not a flag"),
+   (pairsOk F, "an mma's halves are not paired as the facts say"),
    (defsOk F, "a value is not as the facts say"),
    (decide (k.params.zipIdx.map fun (_, i) => s!"p{i}").Nodup, "two parameters have one name"),
    (decide (k.smem < 2 ^ 32), "more shared memory than a GPU addresses")]

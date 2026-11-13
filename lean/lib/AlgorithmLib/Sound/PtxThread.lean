@@ -89,7 +89,7 @@ theorem thread_sound (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e)
     (budget : Nat) (hrun : Kernel.thread k.code ans (threadArgsOf k xs) w hw budget prov = .ok w') :
     ∃ fuel w'', PtxRun.thread e ans (threadArgsOf k xs) pw hw fuel prov = .ok w'' ∧
       WRel w.obs.length pw.obs.length w' w'' := by
-  obtain ⟨f, hf, hnd, hdef, htyp, hwin, htys, htk, hent, hpok, hconds, hdefs, herr, hlab, hpn, rfl, -⟩ :=
+  obtain ⟨f, hf, hnd, hdef, htyp, hwin, htys, htk, hent, hpok, hconds, hpairs, hdefs, herr, hlab, hpn, rfl, -⟩ :=
     entry_facts k e he
   have hf0 := hf
   let F := k.factsOf f
@@ -144,6 +144,8 @@ theorem thread_sound (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e)
       have hn : (c.special.lookup "ntid.x").getD 0 = xs.getD 2 0 := by
         rw [← bits_args k xs 2 (by omega) hlen]; simp [c, args, PtxRun.Ctx.ofThread, List.lookup]
       rw [hn]; exact hwarp (hFw ▸ hw2))
+    pair := pairs_ok F lc c w.obs.length hdefs hwin htk rfl hans
+    pairs := hpairs
     low := fun b hbm j hj => herr _ (hmem b hbm j hj)
     inn := fun b hbm => by
       have := hblk b (hfb ▸ hbm)

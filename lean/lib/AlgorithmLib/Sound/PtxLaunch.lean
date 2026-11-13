@@ -229,7 +229,7 @@ theorem lane32_ok (a : List V) : ∃ z, lane32 a = .sc .i32 z ∧ z &&& widthMas
 
 /-- A kernel the compiler takes asks for less shared memory than a GPU addresses. -/
 theorem entry_smem (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) : k.smem < 2 ^ 32 := by
-  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, h⟩ := entry_facts k e he
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, h⟩ := entry_facts k e he
   exact h
 
 /-- **The laws answer values a thread can take.** -/
