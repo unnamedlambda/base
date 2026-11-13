@@ -139,18 +139,18 @@ def baseBody : Prog V L Unit := do
     storeI32 pre (← at4 base v)
 
 /-- Keys a lane of the tile scatter holds: a warp's run of `32 · ITEMS`. -/
-def ITEMS : Nat := 24
+def ITEMS : Nat := 32
 
 /-- Keys a tile of the scatter holds: its 256 threads' items. -/
 def TILE : Nat := 256 * ITEMS
 
-/-- Shared memory of the tile scatter: each warp's count of each digit, until
-    the keys' places are known, then the tile's keys, then its values, in
-    digit order; each digit's start in the tile and its place in the output
-    less that start; the scan's warp totals; the tile's number. -/
-def SK : Nat := 0
+/-- Shared memory of the tile scatter: each warp's count of each digit; the
+    tile's keys, then its values, in digit order; each digit's start in the
+    tile and its place in the output less that start; the scan's warp totals;
+    the tile's number. -/
 def SCNT : Nat := 0
-def STDS : Nat := max (4 * TILE) (4 * 8 * 256)
+def SK : Nat := 4 * 8 * 256
+def STDS : Nat := SK + 4 * TILE
 def SOUT : Nat := STDS + 4 * 256
 def SSCAN : Nat := SOUT + 4 * 256
 def STILE : Nat := SSCAN + 4 * 8
@@ -262,17 +262,16 @@ def scatterBody : Prog V L Unit := do
     let (start, _) ← blockScan tid sm SSCAN acc
     storeI32 start (← at4 tds tid)
     callLocalVoid barrier %[]
+    -- the tile's keys in digit order, each as soon as its place is known, then
+    -- out in that order (threads next to each other writing places next to
+    -- each other)
     let places ← (items.zip ranks).mapM fun ((ok, key, _), rank) => do
       let d ← if full then digit key else select ok (← digit key) (← c32 0)
-      iadd (← iadd (← load32 (← at4 tds d)) (← load32 (← at4 wcnt d))) rank
-    -- the values, now the ranking no longer holds registers
-    let vals ← items.mapM fun (ok, _, r) => do load32 (← itemAt vin ok r)
-    -- the counts read, their space is the keys'
-    callLocalVoid barrier %[]
-    -- the tile's keys in digit order, then out in that order (threads next to
-    -- each other writing places next to each other)
-    for ((ok, key, _), pos) in items.zip places do
+      let pos ← iadd (← iadd (← load32 (← at4 tds d)) (← load32 (← at4 wcnt d))) rank
       whenOk ok do storeI32 key (← at4 sk pos)
+      pure pos
+    -- the values, now the keys no longer hold registers
+    let vals ← items.mapM fun (ok, _, r) => do load32 (← itemAt vin ok r)
     -- the digit's keys in the tiles before, looked back for once the values'
     -- loads are under way and the keys are in place (the tiles before have
     -- published their counts by then): each status waited for, its count
@@ -318,7 +317,7 @@ def hist : Kernel := AnnKernels.k "sort_hist" histBody 3 (4 * 1024)
 def gather : Kernel := AnnKernels.k "sort_gather" gatherBody 4
 def bases : Kernel := AnnKernels.k "sort_bases" baseBody 2 (4 * 8)
 def scatter : Kernel :=
-  { AnnKernels.k "sort_scatter" scatterBody 7 SCATTER_SMEM with bounds := some (256, 3), stream := true }
+  { AnnKernels.k "sort_scatter" scatterBody 7 SCATTER_SMEM with bounds := some (256, 2), stream := true }
 
 /-- The kernels, each its own module, by index. -/
 def kernels : List Kernel := [hist, AnnKernels.rowSelect, gather, bases, scatter]
