@@ -29,16 +29,18 @@ structure Layout where
   maxDepth : Nat
 
 /-- `rbx` past JSON's whitespace, at most `e` (`r12`): unmoved where the
-    byte there is past a space; one on past a lone space; else 32 bytes at a
-    time up to the first not a space or a newline, then a byte at a time.
-    Scratch: rax, rcx, ymm0–ymm2. -/
-def skipWs (p : String) : Body :=
+    byte there is past a space; one on past a lone space; a run of spaces and
+    newlines taken as long as the last one (an indent repeats; `L.sb + 88`),
+    checked beside the step rather than before it, so the position waits on no
+    load; where it is not, 32 bytes at a time up to the first not a space or
+    a newline; then a byte at a time. Scratch: rax, rcx, rdx, r11, ymm0–ymm2. -/
+def skipWs (L : Layout) (p : String) : Body :=
   [
    cmp rbx r12,
-   jae (p ++ "m5"),
+   jae (p ++ "m6"),
    movzx eax (byte rbx),
    cmp eax 0x20,
-   ja (p ++ "m5"),
+   ja (p ++ "m6"),
    jne (p ++ "m0"),
    lea rcx (mem (rbx + 1)),
    cmp rcx r12,
@@ -47,39 +49,53 @@ def skipWs (p : String) : Body :=
    cmp eax 0x20,
    jbe (p ++ "m0"),
    mov rbx rcx,
-   jmp (p ++ "m5"),
-   lbl (p ++ "m0"), cmp rbx r12,
-   jae (p ++ "m5"),
-   lea rcx (mem (rbx + 0x20)),
+   jmp (p ++ "m6"),
+   lbl (p ++ "m0"), lea rcx (mem (rbx + 0x20)),
    cmp rcx r12,
-   ja (p ++ "m2"),
+   ja (p ++ "m3"),
    vmovdqu ymm0 (ymmword rbx),
    vpcmpeqb ymm1 ymm0 ymm11,
    vpcmpeqb ymm2 ymm0 ymm10,
    vpor ymm1 ymm1 ymm2,
    vpmovmskb eax ymm1,
-   xor eax (-1),
+   mov rcx (qword (r15 + L.sb + 0x58)),
+   lea edx (mem (rax + 1)),
+   mov r11d eax,
+   xor r11d (-1),
+   and edx r11d,
+   mov r11d 1,
+   shl r11d cl,
+   cmp edx r11d,
    jne (p ++ "m1"),
-   add rbx 0x20,
-   jmp (p ++ "m0"),
-   lbl (p ++ "m1"), tzcnt eax eax,
+   cmp (byte (rbx + rcx*1)) 0x20,
+   jbe (p ++ "m1"),
+   add rbx rcx,
+   jmp (p ++ "m6"),
+   lbl (p ++ "m1"), xor eax (-1),
+   je (p ++ "m2"),
+   tzcnt eax eax,
+   mov (qword (r15 + L.sb + 0x58)) rax,
    add rbx rax,
    movzx eax (byte rbx),
    cmp eax 0x20,
-   ja (p ++ "m5"),
-   jmp (p ++ "m3"),
-   lbl (p ++ "m2"), movzx eax (byte rbx),
-   lbl (p ++ "m3"), cmp eax 0x20,
-   je (p ++ "m4"),
-   cmp eax 0xa,
-   je (p ++ "m4"),
-   cmp eax 0xd,
-   je (p ++ "m4"),
-   cmp eax 9,
-   jne (p ++ "m5"),
-   lbl (p ++ "m4"), inc rbx,
+   ja (p ++ "m6"),
+   jmp (p ++ "m4"),
+   lbl (p ++ "m2"), add rbx 0x20,
    jmp (p ++ "m0"),
-   lbl (p ++ "m5")]
+   lbl (p ++ "m3"), cmp rbx r12,
+   jae (p ++ "m6"),
+   movzx eax (byte rbx),
+   lbl (p ++ "m4"), cmp eax 0x20,
+   je (p ++ "m5"),
+   cmp eax 0xa,
+   je (p ++ "m5"),
+   cmp eax 0xd,
+   je (p ++ "m5"),
+   cmp eax 9,
+   jne (p ++ "m6"),
+   lbl (p ++ "m5"), inc rbx,
+   jmp (p ++ "m0"),
+   lbl (p ++ "m6")]
 
 /-- Four hex digits at `rdx + off` into eax; to `handoff` where one is not
     (`HEXV` gives 0x80 for a byte not a hex digit). Scratch: r8, r9. -/
@@ -429,7 +445,7 @@ def parse (L : Layout) : Body :=
    mov (qword (r15 + L.sb + 0x30)) r13,
    mov (qword (r15 + L.sb + 0x38)) r14,
    mov (qword (r15 + L.sb + 0x40)) rbp] ++
-  skipWs (p ++ "w1") ++
+  skipWs L (p ++ "w1") ++
   [
    cmp rbx r12,
    jae "handoff",
@@ -493,7 +509,7 @@ def parse (L : Layout) : Body :=
    jne (p ++ "m0"),
    inc r8d,
    lbl (p ++ "m0"), inc rbx] ++
-  skipWs (p ++ "w2") ++
+  skipWs L (p ++ "w2") ++
   [
    cmp rbx r12,
    jae "v_push",
@@ -529,7 +545,7 @@ def parse (L : Layout) : Body :=
    inc rbx,
    jmp "after",
    lbl "key"] ++
-  skipWs (p ++ "w3") ++
+  skipWs L (p ++ "w3") ++
   [
    cmp rbx r12,
    jae "handoff",
@@ -537,7 +553,7 @@ def parse (L : Layout) : Body :=
    jne "handoff",
    lea rdx (mem (rbx + 1))] ++
   string L (p ++ "s2") ++
-  skipWs (p ++ "w4") ++
+  skipWs L (p ++ "w4") ++
   [
    cmp rbx r12,
    jae "handoff",
@@ -546,7 +562,7 @@ def parse (L : Layout) : Body :=
    inc rbx,
    jmp "trip",
    lbl "after"] ++
-  skipWs (p ++ "w5") ++
+  skipWs L (p ++ "w5") ++
   [
    cmp rbx r12,
    jae "a_end",
