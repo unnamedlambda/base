@@ -233,79 +233,105 @@ def scatterBody : Prog V L Unit := do
     let prefTag ← iadd par (← c32 2)
     let status (tg x : V .i32) : Prog V L (V .i32) := do bor (← ishlImm tg 29) x
     atomicStore (← status (← select (← icmp .eq b (← c32 0)) prefTag aggTag) tcount) (← stat b) .relaxed
-    -- each key's place among its warp's keys of its digit
-    let wcnt ← at4 cnt (← imul w (← c32 256))
-    let mut ranks := #[]
-    for (ok, key, _) in items do
-      let d ← digit key
-      let m ← peers d ok
-      let lead ← band ok (← icmp .eq (← ctz m) lane)
-      let slot ← at4 wcnt d
-      let before ← ifte (jTys := [.i32]) .ne (← bit lead) (← c32 0)
-        (thn := do
-          let c ← load32 slot
-          storeI32 (← iadd c (← popcnt m)) slot
-          pure %[c])
-        (els := do pure %[← c32 0])
-      let bs ← callLocal shflIdx %[before.head, ← band (← ctz m) (← c32 31)]
-      ranks := ranks.push (← iadd bs (← popcnt (← band m ltMask)))
+    -- the digit's keys in the tiles before, by looking back over their
+    -- statuses: each waited for, its count added, until one that has all
+    -- before it; then this tile's status has all up to it
+    let lookBack : Prog V L (V .i32) := do
+      let excl ← ifte (jTys := [.i32]) .eq b (← c32 0)
+        (thn := do pure %[← c32 0])
+        (els := do
+          let r ← wloopL %[← isub b (← c32 1), ← c32 0]
+            (fun _ c => pure (contIfULt c.head b, %[c.snd], ()))
+            (fun lbl c _ => do
+              let v ← atomicLoad .i32 (← stat c.head) .relaxed
+              let hi ← ushrImm v 29
+              let sum ← iadd c.snd (← band v (← c32 (2 ^ 29 - 1)))
+              when .eq hi prefTag do brk lbl %[sum]
+              let isAgg ← icmp .eq hi aggTag
+              pure %[← select isAgg (← isub c.head (← c32 1)) c.head, ← select isAgg sum c.snd])
+          pure %[r.head])
+      atomicStore (← status prefTag (← iadd excl.head tcount)) (← stat b) .relaxed
+      pure excl.head
+    -- a tile of one digit (a full tile whose count of its first key's digit
+    -- is the tile's, alike for the block) is in order already: each key and
+    -- value out at its own offset from the digit's place
+    let firstDigit : Prog V L (V .i32) := match items.toList with
+      | (_, k, _) :: _ => digit k
+      | [] => c32 0
+    let straight : Prog V L Unit := do
+      let excl ← lookBack
+      storeI32 (← iadd (← load32 (← at4 base tid)) excl) (← at4 outAt tid)
       callLocalVoid barrier %[]
-    -- each warp's counts become the counts of the warps before it, and the
-    -- tile's count of each digit is their sum
-    let mut acc ← c32 0
-    for k in List.range 8 do
-      let slot ← at4 cnt (← iadd (← c32 (256 * k)) tid)
-      let t ← load32 slot
-      storeI32 acc slot
-      acc ← iadd acc t
-    -- each digit's start in the tile
-    let (start, _) ← blockScan tid sm SSCAN acc
-    storeI32 start (← at4 tds tid)
-    callLocalVoid barrier %[]
-    -- the tile's keys in digit order, each as soon as its place is known, then
-    -- out in that order (threads next to each other writing places next to
-    -- each other)
-    let places ← (items.zip ranks).mapM fun ((ok, key, _), rank) => do
-      let d ← if full then digit key else select ok (← digit key) (← c32 0)
-      let pos ← iadd (← iadd (← load32 (← at4 tds d)) (← load32 (← at4 wcnt d))) rank
-      whenOk ok do storeI32 key (← at4 sk pos)
-      pure pos
-    -- the values, now the keys no longer hold registers
-    let vals ← items.mapM fun (ok, _, r) => do load32 (← itemAt vin ok r)
-    -- the digit's keys in the tiles before, looked back for once the values'
-    -- loads are under way and the keys are in place (the tiles before have
-    -- published their counts by then): each status waited for, its count
-    -- added, until one that has all before it
-    let excl ← ifte (jTys := [.i32]) .eq b (← c32 0)
-      (thn := do pure %[← c32 0])
-      (els := do
-        let r ← wloopL %[← isub b (← c32 1), ← c32 0]
-          (fun _ c => pure (contIfULt c.head b, %[c.snd], ()))
-          (fun lbl c _ => do
-            let v ← atomicLoad .i32 (← stat c.head) .relaxed
-            let hi ← ushrImm v 29
-            let sum ← iadd c.snd (← band v (← c32 (2 ^ 29 - 1)))
-            when .eq hi prefTag do brk lbl %[sum]
-            let isAgg ← icmp .eq hi aggTag
-            pure %[← select isAgg (← isub c.head (← c32 1)) c.head, ← select isAgg sum c.snd])
-        pure %[r.head])
-    atomicStore (← status prefTag (← iadd excl.head tcount)) (← stat b) .relaxed
-    storeI32 (← isub (← iadd (← load32 (← at4 base tid)) excl.head) start) (← at4 outAt tid)
-    callLocalVoid barrier %[]
-    let mut outs := #[]
-    for r in List.range ITEMS do
-      let i ← iadd tid (← c32 (256 * r))
-      let ok ← if full then pure yes else icmp .ult (← iadd tile i) n
-      let key ← load32 (← at4 sk i)
-      let o ← iadd (← load32 (← at4 outAt (← digit key))) i
-      whenOk ok do storeI32 key (← at4 kout o)
-      outs := outs.push (ok, o)
-    callLocalVoid barrier %[]
-    for (((ok, _, _), pos), val) in (items.zip places).zip vals do
-      whenOk ok do storeI32 val (← at4 sk pos)
-    callLocalVoid barrier %[]
-    for (r, ok, o) in (List.range ITEMS).zip outs.toList do
-      whenOk ok do storeI32 (← load32 (← at4 sk (← iadd tid (← c32 (256 * r))))) (← at4 vout o)
+      let o ← iadd (← load32 (← at4 outAt (← firstDigit))) (← isub run tile)
+      let ko ← at4 kout o
+      let vo ← at4 vout o
+      for (_, key, r) in items do storeI32 key (← at_ ko (4 * 32 * r))
+      for r in List.range ITEMS do storeI32 (← load32 (← itemAt vin yes r)) (← at_ vo (4 * 32 * r))
+    let ranked : Prog V L Unit := do
+      -- each key's place among its warp's keys of its digit
+      let wcnt ← at4 cnt (← imul w (← c32 256))
+      let mut ranks := #[]
+      for (ok, key, _) in items do
+        let d ← digit key
+        let m ← peers d ok
+        let lead ← band ok (← icmp .eq (← ctz m) lane)
+        let slot ← at4 wcnt d
+        let before ← ifte (jTys := [.i32]) .ne (← bit lead) (← c32 0)
+          (thn := do
+            let c ← load32 slot
+            storeI32 (← iadd c (← popcnt m)) slot
+            pure %[c])
+          (els := do pure %[← c32 0])
+        let bs ← callLocal shflIdx %[before.head, ← band (← ctz m) (← c32 31)]
+        ranks := ranks.push (← iadd bs (← popcnt (← band m ltMask)))
+        callLocalVoid barrier %[]
+      -- each warp's counts become the counts of the warps before it, and the
+      -- tile's count of each digit is their sum
+      let mut acc ← c32 0
+      for k in List.range 8 do
+        let slot ← at4 cnt (← iadd (← c32 (256 * k)) tid)
+        let t ← load32 slot
+        storeI32 acc slot
+        acc ← iadd acc t
+      -- each digit's start in the tile
+      let (start, _) ← blockScan tid sm SSCAN acc
+      storeI32 start (← at4 tds tid)
+      callLocalVoid barrier %[]
+      -- the tile's keys in digit order, each as soon as its place is known, then
+      -- out in that order (threads next to each other writing places next to
+      -- each other)
+      let places ← (items.zip ranks).mapM fun ((ok, key, _), rank) => do
+        let d ← if full then digit key else select ok (← digit key) (← c32 0)
+        let pos ← iadd (← iadd (← load32 (← at4 tds d)) (← load32 (← at4 wcnt d))) rank
+        whenOk ok do storeI32 key (← at4 sk pos)
+        pure pos
+      -- the values, now the keys no longer hold registers
+      let vals ← items.mapM fun (ok, _, r) => do load32 (← itemAt vin ok r)
+      -- looked back once the values' loads are under way and the keys are in
+      -- place (the tiles before have published their counts by then)
+      let excl ← lookBack
+      storeI32 (← isub (← iadd (← load32 (← at4 base tid)) excl) start) (← at4 outAt tid)
+      callLocalVoid barrier %[]
+      let mut outs := #[]
+      for r in List.range ITEMS do
+        let i ← iadd tid (← c32 (256 * r))
+        let ok ← if full then pure yes else icmp .ult (← iadd tile i) n
+        let key ← load32 (← at4 sk i)
+        let o ← iadd (← load32 (← at4 outAt (← digit key))) i
+        whenOk ok do storeI32 key (← at4 kout o)
+        outs := outs.push (ok, o)
+      callLocalVoid barrier %[]
+      for (((ok, _, _), pos), val) in (items.zip places).zip vals do
+        whenOk ok do storeI32 val (← at4 sk pos)
+      callLocalVoid barrier %[]
+      for (r, ok, o) in (List.range ITEMS).zip outs.toList do
+        whenOk ok do storeI32 (← load32 (← at4 sk (← iadd tid (← c32 (256 * r))))) (← at4 vout o)
+    if full then
+      let one ← bit (← icmp .eq (← load32 (← at4 thist (← firstDigit))) (← c32 TILE))
+      let _ ← ifte (jTys := []) .ne one (← c32 0)
+        (thn := do straight; pure %[])
+        (els := do ranked; pure %[])
+    else ranked
 
   let full ← bit (← icmp .ule (← iadd tile (← c32 TILE)) n)
   let _ ← ifte (jTys := []) .ne full (← c32 0)
