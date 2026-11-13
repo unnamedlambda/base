@@ -251,6 +251,14 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
       match r with
       | some (.sc _ v) => pure (.step, w', some (d, v))
       | _ => .error "a wide mma answered by no value"
+  | .mmaB hi d a0 a1 a2 a3 b0 b1 e => do
+      let x0 ← opndV c regs a0; let x1 ← opndV c regs a1; let x2 ← opndV c regs a2
+      let x3 ← opndV c regs a3; let x4 ← opndV c regs b0; let x5 ← opndV c regs b1; let x6 ← opndV c regs e
+      let (r, w') ← collV c w (if hi then .mmaBfHi else .mmaBfLo) [.sc .i32 (mask 32 x0), .sc .i32 (mask 32 x1),
+        .sc .i32 (mask 32 x2), .sc .i32 (mask 32 x3), .sc .i32 (mask 32 x4), .sc .i32 (mask 32 x5), .sc .i64 x6]
+      match r with
+      | some (.sc _ v) => pure (.step, w', some (d, v))
+      | _ => .error "a bf16 mma answered by no value"
   | .bar _ => do
       let (_, w') ← collV c w .barrier []
       pure (.step, w', none)
@@ -476,6 +484,23 @@ theorem exec_run (c : Ctx) (i : Instr) (ts : TS) :
         cases r with
         | none => norm
         | some v => cases v <;> norm
+  | mmaB hi d a0 a1 a2 a3 b0 b1 e =>
+      simp only [exec, stepV]; norm
+      rd opndV c ts.regs a0
+      rd opndV c ts.regs a1
+      rd opndV c ts.regs a2
+      rd opndV c ts.regs a3
+      rd opndV c ts.regs b0
+      rd opndV c ts.regs b1
+      rd opndV c ts.regs e
+      cases hc : collV c ts.w _ _ with
+      | error e => simp only [hc]; norm
+      | ok rw =>
+        obtain ⟨r, w'⟩ := rw
+        simp only [hc]; norm
+        cases r with
+        | none => norm
+        | some v => cases v <;> norm
   | vote d p k =>
       simp only [exec, stepV]; norm
       rd opndV c ts.regs p
@@ -676,6 +701,23 @@ theorem stepV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren
       cases opndV c regs a3 <;> try rfl
       cases opndV c regs b0 <;> try rfl
       cases opndV c regs b1 <;> try rfl
+      simp only [bind, Except.bind]
+      cases collV c w _ _ <;> try rfl
+      rename_i rw
+      obtain ⟨r, w'⟩ := rw
+      cases r with
+      | none => rfl
+      | some v => cases v <;> rfl
+  | mmaB hi d a0 a1 a2 a3 b0 b1 e =>
+      rw_reads; rw [R a0 (by ag hag), R a1 (by ag hag), R a2 (by ag hag), R a3 (by ag hag), R b0 (by ag hag),
+        R b1 (by ag hag), R e (by ag hag)]
+      cases opndV c regs a0 <;> try rfl
+      cases opndV c regs a1 <;> try rfl
+      cases opndV c regs a2 <;> try rfl
+      cases opndV c regs a3 <;> try rfl
+      cases opndV c regs b0 <;> try rfl
+      cases opndV c regs b1 <;> try rfl
+      cases opndV c regs e <;> try rfl
       simp only [bind, Except.bind]
       cases collV c w _ _ <;> try rfl
       rename_i rw

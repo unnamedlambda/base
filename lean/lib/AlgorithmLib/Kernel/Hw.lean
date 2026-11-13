@@ -23,6 +23,11 @@ def gpuNaN (t : ClifTy) (_ : UInt64) : UInt64 :=
   | .f64 => 0x7fffffffffffffff
   | _ => 0x7fffffff
 
+/-- `c` plus the products of bf16 values, in f64, rounded once to f32. -/
+def bfDot (as bs : List UInt64) (c : UInt64) : UInt64 :=
+  let v (b : UInt64) : Float := Float32.toFloat (f32 (b <<< 16))
+  ofF32 ((as.zip bs).foldl (fun acc (a, b) => acc + v a * v b) (Float32.toFloat (f32 c))).toFloat32
+
 /-- **The hardware's approximations**: the bits each approximating
     intrinsic (`ex2`, `rcp`, `lg2`, `sin`, `cos`, `sqrt` and `rsqrt`, each
     `.approx.f32`) gives on
@@ -32,6 +37,11 @@ def gpuNaN (t : ClifTy) (_ : UInt64) : UInt64 :=
     nothing else is said. The hardware's NaN results are `nan`'s. -/
 structure Hw where
   approx : Intr → UInt64 → UInt64
+  /-- The f32 bits the hardware's bf16 `mma` leaves for one sum: `c` (f32
+      bits) plus the products of the bf16 values `as` and `bs` (their bits),
+      in order. A tensor core does not round each step as f32 arithmetic
+      would; by default the sum is taken in f64 and rounded once. -/
+  mmaF : List UInt64 → List UInt64 → UInt64 → UInt64 := bfDot
   /-- What the hardware's float arithmetic leaves where a result is a NaN
       (`Mem.nan`): by default a GPU's, one NaN whatever the operands. -/
   nan : ClifTy → UInt64 → UInt64 := gpuNaN

@@ -177,7 +177,7 @@ def dPtx : List String :=
   -- a prompt's kernels, many tokens at once (`GptOssPrefill`)
   , GptOssKernels.Body.moduleOf GptOssPrefill.rmsT, GptOssKernels.Body.moduleOf GptOssPrefill.quantRows
   , GptOssKernels.Body.moduleOf (GptOssPrefill.q8Gemm dQkvOut HH), GptOssKernels.Body.moduleOf GptOssPrefill.ropeT
-  , GptOssKernels.Body.moduleOf GptOssPrefill.kvNarrow, GptOssKernels.Body.moduleOf GptOssPrefill.attnT
+  , GptOssKernels.Body.moduleOf GptOssPrefill.kvNarrow, GptOssKernels.Body.moduleOf GptOssPrefill.attnF
   , GptOssKernels.Body.moduleOf GptOssPrefill.kvStoreT, GptOssKernels.Body.moduleOf (GptOssPrefill.q8Gemm HH QO)
   , GptOssKernels.Body.moduleOf GptOssPrefill.addRows, GptOssKernels.Body.moduleOf GptOssPrefill.routerLogits
   , GptOssKernels.Body.moduleOf GptOssPrefill.routerTopT, GptOssKernels.Body.moduleOf GptOssPrefill.group
@@ -1317,7 +1317,7 @@ def dPrefillChunkM (toks T start : V .i64) : Prog V L Unit := do
     dEnqueueG ptr S_PROPE (← cdiv (← imul T32 (← iconst32 ((NQ + NKV) * (HD / 2)))) 256) NBLK [B_PQKV, B_ROPE, B_PM_T]
     let kvGrid ← cdiv (← imul T32 (← iconst32 (NKV * HD / 2))) 256
     dEnqueueG ptr S_PKVN kvGrid NBLK [B_PQKV, B_PKC, B_PVC, B_PM_T]
-    dEnqueueG ptr S_PATTN (← imul (← iconst32 NKV) (← cdiv T32 GptOssPrefill.AT_TOK)) 128
+    dEnqueueG ptr S_PATTN (← imul (← iconst32 NKV) (← cdiv T32 GptOssPrefill.AT_TOK)) 256
       [B_PQKV, B_PKC, B_PVC, C_KC, C_VC, W_SINKS, B_PATT, B_PM_T]
     dEnqueueG ptr S_PKVS kvGrid NBLK [B_PKC, B_PVC, C_KC, C_VC, B_PM_T]
     dEnqueueG ptr S_PQUANT (← cdiv (← imul Tp (← iconst32 (QO / 32))) 256) NBLK [B_PATT, B_PXQ, B_PXS, B_PM_QA]

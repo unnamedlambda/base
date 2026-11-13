@@ -241,6 +241,29 @@ def mmaWLane (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : In
   let c1b ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 5 c
   pure (Intr.mmaWVal ra rb c0a c0b c1a c1b)
 
+/-- A word's two bf16 values, the low first. -/
+def bfPair (w : UInt64) : List UInt64 := [w &&& 0xffff, (w >>> 16) &&& 0xffff]
+
+/-- **A bf16 `mma`'s answer to lane `lane`**, half `h` (its row `lane / 4`,
+    or eight past): the row's sixteen values, words `h` and `h + 2` of the four
+    lanes of the row, against the sixteen of each of its columns
+    `2 · (lane mod 4)` and the next, words 4 and 5 of the column's four lanes,
+    each sum the f32 the hardware leaves (`hw.mmaF`) for the accumulator
+    `lane` passed (its seventh word's low and high halves). -/
+def mmaBfLane (hw : Hw) (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Intr) (h : Nat) :
+    Except String UInt64 := do
+  let ra ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k h c
+  let rb ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k (h + 2) c
+  let c0a ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4)) + q) k 4 c
+  let c0b ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4)) + q) k 5 c
+  let c1a ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 4 c
+  let c1b ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 5 c
+  let acc ← laneWord calls warp lane k 6 c
+  let row := ra.flatMap bfPair ++ rb.flatMap bfPair
+  let d0 := hw.mmaF row (c0a.flatMap bfPair ++ c0b.flatMap bfPair) (acc &&& 0xffffffff) &&& 0xffffffff
+  let d1 := hw.mmaF row (c1a.flatMap bfPair ++ c1b.flatMap bfPair) (acc >>> 32) &&& 0xffffffff
+  pure (d0 ||| (d1 <<< 32))
+
 /-- The law's answer to one collective of lane `lane` of warp `warp`, its
     `k`-th, after `nbar` barriers. -/
 def answerStep (hw : Hw) (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
@@ -266,6 +289,12 @@ def answerStep (hw : Hw) (calls : Nat → List (Intr × List V)) (snaps : Array 
           pure (nbar, out.push (.val (.sc .i64 r)))
       | .mmaHi, _ => do
           let r ← mmaWLane calls warp lane k c 1
+          pure (nbar, out.push (.val (.sc .i64 r)))
+      | .mmaBfLo, _ => do
+          let r ← mmaBfLane hw calls warp lane k c 0
+          pure (nbar, out.push (.val (.sc .i64 r)))
+      | .mmaBfHi, _ => do
+          let r ← mmaBfLane hw calls warp lane k c 1
           pure (nbar, out.push (.val (.sc .i64 r)))
       | _, _ => throw s!"{c.name} on arguments it does not take"
 

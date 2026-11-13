@@ -789,6 +789,13 @@ inductive Intr where
       (`mmaWVal`); the six words a lane passes are its four of `A` and its two
       of `B`. -/
   | mmaLo | mmaHi
+  /-- `mma.sync.m16n8k16.row.col.f32.bf16.bf16.f32`: lane `l` gets its row
+      `l / 4` (`mmaBfLo`) or `l / 4 + 8` (`mmaBfHi`) at columns `2 · (l mod 4)`
+      and the next, each the f32 the hardware leaves (`Hw.mmaF`) for the
+      accumulator it passed (the low and high words of its seventh) plus the
+      bf16 products; the first six words a lane passes are its four of `A`
+      and its two of `B`, two bf16 values each. -/
+  | mmaBfLo | mmaBfHi
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 namespace Intr
@@ -803,6 +810,7 @@ def sig : Intr → List ClifTy × Option ClifTy
   | .sharedAdd => ([.i64, .i32], none)
   | .prmt => ([.i32, .i32, .i32], some .i32)
   | .mmaLo | .mmaHi => ([.i32, .i32, .i32, .i32, .i32, .i32], some .i64)
+  | .mmaBfLo | .mmaBfHi => ([.i32, .i32, .i32, .i32, .i32, .i32, .i64], some .i64)
 
 def name : Intr → String
   | .shflBfly => "shfl.bfly" | .shflIdx => "shfl.idx" | .ballot => "ballot" | .barrier => "barrier"
@@ -810,6 +818,7 @@ def name : Intr → String
   | .sinApprox => "sin.approx" | .cosApprox => "cos.approx" | .sqrtApprox => "sqrt.approx"
   | .rsqrtApprox => "rsqrt.approx" | .dp4a => "dp4a" | .sharedAdd => "shared.add"
   | .prmt => "prmt" | .mmaLo => "mma.lo" | .mmaHi => "mma.hi"
+  | .mmaBfLo => "mma.bf16.lo" | .mmaBfHi => "mma.bf16.hi"
 
 /-- Whether other threads answer it: a collective, rather than the hardware's
     arithmetic. -/
@@ -825,9 +834,10 @@ def slot : Intr → Nat
   | .sinApprox => 2 ^ 33 + 7 | .cosApprox => 2 ^ 33 + 8 | .sqrtApprox => 2 ^ 33 + 9
   | .rsqrtApprox => 2 ^ 33 + 10 | .dp4a => 2 ^ 33 + 11 | .sharedAdd => 2 ^ 33 + 12
   | .prmt => 2 ^ 33 + 14 | .mmaLo => 2 ^ 33 + 15 | .mmaHi => 2 ^ 33 + 16
+  | .mmaBfLo => 2 ^ 33 + 17 | .mmaBfHi => 2 ^ 33 + 18
 
 def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx,
-  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .prmt, .mmaLo, .mmaHi]
+  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .prmt, .mmaLo, .mmaHi, .mmaBfLo, .mmaBfHi]
 
 /-- The low byte `i` of `x`, as a signed integer. -/
 def sbyte (x : UInt64) (i : Nat) : Int :=

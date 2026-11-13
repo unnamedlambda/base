@@ -526,11 +526,27 @@ def intr6 (d : Val) (c : Intr) (a0 a1 a2 a3 b0 b1 : Val) : LM Unit :=
   | .mmaHi => do emit (.mmaW true (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1))
   | c => fail s!"{c.name} with six arguments"
 
-/-- An intrinsic of three words or more, into `d`: three (`intr3`) or six
-    (`intr6`). -/
+/-- The intrinsics of six words, a 64-bit accumulator and a 64-bit answer:
+    the bf16 `mma`. -/
+def word7 : Intr → Bool
+  | .mmaBfLo | .mmaBfHi => true
+  | _ => false
+
+/-- A seven-argument intrinsic, into `d`: a bf16 `mma`'s half. -/
+def intr7 (d : Val) (c : Intr) (a0 a1 a2 a3 b0 b1 e : Val) : LM Unit :=
+  match c with
+  | .mmaBfLo => do
+      emit (.mmaB false (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
+  | .mmaBfHi => do
+      emit (.mmaB true (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
+  | c => fail s!"{c.name} with seven arguments"
+
+/-- An intrinsic of three words or more, into `d`: three (`intr3`), six
+    (`intr6`) or seven (`intr7`). -/
 def intrN (d : Val) (c : Intr) (a b e : Val) : List Val → LM Unit
   | [] => intr3 d c a b e
   | [a3, b0, b1] => intr6 d c a b e a3 b0 b1
+  | [a3, b0, b1, x] => intr7 d c a b e a3 b0 b1 x
   | _ => fail s!"{c.name} on arguments it does not take"
 
 /-- One instruction that is not a terminator. -/
@@ -1043,11 +1059,14 @@ def takesAtomic (F : Ptx.Facts) : Option Val → Atomic → List Val → Bool
   | _, _, _ => false
 
 /-- An intrinsic of words the compiler takes: three (`Ptx.word3`) or six
-    (`Ptx.word6`), every one an `i32`. -/
+    (`Ptx.word6`), every one an `i32`, or six and a 64-bit accumulator
+    (`Ptx.word7`). -/
 def takesN (F : Ptx.Facts) (c : Intr) (a b e : Val) : List Val → Bool
   | [] => Ptx.word3 c && isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
   | [a3, b0, b1] => Ptx.word6 c && isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32] &&
       isTy F a3 [.i32] && isTy F b0 [.i32] && isTy F b1 [.i32]
+  | [a3, b0, b1, x] => Ptx.word7 c && isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32] &&
+      isTy F a3 [.i32] && isTy F b0 [.i32] && isTy F b1 [.i32] && isTy F x [.i64]
   | _ => false
 
 /-- **What the compiler takes**: the instructions it lowers, each in the forms

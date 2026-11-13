@@ -49,6 +49,11 @@ def prmtR : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .prmt }
 def mmaLoR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32] (some .i64) := { callee := .intr .mmaLo }
 def mmaHiR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32] (some .i64) := { callee := .intr .mmaHi }
 
+/-- A bf16 `mma`'s row `l / 4` (`mmaBfLoR`) or eight past (`mmaBfHiR`) from an
+    accumulator pair: two f32 sums in a 64-bit answer. -/
+def mmaBfLoR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32, .i64] (some .i64) := { callee := .intr .mmaBfLo }
+def mmaBfHiR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32, .i64] (some .i64) := { callee := .intr .mmaBfHi }
+
 /-- `red.shared.add.u32`: `x` added to the shared word at `p`, which every
     thread finds after the next barrier. -/
 def sharedAdd : LocalRef [.i64, .i32] none := { callee := .intr .sharedAdd }
