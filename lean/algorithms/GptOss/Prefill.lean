@@ -783,16 +783,16 @@ def attnFBody : Prog V L Unit := do
       let j0 ← iadd lo0 (← imul cs.head (← c32 AT_KEYS))
       -- a key's word `wd` (its dimensions `2 wd`, `2 wd + 1`), from the cache
       -- or the chunk
+      -- (a cache that wraps is the sliding layers' ring, of `CAP_SWA` slots, a
+      -- power of two; a full layer's holds every position)
       let kvWord (cache chunk : V .i64) (j wd : V .i32) : Prog V L (V .i32) := do
         let jc ← select (← icmp .ult j hi0) j lo0
         let fromCache ← icmp .ult jc start
-        let slot ← isub jc (← imul (← udiv jc cap) cap)
+        let slot ← select (← icmp .ult jc cap) jc (← band jc (← isub cap (← c32 1)))
         let cIx ← iadd (← imul kh stride) (← iadd (← imul slot (← c32 (HD / 2))) wd)
         let chunkT ← select fromCache (← c32 0) (← isub jc start)
         let kIx ← iadd (← imul (← iadd (← imul chunkT (← c32 NKV)) kh) (← c32 (HD / 2))) wd
-        let wcache ← load32 (← at4 cache (← select fromCache cIx (← c32 0)))
-        let wchunk ← load32 (← at4 chunk (← select fromCache (← c32 0) kIx))
-        select fromCache wcache wchunk
+        load32 (← select fromCache (← at4 cache cIx) (← at4 chunk kIx))
       -- the keys, row by row
       for rep in List.range (AT_KEYS * HD / 2 / 256) do
         let wi ← iadd tid (← c32 (256 * rep))
