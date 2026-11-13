@@ -359,12 +359,6 @@ def exec (c : Ctx) : Instr → M Next
       match r with
       | some (.sc _ v) => setReg d (mask 32 v); pure .step
       | _ => throw "a ballot answered by no value"
-  | .mma d a b e => do
-      let r ← coll c .mma [.sc .i32 (mask 32 (← opnd c a)), .sc .i32 (mask 32 (← opnd c b)),
-        .sc .i32 (mask 32 (← opnd c e))]
-      match r with
-      | some (.sc _ v) => setReg d (mask 32 v); pure .step
-      | _ => throw "an mma answered by no value"
   | .mmaW hi d a0 a1 a2 a3 b0 b1 => do
       let x0 ← opnd c a0; let x1 ← opnd c a1; let x2 ← opnd c a2
       let x3 ← opnd c a3; let x4 ← opnd c b0; let x5 ← opnd c b1

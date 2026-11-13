@@ -161,16 +161,6 @@ theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array B
   | dp4a => rfl
   | prmt => rfl
   | sharedAdd => rfl
-  | mma =>
-      simp only [callView, show (Intr.mma == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]
-      match args with
-      | [_, _, .sc ty x] =>
-          simp only [answerStep, mmaLane, laneWord, laneArg_view_of calls warp _ k .mma rfl]
-      | [] => rfl
-      | [_] => rfl
-      | [_, _] => rfl
-      | [_, _, .vec _ _] => rfl
-      | _ :: _ :: c3 :: _ :: _ => cases c3 <;> rfl
   | mmaLo =>
       simp only [callView, show (Intr.mmaLo == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]
       simp only [answerStep, mmaWLane, laneWord, laneArg_view_of calls warp _ k .mmaLo rfl]
@@ -275,21 +265,6 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
-      · simp only [bind, Except.bind] at hr
-        split at hr
-        · cases hr
-        rename_i r hm
-        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        refine ⟨_, rfl, fun v hv => ?_⟩
-        cases hv
-        unfold mmaLane at hm
-        simp only [bind, Except.bind] at hm
-        split at hm
-        · cases hm
-        split at hm
-        · cases hm
-        simp only [pure, Except.pure, Except.ok.injEq] at hm; subst hm
-        exact ⟨_, _, rfl⟩
       · simp only [bind, Except.bind] at hr
         split at hr
         · cases hr

@@ -227,16 +227,6 @@ def laneWord (calls : Nat → List (Intr × List V)) (warp lane k i : Nat) (c : 
   | some (.sc _ x) => pure x
   | _ => throw "an mma of other than words"
 
-/-- **An `mma`'s answer to lane `lane`**, `acc` the word it passed third: the
-    `m8n8k16` product's row `lane / 4`, column `2 · (lane mod 4)` — the first
-    words of the four lanes of its row against the second words of the four
-    lanes of its column (`Intr.mmaVal`). -/
-def mmaLane (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Intr) (acc : UInt64) :
-    Except String UInt64 := do
-  let as ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k 0 c
-  let bs ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (8 * (lane % 4) + q) k 1 c
-  pure (Intr.mmaVal acc as bs)
-
 /-- **A wide `mma`'s answer to lane `lane`**, half `h` (its row `lane / 4`, or
     eight past): the row's words `h` and `h + 2` from the four lanes of the
     row, against words 4 and 5 from the four lanes of each of its columns
@@ -271,9 +261,6 @@ def answerStep (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray)
             | _ => throw "a ballot of other than one value") (0 : UInt32)
           pure (nbar, out.push (.val (.sc .i32 bits.toUInt64)))
       | .sharedAdd, _ => pure (nbar, out.push (.val (.sc .i32 0)))
-      | .mma, [_, _, .sc _ x] => do
-          let r ← mmaLane calls warp lane k c x
-          pure (nbar, out.push (.val (.sc .i32 r)))
       | .mmaLo, _ => do
           let r ← mmaWLane calls warp lane k c 0
           pure (nbar, out.push (.val (.sc .i64 r)))

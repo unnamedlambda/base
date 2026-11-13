@@ -25,9 +25,10 @@ import all Init.Data.List.Sort.Basic
   12, and its block's e8m0 scale is a power of two; a Q8_0 value is an int8
   with an f32 scale a block. A token's activations, quantised to int8 a block
   of thirty-two at a time with one float scale, make each block's product an
-  exact integer sum, which int8 `mma` (`Intr.mma`) computes for eight rows and
-  four tokens at a time; it is scaled once a block by the weight's scale
-  (halved, for MXFP4's doubling) and the activation's.
+  exact integer sum, which the wide int8 `mma` (`Intr.mmaLo`, `Intr.mmaHi`)
+  computes for sixteen rows and eight tokens a block at a time; it is scaled
+  once a block by the weight's scale (halved, for MXFP4's doubling) and the
+  activation's.
 
   ## A layer
 
@@ -89,13 +90,15 @@ def msmem (ks : Nat) : Nat := M_SX ks + ks * TT * 4
 /-- **The tile's sums by int8 `mma`**: for tile rows `r < TR` and tile tokens
     `t < TT`, `Σ_c W[wRow r][c] · x[tokRow t][c]` over `k` columns, `W` in
     format `fmt` (its values at `wb`, its scales at `ws`, a row each), `x` as
-    int8 (`xq`) with a float scale a block (`xsc`). Warp `w` takes rows `32 · (w mod 4) …` and tokens
-    `16 · (w / 4) …`; each `mma` is eight of its rows (lane `l`'s row
-    `l / 4`) against four of its tokens (lane `l` passing token `(l / 4) / 2`,
-    receiving token `l mod 4`), sixteen columns at a time, two a block. Thread
-    `tid`'s sum `4 · i + j` is tile row `32 · (w mod 4) + 8 i + (l / 4)` and tile
-    token `16 · (w / 4) + 4 j + l mod 4`. `tokRow` answers a row in range for
-    every tile token. -/
+    int8 (`xq`) with a float scale a block (`xsc`). Warp `w` takes rows
+    `32 · (w mod 4) …` and tokens `16 · (w / 4) …`; each wide `mma` is sixteen
+    of its rows against eight of its tokens, a whole block, lane `l` passing
+    its rows `l / 4` and `l / 4 + 8`'s words and token `l / 4`'s, and receiving
+    row `l / 4` (`mmaLo`) or eight past (`mmaHi`) at tokens `2 · (l mod 4)` and
+    the next. Thread `tid`'s sum `4 · i + j` is tile row
+    `32 · (w mod 4) + 8 i + (l / 4)` and tile token
+    `16 · (w / 4) + 8 · (j / 2) + 2 · (l mod 4) + j mod 2` (`mmaAt`). `tokRow`
+    answers a row in range for every tile token. -/
 def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRow tokRow : V .i32 → Prog V L (V .i32)) :
     Prog V L (List (V .f32)) := do
   let KS := ksOf k

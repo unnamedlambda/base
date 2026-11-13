@@ -49,10 +49,6 @@ def prmtR : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .prmt }
 def mmaLoR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32] (some .i64) := { callee := .intr .mmaLo }
 def mmaHiR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32] (some .i64) := { callee := .intr .mmaHi }
 
-/-- An int8 `mma.sync.m8n8k16`'s even column: lane `l` gets `c` plus row
-    `l / 4` of the warp's first words against column `2 · (l mod 4)` of its
-    second (`Intr.mmaVal`). -/
-def mmaR : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .mma }
 /-- `red.shared.add.u32`: `x` added to the shared word at `p`, which every
     thread finds after the next barrier. -/
 def sharedAdd : LocalRef [.i64, .i32] none := { callee := .intr .sharedAdd }

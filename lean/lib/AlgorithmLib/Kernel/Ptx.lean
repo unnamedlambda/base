@@ -501,17 +501,16 @@ def voidIntr : Intr → List Val → LM Unit
       emit (.redShared ad (← o x))
   | c, _ => fail s!"{c.name} without a result, on arguments it does not take"
 
-/-- The intrinsics of three words and a word: `dp4a`, `mma`, `prmt`. -/
+/-- The intrinsics of three words and a word: `dp4a`, `prmt`. -/
 def word3 : Intr → Bool
-  | .dp4a | .mma | .prmt => true
+  | .dp4a | .prmt => true
   | _ => false
 
-/-- A three-argument intrinsic with a word result, into `d`: `dp4a`, or an
-    int8 `mma`'s even column. -/
+/-- A three-argument intrinsic with a word result, into `d`: `dp4a` or
+    `prmt`. -/
 def intr3 (d : Val) (c : Intr) (a b e : Val) : LM Unit :=
   match c with
   | .dp4a => do emit (.dp4a (regOf .i32 d) (← o a) (← o b) (← o e))
-  | .mma => do emit (.mma (regOf .i32 d) (← o a) (← o b) (← o e))
   | .prmt => do emit (.prmt (regOf .i32 d) (← o a) (← o b) (← o e))
   | c => fail s!"{c.name} with three arguments"
 
