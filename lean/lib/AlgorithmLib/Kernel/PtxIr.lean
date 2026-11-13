@@ -230,6 +230,12 @@ structure Entry where
       this many threads a block, and registers few enough for this many
       blocks a multiprocessor. A larger block does not launch. -/
   bounds : Option (Nat × Nat) := none
+  /-- Cache hints for a kernel that streams its data through once: its
+      global loads that only read (`.nc`) do not allocate in L1, and its
+      global stores are evicted from L2 first (`.cs`). A hint changes no value
+      a load reads or a store writes, so the text changes and the instructions
+      do not. -/
+  stream : Bool := false
   deriving Repr, DecidableEq, Inhabited
 
 /-- A module: the PTX version, target and address size, the shared arrays at
@@ -382,10 +388,18 @@ def Instr.term : Instr → String
   | .mmaW .. | .mmaB .. | .mmaB2 .. => ""
   | _ => ";"
 
-def Line.text : Line → String
+/-- An instruction's text in an entry with `Entry.stream`'s cache hints
+    where `stream` holds. -/
+def Instr.textIn (stream : Bool) : Instr → String
+  | .ld .global true t d a =>
+      if stream then s!"ld.global.nc.L1::no_allocate.{t.name} {d.text}, {a.text}" else (Instr.ld .global true t d a).text
+  | .st .global t a v => if stream then s!"st.global.cs.{t.name} {a.text}, {v.text}" else (Instr.st .global t a v).text
+  | i => i.text
+
+def Line.text (stream : Bool := false) : Line → String
   | .label l => l.text ++ ":"
-  | .ins none i => "\t" ++ i.text ++ i.term
-  | .ins (some (neg, p)) i => s!"\t@{if neg then "!" else ""}{p.text} {i.text}{i.term}"
+  | .ins none i => "\t" ++ i.textIn stream ++ i.term
+  | .ins (some (neg, p)) i => s!"\t@{if neg then "!" else ""}{p.text} {i.textIn stream}{i.term}"
 
 def RegDecl.text : RegDecl → String
   | .range t p n => s!"\t.reg .{t.name} {p}<{n}>;"
@@ -403,7 +417,7 @@ def Entry.text (e : Entry) : String :=
     | some (n, m) => [s!".maxntid {n}, 1, 1", s!".minnctapersm {m}"]
     | none => []
   "\n".intercalate ([s!".visible .entry {e.name}("] ++ ps ++ [")"] ++ bd ++ ["{"] ++ e.regs.map RegDecl.text ++ sh ++
-    e.body.map Line.text ++ ["}"])
+    e.body.map (Line.text e.stream) ++ ["}"])
 
 /-- The module's text: its header, its shared arrays, then its entries, a
     blank line after each. -/

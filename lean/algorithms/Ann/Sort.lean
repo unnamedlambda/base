@@ -318,7 +318,7 @@ def hist : Kernel := AnnKernels.k "sort_hist" histBody 3 (4 * 1024)
 def gather : Kernel := AnnKernels.k "sort_gather" gatherBody 4
 def bases : Kernel := AnnKernels.k "sort_bases" baseBody 2 (4 * 8)
 def scatter : Kernel :=
-  { AnnKernels.k "sort_scatter" scatterBody 7 SCATTER_SMEM with bounds := some (256, 3) }
+  { AnnKernels.k "sort_scatter" scatterBody 7 SCATTER_SMEM with bounds := some (256, 3), stream := true }
 
 /-- The kernels, each its own module, by index. -/
 def kernels : List Kernel := [hist, AnnKernels.rowSelect, gather, bases, scatter]
