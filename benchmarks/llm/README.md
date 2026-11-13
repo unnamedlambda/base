@@ -37,7 +37,7 @@ never the two at once. Builds run under the cap.
 
 ## Where base stands, and why
 
-Base decodes at 1.00x of llama.cpp at 512 and 0.93x at 8192 (its decode
+Base decodes at 1.02x of llama.cpp at 512 and 0.97x at 8192 (its decode
 512 tokens deeper than llama.cpp's). What is left at depth:
 - **attention**, the fused tile kernel at about 140 GB/s against the
   card's 333;
@@ -47,14 +47,14 @@ Base decodes at 1.00x of llama.cpp at 512 and 0.93x at 8192 (its decode
 - **the experts** at about 68% of the card's bandwidth
   (`applications/gpt-oss/kernel_bench.py`).
 
-Base's prompt runs at 0.98x of llama.cpp at 512 and 0.62x at 8192. The
+Base's prompt runs at 1.06x of llama.cpp at 512 and 0.87x at 8192. The
 prefill (`lean/algorithms/GptOss/Prefill.lean`) puts a chunk of up to 512
-tokens through each layer at once, its projections and experts on the int8
+tokens through each layer at once: its projections and experts on the int8
 tensor cores (the wide `mma`, m16n8k32, MXFP4 and Q8_0 weights against
-activations quantized per 32-block). What is left is attention at depth:
-llama.cpp's flash attention runs on f16 tensor cores, 31 ms in all for a
-prompt at 8192 (ncu on llama-bench), where base's runs in fp32 on the CUDA
-cores, about ten times that.
+activations quantized per 32-block), its attention on the bf16 tensor cores
+(flash-style, the softmax online in the lanes). What is left at depth is
+attention: llama.cpp's takes 31 ms in all for a prompt at 8192 (ncu on
+llama-bench).
 
 ## Not built
 
