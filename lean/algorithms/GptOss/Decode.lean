@@ -1306,10 +1306,13 @@ def dPrefillChunkM (toks T start : V .i64) : Prog V L Unit := do
     let cap ← select swa (← iconst32 CAP_SWA) ctx
     dPrefillMetaM ptr B_PM_T [T32, start32, window, cap, ← imul cap (← iconst32 HDW)]
     dPrefillMetaM ptr B_PM_LAYER [layer]
-    let tp32 ← udiv Tp tt
+    -- the Q8 projections' token tiles (`GptOssPrefill.q8nj`)
+    let q8Tiles (cols : Nat) : Prog V L (V .i32) := do
+      let tq := GptOssPrefill.TTn (GptOssPrefill.q8nj cols)
+      udiv (← iadd Tp (← iconst32 (tq - 1))) (← iconst32 tq)
     dEnqueueG ptr S_PRMS (← cdiv T32 8) NBLK [B_PX, W_ANORM, B_PXN, B_PM_T]
     dEnqueueG ptr S_PQUANT (← cdiv (← imul Tp (← iconst32 (HH / 32))) 256) NBLK [B_PXN, B_PXQ, B_PXS, B_PM_QX]
-    dEnqueueG ptr S_PQKV (← imul (← iconst32 (dQkvOut / GptOssPrefill.TR)) tp32) NBLK
+    dEnqueueG ptr S_PQKV (← imul (← iconst32 (dQkvOut / GptOssPrefill.TR)) (← q8Tiles HH)) NBLK
       [W_QKVW, B_PXQ, B_PXS, B_PQKV, W_QKVB, B_PM_TP]
     dEnqueueG ptr S_PROPE (← cdiv (← imul T32 (← iconst32 ((NQ + NKV) * (HD / 2)))) 256) NBLK [B_PQKV, B_ROPE, B_PM_T]
     let kvGrid ← cdiv (← imul T32 (← iconst32 (NKV * HD / 2))) 256
@@ -1318,7 +1321,7 @@ def dPrefillChunkM (toks T start : V .i64) : Prog V L Unit := do
       [B_PQKV, B_PKC, B_PVC, C_KC, C_VC, W_SINKS, B_PATT, B_PM_T]
     dEnqueueG ptr S_PKVS kvGrid NBLK [B_PKC, B_PVC, C_KC, C_VC, B_PM_T]
     dEnqueueG ptr S_PQUANT (← cdiv (← imul Tp (← iconst32 (QO / 32))) 256) NBLK [B_PATT, B_PXQ, B_PXS, B_PM_QA]
-    dEnqueueG ptr S_PO (← imul (← iconst32 ((HH + GptOssPrefill.TR - 1) / GptOssPrefill.TR)) tp32) NBLK
+    dEnqueueG ptr S_PO (← imul (← iconst32 ((HH + GptOssPrefill.TR - 1) / GptOssPrefill.TR)) (← q8Tiles QO)) NBLK
       [W_OW, B_PXQ, B_PXS, B_PTMP, W_OB, B_PM_TP]
     let hGrid ← cdiv (← imul T32 (← iconst32 HH)) 256
     dEnqueueG ptr S_PADD hGrid NBLK [B_PX, B_PTMP, B_PM_TH]
