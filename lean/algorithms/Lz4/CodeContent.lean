@@ -366,8 +366,8 @@ theorem launch_output (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : Pt
     (hOdis : ∀ c c', c < numBlocks → c' < numBlocks → c' ≠ c → ∀ a, O c' a → ¬ O c a) :
     ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
-        [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
+      RunsLaunch hw (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+        [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs ∧
       (∀ c, c < numBlocks → ∀ a, O c a → u.mem.load a 1 = some (((compressorBodyWStmt inStride lenOff hashLog).eval f
         (startWS numBlocks inStride outStride hashLog c inP (G c))).gmem.getD a.toNat 0).toUInt64) ∧
       ∀ a, NotArena a → (∀ c, c < numBlocks → ¬ O c a) → u.mem.load a 1 = (launchWorld bufs hw.nan).mem.load a 1 := by

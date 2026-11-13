@@ -243,7 +243,7 @@ def mmaWLane (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : In
 
 /-- The law's answer to one collective of lane `lane` of warp `warp`, its
     `k`-th, after `nbar` barriers. -/
-def answerStep (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
+def answerStep (hw : Hw) (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
     (warp lane : Nat) : Nat × Array Answer → (Intr × List V) × Nat → Except String (Nat × Array Answer)
   | (nbar, out), ((c, args), k) =>
       match c, args with
@@ -270,15 +270,15 @@ def answerStep (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray)
       | _, _ => throw s!"{c.name} on arguments it does not take"
 
 /-- What the laws answer thread `t`'s collectives, in order. -/
-def answersOf (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
+def answersOf (hw : Hw) (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
     (t : Nat) : Except String (List Answer) := do
-  let (_, out) ← (calls t).zipIdx.foldlM (answerStep calls snaps smem0 (t / 32) (t % 32)) (0, #[])
+  let (_, out) ← (calls t).zipIdx.foldlM (answerStep hw calls snaps smem0 (t / 32) (t % 32)) (0, #[])
   pure out.toList
 
 /-- **The laws**, from what every thread of a block passed. -/
-def answers (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
+def answers (hw : Hw) (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
     (stores : Nat → List (Nat × UInt64 × Nat × UInt64)) : Except String (Nat → List Answer) := do
-  let per ← (List.range threads).mapM (answersOf calls (snapshots threads smem0 calls stores) smem0)
+  let per ← (List.range threads).mapM (answersOf hw calls (snapshots threads smem0 calls stores) smem0)
   pure fun t => per.getD t []
 
 /-- The collectives a thread's run made, none if it failed. -/
@@ -308,12 +308,12 @@ def Kernel.run (k : Kernel) (hw : Hw) (steps : Nat) : Runner :=
     so far, the answers the laws give from what they passed, and the most
     collectives any thread made. A thread that fails here is reported by the
     last pass, which runs every thread again. -/
-def round (run : Runner) (blockDim : Nat) (smem0 : ByteArray) (args : Nat → List V) (w0 : World)
+def round (hw : Hw) (run : Runner) (blockDim : Nat) (smem0 : ByteArray) (args : Nat → List V) (w0 : World)
     (ans : Nat → List Answer) : Except String ((Nat → List Answer) × Nat) := do
   let runs := (List.range blockDim).map fun t => run true (ans t) (args t) w0
   let calls (t : Nat) := runCalls (runs.getD t (.error "")) w0.obs.length
   let stores (t : Nat) := runStores (runs.getD t (.error "")) w0.obs.length
-  let ans' ← answers blockDim smem0 calls stores
+  let ans' ← answers hw blockDim smem0 calls stores
   pure (ans', (List.range blockDim).foldl (fun m t => max m (calls t).length) 0)
 
 /-- `n` rounds from `ans`. -/
@@ -349,17 +349,17 @@ def passStep (run : Runner) (smem0 : ByteArray) (args : Nat → List V) (ans : N
     by rounds from none, one more than the collectives the first round's
     threads make (each round settles one more: a collective's arguments depend
     only on the answers before it). -/
-def block (run : Runner) (smem blockIdx blockDim : Nat) (params : List V) (w : World) :
+def block (hw : Hw) (run : Runner) (smem blockIdx blockDim : Nat) (params : List V) (w : World) :
     Except String World := do
   let smem0 := ByteArray.mk (Array.replicate smem 0)
   let w0 : World := { w with mem := { w.mem with arena := smem0 } }
   let args := threadArgs blockIdx blockDim params
-  let step := fun ans => round run blockDim smem0 args w0 ans
+  let step := fun ans => round hw run blockDim smem0 args w0 ans
   let (_, n) ← step fun _ => []
   let ans ← rounds step (n + 1) fun _ => []
   let (w', calls, stores) ← (List.range blockDim).foldlM (passStep run smem0 args ans)
     (w0, fun _ => [], fun _ => [])
-  let ans' ← answers blockDim smem0 calls stores
+  let ans' ← answers hw blockDim smem0 calls stores
   unless (List.range blockDim).all (fun t => decide (ans' t = ans t)) do
     throw "the laws' answers are not settled"
   pure { w' with mem := { w'.mem with arena := w.mem.arena } }
@@ -369,18 +369,18 @@ def bufAddr (i : Nat) (h : i < 268435449 := by decide) : UInt64 := addrOf (.buf 
 
 /-- **A launch**: `grid` blocks of `blockDim` threads, each with `smem` bytes
     of shared memory, on device memory `bufs`, buffer by number, its float
-    arithmetic leaving NaNs as `nan` says, and what it holds after. -/
-def launchOn (run : Runner) (smem grid blockDim : Nat) (params : List V) (bufs : Nat → ByteArray)
-    (nan : ClifTy → UInt64 → UInt64) : Except String (Nat → ByteArray) := do
-  let w : World := { mem := { arena := .empty, data := .empty, out := .empty, bufs, nan } }
-  let w' ← (List.range grid).foldlM (fun w b => block run smem b blockDim params w) w
+    hardware `hw` (its float arithmetic leaving NaNs as `hw.nan` says, its
+    collectives' laws), and what it holds after. -/
+def launchOn (hw : Hw) (run : Runner) (smem grid blockDim : Nat) (params : List V) (bufs : Nat → ByteArray) :
+    Except String (Nat → ByteArray) := do
+  let w : World := { mem := { arena := .empty, data := .empty, out := .empty, bufs, nan := hw.nan } }
+  let w' ← (List.range grid).foldlM (fun w b => block hw run smem b blockDim params w) w
   pure w'.mem.bufs
 
 /-- A launch of kernel `k`, buffer `i` the `i`-th of a list. -/
 def launch (k : Kernel) (grid blockDim : Nat) (params : List V) (bufs : List ByteArray) :
     Except String (List ByteArray) := do
-  let out ← launchOn (k.run Hw.rounded 100000000) k.smem grid blockDim params (fun i => bufs.getD i .empty)
-    Hw.rounded.nan
+  let out ← launchOn Hw.rounded (k.run Hw.rounded 100000000) k.smem grid blockDim params (fun i => bufs.getD i .empty)
   pure ((List.range bufs.length).map out)
 
 -- ---------------------------------------------------------------------------
@@ -468,9 +468,9 @@ theorem foldl_keep {α β : Type} (l : List β) : ∀ a : α, l.foldl (fun m _ =
   | nil => intro a; rfl
   | cons x xs ih => intro a; exact ih a
 
-theorem answers_quiet (n : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
+theorem answers_quiet (hw : Hw) (n : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
     (stores : Nat → List (Nat × UInt64 × Nat × UInt64)) (hc : ∀ t, t < n → calls t = []) :
-    answers n smem0 calls stores = .ok fun _ => [] := by
+    answers hw n smem0 calls stores = .ok fun _ => [] := by
   unfold answers
   rw [mapM_congr_mem _ (fun _ => (pure [] : Except String (List Answer))) _ (fun t ht => by
     simp [answersOf, hc t (List.mem_range.mp ht)])]
@@ -489,15 +489,15 @@ theorem runs_getD {α : Type} (f : Nat → α) (n t : Nat) (d : α) (ht : t < n)
     ((List.range n).map f).getD t d = f t := by
   simp [List.getD_eq_getElem?_getD, ht]
 
-theorem round_quiet (run : Runner) (bd : Nat) (smem0 : ByteArray) (args : Nat → List V) (w0 : World)
+theorem round_quiet (hw : Hw) (run : Runner) (bd : Nat) (smem0 : ByteArray) (args : Nat → List V) (w0 : World)
     (ans : Nat → List Answer)
     (hc : ∀ t, t < bd → runCalls (run true (ans t) (args t) w0) w0.obs.length = []) :
-    round run bd smem0 args w0 ans = .ok (fun _ => [], 0) := by
+    round hw run bd smem0 args w0 ans = .ok (fun _ => [], 0) := by
   have hc' : ∀ t, t < bd → runCalls (((List.range bd).map fun t => run true (ans t) (args t) w0).getD t
       (.error "")) w0.obs.length = [] := fun t ht => by rw [runs_getD _ _ _ _ ht]; exact hc t ht
   unfold round
   dsimp only
-  rw [answers_quiet _ _ _ _ hc']
+  rw [answers_quiet _ _ _ _ _ hc']
   simp only [bind, Except.bind]
   rw [foldl_congr_mem _ (fun m _ => m) _ _ (fun t ht m => by rw [hc' t (List.mem_range.mp ht)]; simp), foldl_keep]
   rfl
@@ -545,10 +545,10 @@ theorem pass_inv {run : Runner} {smem0 : ByteArray} {args : Nat → List V} {ans
 /-- **A quiet kernel's block is its threads in order**: when no thread that
     finishes, whatever it is answered and wherever it starts, has made a
     collective, the laws answer nothing. -/
-theorem block_quiet (run : Runner) (smem b bd : Nat) (params : List V) (w : World)
+theorem block_quiet (hw : Hw) (run : Runner) (smem b bd : Nat) (params : List V) (w : World)
     (hq : ∀ t, t < bd → ∀ ans s u (prov : Bool), run prov ans (threadArgs b bd params t) s = .ok u →
       collCalls u s.obs.length = []) :
-    block run smem b bd params w = blockPlain run smem b bd params w := by
+    block hw run smem b bd params w = blockPlain run smem b bd params w := by
   have hr : ∀ t, t < bd → ∀ ans, runCalls (run true ans (threadArgs b bd params t)
       { w with mem := { w.mem with arena := ByteArray.mk (Array.replicate smem 0) } }) w.obs.length = [] := by
     intro t ht ans
@@ -558,22 +558,22 @@ theorem block_quiet (run : Runner) (smem b bd : Nat) (params : List V) (w : Worl
     · rfl
   unfold block blockPlain
   dsimp only
-  rw [round_quiet _ _ _ _ _ _ (fun t ht => hr t ht _)]
+  rw [round_quiet _ _ _ _ _ _ _ (fun t ht => hr t ht _)]
   simp only [bind, Except.bind]
-  rw [rounds_quiet _ (round_quiet _ _ _ _ _ _ (fun t ht => hr t ht _))]
+  rw [rounds_quiet _ (round_quiet _ _ _ _ _ _ _ (fun t ht => hr t ht _))]
   dsimp only
-  have hw := pass_world run (ByteArray.mk (Array.replicate smem 0)) (threadArgs b bd params) (fun _ => [])
+  have hpw := pass_world run (ByteArray.mk (Array.replicate smem 0)) (threadArgs b bd params) (fun _ => [])
     (List.range bd)
     ({ w with mem := { w.mem with arena := ByteArray.mk (Array.replicate smem 0) } }, fun _ => [], fun _ => [])
   cases hp : (List.range bd).foldlM (passStep run (ByteArray.mk (Array.replicate smem 0)) (threadArgs b bd params)
       (fun _ => []))
       ({ w with mem := { w.mem with arena := ByteArray.mk (Array.replicate smem 0) } }, fun _ => [], fun _ => []) with
   | error e =>
-    rw [hp] at hw
-    simp only at hw ⊢
-    rw [← hw]; rfl
+    rw [hp] at hpw
+    simp only at hpw ⊢
+    rw [← hpw]; rfl
   | ok r =>
-    rw [hp] at hw
+    rw [hp] at hpw
     obtain ⟨w', calls, stores⟩ := r
     have hc : ∀ t, calls t = [] :=
       pass_inv (fun s => ∀ t, s.2.1 t = []) (List.range bd) _ _
@@ -590,9 +590,9 @@ theorem block_quiet (run : Runner) (smem b bd : Nat) (params : List V) (w : Worl
               have h := hq t (List.mem_range.mp ht) _ _ _ false hu; exact h
             · simp only [e, if_false]; exact hs t')
         (fun _ => rfl) hp
-    simp only [Except.map] at hw
-    rw [← hw]
-    simp only [answers_quiet _ _ _ _ (fun t _ => hc t)]
+    simp only [Except.map] at hpw
+    rw [← hpw]
+    simp only [answers_quiet _ _ _ _ _ (fun t _ => hc t)]
     rw [if_pos (by simp)]
     rfl
 
@@ -600,14 +600,14 @@ end Quiet
 
 /-- **A block's answers are settled**: a block that runs ran its threads in
     order with answers the laws give back from what those runs passed. -/
-theorem block_settled {run : Runner} {smem b bd : Nat} {params : List V} {w u : World}
-    (h : block run smem b bd params w = .ok u) :
+theorem block_settled {hw : Hw} {run : Runner} {smem b bd : Nat} {params : List V} {w u : World}
+    (h : block hw run smem b bd params w = .ok u) :
     let smem0 := ByteArray.mk (Array.replicate smem 0)
     let w0 : World := { w with mem := { w.mem with arena := smem0 } }
     ∃ ans w' calls stores ans',
       (List.range bd).foldlM (passStep run smem0 (threadArgs b bd params) ans) (w0, fun _ => [], fun _ => []) =
         .ok (w', calls, stores) ∧
-      answers bd smem0 calls stores = .ok ans' ∧ (∀ t, t < bd → ans' t = ans t) ∧
+      answers hw bd smem0 calls stores = .ok ans' ∧ (∀ t, t < bd → ans' t = ans t) ∧
       u = { w' with mem := { w'.mem with arena := w.mem.arena } } := by
   intro smem0 w0
   unfold block at h
@@ -647,51 +647,51 @@ a launch means, whatever runs its threads at some fuel (`run : Nat → Runner`);
 /-- **A block runs** from `w` to `u`: its threads in order, each with its
     answers, which the laws give back from what those runs passed; each run
     ends, at one fuel. -/
-def RunsBlock (run : Nat → Runner) (smem b bd : Nat) (params : List V) (w u : World) : Prop :=
+def RunsBlock (hw : Hw) (run : Nat → Runner) (smem b bd : Nat) (params : List V) (w u : World) : Prop :=
   let smem0 := ByteArray.mk (Array.replicate smem 0)
   let w0 : World := { w with mem := { w.mem with arena := smem0 } }
   ∃ steps ans w' calls stores ans',
     (List.range bd).foldlM (passStep (run steps) smem0 (threadArgs b bd params) ans)
       (w0, fun _ => [], fun _ => []) = .ok (w', calls, stores) ∧
-    answers bd smem0 calls stores = .ok ans' ∧ (∀ t, t < bd → ans' t = ans t) ∧
+    answers hw bd smem0 calls stores = .ok ans' ∧ (∀ t, t < bd → ans' t = ans t) ∧
     u = { w' with mem := { w'.mem with arena := w.mem.arena } }
 
-theorem block_runs {run : Nat → Runner} {steps smem b bd : Nat} {params : List V} {w u : World}
-    (h : block (run steps) smem b bd params w = .ok u) : RunsBlock run smem b bd params w u :=
+theorem block_runs {hw : Hw} {run : Nat → Runner} {steps smem b bd : Nat} {params : List V} {w u : World}
+    (h : block hw (run steps) smem b bd params w = .ok u) : RunsBlock hw run smem b bd params w u :=
   ⟨steps, block_settled h⟩
 
 /-- The first `c` blocks of a grid run, in order. -/
-def RunsBlocks (run : Nat → Runner) (smem bd : Nat) (params : List V) : Nat → World → World → Prop
+def RunsBlocks (hw : Hw) (run : Nat → Runner) (smem bd : Nat) (params : List V) : Nat → World → World → Prop
   | 0, w, u => u = w
-  | c + 1, w, u => ∃ v, RunsBlocks run smem bd params c w v ∧ RunsBlock run smem c bd params v u
+  | c + 1, w, u => ∃ v, RunsBlocks hw run smem bd params c w v ∧ RunsBlock hw run smem c bd params v u
 
 /-- **A launch runs**: `grid` blocks of `blockDim` threads, in order, on
-    device memory `bufs`, buffer by number, its float arithmetic leaving NaNs
-    as `nan` says, leaving `bufs'`. -/
-def RunsLaunch (run : Nat → Runner) (smem grid blockDim : Nat) (params : List V) (bufs bufs' : Nat → ByteArray)
-    (nan : ClifTy → UInt64 → UInt64) : Prop :=
-  ∃ u, RunsBlocks run smem blockDim params grid { mem := { arena := .empty, data := .empty, out := .empty, bufs, nan } } u ∧
+    device memory `bufs`, buffer by number, on hardware `hw` (its float
+    arithmetic leaving NaNs as `hw.nan` says), leaving `bufs'`. -/
+def RunsLaunch (hw : Hw) (run : Nat → Runner) (smem grid blockDim : Nat) (params : List V) (bufs bufs' : Nat → ByteArray) :
+    Prop :=
+  ∃ u, RunsBlocks hw run smem blockDim params grid { mem := { arena := .empty, data := .empty, out := .empty, bufs, nan := hw.nan } } u ∧
     u.mem.bufs = bufs'
 
 /-- A block of kernel `k` runs, its Code each thread. -/
 abbrev BlockRuns (k : Kernel) (b bd : Nat) (params : List V) (hw : Hw) (w u : World) : Prop :=
-  RunsBlock (k.run hw) k.smem b bd params w u
+  RunsBlock hw (k.run hw) k.smem b bd params w u
 
 /-- The first `c` blocks of kernel `k`'s grid run. -/
 abbrev BlocksRun (k : Kernel) (bd : Nat) (params : List V) (hw : Hw) (c : Nat) (w u : World) : Prop :=
-  RunsBlocks (k.run hw) k.smem bd params c w u
+  RunsBlocks hw (k.run hw) k.smem bd params c w u
 
 /-- **A launch of kernel `k` runs**, its Code each thread, the hardware's
     approximations `hw`'s. -/
 abbrev LaunchRuns (k : Kernel) (grid blockDim : Nat) (params : List V) (bufs bufs' : Nat → ByteArray)
     (hw : Hw := Hw.rounded) : Prop :=
-  RunsLaunch (k.run hw) k.smem grid blockDim params bufs bufs' hw.nan
+  RunsLaunch hw (k.run hw) k.smem grid blockDim params bufs bufs'
 
 /-- **What `launchOn` computes is a run of the launch.** -/
-theorem launchOn_runs {run : Nat → Runner} {steps smem grid bd : Nat} {params : List V} {bufs bufs' : Nat → ByteArray}
-    {nan : ClifTy → UInt64 → UInt64}
-    (h : launchOn (run steps) smem grid bd params bufs nan = .ok bufs') :
-    RunsLaunch run smem grid bd params bufs bufs' nan := by
+theorem launchOn_runs {hw : Hw} {run : Nat → Runner} {steps smem grid bd : Nat} {params : List V}
+    {bufs bufs' : Nat → ByteArray}
+    (h : launchOn hw (run steps) smem grid bd params bufs = .ok bufs') :
+    RunsLaunch hw run smem grid bd params bufs bufs' := by
   unfold launchOn at h
   simp only [bind, Except.bind] at h
   split at h
@@ -699,9 +699,9 @@ theorem launchOn_runs {run : Nat → Runner} {steps smem grid bd : Nat} {params 
   rename_i W hfold
   cases h
   refine ⟨W, ?_, rfl⟩
-  suffices hs : ∀ c W, (List.range c).foldlM (fun w b => block (run steps) smem b bd params w)
-      ({ mem := { arena := .empty, data := .empty, out := .empty, bufs, nan } } : World) = .ok W →
-      RunsBlocks run smem bd params c { mem := { arena := .empty, data := .empty, out := .empty, bufs, nan } } W from
+  suffices hs : ∀ c W, (List.range c).foldlM (fun w b => block hw (run steps) smem b bd params w)
+      ({ mem := { arena := .empty, data := .empty, out := .empty, bufs, nan := hw.nan } } : World) = .ok W →
+      RunsBlocks hw run smem bd params c { mem := { arena := .empty, data := .empty, out := .empty, bufs, nan := hw.nan } } W from
     hs grid W hfold
   intro c
   induction c with

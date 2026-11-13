@@ -40,6 +40,8 @@ namespace AlgorithmLib.Kernel
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HProg.Hoare
 open AlgorithmLib.HProg.Contracts AlgorithmLib.LibSpec AlgorithmLib.Prog
 
+variable {hw : Hw}
+
 
 /-- Locals that answer collectives as a thread answered from `ans` does: any
     collective but a barrier or a shared add the value `valAt` gives, cut to its type
@@ -194,7 +196,7 @@ theorem foldlM_zipIdx_push {α β σ : Type} (g : σ × Array β → α × Nat �
 /-- **A butterfly shuffle's answer**: lane `l xor m`'s value at the same
     collective. -/
 theorem answersOf_bfly {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
-    {t : Nat} {as : List Answer} (h : answersOf calls snaps smem0 t = .ok as)
+    {t : Nat} {as : List Answer} (h : answersOf hw calls snaps smem0 t = .ok as)
     {k : Nat} {a : V} {ty : ClifTy} {m : UInt64} (hk : (calls t)[k]? = some (.shflBfly, [a, .sc ty m])) :
     ∃ args, laneArg calls (t / 32) ((t % 32 ^^^ m.toNat) % 32) k .shflBfly = .ok args ∧
       as[k]? = some (.val (lane32 args)) := by
@@ -259,9 +261,9 @@ theorem answersOf_bfly {calls : Nat → List (Intr × List V)} {snaps : Array By
     and counts it if it is a barrier. -/
 theorem answerStep_push {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
     {warp lane nb : Nat} {out : Array Answer} {x : Intr × List V} {k : Nat} {r : Nat × Array Answer}
-    (h : answerStep calls snaps smem0 warp lane (nb, out) (x, k) = .ok r) :
+    (h : answerStep hw calls snaps smem0 warp lane (nb, out) (x, k) = .ok r) :
     ∃ y, r = (nb + (if x.1 == .barrier then 1 else 0), out.push y) ∧
-      answerStep calls snaps smem0 warp lane (nb, #[]) (x, k) =
+      answerStep hw calls snaps smem0 warp lane (nb, #[]) (x, k) =
         .ok (nb + (if x.1 == .barrier then 1 else 0), #[y]) := by
   obtain ⟨c, args⟩ := x
   unfold answerStep at h ⊢
@@ -313,20 +315,20 @@ theorem answerStep_push {calls : Nat → List (Intr × List V)} {snaps : Array B
 theorem foldAns {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
     {warp lane : Nat} :
     ∀ (l : List (Intr × List V)) (st nb : Nat) (out : Array Answer) (r : Nat × Array Answer),
-      (l.zipIdx st).foldlM (answerStep calls snaps smem0 warp lane) (nb, out) = .ok r →
+      (l.zipIdx st).foldlM (answerStep hw calls snaps smem0 warp lane) (nb, out) = .ok r →
       ∀ i x, l[i]? = some x → ∃ y nb', r.2[out.size + i]? = some y ∧
-        answerStep calls snaps smem0 warp lane (nb + (l.take i).countP (·.1 == .barrier), #[]) (x, st + i) =
+        answerStep hw calls snaps smem0 warp lane (nb + (l.take i).countP (·.1 == .barrier), #[]) (x, st + i) =
           .ok (nb', #[y])
   | [], st, nb, out, r, h, i, x, hx => by simp at hx
   | x0 :: xs, st, nb, out, r, h, i, x, hx => by
     simp only [List.zipIdx_cons, List.foldlM_cons] at h
-    cases hg : answerStep calls snaps smem0 warp lane (nb, out) (x0, st) with
+    cases hg : answerStep hw calls snaps smem0 warp lane (nb, out) (x0, st) with
     | error e => rw [hg] at h; cases h
     | ok r1 =>
       rw [hg] at h
       obtain ⟨y, rfl, hy⟩ := answerStep_push hg
       have hkeep : ∀ (l : List (Intr × List V)) st nb (out : Array Answer) r,
-          (l.zipIdx st).foldlM (answerStep calls snaps smem0 warp lane) (nb, out) = .ok r →
+          (l.zipIdx st).foldlM (answerStep hw calls snaps smem0 warp lane) (nb, out) = .ok r →
           ∀ j, j < out.size → r.2[j]? = out[j]? := by
         intro l
         induction l with
@@ -334,7 +336,7 @@ theorem foldAns {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray
         | cons z zs ih =>
           intro st nb out r h j hj
           simp only [List.zipIdx_cons, List.foldlM_cons] at h
-          cases hg' : answerStep calls snaps smem0 warp lane (nb, out) (z, st) with
+          cases hg' : answerStep hw calls snaps smem0 warp lane (nb, out) (z, st) with
           | error e => rw [hg'] at h; cases h
           | ok r2 =>
             rw [hg'] at h
@@ -358,9 +360,9 @@ theorem foldAns {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray
 /-- **What the laws answer a thread's `k`-th collective**: its step from the
     barriers before it. -/
 theorem answersOf_get {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
-    {t : Nat} {as : List Answer} (h : answersOf calls snaps smem0 t = .ok as) {k : Nat} {x : Intr × List V}
+    {t : Nat} {as : List Answer} (h : answersOf hw calls snaps smem0 t = .ok as) {k : Nat} {x : Intr × List V}
     (hk : (calls t)[k]? = some x) :
-    ∃ y nb', as[k]? = some y ∧ answerStep calls snaps smem0 (t / 32) (t % 32)
+    ∃ y nb', as[k]? = some y ∧ answerStep hw calls snaps smem0 (t / 32) (t % 32)
       (((calls t).take k).countP (·.1 == .barrier), #[]) (x, k) = .ok (nb', #[y]) := by
   unfold answersOf at h
   simp only [bind, Except.bind] at h
@@ -376,8 +378,8 @@ theorem answersOf_get {calls : Nat → List (Intr × List V)} {snaps : Array Byt
 /-- A collective's step answers the same whatever was answered before it. -/
 theorem answerStep_out {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
     {warp lane nb : Nat} (out : Array Answer) (x : (Intr × List V) × Nat) :
-    answerStep calls snaps smem0 warp lane (nb, out) x =
-      (answerStep calls snaps smem0 warp lane (nb, #[]) x).map fun r => (r.1, out ++ r.2) := by
+    answerStep hw calls snaps smem0 warp lane (nb, out) x =
+      (answerStep hw calls snaps smem0 warp lane (nb, #[]) x).map fun r => (r.1, out ++ r.2) := by
   obtain ⟨⟨c, args⟩, k⟩ := x
   unfold answerStep
   dsimp only
@@ -405,9 +407,9 @@ theorem foldAns_of {calls : Nat → List (Intr × List V)} {snaps : Array ByteAr
     {warp lane : Nat} :
     ∀ (l : List (Intr × List V)) (as : List Answer) (st nb : Nat) (out : Array Answer), as.length = l.length →
       (∀ i x a, l[i]? = some x → as[i]? = some a → ∃ nb',
-        answerStep calls snaps smem0 warp lane (nb + (l.take i).countP (·.1 == .barrier), #[]) (x, st + i) =
+        answerStep hw calls snaps smem0 warp lane (nb + (l.take i).countP (·.1 == .barrier), #[]) (x, st + i) =
           .ok (nb', #[a])) →
-      ∃ nbF, (l.zipIdx st).foldlM (answerStep calls snaps smem0 warp lane) (nb, out) = .ok (nbF, out ++ as.toArray)
+      ∃ nbF, (l.zipIdx st).foldlM (answerStep hw calls snaps smem0 warp lane) (nb, out) = .ok (nbF, out ++ as.toArray)
   | [], [], _, nb, out, _, _ => ⟨nb, by simp; rfl⟩
   | [], _ :: _, _, _, _, h, _ => by simp at h
   | _ :: _, [], _, _, _, h, _ => by simp at h
@@ -420,7 +422,7 @@ theorem foldAns_of {calls : Nat → List (Intr × List V)} {snaps : Array ByteAr
     have hya : y = a0 := by
       have := congrArg (·[0]?) hy2; simpa using this.symm
     subst hya
-    have hs : answerStep calls snaps smem0 warp lane (nb, out) (x0, st) =
+    have hs : answerStep hw calls snaps smem0 warp lane (nb, out) (x0, st) =
         .ok (nb + (if x0.1 == .barrier then 1 else 0), out.push y) := by
       rw [answerStep_out, h0]; simp only [Except.map]; rw [Array.push_eq_append]
     obtain ⟨nbF, hF⟩ := foldAns_of xs as (st + 1) (nb + (if x0.1 == .barrier then 1 else 0)) (out.push y)
@@ -438,17 +440,17 @@ theorem foldAns_of {calls : Nat → List (Intr × List V)} {snaps : Array ByteAr
 
 /-- The laws answer thread `t`'s `k`-th collective `a`: its step, from the
     barriers before it, answers `a`. -/
-def LawAt (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray) (t k : Nat)
+def LawAt (hw : Hw) (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray) (t k : Nat)
     (a : Answer) : Prop :=
-  ∃ x nb', (calls t)[k]? = some x ∧ answerStep calls snaps smem0 (t / 32) (t % 32)
+  ∃ x nb', (calls t)[k]? = some x ∧ answerStep hw calls snaps smem0 (t / 32) (t % 32)
     (((calls t).take k).countP (·.1 == .barrier), #[]) (x, k) = .ok (nb', #[a])
 
 /-- **The laws answer a thread with a list** where they answer each of its
     collectives with that list's entry there. -/
 theorem answersOf_of_get {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
     {t : Nat} {as : List Answer} (hlen : as.length = (calls t).length)
-    (h : ∀ k a, as[k]? = some a → LawAt calls snaps smem0 t k a) :
-    answersOf calls snaps smem0 t = .ok as := by
+    (h : ∀ k a, as[k]? = some a → LawAt hw calls snaps smem0 t k a) :
+    answersOf hw calls snaps smem0 t = .ok as := by
   obtain ⟨nbF, hF⟩ := foldAns_of (calls := calls) (snaps := snaps) (smem0 := smem0) (warp := t / 32)
     (lane := t % 32) (calls t) as 0 0 #[] hlen (fun i x a hx ha => by
       obtain ⟨x', nb', hx', hs⟩ := h i a ha
@@ -469,7 +471,7 @@ theorem laneArg_congr {F F' : Nat → List (Intr × List V)} {k : Nat} (hF : ∀
 theorem answerStep_congr {F F' : Nat → List (Intr × List V)} {snaps snaps' : Array ByteArray} {smem0 : ByteArray}
     {warp lane nb k : Nat} {out : Array Answer} {x : Intr × List V} (hF : ∀ t, (F t)[k]? = (F' t)[k]?)
     (hs : x.1 = .barrier → snaps[nb]? = snaps'[nb]?) :
-    answerStep F snaps smem0 warp lane (nb, out) (x, k) = answerStep F' snaps' smem0 warp lane (nb, out) (x, k) := by
+    answerStep hw F snaps smem0 warp lane (nb, out) (x, k) = answerStep hw F' snaps' smem0 warp lane (nb, out) (x, k) := by
   obtain ⟨c, args⟩ := x
   have hl := laneArg_congr hF
   unfold answerStep
@@ -482,11 +484,11 @@ theorem answerStep_congr {F F' : Nat → List (Intr × List V)} {snaps snaps' : 
     every thread's `k`-th call is the same, thread `t`'s calls before it are
     the same, and a barrier's snapshot is the same. -/
 theorem LawAt.mono {F F' : Nat → List (Intr × List V)} {snaps snaps' : Array ByteArray} {smem0 : ByteArray}
-    {t k : Nat} {a : Answer} (h : LawAt F snaps smem0 t k a) (hF : ∀ t', (F t')[k]? = (F' t')[k]?)
+    {t k : Nat} {a : Answer} (h : LawAt hw F snaps smem0 t k a) (hF : ∀ t', (F t')[k]? = (F' t')[k]?)
     (htk : (F t).take k = (F' t).take k)
     (hs : ∀ x, (F t)[k]? = some x → x.1 = .barrier →
       snaps[((F t).take k).countP (·.1 == .barrier)]? = snaps'[((F t).take k).countP (·.1 == .barrier)]?) :
-    LawAt F' snaps' smem0 t k a := by
+    LawAt hw F' snaps' smem0 t k a := by
   obtain ⟨x, nb', hx, hst⟩ := h
   refine ⟨x, nb', by rw [← hF]; exact hx, ?_⟩
   rw [← htk, ← answerStep_congr hF (hs x hx), hst]
@@ -510,7 +512,7 @@ theorem lane32_word (a : List V) : ∃ x : UInt32, lane32 a = .sc .i32 (s32 x) :
 
 /-- **The laws answer scalars.** -/
 theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
-    {t : Nat} {as : List Answer} (h : answersOf calls snaps smem0 t = .ok as) : Words as := by
+    {t : Nat} {as : List Answer} (h : answersOf hw calls snaps smem0 t = .ok as) : Words as := by
   unfold answersOf at h
   simp only [bind, Except.bind] at h
   split at h
@@ -591,8 +593,8 @@ theorem mapM_ok {α β : Type} (g : α → Except String β) : ∀ (l : List α)
 /-- What the laws answer thread `t`. -/
 theorem answers_at {n : Nat} {smem0 : ByteArray} {calls : Nat → List (Intr × List V)}
     {stores : Nat → List (Nat × UInt64 × Nat × UInt64)} {f : Nat → List Answer}
-    (h : answers n smem0 calls stores = .ok f) {t : Nat} (ht : t < n) :
-    answersOf calls (snapshots n smem0 calls stores) smem0 t = .ok (f t) := by
+    (h : answers hw n smem0 calls stores = .ok f) {t : Nat} (ht : t < n) :
+    answersOf hw calls (snapshots n smem0 calls stores) smem0 t = .ok (f t) := by
   unfold answers at h
   simp only [bind, Except.bind] at h
   split at h
@@ -1104,7 +1106,7 @@ theorem snapshots_size (n : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr
 /-- **The laws answer shared memory of shared memory's size.** -/
 theorem answersOf_smem_size {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
     (hsn : ∀ B ∈ snaps, B.size = smem0.size) {t : Nat} {as : List Answer}
-    (h : answersOf calls snaps smem0 t = .ok as) :
+    (h : answersOf hw calls snaps smem0 t = .ok as) :
     ∀ (k : Nat) (B : ByteArray), as[k]? = some (.smem B) → B.size = smem0.size := by
   unfold answersOf at h
   simp only [bind, Except.bind] at h
@@ -1170,10 +1172,10 @@ theorem answersOf_smem_size {calls : Nat → List (Intr × List V)} {snaps : Arr
     snapshots, in order. -/
 theorem answersOf_bars {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
     {t n : Nat} (hc : calls t = List.replicate n (.barrier, [])) :
-    answersOf calls snaps smem0 t = .ok ((List.range n).map fun k => .smem (snaps[k]?.getD smem0)) := by
+    answersOf hw calls snaps smem0 t = .ok ((List.range n).map fun k => .smem (snaps[k]?.getD smem0)) := by
   have key : ∀ (n st m : Nat) (out : Array Answer),
       ((List.replicate n ((Intr.barrier, []) : Intr × List V)).zipIdx st).foldlM
-        (answerStep calls snaps smem0 (t / 32) (t % 32)) (m, out) =
+        (answerStep hw calls snaps smem0 (t / 32) (t % 32)) (m, out) =
         .ok (m + n, out ++ ((List.range n).map fun k => Answer.smem (snaps[m + k]?.getD smem0)).toArray) := by
     intro n
     induction n with

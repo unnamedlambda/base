@@ -786,7 +786,7 @@ theorem pass_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) (
 /-- The laws answer each collective of a pass with at least as many answers as
     it made collectives. -/
 theorem calls_le_ans {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray} {t : Nat}
-    {as : List Answer} (h : answersOf calls snaps smem0 t = .ok as) : (calls t).length ≤ as.length := by
+    {as : List Answer} (h : answersOf hw calls snaps smem0 t = .ok as) : (calls t).length ≤ as.length := by
   rcases Nat.eq_zero_or_pos (calls t).length with h0 | hpos
   · rw [h0]; exact Nat.zero_le _
   · obtain ⟨z, _, hz, _⟩ := answersOf_get h (List.getElem?_eq_getElem (show (calls t).length - 1 < (calls t).length by omega))
@@ -834,7 +834,7 @@ theorem block_phases (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
   obtain ⟨steps, ans, w'', calls, stores, ans', hfold, hans, hset, rfl⟩ := hr
   obtain ⟨Ws, hW0, hWN, hWs⟩ := pass_runs (32 * nw) _ _ hfold
   have hWN' : Ws (32 * nw) = w'' := hWN
-  have hA' : ∀ t, t < 32 * nw → answersOf calls (snapshots (32 * nw) (ByteArray.mk (Array.replicate smem 0)) calls stores)
+  have hA' : ∀ t, t < 32 * nw → answersOf hw calls (snapshots (32 * nw) (ByteArray.mk (Array.replicate smem 0)) calls stores)
       (ByteArray.mk (Array.replicate smem 0)) t = .ok (ans t) := fun t ht => by
     have := answers_at hans ht; rwa [hset t ht] at this
   obtain ⟨hInv, _, h1, h2⟩ := pass_phases hw hw32 name nbuf smem s ps hsp nw hnw hnw31 cta hcta hN A rd hacc hA hone

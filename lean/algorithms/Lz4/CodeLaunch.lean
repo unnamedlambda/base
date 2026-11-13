@@ -53,8 +53,8 @@ theorem launch_runs (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : PtxI
     (hdis : ∀ c c', c' < c → c < numBlocks → ∀ a, O c' a → ¬ I c a) :
     ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
-        [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
+      RunsLaunch hw (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+        [.sc .i64 inP, .sc .i64 outA] bufs u.mem.bufs ∧
       ∀ a, NotArena a → u.mem.load a 1 = replay ((List.range numBlocks).flatMap fun c =>
         blockStores f (compressorBodyWStmt inStride lenOff hashLog)
           (startWS numBlocks inStride outStride hashLog c inP (G c))) a ((launchWorld bufs hw.nan).mem.load a 1) := by

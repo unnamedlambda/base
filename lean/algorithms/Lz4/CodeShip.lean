@@ -52,7 +52,7 @@ def RoundTrips (k : AlgorithmLib.Kernel.Kernel) (nb iS oS lO : Nat) (hw : Hw) (o
     Prop :=
   ∃ e, k.shipped = .ok e ∧
   ∃ u : World, LaunchRuns k nb 32 [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw ∧
-    RunsLaunch (PtxRun.runner e hw) k.smem nb 32 [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
+    RunsLaunch hw (PtxRun.runner e hw) k.smem nb 32 [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs ∧
     (∀ o, o < nb * iS + copySlack → (u.mem.bufs 0).get! o = (bufs 0).get! o) ∧
     nb * iS + copySlack + nb * oS ≤ (u.mem.bufs 0).size ∧
     ∀ c, c < nb → ∃ n, n ≤ lO ∧
@@ -109,7 +109,7 @@ def LaunchesRun (k : AlgorithmLib.Kernel.Kernel) (e : PtxIr.Entry) (nb : Nat) (p
     Nat → (Nat → ByteArray) → (Nat → ByteArray) → Prop
   | 0, b, b' => b' = b
   | n + 1, b, b'' => ∃ b', LaunchRuns k nb 32 params b b' hw ∧
-      RunsLaunch (PtxRun.runner e hw) k.smem nb 32 params b b' hw.nan ∧ LaunchesRun k e nb params hw n b' b''
+      RunsLaunch hw (PtxRun.runner e hw) k.smem nb 32 params b b' ∧ LaunchesRun k e nb params hw n b' b''
 
 /-- **The shipped compressor's repeated launches round-trip every block**, as
     the artifact runs it (`rLaunches` times, `Lz4CompSafe.warp15_calls`): after

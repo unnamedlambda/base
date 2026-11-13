@@ -155,7 +155,7 @@ theorem callsOf_at (nan : ClifTy → UInt64 → UInt64) (x : UInt32) (o : Nat �
 theorem warp_sums {bd : Nat} (hbd : bd % 32 = 0) {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray}
     {smem0 : ByteArray} {ans : Nat → List Answer} (nan : ClifTy → UInt64 → UInt64) (Xl : Nat → UInt32)
     (hc : ∀ t, t < bd → calls t = callsOf nan (Xl t) (wordAt (ans t)))
-    (ha : ∀ t, t < bd → answersOf calls snaps smem0 t = .ok (ans t)) :
+    (ha : ∀ t, t < bd → answersOf hw calls snaps smem0 t = .ok (ans t)) :
     ∀ j, j ≤ 5 → ∀ t, t < bd → sums nan (Xl t) (wordAt (ans t)) j = bfly nan Xl (32 * (t / 32)) j (t % 32)
   | 0, _, t, ht => by simp only [sums, bfly]; congr 1; omega
   | j + 1, hj, t, ht => by

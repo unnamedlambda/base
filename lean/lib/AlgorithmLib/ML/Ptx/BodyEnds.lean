@@ -34,11 +34,11 @@ theorem answersOf_shfl {calls : Nat → List (Intr × List V)} {snaps : Array By
     (h : ∀ k x m, (calls t)[k]? = some (.shflBfly, [.sc .i32 x, .sc .i32 m]) →
       ∃ args, (calls (partner t m.toNat))[k]? = some (.shflBfly, args) ∧ lawAt k = .val (lane32 args))
     (hsh : ∀ e ∈ calls t, ∃ x m, e = (.shflBfly, [.sc .i32 x, .sc .i32 m])) :
-    answersOf calls snaps smem0 t = .ok ((List.range (calls t).length).map lawAt) := by
+    answersOf hw calls snaps smem0 t = .ok ((List.range (calls t).length).map lawAt) := by
   unfold answersOf
   suffices hs : ∀ (l : List (Intr × List V)) (st : Nat) (out : Array Answer),
       (∀ k e, l[k]? = some e → (calls t)[st + k]? = some e) →
-      (l.zipIdx st).foldlM (answerStep calls snaps smem0 (t / 32) (t % 32)) (0, out) =
+      (l.zipIdx st).foldlM (answerStep hw calls snaps smem0 (t / 32) (t % 32)) (0, out) =
         .ok (0, out ++ ((List.range l.length).map fun k => lawAt (st + k)).toArray) by
     have := hs (calls t) 0 #[] (fun k e he => by simpa using he)
     simp only [bind, Except.bind, this, pure, Except.pure]
@@ -52,7 +52,7 @@ theorem answersOf_shfl {calls : Nat → List (Intr × List V)} {snaps : Array By
     rw [Nat.add_zero] at he
     obtain ⟨x, m, rfl⟩ := hsh e (List.mem_of_getElem? he)
     obtain ⟨args, hp, hlaw⟩ := h st x m he
-    have hstep : answerStep calls snaps smem0 (t / 32) (t % 32) (0, out)
+    have hstep : answerStep hw calls snaps smem0 (t / 32) (t % 32) (0, out)
         ((.shflBfly, [.sc .i32 x, .sc .i32 m]), st) = .ok (0, out.push (lawAt st)) := by
       simp only [answerStep, laneArg, bind, Except.bind, pure, Except.pure]
       have hp' : (calls (32 * (t / 32) + (t % 32 ^^^ m.toNat) % 32))[st]? = some (.shflBfly, args) := hp
@@ -263,7 +263,7 @@ theorem block_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
     (fun t ht => hWs t ht (hInv t (by omega)).1 (hInv t (by omega)).2.1 (hInv t (by omega)).2.2)
   obtain ⟨c, st, hfold, hc⟩ := hS S (Nat.le_refl _)
   -- the laws give the warp's answers back
-  have hans_t : ∀ t, t < N → answersOf c (snapshots N A0 c st) A0 t = .ok (T t) := by
+  have hans_t : ∀ t, t < N → answersOf hw c (snapshots N A0 c st) A0 t = .ok (T t) := by
     intro t ht
     have hwi : t / 32 < nw := by omega
     let l : Lane := ⟨t % 32, Nat.mod_lt _ (by decide)⟩
@@ -307,7 +307,7 @@ theorem block_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
       obtain ⟨e', he', rfl⟩ := he
       obtain ⟨i, d, sr, m', ws, rfl, _⟩ := jOf_bfly hw nbuf cta nw rd hsp w.mem (t / 32) (hfits _ hwi) e' he'
       exact ⟨_, _, rfl⟩
-  have hans : Kernel.answers N A0 c st = .ok fun t => ((List.range N).map T).getD t [] := by
+  have hans : Kernel.answers hw N A0 c st = .ok fun t => ((List.range N).map T).getD t [] := by
     unfold Kernel.answers
     rw [mapM_range_ok _ T N hans_t]
     rfl

@@ -431,7 +431,7 @@ def runner (e : Entry) (hw : Hw) (steps : Nat) : Kernel.Runner :=
     `thread`, on device memory `bufs`. -/
 def launchOn (e : Entry) (smem grid blockDim : Nat) (params : List V) (bufs : Nat → ByteArray)
     (hw : Hw := Hw.rounded) : Except String (Nat → ByteArray) :=
-  Kernel.launchOn (runner e hw 100000000) smem grid blockDim params bufs hw.nan
+  Kernel.launchOn hw (runner e hw 100000000) smem grid blockDim params bufs
 
 /-- A word cut to a width is below `2` to that width. -/
 theorem mask_lt (t : Ty) (x : UInt64) : (mask t.width x).toNat < 2 ^ t.width := by

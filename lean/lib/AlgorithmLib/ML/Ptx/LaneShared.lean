@@ -1012,7 +1012,7 @@ theorem block_laws (S : Nat) (hS : S ≤ 2 ^ 36) (s : EWStmt) (ws0 : WSt F32)
     (hst : ∀ t, t < 32 → stores t = tagE cta (addrOf .arena 0) (laneOf t) 0 (trace hw cta im shEvLeaf 0 s ws0))
     (hin : ∀ e ∈ trace hw cta im shEvLeaf 0 s ws0, ∀ l, ∀ w ∈ wrF cta l e, w.1 + 2 ≤ S)
     (hok : ShOk cta (trace hw cta im shEvLeaf 0 s ws0)) :
-    ∀ t, t < 32 → answersOf calls (snapshots 32 (bytesOf S ws0.int.smem) calls stores) (bytesOf S ws0.int.smem) t =
+    ∀ t, t < 32 → answersOf hw calls (snapshots 32 (bytesOf S ws0.int.smem) calls stores) (bytesOf S ws0.int.smem) t =
       .ok ((trace hw cta im jLeaf 0 s ws0).map (ansOne cta S (laneOf t))) := by
   let J := trace hw cta im jLeaf 0 s ws0
   let EV := trace hw cta im shEvLeaf 0 s ws0
@@ -1023,7 +1023,7 @@ theorem block_laws (S : Nat) (hS : S ≤ 2 ^ 36) (s : EWStmt) (ws0 : WSt F32)
   have hall : (List.range 32).flatMap stores = (List.range 32).flatMap fun t => tagE cta (addrOf .arena 0) (laneOf t) 0 EV :=
     flatMap_congr' fun t ht => hst t (List.mem_range.mp ht)
   intro t ht
-  have := LaneLaws.warp_laws (snaps := snapshots 32 (bytesOf S ws0.int.smem) calls stores) (smem0 := bytesOf S ws0.int.smem)
+  have := LaneLaws.warp_laws (hw := hw) (snaps := snapshots 32 (bytesOf S ws0.int.smem) calls stores) (smem0 := bytesOf S ws0.int.smem)
     (S := S) (wi := 0) J hJ hc' ?_ (laneOf t)
   · rwa [show 32 * 0 + (laneOf t).val = t by simp [laneOf]; omega] at this
   intro l k i ws hk

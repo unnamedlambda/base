@@ -762,7 +762,7 @@ theorem jLeaf_mem {i : Nat} {s : EWStmt} {ws : WSt F32} {e : Nat × EWStmt × WS
     butterfly shuffle, each lane is answered the warp's answer. -/
 theorem law_bfly (hw : Hw) (cta : Nat) (im : Buf → Nat → Nat) (S : Nat)
     {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
-    (A : Lane → List Answer) (wi : Nat) (hA : ∀ l : Lane, answersOf calls snaps smem0 (32 * wi + l.val) = .ok (A l))
+    (A : Lane → List Answer) (wi : Nat) (hA : ∀ l : Lane, answersOf hw calls snaps smem0 (32 * wi + l.val) = .ok (A l))
     (s : EWStmt) (i : Nat) (ws : WSt F32) (hQ : AllAt im BflyOnly i s) (c0 j : Nat)
     (hj : j < (trace hw cta im jLeaf i s ws).length)
     (hall : ∀ l : Lane, (calls (32 * wi + l.val))[c0 + j]? = (trace hw cta im (callLeaf cta l) i s ws)[j]?) :

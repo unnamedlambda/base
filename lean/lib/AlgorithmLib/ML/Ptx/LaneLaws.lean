@@ -89,13 +89,13 @@ theorem ballot_u32 (p : Lane → UInt64) :
 /-! ## The laws, collective by collective -/
 
 section Laws
-variable {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
+variable {hw : Hw} {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
   {cta S wi k : Nat} {i : Nat} {ws : WSt F32}
 
 /-- **The laws answer a ballot the mask of the lanes' flags.** -/
 theorem lawAt_ballot {d : Nat} {p : IExp} (l : Lane)
     (hall : ∀ l' : Lane, (calls (32 * wi + l'.val))[k]? = some (callOne cta l' (i, .ballot d p, ws))) :
-    LawAt calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .ballot d p, ws)) := by
+    LawAt hw calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .ballot d p, ws)) := by
   refine ⟨_, ((calls (32 * wi + l.val)).take k).countP (·.1 == .barrier), hall l, ?_⟩
   obtain ⟨e1, e2⟩ := lane_div wi l
   have hg : ∀ acc l', l' < 32 → (do
@@ -127,7 +127,7 @@ theorem and_mask_mod (x : UInt64) : (x &&& 0xffffffff).toNat % 32 = x.toNat % 32
 /-- **The laws answer an index shuffle its source lane's word.** -/
 theorem lawAt_shflIdx {d : Nat} {v sr : IExp} (l : Lane)
     (hall : ∀ l' : Lane, (calls (32 * wi + l'.val))[k]? = some (callOne cta l' (i, .shflIdx d v sr, ws))) :
-    LawAt calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .shflIdx d v sr, ws)) := by
+    LawAt hw calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .shflIdx d v sr, ws)) := by
   refine ⟨_, ((calls (32 * wi + l.val)).take k).countP (·.1 == .barrier), hall l, ?_⟩
   obtain ⟨e1, e2⟩ := lane_div wi l
   let P : Lane := ISt.srcLane (sr.eval ws.int cta l)
@@ -142,7 +142,7 @@ theorem lawAt_shflIdx {d : Nat} {v sr : IExp} (l : Lane)
 /-- **The laws answer a butterfly shuffle its partner's word.** -/
 theorem lawAt_bfly {d sr m : Nat} (hm : m < 2 ^ 31) (l : Lane)
     (hall : ∀ l' : Lane, (calls (32 * wi + l'.val))[k]? = some (callOne cta l' (i, .shflXor d sr m, ws))) :
-    LawAt calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .shflXor d sr m, ws)) := by
+    LawAt hw calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .shflXor d sr m, ws)) := by
   refine ⟨_, ((calls (32 * wi + l.val)).take k).countP (·.1 == .barrier), hall l, ?_⟩
   obtain ⟨e1, e2⟩ := lane_div wi l
   have hmn : (s32 (UInt32.ofNat m)).toNat = m := by
@@ -162,7 +162,7 @@ theorem lawAt_barrier (l : Lane)
     (hl : (calls (32 * wi + l.val))[k]? = some (callOne cta l (i, .barrier, ws)))
     (hsnap : snaps[((calls (32 * wi + l.val)).take k).countP (·.1 == .barrier)]?.getD smem0 =
       bytesOf S ws.int.smem) :
-    LawAt calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .barrier, ws)) := by
+    LawAt hw calls snaps smem0 (32 * wi + l.val) k (ansOne cta S l (i, .barrier, ws)) := by
   refine ⟨_, ((calls (32 * wi + l.val)).take k).countP (·.1 == .barrier) + 1, hl, ?_⟩
   simp only [callOne, callLeaf, List.headD_cons, answerStep, pure, Except.pure, hsnap]
   rfl
@@ -182,7 +182,7 @@ theorem warp_laws {calls : Nat → List (Intr × List V)} {snaps : Array ByteArr
     (hc : ∀ l : Lane, calls (32 * wi + l.val) = J.map (callOne cta l))
     (hbar : ∀ (l : Lane) k i ws, J[k]? = some (i, .barrier, ws) →
       snaps[((calls (32 * wi + l.val)).take k).countP (·.1 == .barrier)]?.getD smem0 = bytesOf S ws.int.smem) :
-    ∀ l : Lane, answersOf calls snaps smem0 (32 * wi + l.val) = .ok (J.map (ansOne cta S l)) := by
+    ∀ l : Lane, answersOf hw calls snaps smem0 (32 * wi + l.val) = .ok (J.map (ansOne cta S l)) := by
   intro l
   refine answersOf_of_get (by rw [hc l]; simp) (fun k a ha => ?_)
   rw [List.getElem?_map] at ha

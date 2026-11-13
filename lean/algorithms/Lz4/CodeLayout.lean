@@ -197,8 +197,8 @@ theorem launch_denotes (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e : P
     (hend36 : numBlocks * inStride + copySlack + numBlocks * outStride ≤ 2 ^ 36) :
     ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
-        [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
+      RunsLaunch hw (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+        [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs ∧
       Denotes numBlocks inStride outStride lenOff hashLog (bufs 0) (u.mem.bufs 0) := by
   have hcs : copySlack = 32 := rfl
   -- where block `c`'s bytes are
@@ -468,8 +468,8 @@ theorem launch_roundtrips (hw : Hw) (hhw : PtxSound.HwOk hw) (name : String) {e 
     (hend36 : numBlocks * inStride + copySlack + numBlocks * outStride ≤ 2 ^ 36) :
     ∃ u : World, LaunchRuns (compressorKernel name numBlocks inStride outStride lenOff hashLog) numBlocks 32
         [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw ∧
-      RunsLaunch (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
-        [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs hw.nan ∧
+      RunsLaunch hw (PtxRun.runner e hw) (compressorKernel name numBlocks inStride outStride lenOff hashLog).smem numBlocks 32
+        [.sc .i64 base0, .sc .i64 outA] bufs u.mem.bufs ∧
       (∀ o, o < numBlocks * inStride + copySlack → (u.mem.bufs 0).get! o = (bufs 0).get! o) ∧
       numBlocks * inStride + copySlack + numBlocks * outStride ≤ (u.mem.bufs 0).size ∧
       ∀ c, c < numBlocks → ∃ n, n ≤ lenOff ∧

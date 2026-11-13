@@ -1018,12 +1018,12 @@ theorem block_run (hw : Hw) (hw32 : ∀ k v, (hw.approx k v).toNat < 2 ^ 32) (na
     simp only [step, hl, Option.map_some, Option.getD_some]
     exact hss
   have hlaws := block_laws hw cta (fun _ _ => 0) S hS s ws0 c st hJ hc' hst' hin hShOk
-  have hans_t : ∀ t, t < 32 → answersOf c (snapshots 32 A0 c st) A0 t = .ok (T t) := by
+  have hans_t : ∀ t, t < 32 → answersOf hw c (snapshots 32 A0 c st) A0 t = .ok (T t) := by
     intro t ht
     rw [hA0, hlaws t ht]
     show _ = Except.ok (LaneWarp.trace hw cta (fun _ _ => 0) (ansLeaf cta S (laneOf t)) 0 s ws0)
     rw [trace_ans]
-  have hans : Kernel.answers 32 A0 c st = .ok fun t => ((List.range 32).map T).getD t [] := by
+  have hans : Kernel.answers hw 32 A0 c st = .ok fun t => ((List.range 32).map T).getD t [] := by
     unfold Kernel.answers
     rw [mapM_range_ok _ T 32 hans_t]
     rfl

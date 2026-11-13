@@ -45,8 +45,8 @@ theorem shipped_geometry (b : Nat) (hb : b = 15 ∨ b = 16) :
     buffer 0 as `lz4Machine` says. -/
 theorem lz4Machine_realized (b : Nat) (hb : b = 15 ∨ b = 16) (hw : Hw) (hhw : PtxSound.HwOk hw) (outA : UInt64)
     (bufs : Nat → ByteArray) (hsize : (WP.mk b).bytes ≤ (bufs 0).size) :
-    ∃ e, (WP.mk b).code.shipped = .ok e ∧ ∃ bufs', RunsLaunch (PtxRun.runner e hw) (WP.mk b).code.smem
-      (WP.mk b).numBlk 32 [.sc .i64 base0, .sc .i64 outA] bufs bufs' hw.nan ∧
+    ∃ e, (WP.mk b).code.shipped = .ok e ∧ ∃ bufs', RunsLaunch hw (PtxRun.runner e hw) (WP.mk b).code.smem
+      (WP.mk b).numBlk 32 [.sc .i64 base0, .sc .i64 outA] bufs bufs' ∧
       lz4Machine b [bufs 0] [bufs' 0] := by
   have hc : ∀ k : Kernel, k.entry.isOk = true → ∃ e, k.entry = .ok e := fun k h => by
     cases he : k.entry with

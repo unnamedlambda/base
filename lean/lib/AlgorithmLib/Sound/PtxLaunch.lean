@@ -12,7 +12,7 @@ import all Init.Data.List.Sort.Basic
 A launch runs its blocks in order, and a block its threads in order, each with
 the answers the laws give back from what the threads recorded
 (`Kernel.BlockRuns`). The entry a kernel compiles to runs the same way, its
-threads PTX's (`RunsBlock (PtxRun.runner e hw)`). The two record their collectives alike as the
+threads PTX's (`RunsBlock hw (PtxRun.runner e hw)`). The two record their collectives alike as the
 laws read them (`calls_view`) and the same shared stores (`stores_view`), so
 the laws give the same answers, and each thread ends as its body's does
 (`thread_sound`). A block's PTX threads run at one fuel, which more fuel
@@ -105,10 +105,10 @@ theorem bit_view (v : V) : ((asBits (ballotBit v)).getD 0 != 0) = ((asBits v).ge
   | sc t b => by_cases h : b = 0 <;> simp [ballotBit, asBits, h]
   | vec t xs => simp [ballotBit, asBits]
 
-theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
+theorem answerStep_view {hw : Hw} (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray)
     (warp lane : Nat) (st : Nat × Array Answer) (x : Intr × List V) (k : Nat) :
-    answerStep (callsView calls) snaps smem0 warp lane st (callView x, k) =
-      answerStep calls snaps smem0 warp lane st (x, k) := by
+    answerStep hw (callsView calls) snaps smem0 warp lane st (callView x, k) =
+      answerStep hw calls snaps smem0 warp lane st (x, k) := by
   obtain ⟨n, out⟩ := st
   obtain ⟨c, args⟩ := x
   cases c with
@@ -186,9 +186,9 @@ theorem phaseAdds_view (b : Nat) (l : List (Intr × List V)) :
     simp only [callView, hb', Bool.false_eq_true, if_false]
 
 /-- **The laws read the records only as their view.** -/
-theorem answers_view (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
+theorem answers_view (hw : Hw) (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
     (stores : Nat → List (Nat × UInt64 × Nat × UInt64)) :
-    answers threads smem0 (callsView calls) stores = answers threads smem0 calls stores := by
+    answers hw threads smem0 (callsView calls) stores = answers hw threads smem0 calls stores := by
   have hsn : snapshots threads smem0 (callsView calls) stores = snapshots threads smem0 calls stores := by
     unfold snapshots callsView
     have : ∀ t, (((calls t).map callView).filter (·.1 == .barrier)).length = ((calls t).filter (·.1 == .barrier)).length := by
@@ -227,9 +227,9 @@ theorem entry_smem (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) : k.sme
   exact h
 
 /-- **The laws answer values a thread can take.** -/
-theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray) (t : Nat)
+theorem answersOf_ok {hw : Hw} (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray) (smem0 : ByteArray) (t : Nat)
     (hs0 : smem0.size < 2 ^ 32) (hsn : ∀ B ∈ snaps, B.size = smem0.size)
-    (as : List Answer) (h : answersOf calls snaps smem0 t = .ok as) : AnsOk as := by
+    (as : List Answer) (h : answersOf hw calls snaps smem0 t = .ok as) : AnsOk as := by
   refine ⟨?_, fun k b hk => by rw [Kernel.answersOf_smem_size hsn h k b hk]; exact hs0⟩
   unfold answersOf at h
   simp only [bind, Except.bind] at h
@@ -307,9 +307,9 @@ theorem mapM_ok_mem {α β : Type} (f : α → Except String β) :
       · exact ⟨a, hb⟩
       · exact mapM_ok_mem f l rs hrs y hy
 
-theorem answers_ok (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
+theorem answers_ok (hw : Hw) (threads : Nat) (smem0 : ByteArray) (calls : Nat → List (Intr × List V))
     (stores : Nat → List (Nat × UInt64 × Nat × UInt64)) (ans : Nat → List Answer)
-    (hs0 : smem0.size < 2 ^ 32) (h : answers threads smem0 calls stores = .ok ans) (t : Nat) :
+    (hs0 : smem0.size < 2 ^ 32) (h : answers hw threads smem0 calls stores = .ok ans) (t : Nat) :
     AnsOk (ans t) := by
   unfold answers at h
   simp only [bind, Except.bind] at h
@@ -468,12 +468,12 @@ theorem pass_sim (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) (hw : Hw)
 theorem block_sound (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) (hw : Hw) (hhw : HwOk hw)
     (b bd : Nat) (params : List V) (hargs : ∀ t, ArgsOk k (threadArgs b bd params t))
     (w u pw : World) (hs : Same w pw) (hpn : pw.mem.nan = hw.nan) (h : BlockRuns k b bd params hw w u) :
-    ∃ u', RunsBlock (PtxRun.runner e hw) k.smem b bd params pw u' ∧ Same u u' ∧ u'.mem.nan = hw.nan := by
+    ∃ u', RunsBlock hw (PtxRun.runner e hw) k.smem b bd params pw u' ∧ Same u u' ∧ u'.mem.nan = hw.nan := by
   obtain ⟨steps, ans, w', calls, stores, ans', hf, ha, hset, rfl⟩ := h
   have hsm : (ByteArray.mk (Array.replicate k.smem 0)).size < 2 ^ 32 := by
     simpa [ByteArray.size] using entry_smem k e he
   have hans : ∀ t ∈ List.range bd, AnsOk (ans t) := fun t ht => by
-    rw [← hset t (List.mem_range.mp ht)]; exact answers_ok _ _ _ _ _ hsm ha t
+    rw [← hset t (List.mem_range.mp ht)]; exact answers_ok _ _ _ _ _ _ hsm ha t
   have hs0 := same_arena hs (ByteArray.mk (Array.replicate k.smem 0))
   obtain ⟨F, hF⟩ := pass_sim k e he hw hhw _ hsm _ hargs ans steps (List.range bd) _ _ w' _ _ calls _ stores
     hans hs0 rfl hpn hf
@@ -487,7 +487,7 @@ theorem blocks_sound (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) (hw :
     (bd : Nat) (params : List V)
     (hargs : ∀ b t, ArgsOk k (threadArgs b bd params t)) :
     ∀ (c : Nat) (w u pw : World), Same w pw → pw.mem.nan = hw.nan → BlocksRun k bd params hw c w u →
-      ∃ u', RunsBlocks (PtxRun.runner e hw) k.smem bd params c pw u' ∧ Same u u' ∧ u'.mem.nan = hw.nan
+      ∃ u', RunsBlocks hw (PtxRun.runner e hw) k.smem bd params c pw u' ∧ Same u u' ∧ u'.mem.nan = hw.nan
   | 0, w, u, pw, hs, hpn, h => ⟨pw, rfl, by cases h; exact hs, hpn⟩
   | c + 1, w, u, pw, hs, hpn, h => by
       obtain ⟨v, hv, hb⟩ := h
@@ -501,7 +501,7 @@ theorem launch_sound (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) (hw :
     (grid bd : Nat) (params : List V)
     (hargs : ∀ b t, ArgsOk k (threadArgs b bd params t)) (bufs bufs' : Nat → ByteArray)
     (h : LaunchRuns k grid bd params bufs bufs' hw) :
-    RunsLaunch (PtxRun.runner e hw) k.smem grid bd params bufs bufs' hw.nan := by
+    RunsLaunch hw (PtxRun.runner e hw) k.smem grid bd params bufs bufs' := by
   obtain ⟨u, hu, rfl⟩ := h
   obtain ⟨u', hu', hs, -⟩ := blocks_sound k e he hw hhw bd params hargs grid _ u _ rfl rfl hu
   exact ⟨u', hu', by rw [same_mem hs]⟩
@@ -541,7 +541,7 @@ theorem launch_sound_bits (k : Kernel) (e : PtxIr.Entry) (he : k.entry = .ok e) 
     (hn : ∀ i (h1 : i < k.params.length) (h2 : i < ps.length), ps[i] &&& widthMask k.params[i] = ps[i])
     (hbd : k.warp = true → bd ≤ 32)
     (bufs bufs' : Nat → ByteArray) (h : LaunchRuns k grid bd (paramsOf k ps) bufs bufs' hw) :
-    RunsLaunch (PtxRun.runner e hw) k.smem grid bd (paramsOf k ps) bufs bufs' hw.nan :=
+    RunsLaunch hw (PtxRun.runner e hw) k.smem grid bd (paramsOf k ps) bufs bufs' :=
   launch_sound k e he hw hhw grid bd _ (fun b t => threadArgs_ok k ps hps hn b bd t hbd) bufs bufs' h
 
 /-! ## The entry that ships -/
