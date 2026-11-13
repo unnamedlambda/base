@@ -138,28 +138,34 @@ def baseBody : Prog V L Unit := do
     let (pre, _) ← blockScan tid sm 0 (← load32 (← at4 hist v))
     storeI32 pre (← at4 base v)
 
-/-- Keys a lane of the tile scatter holds: a warp's run of `32 · ITEMS`. -/
-def ITEMS : Nat := 32
+/-- Keys a lane of the tile scatter holds, a warp's run `32` times that: the
+    big tiles' for many keys, the small tiles' for few, so a pass's last wave
+    of tiles leaves few SMs idle. -/
+def ITEMS_BIG : Nat := 32
+def ITEMS_SMALL : Nat := 16
+
+/-- Keys below which a sort takes the small tiles. -/
+def SMALL_N : Nat := 2 ^ 22
 
 /-- Keys a tile of the scatter holds: its 256 threads' items. -/
-def TILE : Nat := 256 * ITEMS
+def tileOf (items : Nat) : Nat := 256 * items
 
-/-- Shared memory of the tile scatter: each warp's count of each digit; the
-    tile's keys, then its values, in digit order; each digit's start in the
-    tile and its place in the output less that start; the scan's warp totals;
-    the tile's number. -/
+/-- Shared memory of the tile scatter: each warp's count of each digit; each
+    digit's start in the tile and its place in the output less that start;
+    the scan's warp totals; the tile's number; the tile's count of each
+    digit; the tile's keys, then its values, in digit order. -/
 def SCNT : Nat := 0
-def SK : Nat := 4 * 8 * 256
-def STDS : Nat := SK + 4 * TILE
+def STDS : Nat := 4 * 8 * 256
 def SOUT : Nat := STDS + 4 * 256
 def SSCAN : Nat := SOUT + 4 * 256
 def STILE : Nat := SSCAN + 4 * 8
 def STHIST : Nat := STILE + 4
-def SCATTER_SMEM : Nat := STHIST + 4 * 256
+def SK : Nat := STHIST + 4 * 256
+def scatterSmem (items : Nat) : Nat := SK + 4 * tileOf items
 
 /-- **One pass of the sort**, in one sweep: a block (256 threads) takes the
-    next tile by the pass's ticket, tile `b` the `TILE` keys at `b · TILE`,
-    warp `w` the run of `32 · ITEMS` at `w · 32 · ITEMS`, a lane its `ITEMS`
+    next tile by the pass's ticket, tile `b` the `T = 256 · per` keys at
+    `b · T`, warp `w` the run of `32 · per` at `w · 32 · per`, a lane its `per`
     keys `32` apart. It puts the tile in shared memory in digit order (stable:
     a key's place its digit's start in the tile, the keys of that digit in the
     warps before its own, then those its warp met before it: in its earlier
@@ -169,7 +175,8 @@ def SCATTER_SMEM : Nat := STHIST + 4 * 256
     other: a key `i` places at `base[d] + before[d] + i - start[d]`. A warp
     counts its digits in its own counters, a round's count of a digit by its
     lowest lane. `meta`: `n`, `shift`, the pass's tag, its ticket. -/
-def scatterBody : Prog V L Unit := do
+def scatterBody (per : Nat) : Prog V L Unit := do
+  let TILE := tileOf per
   let ps ← entryParams (idParams ++ List.replicate 7 .i64)
   let tid := ps.snd; let sm := (ps.drop 3).head
   let kin := (ps.drop 4).head; let vin := (ps.drop 5).head
@@ -202,7 +209,7 @@ def scatterBody : Prog V L Unit := do
   -- is the block's alike
   let go (full : Bool) : Prog V L Unit := do
     let digit (k : V .i32) : Prog V L (V .i32) := do band (← ushr k shift) (← c32 255)
-    let run ← iadd tile (← iadd (← imul w (← c32 (32 * ITEMS))) lane)
+    let run ← iadd tile (← iadd (← imul w (← c32 (32 * per))) lane)
     let yes ← icmp .eq (← c32 0) (← c32 0)
     -- `body` where the key is in the array (always, in a full tile)
     let whenOk (ok : V .i8) (body : Prog V L Unit) : Prog V L Unit := do
@@ -212,7 +219,7 @@ def scatterBody : Prog V L Unit := do
       if full then at_ (← at4 arr run) (4 * 32 * r)
       else at4 arr (← select ok (← iadd run (← c32 (32 * r))) (← c32 0))
     let mut items := #[]
-    for r in List.range ITEMS do
+    for r in List.range per do
       let ok ← if full then pure yes else icmp .ult (← iadd run (← c32 (32 * r))) n
       items := items.push (ok, ← load32 (← itemAt kin ok r), r)
     -- the tile's count of each digit, by shared adds, published before the
@@ -266,7 +273,7 @@ def scatterBody : Prog V L Unit := do
       let ko ← at4 kout o
       let vo ← at4 vout o
       for (_, key, r) in items do storeI32 key (← at_ ko (4 * 32 * r))
-      for r in List.range ITEMS do storeI32 (← load32 (← itemAt vin yes r)) (← at_ vo (4 * 32 * r))
+      for r in List.range per do storeI32 (← load32 (← itemAt vin yes r)) (← at_ vo (4 * 32 * r))
     let ranked : Prog V L Unit := do
       -- each key's place among its warp's keys of its digit
       let wcnt ← at4 cnt (← imul w (← c32 256))
@@ -313,7 +320,7 @@ def scatterBody : Prog V L Unit := do
       storeI32 (← isub (← iadd (← load32 (← at4 base tid)) excl) start) (← at4 outAt tid)
       callLocalVoid barrier %[]
       let mut outs := #[]
-      for r in List.range ITEMS do
+      for r in List.range per do
         let i ← iadd tid (← c32 (256 * r))
         let ok ← if full then pure yes else icmp .ult (← iadd tile i) n
         let key ← load32 (← at4 sk i)
@@ -324,7 +331,7 @@ def scatterBody : Prog V L Unit := do
       for (((ok, _, _), pos), val) in (items.zip places).zip vals do
         whenOk ok do storeI32 val (← at4 sk pos)
       callLocalVoid barrier %[]
-      for (r, ok, o) in (List.range ITEMS).zip outs.toList do
+      for (r, ok, o) in (List.range per).zip outs.toList do
         whenOk ok do storeI32 (← load32 (← at4 sk (← iadd tid (← c32 (256 * r))))) (← at4 vout o)
     if full then
       let one ← bit (← icmp .eq (← load32 (← at4 thist (← firstDigit))) (← c32 TILE))
@@ -342,11 +349,14 @@ end
 def hist : Kernel := AnnKernels.k "sort_hist" histBody 3 (4 * 1024)
 def gather : Kernel := AnnKernels.k "sort_gather" gatherBody 4
 def bases : Kernel := AnnKernels.k "sort_bases" baseBody 2 (4 * 8)
-def scatter : Kernel :=
-  { AnnKernels.k "sort_scatter" scatterBody 7 SCATTER_SMEM with bounds := some (256, 2), stream := true }
+def scatterOf (name : String) (items blocks : Nat) : Kernel :=
+  { AnnKernels.k name (scatterBody items) 7 (scatterSmem items) with
+    bounds := some (256, blocks), stream := true }
+def scatter : Kernel := scatterOf "sort_scatter" ITEMS_BIG 2
+def scatterSmall : Kernel := scatterOf "sort_scatter_small" ITEMS_SMALL 3
 
 /-- The kernels, each its own module, by index. -/
-def kernels : List Kernel := [hist, AnnKernels.rowSelect, gather, bases, scatter]
+def kernels : List Kernel := [hist, AnnKernels.rowSelect, gather, bases, scatter, scatterSmall]
 
 /-! ## The layout -/
 
@@ -366,13 +376,15 @@ def M (j : Nat) : Nat := 11 + j
 
 /-- The specs: the histogram of the four passes and their bases, a scatter
     for each pass (the passes alternate the buffer pairs, each its own shift
-    and ticket), the row select and the gather. -/
+    and ticket), the row select and the gather, then each pass's scatter of
+    small tiles. -/
 def kHIST : Nat := 0
 def kBASE : Nat := 1
 def kSCAT (p : Nat) : Nat := 2 + p
 def kSEL : Nat := 6
 def kGATH : Nat := 7
-def NSPEC : Nat := 8
+def kSCATS (p : Nat) : Nat := 8 + p
+def NSPEC : Nat := 12
 
 def STATE_OFF : Nat := 0x4000
 def META_OFF : Nat := 0x5000
@@ -394,6 +406,7 @@ def specs : List (Nat × List Nat × Nat) :=
   [(0, [K0, HIST, M kHIST], 128), (3, [HIST, BASE], 256)]
   ++ (List.range 4).map (fun p => let (k, v, k', v') := src p; (4, [k, v, k', v', BASE, LOOK, M (kSCAT p)], 256))
   ++ [(1, [X, SEL, M kSEL], 256), (2, [X, SEL, OUTV, M kGATH], 256)]
+  ++ (List.range 4).map (fun p => let (k, v, k', v') := src p; (5, [k, v, k', v', BASE, LOOK, M (kSCATS p)], 256))
 
 def app (memSize : Nat := PTX_OFF) : Drv.App :=
   { bufs := List.replicate (M NSPEC) 0,
@@ -470,8 +483,10 @@ def loadCode : Prog V L (V .i64) := do
       for b in [K0, V0, K1, V1] do ensure a base b bytes
       ensure a base HIST (← iconst64 4096)
       ensure a base BASE (← iconst64 4096)
-      -- the tiles' statuses, cleared once so none reads as a pass's own
-      let lb ← imul (← umax (← udiv (← iaddImm n (TILE - 1)) (← iconst64 TILE))
+      -- the tiles' statuses (as many as the small tiles), cleared once so
+      -- none reads as a pass's own
+      let T := tileOf ITEMS_SMALL
+      let lb ← imul (← umax (← udiv (← iaddImm n (T - 1)) (← iconst64 T))
         (← iconst64 1)) (← iconst64 1024)
       ensure a base LOOK lb
       let _ ← ext (.cuda .memsetD8) %[← ptrOf a base LOOK, ← iconst32 0, lb]
@@ -488,7 +503,6 @@ def sortCode : Prog V L (V .i64) := do
   let base ← basePtr
   let n ← getW base S_N
   let n32 ← lo32 n
-  let blocks ← cdiv n TILE
   let chunks ← cdiv n HKEYS
   let grid ← umin chunks (← iconst32 UPG)
   metaW base kHIST 0 n32; metaW base kHIST 1 chunks; metaW base kHIST 2 grid
@@ -498,13 +512,22 @@ def sortCode : Prog V L (V .i64) := do
   setW base S_SORTS (← iaddImm sorts 1)
   for p in List.range 4 do
     let tag ← lo32 (← iaddImm (← ishlImm sorts 2) (p + 1))
-    metaW base (kSCAT p) 0 n32; metaW base (kSCAT p) 1 (← iconst32 (8 * p)); metaW base (kSCAT p) 2 tag
-    metaW base (kSCAT p) 3 (← iconst32 0)
+    for j in [kSCAT p, kSCATS p] do
+      metaW base j 0 n32; metaW base j 1 (← iconst32 (8 * p)); metaW base j 2 tag
+      metaW base j 3 (← iconst32 0)
   upMetaAll a base
   let _ ← ext (.cuda .memsetD8) %[← ptrOf a base HIST, ← iconst32 0, ← iconst64 4096]
   a.runX base kHIST grid
   a.runX base kBASE (← iconst32 1)
-  for p in List.range 4 do a.runX base (kSCAT p) blocks
+  let _ ← ifte (jTys := []) .ult n (← iconst64 SMALL_N)
+    (thn := do
+      let blocks ← cdiv n (tileOf ITEMS_SMALL)
+      for p in List.range 4 do a.runX base (kSCATS p) blocks
+      pure %[])
+    (els := do
+      let blocks ← cdiv n (tileOf ITEMS_BIG)
+      for p in List.range 4 do a.runX base (kSCAT p) blocks
+      pure %[])
   finish
 
 def fetchCode : Prog V L (V .i64) := do
