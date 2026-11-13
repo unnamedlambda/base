@@ -75,7 +75,7 @@ def main():
         nxt = struct.unpack_from("<I", b, 0)[0]
         return nxt, np.frombuffer(b, np.float32, count=VOCAB, offset=D_OUT_LOGITS).copy()
 
-    print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
+    print("  first call reads 14.0 GiB off disk and pins 10.6 GiB; this takes a while")
     # The cache holds whatever these steps put there, so the logits mean
     # nothing on their own.  What is being compared is one run against another.
     cap = args.context

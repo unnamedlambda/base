@@ -1,6 +1,6 @@
 """gpt-oss-20b at a prompt.
 
-Loads once — the twelve gigabytes off disk and the 9.48 GiB pin are paid at
+Loads once — the fourteen gigabytes off disk and the 10.6 GiB pin are paid at
 start-up, not per turn — and then holds a conversation.
 
 Nothing here tokenizes. The user's text goes to the artifact as bytes and comes
@@ -81,7 +81,7 @@ def main():
                     help="print the model's reasoning as well as its answer")
     args = ap.parse_args()
 
-    # before anything allocates: two of these pin 9.48 GiB each
+    # before anything allocates: two of these pin 10.6 GiB each
     acquire_engine_lock('cli.py')
 
     import py_base
@@ -182,7 +182,7 @@ def main():
     print(f"  gpt-oss-20b   reasoning {state['reasoning']}   "
           f"temp {state['temp']}   max {args.max_new}   "
           f"context {args.context}")
-    print("  loading: 12.9 GiB off disk, 9.48 GiB pinned; this takes ~30 s")
+    print("  loading: 14.0 GiB off disk, 10.6 GiB pinned; this takes ~30 s")
     t0 = time.time()
     err = open_conversation()
     if err:

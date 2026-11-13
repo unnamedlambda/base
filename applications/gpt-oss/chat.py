@@ -14,7 +14,7 @@ format inside the model program would be the wrong place for it.
   python applications/gpt-oss/chat.py <artifact.cbor> --bank data/gptoss-bank \\
       --prompt "What is the capital of France?"
 
-The first call reads 12.9 GiB off disk and pins 9.5 GiB. Do not run this beside
+The first call reads 14.0 GiB off disk and pins 10.6 GiB. Do not run this beside
 tools/check.sh, and nothing memory-hungry may share the process -- the pin
 cannot be swapped or reclaimed.
 """
@@ -73,7 +73,7 @@ def main():
     args = ap.parse_args()
 
     import time
-    # before anything allocates: two of these pin 9.48 GiB each
+    # before anything allocates: two of these pin 10.6 GiB each
     acquire_engine_lock('chat.py')
 
     import py_base
@@ -142,7 +142,7 @@ def main():
     print(f"  prompt: {args.prompt!r}   reasoning: {args.reasoning}"
           f"   temp: {args.temp}{'' if args.temp <= 0 else f' seed {args.seed}'}")
     print(f"  template: {len(pre)} + text + {len(post)} tokens, stop {stop}")
-    print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
+    print("  first call reads 14.0 GiB off disk and pins 10.6 GiB; this takes a while")
     out = bytearray(D_OUT_BYTES)
     t0 = time.time()
     base.function("main")(bytes(buf), out)

@@ -26,7 +26,7 @@ at 131071.  The key cache accounts for a ninth of that growth, so the rest is
 an attention path running at roughly a tenth of what the card can read -- which
 is the finding this script exists to keep honest.
 
-Run it alone: the pool is 9.48 GiB of pinned host memory.
+Run it alone: the pool and the embedding table are 10.6 GiB of pinned host memory.
 """
 
 import argparse
@@ -86,7 +86,7 @@ def main():
 
     print(f"  context {args.context}; {args.reps} steps timed at each position",
           flush=True)
-    print("  first call reads 12.9 GiB off disk and pins 9.5 GiB\n", flush=True)
+    print("  first call reads 14.0 GiB off disk and pins 10.6 GiB\n", flush=True)
     step(0)
 
     marks = [p for p in (0, 1024, 2048, 4096, 8192, 16384, 32768, 65536,

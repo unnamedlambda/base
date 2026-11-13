@@ -110,7 +110,7 @@ _lock_handle = None
 def acquire_engine_lock(who="this program"):
     """Refuse to start if another driver already holds the pool.
 
-    The engine pins 9.48 GiB of host memory. Pinned pages cannot be swapped or
+    The engine pins 10.6 GiB of host memory. Pinned pages cannot be swapped or
     reclaimed, so two of these on a 16 GiB machine do not fail -- the kernel
     runs out of anything to page against and the box stops responding. It is
     the worst failure mode available to this program, it has happened twice,
@@ -133,7 +133,7 @@ def acquire_engine_lock(who="this program"):
         name = rec[1] if len(rec) > 1 else "a driver"
         raise SystemExit(
             f"\n  {name} is already running (pid {pid}).\n"
-            f"  Two of these pin 9.48 GiB each and this machine has 16 GiB, so "
+            f"  Two of these pin 10.6 GiB each and this machine has 16 GiB, so "
             f"the second\n  would lock it up rather than fail. Wait for that "
             f"one, or:\n      kill {pid}\n")
     f.seek(0)

@@ -128,7 +128,7 @@ def main():
                         for i in range(n_sentences))
 
     print(f"  context {args.context}; filler turns {args.filler_turns}", flush=True)
-    print("  first call reads 12.9 GiB off disk and pins 9.5 GiB", flush=True)
+    print("  first call reads 14.0 GiB off disk and pins 10.6 GiB", flush=True)
     t0 = time.time()
     pos = 0
 

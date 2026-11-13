@@ -456,7 +456,8 @@ def DP_EOFF_OFF : Nat := DT_GENTOK + 4 * TEXT_MAX
 def DP_SLOTQ_OFF : Nat := DP_EOFF_OFF + 4 * (NE + 1)
 def DP_SLOTQN_OFF : Nat := DP_SLOTQ_OFF + 4 * (2 * NL * NE)
 def DP_META_OFF : Nat := DP_SLOTQN_OFF + 8
-/-- Where the embedding table sits in host memory, read whole at start-up. -/
+/-- Where the embedding table sits in pinned host memory, read whole at
+    start-up. -/
 def DEMB_OFF : Nat := DP_META_OFF + 4 * 16
 def DMEM_SIZE : Nat := DEMB_OFF + 8 + 0x100
 
@@ -673,11 +674,12 @@ def dInitM : Prog V L Unit := do
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
   let _ ← readFileFrom pExp (← iconst64 D_PATH_FIELD) poolPtr zero64 poolBytes
-  -- the embedding table, all of it, in ordinary host memory: a token's row
-  -- is then a copy, not a read of the file
+  -- the embedding table, all of it, pinned beside the pool: a token's row is
+  -- then a copy, not a read of the file, and no page of it is swapped out
+  -- while the expert file's reading fills the page cache
   let embBytes ← iconst64 (VOCAB * HH * 2)
-  let emb ← ext (.c .calloc) %[embBytes, ← iconst64 1]
-  storeI64 emb (← iaddImm ptr DEMB_OFF)
+  let _ ← ext (.cuda .memAllocHost) %[← iaddImm ptr DEMB_OFF, embBytes]
+  let emb ← load64 (← iaddImm ptr DEMB_OFF)
   let _ ← readFileFrom (← iaddImm dataPtr D_PEMB) (← iconst64 D_PATH_FIELD) emb zero64 embBytes
   -- a staging buffer, big enough for the widest dense tensor
   let stageBytes ← iconst64 STAGE_BYTES

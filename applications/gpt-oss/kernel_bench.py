@@ -7,7 +7,7 @@ exactly once, and the card's measured bandwidth says how long that takes.  The
 gap between that and the clock is the whole subject.
 
 This runs the PTX the generator emitted, directly, with one expert's worth of
-buffers -- no artifact, no bank, no 12.9 GiB.  That is the point: the edit-test
+buffers -- no artifact, no bank, no 14 GiB.  That is the point: the edit-test
 loop for a kernel should be seconds.
 
   python applications/gpt-oss/kernel_bench.py \\

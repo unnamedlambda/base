@@ -5,15 +5,16 @@ embedding row.  Out: the next token, and how many cache misses the step took.
 Everything between -- twenty-four layers, the router, the expert cache, the
 head -- happens in the artifact.
 
-The expert file is pinned once at start-up, 9.48 GiB of it, and the device
+The expert file is pinned once at start-up, 9.48 GiB of it (and the 1.08 GiB
+embedding table beside it), and the device
 holds as many slots as it turns out to have room for.  So the first call is
-slow in a way none of the others are: it reads twelve gigabytes off disk.
+slow in a way none of the others are: it reads fourteen gigabytes off disk.
 
   python applications/gpt-oss/run.py <artifact.cbor> --bank data/gptoss-bank \
       --prompt "The capital of France is" -n 8
 
 Do not run this beside tools/check.sh; they both want most of the machine.
-Nothing memory-hungry may share this process either: the 9.48 GiB is *pinned*,
+Nothing memory-hungry may share this process either: the 10.6 GiB is *pinned*,
 so the kernel can neither swap nor reclaim it, and a second large allocation
 here freezes the box rather than failing.  That is why scoring against the
 reference lives in check.py, downstream of --dump-logits.
@@ -40,7 +41,7 @@ def main():
     ap.add_argument("--bank", required=True)
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("-n", type=int, default=8)
-    # No --check here on purpose.  This process pins 9.5 GiB, and pinned pages
+    # No --check here on purpose.  This process pins 10.6 GiB, and pinned pages
     # cannot be swapped or reclaimed; running the NumPy reference beside them on
     # a 16 GiB box thrashes the whole machine.  Dump the logits instead and let
     # check.py score them once this process has exited.
@@ -55,7 +56,7 @@ def main():
                          f"expert slot not held resident")
     args = ap.parse_args()
 
-    # before anything allocates: two of these pin 9.48 GiB each
+    # before anything allocates: two of these pin 10.6 GiB each
     acquire_engine_lock('run.py')
 
     import py_base
@@ -102,7 +103,7 @@ def main():
                            offset=D_OUT_TRACE).reshape(NL, 2, H)
         return tok_id_out, miss, lg, tr
 
-    print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
+    print("  first call reads 14.0 GiB off disk and pins 10.6 GiB; this takes a while")
     t0 = time.time()
     nxt, miss, lg0, tr0 = step(ids[0], 0)
     print(f"  start-up + first token: {time.time()-t0:.1f}s   (misses {miss})")

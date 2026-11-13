@@ -14,7 +14,7 @@ doing at all, and this reports all three:
   * **bus throughput** implied by those misses, which is the check that a miss
     costs what a miss should cost and not more.
 
-Run it alone. The pool is 9.48 GiB of pinned host memory, which cannot be
+Run it alone. The pool and the embedding table are 10.6 GiB of pinned host memory, which cannot be
 swapped or reclaimed, so anything else large in this process takes the machine
 down rather than failing.
 
@@ -58,7 +58,7 @@ def main():
     args = ap.parse_args()
     args.context = args.context or args.depth + args.prompt_len + args.gen
 
-    # before anything allocates: two of these pin 9.48 GiB each
+    # before anything allocates: two of these pin 10.6 GiB each
     acquire_engine_lock('bench.py')
 
     import py_base
@@ -115,7 +115,7 @@ def main():
     held = [int(t) for t in rng.integers(1000, 50000, args.depth)]
     ids = [int(t) for t in rng.integers(1000, 50000, args.prompt_len)]
 
-    print("  loading: 12.9 GiB read, 9.48 GiB pinned")
+    print("  loading: 14.0 GiB read, 10.6 GiB pinned")
     t0 = time.time()
     nxt, miss0 = step(ids[0], 0)
     load = time.time() - t0

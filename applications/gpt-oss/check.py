@@ -1,9 +1,10 @@
 """Score logits the engine dumped against the NumPy reference.
 
 This is a separate program from run.py for a reason that cost a machine freeze:
-run.py pins 9.5 GiB of host memory for the expert pool, and pinned pages cannot
-be swapped or reclaimed.  Running the reference beside them on a 16 GiB box
-leaves the kernel nothing to page against, so it thrashes instead of failing.
+run.py pins 10.6 GiB of host memory for the expert pool and the embedding
+table, and pinned pages cannot be swapped or reclaimed.  Running the reference
+beside them on a 16 GiB box leaves the kernel nothing to page against, so it
+thrashes instead of failing.
 
     python run.py <artifact> --bank B --tokens ... --dump-logits /tmp/lg.bin
     python check.py --bank B --logits /tmp/lg.bin
