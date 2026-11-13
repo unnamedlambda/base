@@ -612,6 +612,12 @@ def q8Rows : Nat := warpsPerCta * GptOssKernels.Body.rowsPerWarpQ8
     load that exceeds it is chunked rather than trusted to fit. -/
 def STAGE_BYTES : Nat := dQkvOut * HH * 2
 
+/-- Where in the staging buffer decode keeps each layer's meta for its
+    asynchronous upload: past the embedding row, `64 · 4` bytes a layer. -/
+def STAGE_META_AT : Nat := 0x10000
+
+#guard STAGE_META_AT ≥ HH * 2 ∧ STAGE_META_AT + NL * 64 * 4 ≤ STAGE_BYTES
+
 /-- Kernel `i`, its module and function handles kept in the table. -/
 def dKern (i : Nat) : Drv.Kern :=
   { ptxOff := dSlotOff i, nameOff := DNAME_OFF, modSlot := DFN_OFF + 16 * i, fnSlot := DFN_OFF + 16 * i + 8,
@@ -968,8 +974,15 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   -- in one word.  The contractions below stride by `HD` elements over the same
   -- bytes, which is the same distance counted the other way.
   storeI32 (← imul capV (← iconst32 HDW)) (← iaddImm ptr (DMETA_OFF + 4 * M_KVSTRIDE))
+  -- the meta to the device without waiting for it: copied to the layer's own
+  -- slot of the pinned staging buffer (a slot is next written a token later,
+  -- after the head's wait) and sent from there in stream order, so the host
+  -- goes on to the next launches while the device is still busy
   let bMetaL ← load64 (← iaddImm ptr (dBindOff B_META))
-  let _ ← ext (.cuda .memcpyHtoD) %[bMetaL, (← iaddImm ptr DMETA_OFF), (← iconst64 (64 * 4))]
+  let metaSlot ← iadd (← iaddImm (← load64 (← iaddImm ptr DSTAGE_OFF)) STAGE_META_AT)
+    (← imul (← uextend64 layer) (← iconst64 (64 * 4)))
+  let _ ← ext (.c .memcpy) %[metaSlot, (← iaddImm ptr DMETA_OFF), (← iconst64 (64 * 4))]
+  let _ ← ext (.cuda .memcpyHtoDAsync) %[bMetaL, metaSlot, (← iconst64 (64 * 4)), ← iconst64 0]
   let bRW ← load64 (← iaddImm ptr (dBindOff W_RW))
   let bXM ← load64 (← iaddImm ptr (dBindOff B_XM))
   let bRLOG ← load64 (← iaddImm ptr (dBindOff B_RLOG))
