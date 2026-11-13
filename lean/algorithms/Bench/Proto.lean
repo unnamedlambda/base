@@ -23,8 +23,9 @@ namespace Proto
   `benchmarks/protobuf` measures it beside protobuf C++ and upb on
   HyperProtoBench. The generator reads a proto2 schema (messages, nested
   messages and enums, `optional` and `repeated` fields of the scalar, string,
-  bytes, enum and message types) and writes one artifact: a decoder and an
-  encoder for every message type, over base's own layout of a message.
+  bytes, enum and message types) and writes one artifact: one decoder, which
+  reads a table of each message's fields, and an encoder for every message
+  type, over base's own layout of a message.
 
   **The layout.** A message is a record in the arena: its encoded size (cached
   by the encoder), a presence word for every 64 fields, then eight bytes a
@@ -182,7 +183,10 @@ def ADVISED : Nat := 0x120
 def TOP : Nat := 0x200
 def MAX_TOP : Nat := 4096
 def COPY_CODE : Nat := TOP + 16 * MAX_TOP
-def HEAP : Nat := Memops.align64 (COPY_CODE + (Memops.bodyBytes MemopsAsm.copy).length)
+/-- The decoder's tables (`tableBytes`), in at most `TABLE_BYTES`. -/
+def TABLES : Nat := Memops.align64 (COPY_CODE + (Memops.bodyBytes MemopsAsm.copy).length)
+def TABLE_BYTES : Nat := 1 <<< 20
+def HEAP : Nat := TABLES + TABLE_BYTES
 def MEM : Nat := HEAP + (1 <<< 28)
 
 /-- A record's bytes: its cached size, its presence words, eight bytes a field. -/
@@ -336,28 +340,58 @@ end
 
     Function `k` of the program: the two entries at 0 and 1; the shared
     helpers (a varint's general case, a string's copy, a list's append, a
-    record's allocation, a packed run) at 2 to 6; message `i`'s decoder at
-    `7 + 3i`, its sizer at `8 + 3i`, its writer at `9 + 3i`. One copy of each helper rather than one a field keeps
-    the decoders small, so a message's code stays in the cache. -/
+    record's allocation, a packed run) at 2 to 6; the decoder at 7; message
+    `i`'s sizer at `8 + 2i`, its writer at `9 + 2i`. One decoder over tables,
+    and one copy of each helper rather than one a field, keep a parse's code
+    small enough to stay in the caches, whatever the schema. -/
 
 def COPY_IX : Nat := 3
 def APPEND_IX : Nat := 4
 def ALLOC_IX : Nat := 5
 def PACKED_IX : Nat := 6
-def decIx (i : Nat) : Nat := 7 + 3 * i
-def sizeIx (i : Nat) : Nat := 8 + 3 * i
-def writeIx (i : Nat) : Nat := 9 + 3 * i
+def DEC_IX : Nat := 7
+def sizeIx (i : Nat) : Nat := 8 + 2 * i
+def writeIx (i : Nat) : Nat := 9 + 2 * i
 
 /-- Every generated function takes four words, as an entry does, so the
     arena's base reaches it the way it reaches an entry (`basePtr`); the
     words a function does not use are 0. -/
 def P4 : List ClifTy := [.i64, .i64, .i64, .i64]
-def decRef (i : Nat) : LocalRef P4 (some .i64) := ⟨.local (decIx i)⟩
 def sizeRef (i : Nat) : LocalRef P4 (some .i64) := ⟨.local (sizeIx i)⟩
 def writeRef (i : Nat) : LocalRef P4 (some .i64) := ⟨.local (writeIx i)⟩
 
 def wireType : Kind → Nat
   | .varint => 0 | .fixed64 => 1 | .len => 2 | .msg _ => 2 | .fixed32 => 5
+
+/-- A field's kind in its table entry. -/
+def KIND_VARINT : Nat := 0
+def KIND_FIXED32 : Nat := 1
+def KIND_FIXED64 : Nat := 2
+def KIND_LEN : Nat := 3
+def KIND_MSG : Nat := 4
+def kindCode : Kind → Nat
+  | .varint => KIND_VARINT | .fixed32 => KIND_FIXED32 | .fixed64 => KIND_FIXED64 | .len => KIND_LEN | .msg _ => KIND_MSG
+
+/-- `x`'s `n` bytes, little-endian. -/
+def le (x n : Nat) : List UInt8 := (List.range n).map fun i => UInt8.ofNat (x / 256 ^ i % 256)
+
+/-- The decoder's tables, at `TABLES`: 16 bytes a message (its fields' table
+    as an arena offset, their count, its record's bytes), then 16 bytes a
+    field, a message's in schema order: its number; its slot's offset in the
+    record; its presence word's offset and bit; its kind (`kindCode`); a
+    message field's message; 1 if it repeats; the wire type it is written
+    with. -/
+def tableBytes (msgs : Array Message) : List UInt8 :=
+  let ms := msgs.toList
+  let starts := ms.foldl (fun (acc : List Nat × Nat) m => (acc.1 ++ [acc.2], acc.2 + m.fields.length)) ([], 0) |>.1
+  let fields0 := TABLES + 16 * ms.length
+  let hdrs := (ms.zip starts).flatMap fun (m, k) =>
+    le (fields0 + 16 * k) 4 ++ le m.fields.length 4 ++ le (recordBytes m) 4 ++ le 0 4
+  let ents := ms.flatMap fun m => m.fields.zipIdx.flatMap fun (f, i) =>
+    let sub := match f.kind with | .msg j => j | _ => 0
+    le f.number 4 ++ le (slotOff m i) 4 ++ le (presenceOff (i / 64)) 2 ++ le (i % 64) 1 ++ le (kindCode f.kind) 1 ++
+      le sub 2 ++ le (if f.repeated then 1 else 0) 1 ++ le (wireType f.kind) 1
+  hdrs ++ ents
 
 section
 variable {V : ClifTy → Type} {L : List ClifTy → List ClifTy → Type}
@@ -386,92 +420,108 @@ def copyBytes (q n : V .i64) : Prog V L (V .i64) := do
     pure %[← bor off (← ishlImm n 32)])
   pure r.head
 
-/-- **Message `mi`'s decoder**: params `(p, e, rec)`; fields until `e`, into
-    record `rec` (merged with what it holds); where it stopped, `0` on an
-    error. -/
-def decodeBody (msgs : Array Message) (mi : Nat) : Prog V L (V .i64) := do
-  let m := msgs[mi]!
+/-- **The decoder**: params `(p, e, rec, mi)`; message `mi`'s fields until
+    `e`, into record `rec` (merged with what it holds), each found in the
+    message's field table (`tableBytes`) from the field after the last one
+    seen, as a writer orders them; where it stopped, `0` on an error. -/
+def decodeBody : Prog V L (V .i64) := do
   let ps ← entryParams P4
-  let p0 := ps.head; let e := ps.snd; let rec_ := ps.thd
+  let p0 := ps.head; let e := ps.snd; let rec_ := ps.thd; let mi := ps.fth
   let zero ← c 0
-  let r ← wloopL %[p0]
+  let hdr ← at_ (← iaddImm (← ishlImm mi 4) TABLES)
+  let fa ← uload32_64 hdr
+  let nf ← uload32_64 (← iaddImm hdr 4)
+  let recA ← at_ rec_
+  -- carried: the position, the field to look at first
+  let r ← wloopL %[p0, zero]
     (head := fun _ cs => do pure (contIf .ult cs.head e, %[cs.head], ()))
     (body := fun out cs _ => do
       let (q, tag) ← readVarint cs.head e
       when .eq q zero do brk out %[zero]
       let num ← ushrImm tag 3
       let wt ← band tag (← c 7)
-      let recA ← at_ rec_
-      for (f, i) in m.fields.zipIdx do
-        when .eq num (← c f.number) do
-          let slot ← iaddImm recA (slotOff m i)
-          let pw ← iaddImm recA (presenceOff (i / 64))
-          let mark : Prog V L Unit := do
-            storeI64 (← bor (← load64 pw) (← c (Int.ofNat (2 ^ (i % 64)) - if i % 64 == 63 then 2 ^ 64 else 0))) pw
+      -- the field numbered `num`: its index, `nf` for none
+      let found ← wloopL %[cs.snd, nf]
+        (head := fun _ fs => do pure (contIf .ne fs.snd zero, %[nf], ()))
+        (body := fun inner fs _ => do
+          when .eq (← uload32_64 (← at_ (← iadd fa (← ishlImm fs.head 4)))) num do brk inner %[fs.head]
+          let k ← iaddImm fs.head 1
+          pure %[← select (← icmp .eq k nf) zero k, ← iaddImm fs.snd (-1)])
+      let idx := found.head
+      when .ne idx nf do
+        let ent ← at_ (← iadd fa (← ishlImm idx 4))
+        let slot ← iadd recA (← uload32_64 (← iaddImm ent 4))
+        let pw ← iadd recA (← uload16_64 (← iaddImm ent 8))
+        let bit ← ishl (← c 1) (← uload8_64 (← iaddImm ent 10))
+        let kind ← uload8_64 (← iaddImm ent 11)
+        let sub ← uload16_64 (← iaddImm ent 12)
+        let rep ← uload8_64 (← iaddImm ent 14)
+        let want ← uload8_64 (← iaddImm ent 15)
+        let mark : Prog V L Unit := do storeI64 (← bor (← load64 pw) bit) pw
+        -- the next field looked at: this one again if it repeats, else the next
+        let k ← iadd idx (← bxor rep (← c 1))
+        let hint ← select (← icmp .eq k nf) zero k
+        let lenThen (k : V .i64 → V .i64 → Prog V L (Vals V [.i64, .i64])) : Prog V L (Vals V [.i64, .i64]) := do
+          let (q2, n) ← readVarint q e
+          let ok ← band (← b2i (← icmp .ne q2 zero)) (← b2i (← icmp .ule n (← isub e q2)))
+          ifte (jTys := [.i64, .i64]) .ne ok zero (thn := k q2 n) (els := do pure %[zero, zero])
+        when .eq wt want do
           -- a value, as the slot keeps it, and where the text resumes
-          let value : Prog V L (Vals V [.i64, .i64]) := do
-            match f.kind with
-            | .varint => do
-                let (q2, v) ← readVarint q e
-                pure %[q2, v]
-            | .fixed32 => do
+          let v ← ifte (jTys := [.i64, .i64]) .eq kind (← c KIND_VARINT)
+            (thn := do
+              let (q2, x) ← readVarint q e
+              pure %[q2, x])
+            (els := ifte .eq kind (← c KIND_FIXED32)
+              (thn := do
                 let ok ← icmp .ule (← iaddImm q 4) e
                 ifte (jTys := [.i64, .i64]) .ne (← b2i ok) zero
-                  (thn := do pure %[← iaddImm q 4, ← uload32_64 q]) (els := do pure %[zero, zero])
-            | .fixed64 => do
-                let ok ← icmp .ule (← iaddImm q 8) e
-                ifte (jTys := [.i64, .i64]) .ne (← b2i ok) zero
-                  (thn := do pure %[← iaddImm q 8, ← load64 q]) (els := do pure %[zero, zero])
-            | .len => do
-                let (q2, n) ← readVarint q e
-                let ok ← band (← b2i (← icmp .ne q2 zero)) (← b2i (← icmp .ule n (← isub e q2)))
-                ifte (jTys := [.i64, .i64]) .ne ok zero
-                  (thn := do
+                  (thn := do pure %[← iaddImm q 4, ← uload32_64 q]) (els := do pure %[zero, zero]))
+              (els := ifte .eq kind (← c KIND_FIXED64)
+                (thn := do
+                  let ok ← icmp .ule (← iaddImm q 8) e
+                  ifte (jTys := [.i64, .i64]) .ne (← b2i ok) zero
+                    (thn := do pure %[← iaddImm q 8, ← load64 q]) (els := do pure %[zero, zero]))
+                (els := ifte .eq kind (← c KIND_LEN)
+                  (thn := lenThen fun q2 n => do
                     let w ← callLocal (⟨.local COPY_IX⟩ : LocalRef [.i64, .i64, .i64, .i64] (some .i64)) %[q2, n, zero, zero]
                     pure %[← select (← icmp .eq w zero) zero (← iadd q2 n), w])
-                  (els := do pure %[zero, zero])
-            | .msg sub => do
-                let (q2, n) ← readVarint q e
-                let ok ← band (← b2i (← icmp .ne q2 zero)) (← b2i (← icmp .ule n (← isub e q2)))
-                ifte (jTys := [.i64, .i64]) .ne ok zero
-                  (thn := do
+                  (els := lenThen fun q2 n => do
                     -- an optional message seen again merges into its record
-                    let have_ ← band (← ushrImm (← load64 pw) (i % 64)) (← c 1)
-                    let old ← load64 slot
-                    let fresh ← ifte (jTys := [.i64]) .ne (← band have_ (← c (if f.repeated then 0 else 1))) zero
-                      (thn := do pure %[old])
-                      (els := do pure %[← callLocal (⟨.local ALLOC_IX⟩ : LocalRef [.i64, .i64, .i64, .i64] (some .i64)) %[← c (recordBytes msgs[sub]!), zero, zero, zero]])
+                    let again ← band (← b2i (← icmp .ne (← band (← load64 pw) bit) zero)) (← bxor rep (← c 1))
+                    let fresh ← ifte (jTys := [.i64]) .ne again zero
+                      (thn := do pure %[← load64 slot])
+                      (els := do
+                        let bytes ← uload32_64 (← at_ (← iaddImm (← ishlImm sub 4) (TABLES + 8)))
+                        pure %[← callLocal (⟨.local ALLOC_IX⟩ : LocalRef [.i64, .i64, .i64, .i64] (some .i64)) %[bytes, zero, zero, zero]])
                     let sr := fresh.head
                     let res ← ifte (jTys := [.i64]) .eq sr zero (thn := do pure %[zero]) (els := do
                       let end_ ← iadd q2 n
-                      let got ← callLocal (decRef sub) %[q2, end_, sr, zero]
+                      let got ← callLocal (⟨.local DEC_IX⟩ : LocalRef P4 (some .i64)) %[q2, end_, sr, sub]
                       pure %[← select (← icmp .eq got end_) end_ zero])
-                    pure %[res.head, sr])
-                  (els := do pure %[zero, zero])
-          let wantWt := wireType f.kind
-          let packable := f.repeated && (match f.kind with | .varint | .fixed32 | .fixed64 => true | _ => false)
-          when .eq wt (← c wantWt) do
-            let v ← value
-            when .eq v.head zero do brk out %[zero]
-            if f.repeated then
+                    pure %[res.head, sr]))))
+          when .eq v.head zero do brk out %[zero]
+          let _ ← ifte (jTys := []) .ne rep zero
+            (thn := do
               when .eq (← callLocal (⟨.local APPEND_IX⟩ : LocalRef [.i64, .i64, .i64, .i64] (some .i64)) %[slot, v.snd, zero, zero]) zero do brk out %[zero]
-            else
-              storeI64 v.snd slot
-            mark
-            continueWith out %[v.head]
-          if packable then
-            -- a packed run of the field's values
-            when .eq wt (← c 2) do
-              let (q2, n) ← readVarint q e
-              let ok ← band (← b2i (← icmp .ne q2 zero)) (← b2i (← icmp .ule n (← isub e q2)))
-              when .eq ok zero do brk out %[zero]
-              let end_ ← iadd q2 n
-              let width : Nat := match f.kind with | .varint => 0 | .fixed32 => 4 | _ => 8
-              let got ← callLocal (⟨.local PACKED_IX⟩ : LocalRef [.i64, .i64, .i64, .i64] (some .i64))
-                %[q2, end_, slot, ← c width]
-              when .ne got end_ do brk out %[zero]
-              mark
-              continueWith out %[end_]
+              pure %[])
+            (els := do storeI64 v.snd slot; pure %[])
+          mark
+          continueWith out %[v.head, hint]
+        -- a packed run of a repeated scalar's values
+        let packable ← band rep (← b2i (← icmp .ult kind (← c KIND_LEN)))
+        when .ne (← band packable (← b2i (← icmp .eq wt (← c 2)))) zero do
+          let (q2, n) ← readVarint q e
+          let ok ← band (← b2i (← icmp .ne q2 zero)) (← b2i (← icmp .ule n (← isub e q2)))
+          when .eq ok zero do brk out %[zero]
+          let end_ ← iadd q2 n
+          -- 0 for varints, else the value's bytes
+          let width ← select (← icmp .eq kind (← c KIND_FIXED32)) (← c 4)
+            (← select (← icmp .eq kind (← c KIND_FIXED64)) (← c 8) zero)
+          let got ← callLocal (⟨.local PACKED_IX⟩ : LocalRef [.i64, .i64, .i64, .i64] (some .i64))
+            %[q2, end_, slot, width]
+          when .ne got end_ do brk out %[zero]
+          mark
+          continueWith out %[end_, hint]
       -- an unknown field, or a known one on a wire type it does not have: skipped
       let skip ← ifte (jTys := [.i64]) .eq wt zero
         (thn := do
@@ -488,7 +538,7 @@ def decodeBody (msgs : Array Message) (mi : Nat) : Prog V L (V .i64) := do
                 pure %[← select (← icmp .ne ok zero) (← iadd q2 n) zero])
               (els := do pure %[zero]))))
       when .eq skip.head zero do brk out %[zero]
-      pure %[skip.head])
+      pure %[skip.head, cs.snd])
   pure r.head
 
 /-- A tag's bytes, as a constant: field `n`, wire type `wt`. -/
@@ -609,7 +659,7 @@ def decodeEntry (msgs : Array Message) (tops : List Nat) : Prog V L (V .i64) := 
         let res ← ifte (jTys := [.i64, .i64]) .eq ty (← c t) (thn := do
           let rec_ ← alloc (← c (recordBytes msgs[mi]!))
           let ok ← ifte (jTys := [.i64]) .eq rec_ zero (thn := do pure %[zero]) (els := do
-            let got ← callLocal (decRef mi) %[q, end_, rec_, zero]
+            let got ← callLocal (⟨.local DEC_IX⟩ : LocalRef P4 (some .i64)) %[q, end_, rec_, ← c mi]
             pure %[← b2i (← icmp .eq got end_)])
           let slot ← iadd (← iaddImm base TOP) (← ishlImm cs.snd 4)
           storeI64 ty slot
@@ -707,9 +757,12 @@ def packedHelper : Prog V L (V .i64) := do
 
 end
 
-/-- The program: the two entries, the helpers, then each message's decoder,
-    sizer and writer. -/
-def clifIR (msgs : Array Message) (tops : List Nat) : Except String (List FuncData) :=
+/-- The program: the two entries, the helpers, the decoder, then each
+    message's sizer and writer. -/
+def clifIR (msgs : Array Message) (tops : List Nat) : Except String (List FuncData) := do
+  -- a table entry keeps a message's index in 16 bits
+  if msgs.size > 65536 ∨ (tableBytes msgs).length > TABLE_BYTES then
+    throw s!"the schema's {msgs.size} messages are past the decoder's tables"
   Prog.program <|
     [Prog.entry "decode" (Prog.compileProgStatus 0 (decodeEntry msgs tops)),
      Prog.entry "encode" (Prog.compileProgStatus 1 (encodeEntry tops)),
@@ -717,19 +770,20 @@ def clifIR (msgs : Array Message) (tops : List Nat) : Except String (List FuncDa
      Prog.compileProgStatus COPY_IX copyHelper P4,
      Prog.compileProgStatus APPEND_IX appendHelper P4,
      Prog.compileProgStatus ALLOC_IX allocHelper P4,
-     Prog.compileProgStatus PACKED_IX packedHelper P4] ++
+     Prog.compileProgStatus PACKED_IX packedHelper P4,
+     Prog.compileProgStatus DEC_IX decodeBody P4] ++
     (List.range msgs.size).flatMap fun i =>
-      [Prog.compileProgStatus (decIx i) (decodeBody msgs i) P4,
-       Prog.compileProgStatus (sizeIx i) (sizeBody msgs i) P4,
+      [Prog.compileProgStatus (sizeIx i) (sizeBody msgs i) P4,
        Prog.compileProgStatus (writeIx i) (writeBody msgs i) P4]
 
-/-- The arena's image: the copy's CPU test name and its bytes. -/
-def initialMemory : List UInt8 :=
-  Memops.writeAt (Memops.writeAt (zeros HEAP) COPY_NAME ("avx2".toUTF8.toList ++ [0]))
-    COPY_CODE (Memops.bodyBytes MemopsAsm.copy)
+/-- The arena's image: the copy's CPU test name and its bytes, the decoder's
+    tables. -/
+def initialMemory (msgs : Array Message) : List UInt8 :=
+  Memops.writeAt (Memops.writeAt (Memops.writeAt (zeros HEAP) COPY_NAME ("avx2".toUTF8.toList ++ [0]))
+    COPY_CODE (Memops.bodyBytes MemopsAsm.copy)) TABLES (tableBytes msgs)
 
-def artifacts (clif : List FuncData) : Array ArtifactEntry :=
-  #[artifactEntry "proto" { functions := clif, required_memory := MEM, initial_memory := initialMemory }]
+def artifacts (msgs : Array Message) (clif : List FuncData) : Array ArtifactEntry :=
+  #[artifactEntry "proto" { functions := clif, required_memory := MEM, initial_memory := initialMemory msgs }]
 
 end Proto
 
@@ -784,6 +838,6 @@ def Bench.Proto.main (args : List String) : IO Unit := do
     | .error e => throw (IO.userError e)
   let outDir ← requireOutputDir outArgs
   let clif ← Prog.orDie (Proto.clifIR msgs tops)
-  emitArtifacts outDir (Proto.artifacts clif)
+  emitArtifacts outDir (Proto.artifacts msgs clif)
 
 #eval ShipScan.check "Bench.Proto" `Bench.Proto.main

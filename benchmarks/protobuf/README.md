@@ -49,10 +49,10 @@ upb copy them by default.
 Every corpus is nearly all string bytes, so a parse or a serialize is mostly
 copies: base copies a string of 128 bytes or more with its own AVX2 loop
 (`MemopsAsm.copy`) into 64-byte-aligned arena space, and asks for huge pages
-under its arena once. Base is ahead of the best other engine on 7 of the 12
-measures and within 4% on four more; bench2 parses at about 0.8x of upb.
-bench2 is 310 message types: its decoders are the most code, and a message's
-decode reaches the most of it.
+under its arena once. One decoder serves every message type, reading each
+message's table of fields, so a parse's code stays a few kilobytes however
+large the schema (bench2 is 310 message types). Base parses every benchmark
+faster than the best other engine.
 
 ## Not built
 
