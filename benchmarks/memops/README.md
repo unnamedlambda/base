@@ -50,7 +50,9 @@ three causes, each measured:
   base function is `f(in, in_len, out, out_len)`, so the harness calls it
   through a wrapper that reorders a libc call's arguments. Called directly
   at a fixed size, base's memcpy takes what glibc's does. This is the C API's
-  shape, not the code.
+  shape, not the code, and the suite keeps it as the measure of that
+  boundary: a call that does a few nanoseconds of work is where its fixed
+  cost shows.
 - *Width* (about 2x at 384-4096 bytes for memcpy, memset and bzero):
   Cranelift's widest vector is 128 bits; llvm-libc and glibc copy 32 bytes an
   instruction with AVX2. A system limit, which base passes where it carries

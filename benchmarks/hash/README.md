@@ -55,7 +55,11 @@ loop's loads folded into the rounds. On small keys the frontier is Abseil's
 low-level hash (15.9 cycles); base's gxhash takes 34 and its rapidhash 27
 (the C build's 22): every hash of base's pays the C API's call and the
 seed's trip through the output word, and Cranelift forms rapidhash's
-64x64->128 product as two multiplies where x86 has one.
+64x64->128 product as two multiplies where x86 has one. The small-key rows
+stay as the measure of that boundary: a base function takes whole buffers
+through its four-argument C API, which costs nothing beside real work (as
+in `../hashtable`, where base leads) and shows where a call does a few
+nanoseconds of it.
 
 **Reproduction.** SMHasher3's results directory at the pinned commit gives
 every hash's published verification value and speeds; the report sets them
