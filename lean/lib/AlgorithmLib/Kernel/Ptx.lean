@@ -531,17 +531,20 @@ def voidIntr : Intr → List Val → LM Unit
       emit (.redShared ad (← o x))
   | c, _ => fail s!"{c.name} without a result, on arguments it does not take"
 
-/-- The intrinsics of three words and a word: `dp4a`, `prmt`. -/
+/-- The intrinsics of three words and a word: `dp4a`, `prmt`, `cvtH`,
+    `hfma2`. -/
 def word3 : Intr → Bool
-  | .dp4a | .prmt => true
+  | .dp4a | .prmt | .cvtH | .hfma2 => true
   | _ => false
 
-/-- A three-argument intrinsic with a word result, into `d`: `dp4a` or
-    `prmt`. -/
+/-- A three-argument intrinsic with a word result, into `d`: `dp4a`,
+    `prmt`, `cvtH` or `hfma2`. -/
 def intr3 (d : Val) (c : Intr) (a b e : Val) : LM Unit :=
   match c with
   | .dp4a => do emit (.dp4a (regOf .i32 d) (← o a) (← o b) (← o e))
   | .prmt => do emit (.prmt (regOf .i32 d) (← o a) (← o b) (← o e))
+  | .cvtH => do emit (.cvtH (regOf .i32 d) (← o a) (← o b) (← o e))
+  | .hfma2 => do emit (.hfma2 (regOf .i32 d) (← o a) (← o b) (← o e))
   | c => fail s!"{c.name} with three arguments"
 
 /-- The intrinsics of six words and a 64-bit answer: the wide `mma`. -/
@@ -557,12 +560,13 @@ def intr6 (d : Val) (c : Intr) (a0 a1 a2 a3 b0 b1 : Val) : LM Unit :=
   | c => fail s!"{c.name} with six arguments"
 
 /-- The intrinsics of six words, a 64-bit accumulator and a 64-bit answer:
-    the bf16 `mma`. -/
+    the bf16 and f16 `mma`. -/
 def word7 : Intr → Bool
-  | .mmaBfLo | .mmaBfHi => true
+  | .mmaBfLo | .mmaBfHi | .mmaH => true
   | _ => false
 
-/-- A seven-argument intrinsic, into `d`: a bf16 `mma`'s half. -/
+/-- A seven-argument intrinsic, into `d`: a bf16 `mma`'s half, or an f16
+    `mma`. -/
 def intr7 (d : Val) (c : Intr) (a0 a1 a2 a3 b0 b1 e : Val) : LM Unit :=
   match c with
   | .mmaBfLo => do
@@ -570,11 +574,13 @@ def intr7 (d : Val) (c : Intr) (a0 a1 a2 a3 b0 b1 e : Val) : LM Unit :=
       | some (d', e') =>
           emit (.mmaB2 (regOf .i64 d) (regOf .i64 d') (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1)
             (← o e) (← o e'))
-      | none => emit (.mmaB false (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
+      | none => emit (.mmaB .bfLo (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
   | .mmaBfHi => do
       -- one lowered with its low half is that half's
       if ((← facts?).pairHi.get? d.id).isNone then
-        emit (.mmaB true (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
+        emit (.mmaB .bfHi (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
+  | .mmaH => do
+      emit (.mmaB .h16 (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1) (← o e))
   | c => fail s!"{c.name} with seven arguments"
 
 /-- An intrinsic of three words or more, into `d`: three (`intr3`), six

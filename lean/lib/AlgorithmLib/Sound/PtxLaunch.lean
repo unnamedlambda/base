@@ -173,6 +173,11 @@ theorem answerStep_view {hw : Hw} (calls : Nat → List (Intr × List V)) (snaps
   | mmaBfHi =>
       simp only [callView, show (Intr.mmaBfHi == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]
       simp only [answerStep, mmaBfLane, laneWord, laneArg_view_of calls warp _ k .mmaBfHi rfl]
+  | cvtH => rfl
+  | hfma2 => rfl
+  | mmaH =>
+      simp only [callView, show (Intr.mmaH == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]
+      simp only [answerStep, mmaHLane, laneWord, laneArg_view_of calls warp _ k .mmaH rfl]
 
 /-- The shared adds read through the view: the view changes only ballots. -/
 theorem foldl_view {β : Type} (f : β → Intr × List V → β) (hf : ∀ a x, f a (callView x) = f a x) :
@@ -270,6 +275,11 @@ theorem answersOf_ok {hw : Hw} (calls : Nat → List (Intr × List V)) (snaps : 
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · simp only [bind, Except.bind] at hr
         split at hr

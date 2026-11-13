@@ -796,6 +796,19 @@ inductive Intr where
       bf16 products; the first six words a lane passes are its four of `A`
       and its two of `B`, two bf16 values each. -/
   | mmaBfLo | mmaBfHi
+  /-- `cvt.rn.f16x2.f32`: the f32 values of `a` and `b`, each rounded to the
+      nearest f16, `a`'s the low half (`cvtHVal`); the third word is not read. -/
+  | cvtH
+  /-- `fma.rn.f16x2`: in each half, the f16 nearest `a · b + c`, exactly
+      (`hfma2Val`). -/
+  | hfma2
+  /-- `mma.sync.m16n8k16.row.col.f16.f16.f16.f16`: lane `l` gets its rows
+      `l / 4` (the low word of its answer) and `l / 4 + 8` (the high) at
+      columns `2 · (l mod 4)` and the next, each the f16 the hardware leaves
+      (`Hw.mmaH`) for the accumulator it passed (its seventh word's, the same
+      halves) plus the f16 products; the first six words a lane passes are its
+      four of `A` and its two of `B`, two f16 values each. -/
+  | mmaH
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 namespace Intr
@@ -808,9 +821,9 @@ def sig : Intr → List ClifTy × Option ClifTy
       ([.f32], some .f32)
   | .dp4a => ([.i32, .i32, .i32], some .i32)
   | .sharedAdd => ([.i64, .i32], none)
-  | .prmt => ([.i32, .i32, .i32], some .i32)
+  | .prmt | .cvtH | .hfma2 => ([.i32, .i32, .i32], some .i32)
   | .mmaLo | .mmaHi => ([.i32, .i32, .i32, .i32, .i32, .i32], some .i64)
-  | .mmaBfLo | .mmaBfHi => ([.i32, .i32, .i32, .i32, .i32, .i32, .i64], some .i64)
+  | .mmaBfLo | .mmaBfHi | .mmaH => ([.i32, .i32, .i32, .i32, .i32, .i32, .i64], some .i64)
 
 def name : Intr → String
   | .shflBfly => "shfl.bfly" | .shflIdx => "shfl.idx" | .ballot => "ballot" | .barrier => "barrier"
@@ -819,11 +832,12 @@ def name : Intr → String
   | .rsqrtApprox => "rsqrt.approx" | .dp4a => "dp4a" | .sharedAdd => "shared.add"
   | .prmt => "prmt" | .mmaLo => "mma.lo" | .mmaHi => "mma.hi"
   | .mmaBfLo => "mma.bf16.lo" | .mmaBfHi => "mma.bf16.hi"
+  | .cvtH => "cvt.f16x2" | .hfma2 => "fma.f16x2" | .mmaH => "mma.f16"
 
 /-- Whether other threads answer it: a collective, rather than the hardware's
     arithmetic. -/
 def isColl : Intr → Bool
-  | .ex2Approx | .rcpApprox | .lg2Approx | .sinApprox | .cosApprox | .sqrtApprox | .rsqrtApprox | .dp4a | .prmt => false
+  | .ex2Approx | .rcpApprox | .lg2Approx | .sinApprox | .cosApprox | .sqrtApprox | .rsqrtApprox | .dp4a | .prmt | .cvtH | .hfma2 => false
   | _ => true
 
 /-- Where an intrinsic's meaning sits among the functions a run is given,
@@ -835,9 +849,11 @@ def slot : Intr → Nat
   | .rsqrtApprox => 2 ^ 33 + 10 | .dp4a => 2 ^ 33 + 11 | .sharedAdd => 2 ^ 33 + 12
   | .prmt => 2 ^ 33 + 14 | .mmaLo => 2 ^ 33 + 15 | .mmaHi => 2 ^ 33 + 16
   | .mmaBfLo => 2 ^ 33 + 17 | .mmaBfHi => 2 ^ 33 + 18
+  | .cvtH => 2 ^ 33 + 19 | .hfma2 => 2 ^ 33 + 20 | .mmaH => 2 ^ 33 + 21
 
 def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx,
-  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .prmt, .mmaLo, .mmaHi, .mmaBfLo, .mmaBfHi]
+  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .prmt, .mmaLo, .mmaHi, .mmaBfLo, .mmaBfHi,
+  .cvtH, .hfma2, .mmaH]
 
 /-- The low byte `i` of `x`, as a signed integer. -/
 def sbyte (x : UInt64) (i : Nat) : Int :=
@@ -861,6 +877,73 @@ def prmtVal (a b s : UInt64) : UInt64 :=
     let v := bytes.getD (n &&& 7).toNat 0
     let v := if n &&& 8 == 0 then v else if v &&& 0x80 == 0 then 0 else 0xff
     acc ||| (v <<< UInt64.ofNat (8 * i))) 0 &&& 0xffffffff
+
+/-- **The f16 nearest `n · 2^e`** (ties to the even), negative where `neg`:
+    eleven bits of `n` kept at the exponent the value's size gives, never
+    below the subnormals' `2^-24`, and past the largest finite f16, infinity. -/
+def f16Near (neg : Bool) (n : Nat) (e : Int) : UInt64 :=
+  let sgn : UInt64 := if neg then 0x8000 else 0
+  if n = 0 then sgn else
+  let u : Int := max (-24) ((Nat.log2 n : Int) + 1 + e - 11)
+  let q : Nat :=
+    if u ≤ e then n * 2 ^ (e - u).toNat else
+    let s := (u - e).toNat
+    let q0 := n / 2 ^ s
+    let rem := n % 2 ^ s
+    if rem * 2 > 2 ^ s ∨ (rem * 2 = 2 ^ s ∧ q0 % 2 = 1) then q0 + 1 else q0
+  let (q, u) := if q = 2048 then (1024, u + 1) else (q, u)
+  if q < 1024 then sgn ||| UInt64.ofNat q
+  else if u + 25 ≥ 31 then sgn ||| 0x7c00
+  else sgn ||| UInt64.ofNat ((u + 25).toNat * 1024 + (q - 1024))
+
+/-- An f16's parts, from its bits' low half: its sign, its exponent field,
+    and its value `n · 2^e` where that field is not 31's. -/
+def f16Parts (h : UInt64) : Bool × Nat × Nat × Int :=
+  let ex := ((h >>> 10) &&& 31).toNat
+  let m := (h &&& 1023).toNat
+  (h &&& 0x8000 != 0, ex, if ex = 0 then m else m + 1024, if ex = 0 then -24 else (ex : Int) - 25)
+
+/-- **An f32 rounded to the nearest f16**, a NaN to `0x7fff`. -/
+def f16OfF32 (w : UInt64) : UInt64 :=
+  let neg := w &&& 0x80000000 != 0
+  let ex := ((w >>> 23) &&& 255).toNat
+  let m := (w &&& 0x7fffff).toNat
+  if ex = 255 then (if m ≠ 0 then 0x7fff else if neg then 0xfc00 else 0x7c00)
+  else if ex = 0 then f16Near neg m (-149)
+  else f16Near neg (m + 0x800000) ((ex : Int) - 150)
+
+/-- **`cvt.rn.f16x2.f32`'s value**: `a`'s f32 to the low f16, `b`'s to the
+    high. -/
+def cvtHVal (a b _ : UInt64) : UInt64 :=
+  (f16OfF32 (a &&& 0xffffffff) ||| (f16OfF32 (b &&& 0xffffffff) <<< 16)) &&& 0xffffffff
+
+/-- **One f16 `a · b + c`**, rounded once: a NaN operand, `∞ · 0` or `∞ - ∞`
+    give `0x7fff`; an exact zero is `-0` only for a zero product and a zero
+    `c` both negative. -/
+def hfmaVal (a b c : UInt64) : UInt64 :=
+  let (sa, ea, na, xa) := f16Parts a
+  let (sb, eb, nb, xb) := f16Parts b
+  let (sc, ec, nc, xc) := f16Parts c
+  let nan (e n : Nat) := e = 31 ∧ n ≠ 1024
+  let inf (e n : Nat) := e = 31 ∧ n = 1024
+  let sp := sa != sb
+  if nan ea na ∨ nan eb nb ∨ nan ec nc then 0x7fff
+  else if inf ea na ∨ inf eb nb then
+    if (ea ≠ 31 ∧ na = 0) ∨ (eb ≠ 31 ∧ nb = 0) then 0x7fff
+    else if inf ec nc ∧ sc != sp then 0x7fff
+    else if sp then 0xfc00 else 0x7c00
+  else if inf ec nc then (if sc then 0xfc00 else 0x7c00)
+  else
+    let emin := min (xa + xb) xc
+    let p : Int := (if sp then -1 else 1) * ((na * nb * 2 ^ (xa + xb - emin).toNat : Nat) : Int)
+    let z : Int := (if sc then -1 else 1) * ((nc * 2 ^ (xc - emin).toNat : Nat) : Int)
+    if p + z = 0 then (if p = 0 ∧ sp ∧ sc then 0x8000 else 0)
+    else f16Near (p + z < 0) (p + z).natAbs emin
+
+/-- **`fma.rn.f16x2`'s value**: `hfmaVal` in each half. -/
+def hfma2Val (a b c : UInt64) : UInt64 :=
+  (hfmaVal (a &&& 0xffff) (b &&& 0xffff) (c &&& 0xffff) |||
+    (hfmaVal ((a >>> 16) &&& 0xffff) ((b >>> 16) &&& 0xffff) ((c >>> 16) &&& 0xffff) <<< 16)) &&& 0xffffffff
 
 /-- The int8 dot product of `a`'s and `b`'s four low bytes. -/
 def dot4 (a b : UInt64) : Int := (List.range 4).foldl (fun acc i => acc + sbyte a i * sbyte b i) 0

@@ -146,6 +146,12 @@ def AtomOp.name : AtomOp → String
   | .add => "add" | .and => "and" | .or => "or" | .xor => "xor" | .exch => "exch"
   | .umin | .smin => "min" | .umax | .smax => "max" | .load => "load" | .store => "store"
 
+/-- An `mma.sync.m16n8k16`'s kind: a bf16 `mma` into f32, its row `l / 4`
+    (`bfLo`) or eight past (`bfHi`); or an f16 `mma` into f16 (`h16`), both. -/
+inductive MmaK where
+  | bfLo | bfHi | h16
+  deriving Repr, DecidableEq, Inhabited, BEq
+
 /-- An instruction. -/
 inductive Instr where
   | mov (t : Ty) (d : Reg) (a : Opnd)
@@ -158,6 +164,11 @@ inductive Instr where
   | setp (c : Cmp) (t : Ty) (p : Reg) (a b : Opnd)
   | selp (t : Ty) (d : Reg) (a b : Opnd) (p : Opnd)
   | prmt (d : Reg) (a b c : Opnd)
+  /-- `cvt.rn.f16x2.f32`: `a`'s and `b`'s f32 values to the nearest f16, `a`'s
+      the low half; `c` is not read. -/
+  | cvtH (d : Reg) (a b c : Opnd)
+  /-- `fma.rn.f16x2`: in each half, the f16 nearest `a · b + c`. -/
+  | hfma2 (d : Reg) (a b c : Opnd)
   /-- `dp4a.s32.s32`: `c` plus the dot product of the four signed bytes of
       `a` and of `b`. -/
   | dp4a (d : Reg) (a b c : Opnd)
@@ -174,10 +185,11 @@ inductive Instr where
   /-- One `mma.sync.m16n8k32` of int8 from zero, to `d` its rows `l / 4`
       (or, `hi`, eight past) sums at its two columns, the first low. -/
   | mmaW (hi : Bool) (d : Reg) (a0 a1 a2 a3 b0 b1 : Opnd)
-  /-- One `mma.sync.m16n8k16` of bf16 into f32, to `d` its row `l / 4` (or,
-      `hi`, eight past) at its two columns from the accumulator pair `c`, the
-      first low. -/
-  | mmaB (hi : Bool) (d : Reg) (a0 a1 a2 a3 b0 b1 c : Opnd)
+  /-- One `mma.sync.m16n8k16` of six words and a 64-bit accumulator, of
+      kind `k`: of bf16 into f32 (`bfLo`, `bfHi`), to `d` its row `l / 4` (or
+      eight past) at its two columns from the accumulator pair `c`, the first
+      low; of f16 into f16 (`h16`), to `d` both rows from `c`. -/
+  | mmaB (k : MmaK) (d : Reg) (a0 a1 a2 a3 b0 b1 c : Opnd)
   /-- Both halves of one bf16 `mma.sync.m16n8k16`: to `dLo` row `l / 4` from
       the accumulator pair `cLo`, to `dHi` row `l / 4 + 8` from `cHi`. -/
   | mmaB2 (dLo dHi : Reg) (a0 a1 a2 a3 b0 b1 cLo cHi : Opnd)
@@ -281,6 +293,8 @@ def Instr.text : Instr → String
   | .setp c t p a b => s!"setp.{c.name}.{t.name} {p.text}, {a.text}, {b.text}"
   | .selp t d a b p => s!"selp.{t.name} {d.text}, {a.text}, {b.text}, {p.text}"
   | .prmt d a b c => s!"prmt.b32 {d.text}, {a.text}, {b.text}, {c.text}"
+  | .cvtH d a b _ => s!"cvt.rn.f16x2.f32 {d.text}, {b.text}, {a.text}"
+  | .hfma2 d a b c => s!"fma.rn.f16x2 {d.text}, {a.text}, {b.text}, {c.text}"
   | .dp4a d a b c => s!"dp4a.s32.s32 {d.text}, {a.text}, {b.text}, {c.text}"
   | .ld sp nc t d a => s!"ld{sp.dot}{if nc then ".nc" else ""}.{t.name} {d.text}, {a.text}"
   | .st sp t a v => s!"st{sp.dot}.{t.name} {a.text}, {v.text}"
@@ -305,7 +319,23 @@ def Instr.text : Instr → String
       s!"mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 \{%mw_o0, %mw_o1, %mw_o2, %mw_o3}, " ++
       s!"\{{t 0}, {t 1}, {t 2}, {t 3}}, \{{t 4}, {t 5}}, \{0, 0, 0, 0}; " ++
       s!"mov.b64 {d.text}, \{{if hi then "%mw_o2, %mw_o3" else "%mw_o0, %mw_o1"}}; }"
-  | .mmaB hi d a0 a1 a2 a3 b0 b1 c =>
+  | .mmaB .h16 d a0 a1 a2 a3 b0 b1 c =>
+      let sel (o : Opnd) (nm : String) : String × String := match o with
+        | .reg r => (r.text, "")
+        | o => (nm, s!"mov.b32 {nm}, {o.text}; ")
+      let ops := [(a0, "%mh_a0"), (a1, "%mh_a1"), (a2, "%mh_a2"), (a3, "%mh_a3"), (b0, "%mh_b0"),
+        (b1, "%mh_b1")].map fun (o, nm) => sel o nm
+      let t (i : Nat) : String := (ops.getD i ("", "")).1
+      let (tc, mc) := match c with
+        | .reg r => (r.text, "")
+        | o => ("%mh_cc", s!"mov.b64 %mh_cc, {o.text}; ")
+      s!"\{ .reg .b32 %mh_a0, %mh_a1, %mh_a2, %mh_a3, %mh_b0, %mh_b1, %mh_c<2>, %mh_o<2>; .reg .b64 %mh_cc; " ++
+      String.join (ops.map (·.2)) ++ mc ++ s!"mov.b64 \{%mh_c0, %mh_c1}, {tc}; " ++
+      s!"mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 \{%mh_o0, %mh_o1}, " ++
+      s!"\{{t 0}, {t 1}, {t 2}, {t 3}}, \{{t 4}, {t 5}}, \{%mh_c0, %mh_c1}; " ++
+      s!"mov.b64 {d.text}, \{%mh_o0, %mh_o1}; }"
+  | .mmaB k d a0 a1 a2 a3 b0 b1 c =>
+      let hi := k == .bfHi
       let sel (o : Opnd) (nm : String) : String × String := match o with
         | .reg r => (r.text, "")
         | o => (nm, s!"mov.b32 {nm}, {o.text}; ")

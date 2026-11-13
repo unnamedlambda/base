@@ -193,6 +193,12 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
   | .prmt d a b s => do
       let x ← opndV c regs a; let y ← opndV c regs b; let sel ← opndV c regs s
       pure (.step, w, some (d, Intr.prmtVal x y sel))
+  | .cvtH d a b s => do
+      let x ← opndV c regs a; let y ← opndV c regs b; let z ← opndV c regs s
+      pure (.step, w, some (d, Intr.cvtHVal x y z))
+  | .hfma2 d a b s => do
+      let x ← opndV c regs a; let y ← opndV c regs b; let z ← opndV c regs s
+      pure (.step, w, some (d, Intr.hfma2Val x y z))
   | .dp4a d a b e => do
       let x ← opndV c regs a; let y ← opndV c regs b; let z ← opndV c regs e
       pure (.step, w, some (d, Intr.dp4aVal x y z))
@@ -251,14 +257,14 @@ def stepV (c : Ctx) (regs : Std.HashMap Reg UInt64) (w : World) :
       match r with
       | some (.sc _ v) => pure (.step, w', some (d, v))
       | _ => .error "a wide mma answered by no value"
-  | .mmaB hi d a0 a1 a2 a3 b0 b1 e => do
+  | .mmaB k d a0 a1 a2 a3 b0 b1 e => do
       let x0 ← opndV c regs a0; let x1 ← opndV c regs a1; let x2 ← opndV c regs a2
       let x3 ← opndV c regs a3; let x4 ← opndV c regs b0; let x5 ← opndV c regs b1; let x6 ← opndV c regs e
-      let (r, w') ← collV c w (if hi then .mmaBfHi else .mmaBfLo) [.sc .i32 (mask 32 x0), .sc .i32 (mask 32 x1),
+      let (r, w') ← collV c w k.intr [.sc .i32 (mask 32 x0), .sc .i32 (mask 32 x1),
         .sc .i32 (mask 32 x2), .sc .i32 (mask 32 x3), .sc .i32 (mask 32 x4), .sc .i32 (mask 32 x5), .sc .i64 x6]
       match r with
       | some (.sc _ v) => pure (.step, w', some (d, v))
-      | _ => .error "a bf16 mma answered by no value"
+      | _ => .error "an mma answered by no value"
   -- a line writing two registers is in no renamed body (`Coalesce.fresh`)
   | .mmaB2 .. => .error "an mma writing both halves is not renamed"
   | .bar _ => do
@@ -414,6 +420,16 @@ theorem exec_run (c : Ctx) (i : Instr) (ts : TS) (h2 : Coalesce.Instr.two i = fa
       rd opndV c ts.regs a
       rd opndV c ts.regs b
   | prmt d a b x =>
+      simp only [exec, stepV]; norm
+      rd opndV c ts.regs a
+      rd opndV c ts.regs b
+      rd opndV c ts.regs x
+  | cvtH d a b x =>
+      simp only [exec, stepV]; norm
+      rd opndV c ts.regs a
+      rd opndV c ts.regs b
+      rd opndV c ts.regs x
+  | hfma2 d a b x =>
       simp only [exec, stepV]; norm
       rd opndV c ts.regs a
       rd opndV c ts.regs b
@@ -636,6 +652,16 @@ theorem stepV_ren (c : Ctx) (b : Array Line) (L : Std.HashMap Lbl Nat) (ρ : Ren
       cases opndV c regs a <;> try rfl
       cases opndV c regs b <;> rfl
   | prmt d a b x =>
+      rw_reads; rw [R a (by ag hag), R b (by ag hag), R x (by ag hag)]
+      cases opndV c regs a <;> try rfl
+      cases opndV c regs b <;> try rfl
+      cases opndV c regs x <;> rfl
+  | cvtH d a b x =>
+      rw_reads; rw [R a (by ag hag), R b (by ag hag), R x (by ag hag)]
+      cases opndV c regs a <;> try rfl
+      cases opndV c regs b <;> try rfl
+      cases opndV c regs x <;> rfl
+  | hfma2 d a b x =>
       rw_reads; rw [R a (by ag hag), R b (by ag hag), R x (by ag hag)]
       cases opndV c regs a <;> try rfl
       cases opndV c regs b <;> try rfl

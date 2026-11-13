@@ -54,6 +54,15 @@ def mmaHiR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32] (some .i64) := { call
 def mmaBfLoR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32, .i64] (some .i64) := { callee := .intr .mmaBfLo }
 def mmaBfHiR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32, .i64] (some .i64) := { callee := .intr .mmaBfHi }
 
+/-- `cvt.rn.f16x2.f32`: the f32 values (their bits) `a` and `b` to the nearest
+    f16, `a`'s the low half; the third word is not read. -/
+def cvtHR : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .cvtH }
+/-- `fma.rn.f16x2`: in each half, the f16 nearest `a · b + c`. -/
+def hfma2R : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .hfma2 }
+/-- An f16 `mma` from an accumulator: rows `l / 4` (low word) and eight past
+    (high), two f16 sums each. -/
+def mmaHR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32, .i64] (some .i64) := { callee := .intr .mmaH }
+
 /-- `red.shared.add.u32`: `x` added to the shared word at `p`, which every
     thread finds after the next barrier. -/
 def sharedAdd : LocalRef [.i64, .i32] none := { callee := .intr .sharedAdd }

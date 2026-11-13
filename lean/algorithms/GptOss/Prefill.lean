@@ -691,12 +691,13 @@ def AT_KEYS : Nat := 32
 
 /-- Words a staged key row takes in shared memory (its 32, and 4 so that the
     eight keys a fragment load reads fall on distinct banks), and a staged
-    dimension row of values (its 16 key pairs, and 4). -/
+    dimension row of values (its 16 key pairs, f16, and 4; a row's columns
+    xor its eighth, `row / 8`). -/
 def KSTR : Nat := 36
 def VSTR : Nat := 20
 
 set_option maxRecDepth 8000 in
-/-- **Attention of every token, on the bf16 tensor cores**: causal, a key
+/-- **Attention of every token, on the tensor cores**: causal, a key
     window where the layer slides, the learned sink in the denominator
     (`meta`: `T`, `start`, `window` (0 for none), `cap`, `stride`). Token `t`
     at position `p = start + t` sees the keys at `max(0, p - window + 1) … p`,
@@ -710,7 +711,9 @@ set_option maxRecDepth 8000 in
     `AT_KEYS` keys is staged as bf16 (keys row by row, values dimension by
     dimension), its scores are the bf16 `mma`'s, the softmax is online in the
     lanes (a row's four lanes combining by butterfly), and the probabilities,
-    rounded to bf16, multiply the values by the bf16 `mma` again. -/
+    rounded to f16, multiply the values, staged as f16, by the f16 `mma`
+    into f16 sums (`mmaH`), which each tile scales by its rows' factors
+    (`hfma2`). -/
 def attnFBody : Prog V L Unit := do
   let ps ← entryParams (idParams ++ List.replicate 8 .i64)
   let cta := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
@@ -751,9 +754,18 @@ def attnFBody : Prog V L Unit := do
     let b ← bitcast .i32 x
     ushrImm (← iadd (← iadd b (← c32 0x7FFF)) (← band (← ushrImm b 16) (← c32 1))) 16
   let pack (x y : V .f32) : Prog V L (V .i32) := do bor (← bfOf x) (← ishlImm (← bfOf y) 16)
+  let z32 ← c32 0
+  let ex2 (x : V .f32) : Prog V L (V .f32) := do callLocal ex2Approx %[x]
+  -- two f32 to an f16 pair, the first low
+  let packH (x y : V .f32) : Prog V L (V .i32) := do
+    callLocal cvtHR %[← bitcast .i32 x, ← bitcast .i32 y, z32]
+  -- a word's two bf16 values as an f16 pair
+  let bfToH (w : V .i32) : Prog V L (V .i32) := do
+    callLocal cvtHR %[← ishlImm w 16, ← band w (← c32 0xFFFF0000), z32]
   -- the queries' fragments: for each sixteen dimensions, rows `g` (token A)
   -- and `g + 8` (token B) at dimensions `2 t, 2 t + 1` and eight past
-  let eighth ← fl 0.125
+  -- scaled by `log₂ e / 8`: the scores in base 2, each probability one `ex2`
+  let eighth ← fl (1.4426950408889634 / 8)
   let qA ← at4 qkv (← iadd (← imul tA (← c32 QKVW)) (← imul head (← c32 HD)))
   let qB ← at4 qkv (← iadd (← imul tB (← c32 QKVW)) (← imul head (← c32 HD)))
   let tw ← ishlImm t 1
@@ -768,18 +780,18 @@ def attnFBody : Prog V L Unit := do
   let z64 ← iconst64 0
   let lo32 (x : V .i64) : Prog V L (V .f32) := do bitcast .f32 (← ireduce32 x)
   let hi32 (x : V .i64) : Prog V L (V .f32) := do bitcast .f32 (← ireduce32 (← ushrImm x 32))
-  let join (a b : V .f32) : Prog V L (V .i64) := do
-    bor (← uextend64 (← bitcast .i32 a)) (← ishlImm (← uextend64 (← bitcast .i32 b)) 32)
   let quad (x : V .f32) (f : V .f32 → V .f32 → Prog V L (V .f32)) : Prog V L (V .f32) := do
     let x1 ← f x (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 x, ← c32 1]))
     f x1 (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 x1, ← c32 2]))
   let nTiles ← udiv (← iadd (← isub hi0 lo0) (← c32 (AT_KEYS - 1))) (← c32 AT_KEYS)
-  let st ← wloop (Vals.append %[← c32 0, ninf, ninf, zero, zero] (Vals.ofFn (n := 16) fun _ => z64))
+  -- the tile index, both rows' maxima and sums, and eight f16 sums of
+  -- values (`HD / 8`: one an `mma` of eight dimensions, both rows)
+  let st ← wloop (Vals.append %[← c32 0, ninf, ninf, zero, zero] (Vals.ofFn (n := 8) fun _ => z64))
     (fun cs => do pure (contIfULt cs.head nTiles, cs, ()))
     (fun cs _ => do
       let mA := (cs.drop 1).head; let mB := (cs.drop 2).head
       let lA := (cs.drop 3).head; let lB := (cs.drop 4).head
-      let os := Vals.uniformToList (cs.drop 5 : Vals V (List.replicate 16 .i64))
+      let os := Vals.uniformToList (cs.drop 5 : Vals V (List.replicate 8 .i64))
       let j0 ← iadd lo0 (← imul cs.head (← c32 AT_KEYS))
       -- a key's word `wd` (its dimensions `2 wd`, `2 wd + 1`), from the cache
       -- or the chunk
@@ -808,11 +820,14 @@ def attnFBody : Prog V L Unit := do
           let m ← ushrImm ci 5
           let dp ← band ci (← c32 31)
           let j ← iadd j0 (← ishlImm m 1)
-          let w0 ← word vcache vc j dp
-          let w1 ← word vcache vc (← iadd j (← c32 1)) dp
+          let w0 ← bfToH (← word vcache vc j dp)
+          let w1 ← bfToH (← word vcache vc (← iadd j (← c32 1)) dp)
           let lo ← bor (← band w0 (← c32 0xFFFF)) (← ishlImm w1 16)
           let hi ← bor (← ushrImm w0 16) (← band w1 (← c32 0xFFFF0000))
-          let at0 ← iadd (← c32 (AT_KEYS * KSTR)) (← iadd (← imul (← ishlImm dp 1) (← c32 VSTR)) m)
+          -- column `m` of rows `2 dp` and `2 dp + 1`, xor the rows' eighth
+          -- (`dp / 4`), so a warp's thirty-two stores meet in no bank
+          let mx ← bxor m (← band (← ushrImm dp 2) (← c32 7))
+          let at0 ← iadd (← c32 (AT_KEYS * KSTR)) (← iadd (← imul (← ishlImm dp 1) (← c32 VSTR)) mx)
           storeI32 lo (← at4 sm at0)
           storeI32 hi (← at4 sm (← iadd at0 (← c32 VSTR)))
       -- a tile wholly before the chunk, in slots that do not wrap, read
@@ -845,17 +860,18 @@ def attnFBody : Prog V L Unit := do
         sB := sB ++ [← lo32 accB, ← hi32 accB]
       -- the keys each row sees, the rest `-inf`: key `j0 + tw + k` (`k` its
       -- place in the lane's scores' pattern) where `lo ≤ j ≤ p` and `j < hi0`,
-      -- two comparisons of `k` against the row's bounds, signed (a bound may
-      -- fall before the tile)
+      -- that is `bot ≤ k ≤ top` (signed: a bound may fall before the tile),
+      -- one unsigned comparison `k - bot ≤ top - bot`; a row that sees none
+      -- of the tile moves `bot` past every `k`, so that no `k - bot` is 0
       let maskRow (sv : List (V .f32)) (p lo : V .i32) : Prog V L (List (V .f32)) := do
         let base ← iadd j0 tw
         let top ← isub (← select (← icmp .ult p hi0) p (← isub hi0 (← c32 1))) base
         let bot ← isub lo base
+        let none ← icmp .slt top bot
+        let bot' ← select none (← iadd bot (← c32 (2 ^ 30))) bot
+        let rng ← select none (← c32 0) (← isub top bot)
         (List.range sv.length).zip sv |>.mapM fun (i, x) => do
-          let k ← c32 (8 * (i / 2) + i % 2)
-          let inr ← band (← select (← icmp .sle k top) (← c32 1) (← c32 0))
-            (← select (← icmp .sge k bot) (← c32 1) (← c32 0))
-          select (← icmp .ne inr (← c32 0)) x ninf
+          select (← icmp .ule (← isub (← c32 (8 * (i / 2) + i % 2)) bot') rng) x ninf
       let sA' ← maskRow sA pA loA
       let sB' ← maskRow sB pB loB
       -- the online softmax of a row: its new maximum, the old sum's factor,
@@ -867,55 +883,75 @@ def attnFBody : Prog V L Unit := do
         let rmax ← quad tmax fmax
         let mNew ← fmax m rmax
         let dead ← fcmp .eq mNew ninf
-        let alive ← fcmp .ne mNew ninf
-        let corr ← select dead one (← expA (← fsub m mNew))
-        -- a key the row does not see scores `-inf`, its probability `exp(-inf) = 0`
-        let pr ← sv.mapM fun x => do select alive (← expA (← fsub x mNew)) zero
+        let corr ← select dead one (← ex2 (← fsub m mNew))
+        -- a key the row does not see scores `-inf`, its probability
+        -- `2^-inf = 0`; a row that has seen none subtracts 0, not `-inf`
+        let mUse ← select dead zero mNew
+        let pr ← sv.mapM fun x => do ex2 (← fsub x mUse)
         let mut tsum := zero
         for x in pr do tsum ← fadd tsum x
         let rsum ← quad tsum fadd
         pure (mNew, corr, pr, ← fma l corr rsum)
       let (mA', corrA, prA, lA') ← soft sA' mA lA
       let (mB', corrB, prB, lB') ← soft sB' mB lB
-      -- the sums so far, scaled by their factor, then the tile's values
+      -- the sums so far, scaled by their rows' factors (token A's the low
+      -- word, B's the high), then the tile's values
+      let cA ← packH corrA corrA
+      let cB ← packH corrB corrB
       let mut os' : List (V .i64) := []
-      for (o, idx) in os.zipIdx do
-        let corr := if idx % 2 == 0 then corrA else corrB
-        os' := os' ++ [← join (← fmul (← lo32 o) corr) (← fmul (← hi32 o) corr)]
+      for o in os do
+        let lo : V .i32 ← callLocal hfma2R %[← ireduce32 o, cA, z32]
+        let hi : V .i32 ← callLocal hfma2R %[← ireduce32 (← ushrImm o 32), cB, z32]
+        os' := os' ++ [← bor (← uextend64 lo) (← ishlImm (← uextend64 hi) 32)]
       for c in List.range (AT_KEYS / 16) do
-        let a0 ← pack (prA.getD (4 * c) zero) (prA.getD (4 * c + 1) zero)
-        let a1 ← pack (prB.getD (4 * c) zero) (prB.getD (4 * c + 1) zero)
-        let a2 ← pack (prA.getD (4 * c + 2) zero) (prA.getD (4 * c + 3) zero)
-        let a3 ← pack (prB.getD (4 * c + 2) zero) (prB.getD (4 * c + 3) zero)
+        let a0 ← packH (prA.getD (4 * c) zero) (prA.getD (4 * c + 1) zero)
+        let a1 ← packH (prB.getD (4 * c) zero) (prB.getD (4 * c + 1) zero)
+        let a2 ← packH (prA.getD (4 * c + 2) zero) (prA.getD (4 * c + 3) zero)
+        let a3 ← packH (prB.getD (4 * c + 2) zero) (prB.getD (4 * c + 3) zero)
         let mut nx : List (V .i64) := []
         for ng in List.range (HD / 8) do
+          -- rows `8 ng + g`, their columns xor `ng` as staged
           let vRow ← iadd (← c32 (AT_KEYS * KSTR)) (← imul (← iadd (← c32 (8 * ng)) g) (← c32 VSTR))
-          let b0 ← load32 (← at4 sm (← iadd vRow (← iadd (← c32 (8 * c)) t)))
-          let b1 ← load32 (← at4 sm (← iadd vRow (← iadd (← c32 (8 * c + 4)) t)))
-          let oA : V .i64 ← callLocal mmaBfLoR %[a0, a1, a2, a3, b0, b1, os'.getD (2 * ng) z64]
-          let oB : V .i64 ← callLocal mmaBfHiR %[a0, a1, a2, a3, b0, b1, os'.getD (2 * ng + 1) z64]
-          nx := nx ++ [oA, oB]
+          let tx ← bxor t (← c32 ng)
+          let b0 ← load32 (← at4 sm (← iadd vRow (← iadd (← c32 (8 * c)) tx)))
+          let b1 ← load32 (← at4 sm (← iadd vRow (← iadd (← c32 (8 * c)) (← bxor tx (← c32 4)))))
+          let o : V .i64 ← callLocal mmaHR %[a0, a1, a2, a3, b0, b1, os'.getD ng z64]
+          nx := nx ++ [o]
         os' := nx
       callLocalVoid barrier %[]
       pure (Vals.append %[← iadd cs.head (← c32 1), mA', mB', lA', lB']
-        (Vals.ofFn (n := 16) fun q => os'.getD q.val z64)))
-  -- the sink, and each row's dimensions `8 ng + 2 t`, `+ 1` out
-  let sink ← loadF32 (← at4 sinks head)
-  let os := Vals.uniformToList (st.drop 5 : Vals V (List.replicate 16 .i64))
+        (Vals.ofFn (n := 8) fun q => os'.getD q.val z64)))
+  -- the sink (in base 2, as the scores), and each row's dimensions
+  -- `8 ng + 2 t`, `+ 1` out
+  let sink ← fmul (← loadF32 (← at4 sinks head)) (← fl 1.4426950408889634)
+  let os := Vals.uniformToList (st.drop 5 : Vals V (List.replicate 8 .i64))
+  -- an f16 (a word's low half) as the f32 of the same value
+  let f32OfH (h : V .i32) : Prog V L (V .f32) := do
+    let sign ← ishlImm (← band h (← c32 0x8000)) 16
+    let e ← band (← ushrImm h 10) (← c32 31)
+    let m ← band h (← c32 1023)
+    let normal ← bor (← ishlImm (← iadd e (← c32 112)) 23) (← ishlImm m 13)
+    let special ← bor (← c32 0x7F800000) (← ishlImm m 13)
+    -- a subnormal's (or zero's) value: `m · 2^-24`, exactly
+    let sub ← bitcast .i32 (← fmul (← fcvtFromSint .f32 m) (← fconst .f32 0x33800000))
+    let mag ← select (← icmp .eq e (← c32 0)) sub
+      (← select (← icmp .eq e (← c32 31)) special normal)
+    bitcast .f32 (← bor sign mag)
   for (tok, m, l, half) in [(tokA, (st.drop 1).head, (st.drop 3).head, 0),
       (tokB, (st.drop 2).head, (st.drop 4).head, 1)] do
     when .ult tok T do
       let mAll ← fmax m sink
-      let wgt ← expA (← fsub m mAll)
-      let lAll ← fadd (← fmul l wgt) (← expA (← fsub sink mAll))
+      let wgt ← ex2 (← fsub m mAll)
+      let lAll ← fadd (← fmul l wgt) (← ex2 (← fsub sink mAll))
       let inv : V .f32 ← callLocal rcpApprox %[lAll]
       let scale ← fmul wgt inv
       let orow ← at4 out (← iadd (← imul tok (← c32 QW)) (← imul head (← c32 HD)))
       for ng in List.range (HD / 8) do
-        let o := os.getD (2 * ng + half) z64
+        let o := os.getD ng z64
+        let w ← if half == 0 then ireduce32 o else do ireduce32 (← ushrImm o 32)
         let at' ← at4 orow (← iadd (← c32 (8 * ng)) tw)
-        store (← fmul (← lo32 o) scale) at'
-        store (← fmul (← hi32 o) scale) (← at_ at' 4)
+        store (← fmul (← f32OfH (← band w (← c32 0xFFFF))) scale) at'
+        store (← fmul (← f32OfH (← ushrImm w 16)) scale) (← at_ at' 4)
 
 /-- **The router's logits for every token**: a warp a (token, expert)
     (`meta`: `T`), `bias[e] + Σ_c W[e][c] · x[t][c]`, lanes every

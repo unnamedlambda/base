@@ -28,6 +28,18 @@ def bfDot (as bs : List UInt64) (c : UInt64) : UInt64 :=
   let v (b : UInt64) : Float := Float32.toFloat (f32 (b <<< 16))
   ofF32 ((as.zip bs).foldl (fun acc (a, b) => acc + v a * v b) (Float32.toFloat (f32 c))).toFloat32
 
+/-- `c` plus the products of f16 values, exactly, rounded once to f16; an
+    infinite or NaN operand gives `0x7fff`. -/
+def hDot (as bs : List UInt64) (c : UInt64) : UInt64 :=
+  let val (h : UInt64) : Int :=
+    let (s, _, n, e) := Intr.f16Parts h
+    (if s then -1 else 1) * ((n * 2 ^ (e + 48).toNat : Nat) : Int)
+  let special (h : UInt64) : Bool := (Intr.f16Parts h).2.1 = 31
+  if special c ∨ as.any special ∨ bs.any special then 0x7fff else
+  -- every product and `c` a whole number of `2^-48`
+  let sum : Int := (as.zip bs).foldl (fun (acc : Int) (a, b) => acc + val a * val b) (val c * 2 ^ 48)
+  if sum = 0 then 0 else Intr.f16Near (sum < 0) sum.natAbs (-96)
+
 /-- **The hardware's approximations**: the bits each approximating
     intrinsic (`ex2`, `rcp`, `lg2`, `sin`, `cos`, `sqrt` and `rsqrt`, each
     `.approx.f32`) gives on
@@ -42,6 +54,10 @@ structure Hw where
       in order. A tensor core does not round each step as f32 arithmetic
       would; by default the sum is taken in f64 and rounded once. -/
   mmaF : List UInt64 → List UInt64 → UInt64 → UInt64 := bfDot
+  /-- The f16 bits the hardware's f16 `mma` leaves for one sum: `c` (f16
+      bits) plus the products of the f16 values `as` and `bs`; by default
+      exact, rounded once. -/
+  mmaH : List UInt64 → List UInt64 → UInt64 → UInt64 := hDot
   /-- What the hardware's float arithmetic leaves where a result is a NaN
       (`Mem.nan`): by default a GPU's, one NaN whatever the operands. -/
   nan : ClifTy → UInt64 → UInt64 := gpuNaN

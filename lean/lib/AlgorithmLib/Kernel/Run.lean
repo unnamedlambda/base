@@ -122,7 +122,7 @@ def sharedWord (m : Mem) : List V → Bool
     a shared add by nothing, its word one of the block's shared memory (the
     laws add it at the next barrier); any other collective by the value
     `valAt` gives, cut to the call's type (`fitTo`), zero where it holds none — an approximating intrinsic as
-    the hardware `hw` does, and `dp4a` and `prmt` exactly. A run whose answers the laws
+    the hardware `hw` does, and `dp4a`, `prmt`, `cvtH` and `hfma2` exactly. A run whose answers the laws
     do not give back is not a block's (`BlockRuns`). -/
 def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := false) : Locals := fun i vs w' =>
   match Intr.all.find? (·.slot == i) with
@@ -143,6 +143,8 @@ def threadLocals (ans : List Answer) (start : Nat) (hw : Hw) (provisional := fal
       | [.sc _ a, .sc _ b, .sc _ e] =>
           if c = .dp4a then .ok (some (.sc .i32 (Intr.dp4aVal a b e)), w')
           else if c = .prmt then .ok (some (.sc .i32 (Intr.prmtVal a b e)), w')
+          else if c = .cvtH then .ok (some (.sc .i32 (Intr.cvtHVal a b e)), w')
+          else if c = .hfma2 then .ok (some (.sc .i32 (Intr.hfma2Val a b e)), w')
           else .error (.stuck "an approximation of something not a scalar")
       | _ => .error (.stuck "an approximation of something not a scalar")
   | none => .error (.stuck s!"calls u0:{i}, which a kernel does not have")
@@ -241,8 +243,8 @@ def mmaWLane (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : In
   let c1b ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 5 c
   pure (Intr.mmaWVal ra rb c0a c0b c1a c1b)
 
-/-- A word's two bf16 values, the low first. -/
-def bfPair (w : UInt64) : List UInt64 := [w &&& 0xffff, (w >>> 16) &&& 0xffff]
+/-- A word's two 16-bit values (bf16 or f16), the low first. -/
+def halves (w : UInt64) : List UInt64 := [w &&& 0xffff, (w >>> 16) &&& 0xffff]
 
 /-- **A bf16 `mma`'s answer to lane `lane`**, half `h` (its row `lane / 4`,
     or eight past): the row's sixteen values, words `h` and `h + 2` of the four
@@ -259,10 +261,34 @@ def mmaBfLane (hw : Hw) (calls : Nat → List (Intr × List V)) (warp lane k : N
   let c1a ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 4 c
   let c1b ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 5 c
   let acc ← laneWord calls warp lane k 6 c
-  let row := ra.flatMap bfPair ++ rb.flatMap bfPair
-  let d0 := hw.mmaF row (c0a.flatMap bfPair ++ c0b.flatMap bfPair) (acc &&& 0xffffffff) &&& 0xffffffff
-  let d1 := hw.mmaF row (c1a.flatMap bfPair ++ c1b.flatMap bfPair) (acc >>> 32) &&& 0xffffffff
+  let row := ra.flatMap halves ++ rb.flatMap halves
+  let d0 := hw.mmaF row (c0a.flatMap halves ++ c0b.flatMap halves) (acc &&& 0xffffffff) &&& 0xffffffff
+  let d1 := hw.mmaF row (c1a.flatMap halves ++ c1b.flatMap halves) (acc >>> 32) &&& 0xffffffff
   pure (d0 ||| (d1 <<< 32))
+
+/-- **An f16 `mma`'s answer to lane `lane`**: its rows `lane / 4` (the low
+    word) and eight past (the high), each at columns `2 · (lane mod 4)` and
+    the next (the word's low and high halves), a row's sixteen values words
+    `h` and `h + 2` of the four lanes of the row, a column's words 4 and 5 of
+    its four lanes, each sum the f16 the hardware leaves (`hw.mmaH`) for that
+    place's half of the accumulator `lane` passed (its seventh word). -/
+def mmaHLane (hw : Hw) (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Intr) :
+    Except String UInt64 := do
+  let row (h : Nat) : Except String (List UInt64) := do
+    let ra ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k h c
+    let rb ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k (h + 2) c
+    pure (ra.flatMap halves ++ rb.flatMap halves)
+  let col (n : Nat) : Except String (List UInt64) := do
+    let ca ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * n + q) k 4 c
+    let cb ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * n + q) k 5 c
+    pure (ca.flatMap halves ++ cb.flatMap halves)
+  let r0 ← row 0
+  let r1 ← row 1
+  let c0 ← col (2 * (lane % 4))
+  let c1 ← col (2 * (lane % 4) + 1)
+  let acc ← laneWord calls warp lane k 6 c
+  let place (r cl : List UInt64) (sh : UInt64) : UInt64 := hw.mmaH r cl ((acc >>> sh) &&& 0xffff) &&& 0xffff
+  pure (place r0 c0 0 ||| (place r0 c1 16 <<< 16) ||| (place r1 c0 32 <<< 32) ||| (place r1 c1 48 <<< 48))
 
 /-- The law's answer to one collective of lane `lane` of warp `warp`, its
     `k`-th, after `nbar` barriers. -/
@@ -295,6 +321,9 @@ def answerStep (hw : Hw) (calls : Nat → List (Intr × List V)) (snaps : Array 
           pure (nbar, out.push (.val (.sc .i64 r)))
       | .mmaBfHi, _ => do
           let r ← mmaBfLane hw calls warp lane k c 1
+          pure (nbar, out.push (.val (.sc .i64 r)))
+      | .mmaH, _ => do
+          let r ← mmaHLane hw calls warp lane k c
           pure (nbar, out.push (.val (.sc .i64 r)))
       | _, _ => throw s!"{c.name} on arguments it does not take"
 
