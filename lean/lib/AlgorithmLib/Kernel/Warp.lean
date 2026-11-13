@@ -484,8 +484,9 @@ theorem collCalls_obsStore {w : World} {st : Nat} (hs : st ≤ w.obs.length) (p 
   simp [collOf]
 
 
-/-- Answers whose values are 32-bit words. -/
-def Words (as : List Answer) : Prop := ∀ a ∈ as, ∀ v, a = .val v → ∃ x : UInt32, v = .sc .i32 (s32 x)
+/-- Answers whose values are scalars, which a call cuts to its type
+    (`fitTo`). -/
+def Words (as : List Answer) : Prop := ∀ a ∈ as, ∀ v, a = .val v → ∃ ty x, v = .sc ty x
 
 /-- An `mma` lane's value is a word: it is cut to 32 bits. -/
 theorem mmaVal_word (c : UInt64) (as bs : List UInt64) : ∃ x : UInt32, Intr.mmaVal c as bs = s32 x := by
@@ -502,7 +503,7 @@ theorem lane32_word (a : List V) : ∃ x : UInt32, lane32 a = .sc .i32 (s32 x) :
   · exact ⟨_, rfl⟩
   · exact ⟨0, rfl⟩
 
-/-- **The laws answer words.** -/
+/-- **The laws answer scalars.** -/
 theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
     {t : Nat} {as : List Answer} (h : answersOf calls snaps smem0 t = .ok as) : Words as := by
   unfold answersOf at h
@@ -565,7 +566,8 @@ theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array B
   simp only [Array.getElem_toList] at hv
   rw [Array.getElem?_eq_getElem hi] at hy
   cases hy
-  exact hP v hv
+  obtain ⟨x, hx⟩ := hP v hv
+  exact ⟨_, _, hx⟩
 
 theorem mapM_ok {α β : Type} (g : α → Except String β) : ∀ (l : List α) (per : List β), l.mapM g = .ok per →
     per.length = l.length ∧ ∀ i (h : i < l.length), ∃ y, per[i]? = some y ∧ g l[i] = .ok y
@@ -677,31 +679,12 @@ def wordAt (ans : List Answer) (j : Nat) : UInt32 :=
   | some (.val (.sc _ x)) => x.toUInt32
   | _ => 0
 
-theorem words_at {ans : List Answer} (hw : Words ans) :
-    ∀ (j : Nat) (v : V), ans[j]? = some (.val v) → v = .sc .i32 (s32 (wordAt ans j)) := by
-  intro j v h
-  obtain ⟨x, rfl⟩ := hw _ (List.mem_of_getElem? h) v rfl
-  simp [wordAt, h]
-
 theorem lane32_s32 (ty : ClifTy) (a : UInt32) (rest : List V) : lane32 (.sc ty (s32 a) :: rest) = .sc .i32 (s32 a) := by
   simp [lane32]
 
 theorem wordAt_val {ans : List Answer} {j : Nat} {x : UInt32} {ty : ClifTy}
     (h : ans[j]? = some (.val (.sc ty (s32 x)))) : wordAt ans j = x := by
   simp [wordAt, h]
-
-/-- Where the answers are words, what a collective is answered is its word. -/
-theorem valAt_words {ans : List Answer} (hw : Words ans) (j : Nat) :
-    valAt ans j = .sc .i32 (s32 (wordAt ans j)) := by
-  unfold valAt wordAt
-  cases h : ans[j]? with
-  | none => rfl
-  | some a =>
-    cases a with
-    | smem b => rfl
-    | val v =>
-      obtain ⟨x, rfl⟩ := hw _ (List.mem_of_getElem? h) v rfl
-      simp [s32]
 
 /-- A word widened is within a word's width. -/
 theorem s32_mask (x : UInt32) : s32 x &&& widthMask .i32 = s32 x := by
@@ -711,11 +694,27 @@ theorem s32_mask (x : UInt32) : s32 x &&& widthMask .i32 = s32 x := by
   rw [show (4294967295 : Nat) = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
   simp [Nat.mod_eq_of_lt x.toNat_lt]
 
-/-- Where the answers are words, a collective of a word is answered its word. -/
+/-- A scalar cut to a word is the word of its low half. -/
+theorem s32_low (x : UInt64) : s32 x.toUInt32 = x &&& widthMask .i32 := by
+  apply UInt64.toNat_inj.mp
+  rw [UInt64.toNat_and]
+  show x.toUInt32.toUInt64.toNat = x.toNat &&& 4294967295
+  rw [show (4294967295 : Nat) = 2 ^ 32 - 1 from rfl, Nat.and_two_pow_sub_one_eq_mod]
+  simp
+
+/-- Where the answers are scalars, a collective of a word is answered the
+    word of its answer's low half. -/
 theorem fitAt_words {ans : List Answer} (hw : Words ans) {c : Intr} (hc : c.sig.2 = some .i32) (j : Nat) :
     fitTo c (valAt ans j) = .sc .i32 (s32 (wordAt ans j)) := by
-  rw [valAt_words hw j]
-  simp only [fitTo, hc, s32_mask]
+  unfold valAt wordAt
+  cases h : ans[j]? with
+  | none => simp [fitTo, hc]
+  | some a =>
+    cases a with
+    | smem b => simp [fitTo, hc]
+    | val v =>
+      obtain ⟨ty, x, rfl⟩ := hw _ (List.mem_of_getElem? h) _ rfl
+      simp only [fitTo, hc, s32_low]
 
 section Steps
 

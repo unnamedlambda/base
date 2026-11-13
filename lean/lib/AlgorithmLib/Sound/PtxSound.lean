@@ -115,10 +115,11 @@ structure MemInv (c : PtxRun.Ctx) (P : Mem → Prop) : Prop where
   store : ∀ {m m' : Mem} {a : UInt64} {n : Nat} {v : UInt64}, m.store a n v = some m' → P m → P m'
   smem : ∀ {k : Nat} {b : ByteArray} (m : Mem), c.ans[k]? = some (.smem b) → P m → P { m with arena := b }
 
-/-- **What a thread's answers are**: a value answer an `i32`, and shared
-    memory within what a GPU addresses, below `2 ^ 32` bytes. -/
+/-- **What a thread's answers are**: a value answer a scalar (its call cuts
+    it to its type), and shared memory within what a GPU addresses, below
+    `2 ^ 32` bytes. -/
 def AnsOk (ans : List Answer) : Prop :=
-  (∀ (k : Nat) (v : V), ans[k]? = some (Answer.val v) → ∃ x, v = V.sc .i32 x ∧ x &&& widthMask .i32 = x) ∧
+  (∀ (k : Nat) (v : V), ans[k]? = some (Answer.val v) → ∃ ty x, v = V.sc ty x) ∧
   ∀ (k : Nat) (b : ByteArray), ans[k]? = some (Answer.smem b) → b.size < 2 ^ 32
 
 /-- **A thread's memory as the platform has it**: its NaN rule, and shared
@@ -5545,14 +5546,21 @@ theorem barrier_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat)
             simp [MonadState.get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set, pure,
               StateT.pure, Except.pure, Except.bind, hmem, hA, show (Intr.barrier == Intr.barrier) = true from rfl, hprov]
 
-/-- **Answers a thread can take**: every value a 32-bit integer cut to its
-    width, as the laws give a shuffle's or a ballot's. -/
+/-- **Answers a thread can take**: every value a scalar. -/
 theorem valAt_ok (ans : List Answer) (h : AnsOk ans) (k : Nat) :
-    ∃ x, valAt ans k = .sc .i32 x ∧ x &&& widthMask .i32 = x := by
+    ∃ ty x, valAt ans k = .sc ty x := by
   unfold valAt
   split
   · rename_i v hv; exact h.1 k v hv
-  · exact ⟨0, rfl, rfl⟩
+  · exact ⟨_, 0, rfl⟩
+
+/-- A scalar answer to a call of a word, as the block semantics takes it and
+    as the PTX's register keeps it: its low half. -/
+theorem fit_word_ok {c : Intr} (hc : c.sig.2 = some .i32) (ty : ClifTy) (x0 : UInt64) :
+    fitTo c (.sc ty x0) = .sc .i32 (x0 &&& widthMask .i32) ∧ PtxRun.mask 32 x0 = x0 &&& widthMask .i32 ∧
+    (x0 &&& widthMask .i32) &&& widthMask .i32 = x0 &&& widthMask .i32 := by
+  refine ⟨by simp [fitTo, hc], ?_, by rw [UInt64.and_assoc, UInt64.and_self]⟩
+  rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp [IntT])]
 
 open PtxRun in
 /-- **A shuffle** meets its obligation: both semantics record it with the same
@@ -5584,7 +5592,9 @@ theorem shfl_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
   -- the block semantics' step
   let args : List V := [.sc .i32 xv, .sc .i32 xm]
   let o : Obs := .call (.intr i) args
-  obtain ⟨x, hx, hxn⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  obtain ⟨ty0, x0, hx⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  obtain ⟨hfit, hmx, hxn⟩ := fit_word_ok (c := i) (by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl) ty0 x0
+  generalize x0 &&& widthMask .i32 = x at hfit hmx hxn
   have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i32 x), world := { s.world with obs := o :: s.world.obs } } := by
     simp only [step1, List.mapM_cons, List.mapM_nil, hvv, hvm, bind, Option.bind, pure, callOf, obsCall, callWords,
       List.append_nil, threadLocals, Intr.find_slot, hcoll, if_true, hnb, Bool.false_eq_true, if_false] at hst
@@ -5596,7 +5606,7 @@ theorem shfl_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     have hnb' : i ≠ .barrier := by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
     have hns' : i ≠ .sharedAdd := by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
     simp [Except.toOption, hnb', hns', hx] at hst
-    rw [fitTo_word (by rcases hi with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl) hxn] at hst
+    rw [hfit] at hst
     exact hst.symm
   subst hs1
   -- the lines
@@ -5630,7 +5640,7 @@ theorem shfl_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     rcases hi with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;>
     simp [core, exec, coll, opnd, getReg_plain _ _ hns1, getReg_plain _ _ hns2, h1, h2,
       show UInt64.ofInt 31 = (31 : UInt64) from rfl, show (Intr.shflBfly == Intr.barrier) = false from rfl,
-      show (Intr.shflIdx == Intr.barrier) = false from rfl, hx, hm32 xv hnv, hm32 xm hnm, hm32 x hxn,
+      show (Intr.shflIdx == Intr.barrier) = false from rfl, hx, hmx, hm32 xv hnv, hm32 xm hnm, hm32 x hxn,
       MonadState.get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set, setReg, pure,
       StateT.pure, Except.pure, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, o, args,
       StateT.bind, StateT.run, bind, Except.bind]
@@ -5692,7 +5702,9 @@ theorem mma_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
   have hle : start0 ≤ s.world.obs.reverse.length := by simpa using hW.2.1
   -- the block semantics' step
   let o : Obs := .call (.intr .mma) [.sc .i32 xa, .sc .i32 xb, .sc .i32 xe]
-  obtain ⟨x, hx, hxn⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  obtain ⟨ty0, x0, hx⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  obtain ⟨hfit, hmx, hxn⟩ := fit_word_ok (c := .mma) rfl ty0 x0
+  generalize x0 &&& widthMask .i32 = x at hfit hmx hxn
   have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i32 x), world := { s.world with obs := o :: s.world.obs } } := by
     simp only [step1, List.mapM_cons, List.mapM_nil, hva, hvb, hve, bind, Option.bind, pure, callOf, obsCall, callWords,
       List.append_nil, threadLocals, Intr.find_slot, Intr.isColl, if_true] at hst
@@ -5702,7 +5714,7 @@ theorem mma_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
     rw [hk, hx] at hst
     simp [Except.toOption, show Intr.mma ≠ .barrier by decide, show Intr.mma ≠ .sharedAdd by decide] at hst
-    rw [fitTo_word rfl hxn] at hst
+    rw [hfit] at hst
     exact hst.symm
   subst hs1
   -- the lines: the three words', then one `mma`
@@ -5740,7 +5752,7 @@ theorem mma_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
     have h3 : regs3[(runLM (r e) F tag sb).1]? = some xe := by
       rw [← Std.HashMap.get?_eq_getElem?]; exact hreg3
     simp [core, exec, coll, opnd, getReg_plain _ _ hns1, getReg_plain _ _ hns2, getReg_plain _ _ hns3, h1, h2, h3,
-      show (Intr.mma == Intr.barrier) = false from rfl, hx, hm32 xa hna, hm32 xb hnb, hm32 xe hne, hm32 x hxn,
+      show (Intr.mma == Intr.barrier) = false from rfl, hx, hmx, hm32 xa hna, hm32 xb hnb, hm32 xe hne, hm32 x hxn,
       MonadState.get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set, setReg, pure,
       StateT.pure, Except.pure, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, o,
       StateT.bind, StateT.run, bind, Except.bind]
@@ -5791,7 +5803,9 @@ theorem ballot_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.an
   have hle : start0 ≤ s.world.obs.reverse.length := by simpa using hW.2.1
   -- the block semantics' step
   let o : Obs := .call (.intr .ballot) [.sc .i8 xv]
-  obtain ⟨x, hx, hxn⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  obtain ⟨ty0, x0, hx⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  obtain ⟨hfit, hmx, hxn⟩ := fit_word_ok (c := .ballot) rfl ty0 x0
+  generalize x0 &&& widthMask .i32 = x at hfit hmx hxn
   have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i32 x), world := { s.world with obs := o :: s.world.obs } } := by
     simp only [step1, List.mapM_cons, List.mapM_nil, hvv, bind, Option.bind, pure, callOf, obsCall, callWords,
       List.append_nil, threadLocals, Intr.find_slot, Intr.isColl, if_true] at hst
@@ -5801,7 +5815,7 @@ theorem ballot_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.an
     have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
     rw [hk, hx] at hst
     simp [Except.toOption, show Intr.ballot ≠ .barrier by decide, show Intr.ballot ≠ .sharedAdd by decide, hx] at hst
-    rw [fitTo_word rfl hxn] at hst
+    rw [hfit] at hst
     exact hst.symm
   subst hs1
   -- the lines: the flag's predicate, then one `vote`
@@ -5820,7 +5834,7 @@ theorem ballot_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.an
   simp only [Std.HashMap.get?_eq_getElem?] at hR
   have hvt : (exec c vt).run { ts with regs := regs1 } =
       .ok (.step, { ts with regs := regs1.insert (regOf .i32 d) x, w := { ts.w with obs := o' :: ts.w.obs } }) := by
-    simp [vt, exec, coll, opnd, getReg_plain _ _ hns1, hR, hx, hm32,
+    simp [vt, exec, coll, opnd, getReg_plain _ _ hns1, hR, hx, hmx, hm32,
       show (Intr.ballot == Intr.barrier) = false from rfl, MonadState.get, getThe, MonadStateOf.get, StateT.get, set,
       MonadStateOf.set, StateT.set, setReg, pure, StateT.pure, Except.pure, modify, modifyGet, MonadStateOf.modifyGet,
       StateT.modifyGet, o', StateT.bind, StateT.run, bind, Except.bind]

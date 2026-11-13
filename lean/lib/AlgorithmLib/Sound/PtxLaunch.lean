@@ -297,7 +297,8 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
   have hk2 : out[k]? = some (Answer.val v) := by simpa using hk
   have : y = Answer.val v := by
     rw [hk2] at hy; exact (Option.some.inj hy).symm
-  exact hP v this
+  obtain ⟨z, hz, -⟩ := hP v this
+  exact ⟨_, _, hz⟩
 
 theorem mapM_ok_mem {α β : Type} (f : α → Except String β) :
     ∀ (l : List α) (r : List β), l.mapM f = .ok r → ∀ y ∈ r, ∃ x, f x = .ok y

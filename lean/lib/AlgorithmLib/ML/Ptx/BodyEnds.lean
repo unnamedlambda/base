@@ -208,7 +208,7 @@ theorem block_exists (hw : Hw) (hw32 : ∀ c x, (hw.approx c x).toNat < 2 ^ 32) 
     obtain ⟨i, d, sr, m, ws, rfl, _⟩ := jOf_bfly hw nbuf cta nw rd hsp w.mem (t / 32) (hfits _ (by omega)) e he
     simp only [ansOne, ansLeaf, List.headD_cons] at hv
     cases hv
-    exact ⟨_, rfl⟩
+    exact ⟨_, _, rfl⟩
   have hWs : ∀ t, t < N → MemSame (rm A0 w.mem) (rm A0 (Ws t).mem) → RdOk nbuf (Ws t).mem rd →
       (Ws t).mem.nan = hw.nan → ∃ steps, thread (Body.kernel name nbuf smem s nw).code (T t)
         (threadArgs cta (32 * nw) (bufArgs nbuf) t) (Vw (Ws t)) hw steps = .ok (Ws (t + 1)) := by

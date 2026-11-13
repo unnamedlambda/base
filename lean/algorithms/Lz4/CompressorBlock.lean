@@ -109,10 +109,11 @@ theorem trace_leafwise {α : Type} (leaf : Nat → EWStmt → WSt F32 → List �
       · exact h' (fun x hx => hab x (List.mem_append_right _ hx)) e he)
     s i ws (fun x _ hx => hx x List.mem_cons_self) h
 
-/-- **A lane's answers from the warp are words.** -/
+/-- **A lane's answers from the warp are words**, so scalars. -/
 theorem words_ans (S : Nat) (l : Lane) (s : EWStmt) (i : Nat) (ws : WSt F32) :
     Words (LaneWarp.trace hw cta im (ansLeaf cta S l) i s ws) := by
   intro x hx v hv
+  suffices h : ∃ y : UInt32, v = .sc .i32 (s32 y) from let ⟨_, hy⟩ := h; ⟨_, _, hy⟩
   refine trace_leafwise hw cta im (ansLeaf cta S l) (fun x => ∀ v, x = .val v → ∃ y : UInt32, v = .sc .i32 (s32 y))
     s i ws (fun y _ e he => ?_) x hx v hv
   obtain ⟨i', s', ws'⟩ := y
