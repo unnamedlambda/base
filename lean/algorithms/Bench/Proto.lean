@@ -232,13 +232,35 @@ def copyLoop (src dst n : V .i64) : Prog V L Unit := do
       storeUnaligned (← load { ty := .i8x16 } (← iadd src last)) (← iadd dst last)
       pure %[])
     (els := do
-      forLoop n fun i => do istore8 (← uload8_64 (← iadd src i)) (← iadd dst i)
+      -- under 16: two moves of the widest power of two that fits, the second
+      -- ending at the end (overlapping the first where `n` is not that width)
+      let pair (w : Nat) (ld : V .i64 → Prog V L (V .i64)) (st : V .i64 → V .i64 → Prog V L Unit) :
+          Prog V L Unit := do
+        let a ← ld src
+        let tail ← iaddImm n (-(w : Int))
+        let b ← ld (← iadd src tail)
+        st a dst
+        st b (← iadd dst tail)
+      let _ ← ifte (jTys := []) .uge n (← c 8)
+        (thn := do pair 8 load64 (fun v p => storeI64 v p); pure %[])
+        (els := do
+          let _ ← ifte (jTys := []) .uge n (← c 4)
+            (thn := do pair 4 uload32_64 (fun v p => do storeI32 (← ireduce32 v) p); pure %[])
+            (els := do
+              let _ ← ifte (jTys := []) .uge n (← c 2)
+                (thn := do pair 2 uload16_64 (fun v p => istore16 v p); pure %[])
+                (els := do
+                  when .ne n (← c 0) do istore8 (← uload8_64 src) dst
+                  pure %[])
+              pure %[])
+          pure %[])
       pure %[])
   pure ()
 
 /-- `n` bytes from `src` to `dst`, which do not overlap: from 128, base's AVX2
     copy where it is mapped; otherwise 64 at a time, then 16, the last 16
-    overlapping the trips before; under 16, a byte at a time. -/
+    overlapping the trips before; under 16, two overlapping moves of 8, 4 or 2
+    bytes, or the one byte. -/
 def copyN (src dst n : V .i64) : Prog V L Unit := do
   let fn ← ifte (jTys := [.i64]) .uge n (← c 128)
     (thn := do pure %[← Memops.mappedAt COPY_SLOT COPY_NAME COPY_CODE MemopsAsm.copy])
