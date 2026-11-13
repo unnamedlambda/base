@@ -303,6 +303,16 @@ def vpxor (a b c : Opd) : Item := .ins "vpxor" [a, b, c]
 def vpcmpeqb (a b c : Opd) : Item := .ins "vpcmpeqb" [a, b, c]
 def vpmovmskb (a b : Opd) : Item := .ins "vpmovmskb" [a, b]
 def bsf (a b : Opd) : Item := .ins "bsf" [a, b]
+def tzcnt (a b : Opd) : Item := .ins "tzcnt" [a, b]
+def lzcnt (a b : Opd) : Item := .ins "lzcnt" [a, b]
+def push (a : Opd) : Item := .ins "push" [a]
+def pop (a : Opd) : Item := .ins "pop" [a]
+def mul (a : Opd) : Item := .ins "mul" [a]
+def neg (a : Opd) : Item := .ins "neg" [a]
+def imul (a b : Opd) : Item := .ins "imul" [a, b]
+/-- `imul` of three operands: `a ← b · c`, `c` an immediate. -/
+def imul3 (a b c : Opd) : Item := .ins "imul" [a, b, c]
+def vcvtsi2sd (a b c : Opd) : Item := .ins "vcvtsi2sd" [a, b, c]
 def movzx (a b : Opd) : Item := .ins "movzx" [a, b]
 def vpaddd (a b c : Opd) : Item := .ins "vpaddd" [a, b, c]
 def vpaddb (a b c : Opd) : Item := .ins "vpaddb" [a, b, c]
@@ -610,6 +620,17 @@ def encode (mn : String) (ops : List Opd) : Except String Enc := do
       if fitsI8 v then return legacy (d.w == .q) [0x83] op (rmReg op d) (leInt 1 v)
       if d.n == 0 then return legacy (d.w == .q) [UInt8.ofNat (op * 8 + 5)] 0 { bytes := [] } (leInt 4 v)
       return legacy (d.w == .q) [0x81] op (rmReg op d) (leInt 4 v)
+    -- memory and an immediate: `80 /op ib` for a byte, `83 /op ib` or
+    -- `81 /op id` for a dword or a qword, the memory operand's size
+    | [.m m, .i x] =>
+      match m.size with
+      | 1 => return legacy false [0x80] op (← rmMem op m.addr) (leInt 1 (← immFor .b x))
+      | 4 | 8 =>
+        let v ← immFor (if m.size == 8 then .q else .d) x
+        unless fitsI32 v do throw s!"immediate {signedHex x} does not fit 32 bits"
+        if fitsI8 v then return legacy (m.size == 8) [0x83] op (← rmMem op m.addr) (leInt 1 v)
+        return legacy (m.size == 8) [0x81] op (← rmMem op m.addr) (leInt 4 v)
+      | _ => throw "an immediate into memory of a byte, a dword or a qword"
     | _ => throw "unsupported operands"
   if let some op := shiftOp mn then
     match ops with
@@ -617,6 +638,10 @@ def encode (mn : String) (ops : List Opd) : Except String Enc := do
     | [.r d, .i x] =>
       unless 0 ≤ x && x < d.w.bits do throw s!"shift count {x} is not below {d.w.bits}"
       return legacy (d.w == .q) (byteOp d.w 0xC1) op (rmReg op d) (leInt 1 x)
+    -- by `cl`: `D3 /op` (`D2` for a byte)
+    | [.r d, .r c] =>
+      unless c.w == .b && c.n == 1 do throw "a shift by a register shifts by cl"
+      return legacy (d.w == .q) (byteOp d.w 0xD3) op (rmReg op d)
     | _ => throw "unsupported operands"
   if let some (pp, opc, packed) := vexArith mn then
     match ops with
@@ -698,6 +723,50 @@ def encode (mn : String) (ops : List Opd) : Except String Enc := do
   | "bsf", [.r d, .r s] =>
     if d.w != s.w || d.w == .b then throw "bsf takes two 32- or 64-bit registers"
     return legacy (d.w == .q) [0x0F, 0xBC] d.n (rmReg d.n s)
+  -- `F3` before any REX, then `0F BC` (`tzcnt`) or `0F BD` (`lzcnt`)
+  | "tzcnt", [.r d, .r s] =>
+    if d.w != s.w || d.w == .b then throw "tzcnt takes two 32- or 64-bit registers"
+    let e := legacy (d.w == .q) [0x0F, 0xBC] d.n (rmReg d.n s)
+    return { e with bytes := 0xF3 :: e.bytes }
+  | "lzcnt", [.r d, .r s] =>
+    if d.w != s.w || d.w == .b then throw "lzcnt takes two 32- or 64-bit registers"
+    let e := legacy (d.w == .q) [0x0F, 0xBD] d.n (rmReg d.n s)
+    return { e with bytes := 0xF3 :: e.bytes }
+  | "push", [.r r] =>
+    if r.w != .q then throw "push takes a 64-bit register"
+    return { bytes := (if r.n ≥ 8 then [0x41] else []) ++ [UInt8.ofNat (0x50 + r.n % 8)] }
+  | "pop", [.r r] =>
+    if r.w != .q then throw "pop takes a 64-bit register"
+    return { bytes := (if r.n ≥ 8 then [0x41] else []) ++ [UInt8.ofNat (0x58 + r.n % 8)] }
+  -- `F7 /4`: rdx:rax ← rax · s, unsigned
+  | "mul", [.r s] =>
+    if s.w == .b then throw "mul here takes a 32- or 64-bit register"
+    return legacy (s.w == .q) [0xF7] 4 (rmReg 4 s)
+  | "neg", [.r d] => return legacy (d.w == .q) (byteOp d.w 0xF7) 3 (rmReg 3 d) (regByte := isLowByte d)
+  -- `0F AF /r`: d ← d · s, the low bits
+  | "imul", [.r d, s] =>
+    if d.w == .b then throw "imul takes a 32- or 64-bit register"
+    match s with
+    | .r x => if x.w != d.w then throw "operand widths differ"
+    | .m _ => sized d.w.bytes s
+    | _ => throw "unsupported operands"
+    return legacy (d.w == .q) [0x0F, 0xAF] d.n (← rmOf d.n s)
+  -- `6B /r ib` or `69 /r id`: d ← s · x
+  | "imul", [.r d, s, .i x] =>
+    if d.w == .b then throw "imul takes a 32- or 64-bit register"
+    match s with
+    | .r y => if y.w != d.w then throw "operand widths differ"
+    | .m _ => sized d.w.bytes s
+    | _ => throw "unsupported operands"
+    let v ← immFor d.w x
+    unless fitsI32 v do throw s!"immediate {signedHex x} does not fit 32 bits"
+    if fitsI8 v then return legacy (d.w == .q) [0x6B] d.n (← rmOf d.n s) (leInt 1 v)
+    return legacy (d.w == .q) [0x69] d.n (← rmOf d.n s) (leInt 4 v)
+  -- `VEX.F2.0F.W 2A /r`: d's low double ← the integer r, the rest from s1
+  | "vcvtsi2sd", [.v d, .v s1, .r r] =>
+    if d.ymm || s1.ymm then throw "vcvtsi2sd takes xmm registers"
+    if r.w == .b then throw "vcvtsi2sd converts a 32- or 64-bit register"
+    return vex 3 1 (r.w == .q) false 0x2A d.n s1.n (rmReg d.n r)
   | "movzx", [.r d, .m m] =>
     if d.w == .b then throw "movzx widens into a 32- or 64-bit register"
     if m.size != 1 then throw "movzx here reads a byte"

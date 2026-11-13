@@ -4,6 +4,8 @@ public import Scan.Ship
 meta import Scan.Ship
 public import AlgorithmLib.Surface.ProgFFI
 meta import AlgorithmLib.Surface.ProgFFI
+public import Bench.JsonAsm
+meta import Bench.JsonAsm
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -31,6 +33,11 @@ namespace Json
     the value in the next word (simdjson's classes for a number);
   * `t`, `f`, `n`: `true`, `false`, `null`.
 
+  Where the machine has AVX2, BMI1 and LZCNT, the loop's trips run in
+  machine code (`JsonAsm.parse`), which writes the same tape and hands back
+  any trip it does not take (a number for the slow path, one near the text's
+  end, anything that is not JSON) for this loop to run.
+
   A double is the correctly rounded nearest: Clinger's exact fast path where
   the digits and the power of ten are small, Eisel and Lemire's 128-bit
   product with a table of the powers of five (`POW5`) otherwise. A number with
@@ -54,6 +61,14 @@ namespace Json
 /-- State words: the tape's length in words, the string buffer's in bytes. -/
 def TAPE_LEN : Nat := 0x100
 def STR_LEN : Nat := 0x108
+/-- The machine code's state (`JsonAsm.parse`): the text's position and end,
+    the tape words, the string bytes, the depth, then its own scratch. -/
+def SB : Nat := 0x110
+/-- The code's address once mapped, or `UNMAPPED`; at `FEATS` the features it
+    needs, NUL-terminated, 8 bytes each, for `base_cpu_has`. -/
+def SLOT : Nat := 0x180
+def FEATS : Nat := 0x188
+def FEATURES : List String := ["avx2", "bmi1", "lzcnt"]
 /-- The powers of ten `1e0 … 1e22` as doubles (exact), and the 128-bit
     powers of five for Eisel–Lemire, `5^q` for `q` in `-342 … 308`, two words
     each (high, low). -/
@@ -63,9 +78,12 @@ def POWI : Nat := 0x300
 def POW5 : Nat := 0x400
 def POW5_MIN : Int := -342
 def POW5_COUNT : Nat := 651
+/-- The machine code, in `CODE_LEN` bytes after the powers of five. -/
+def CODE : Nat := POW5 + 16 * POW5_COUNT
+def CODE_LEN : Nat := 0x2000
 /-- The stack of open containers: a word each, the tape index of the open
     times two, plus 1 for an object. -/
-def STACK : Nat := POW5 + 16 * POW5_COUNT
+def STACK : Nat := CODE + CODE_LEN
 def MAX_DEPTH : Nat := 1024
 def TAPE : Nat := STACK + 8 * MAX_DEPTH
 def TAPE_WORDS : Nat := 1 <<< 23
@@ -99,13 +117,28 @@ def pow5 (q : Int) : Nat :=
 
 def u64le (x : Nat) : List UInt8 := (List.range 8).map fun i => UInt8.ofNat (x / 256 ^ i % 256)
 
+/-- Where the machine code finds the arena. -/
+def layout : JsonAsm.Layout :=
+  { sb := SB, pow10 := POW10, powi := POWI, pow5 := POW5, stack := STACK, tape := TAPE, strs := STRS,
+    strBytes := STR_BYTES, tapeWords := TAPE_WORDS, maxDepth := MAX_DEPTH }
+
+def codeBytes : List UInt8 :=
+  match AlgorithmLib.X86.assemble (JsonAsm.code layout) with
+  | .ok bs => bs
+  | .error e => panic! e
+
+#guard (AlgorithmLib.X86.assemble (JsonAsm.code layout)).isOk
+#guard codeBytes.length ≤ CODE_LEN
+
 def tables : List UInt8 :=
   let p10 := (List.range 23).flatMap fun i => u64le (Float.ofNat (10 ^ i)).toBits.toNat
   let p5 := (List.range POW5_COUNT).flatMap fun i =>
     let v := pow5 (POW5_MIN + Int.ofNat i)
     u64le (v / 2 ^ 64) ++ u64le (v % 2 ^ 64)
   let pi := (List.range 9).flatMap fun i => u64le (10 ^ i)
-  zeros (POW10 - 0) ++ p10 ++ zeros (POWI - POW10 - p10.length) ++ pi ++ zeros (POW5 - POWI - pi.length) ++ p5
+  let feats := FEATURES.flatMap fun f => f.toUTF8.toList ++ zeros (8 - f.length)
+  zeros FEATS ++ feats ++ zeros (POW10 - FEATS - feats.length) ++ p10 ++ zeros (POWI - POW10 - p10.length) ++ pi ++
+    zeros (POW5 - POWI - pi.length) ++ p5 ++ codeBytes
 
 -- the table is fast_float's: its first entry, and 5^0
 #guard pow5 (-342) / 2 ^ 64 == 0xeef453d6923bd65a ∧ pow5 (-342) % 2 ^ 64 == 0x113faa2906a13b3f
@@ -843,6 +876,27 @@ def literal (p e : V .i64) (lit : String) : Prog V L (V .i64) := do
     (els := do pure %[← c 0])
   pure ok.head
 
+/-- The slot's word when the code could not be mapped (no x86-64, a feature
+    missing, or the map failed). -/
+def UNMAPPED : Int := 1
+
+/-- The machine code's address, mapping it the first time; `UNMAPPED` where it
+    cannot run. -/
+def codeMapped : Prog V L (V .i64) := do
+  let base ← basePtr
+  let at_ ← iaddImm base SLOT
+  when .eq (← load64 at_) (← iconst64 0) do
+    let one ← iconst32 1
+    let mut ok ← select (← icmp .eq (← nativeArch) one) one (← iconst32 0)
+    for (f, k) in FEATURES.zip (List.range FEATURES.length) do
+      let has ← cpuHas (← iaddImm base (FEATS + 8 * k)) (← iconst64 8)
+      ok ← band ok (← select (← icmp .eq has one) one (← iconst32 0))
+    let fn ← ifte (jTys := [.i64]) .ne ok (← iconst32 0)
+      (thn := do pure %[← nativeLoad (← iaddImm base CODE) (← iconst64 codeBytes.length)])
+      (els := do pure %[← iconst64 0])
+    storeI64 (← select (← icmp .eq fn.head (← iconst64 0)) (← iconst64 UNMAPPED) fn.head) at_
+  load64 at_
+
 /-- **The parse**: the status 0, or one past the byte where the text stops
     being JSON. Each trip round its loop reads one value; a scalar, or a
     container closed as soon as opened, then takes what follows it in the
@@ -856,10 +910,24 @@ def parseBody : Prog V L (V .i64) := do
   let stack ← at_ STACK
   let tape ← at_ TAPE
   let put (i v : V .i64) : Prog V L Unit := do storeI64 v (← iadd tape (← ishlImm i 3))
+  let fn ← codeMapped
+  let sb ← at_ SB
   -- carried: position, tape words, string bytes, depth; a value next
   let r ← wloopL %[p0, zero, zero, zero]
     (head := fun _ _ => do pure (contIf .eq zero zero, %[zero, zero, zero], ()))
-    (body := fun out cs _ => do
+    (body := fun out cs0 _ => do
+      -- the machine code's trips, until the end or one it hands back
+      let cs ← ifte (jTys := [.i64, .i64, .i64, .i64]) .ne fn (← c UNMAPPED)
+        (thn := do
+          storeI64 cs0.head sb
+          storeI64 e (← iaddImm sb 8)
+          storeI64 cs0.snd (← iaddImm sb 16)
+          storeI64 cs0.thd (← iaddImm sb 24)
+          storeI64 cs0.fth (← iaddImm sb 32)
+          let st ← nativeCall fn (← basePtr) zero zero zero
+          when .eq st zero do brk out %[zero, ← load64 (← iaddImm sb 16), ← load64 (← iaddImm sb 24)]
+          pure %[← load64 sb, ← load64 (← iaddImm sb 16), ← load64 (← iaddImm sb 24), ← load64 (← iaddImm sb 32)])
+        (els := do pure %[cs0.head, cs0.snd, cs0.thd, cs0.fth])
       let fail (p : V .i64) : Prog V L Unit := do brk out %[← iaddImm (← isub p p0) 1, zero, zero]
       let full (tp p : V .i64) : Prog V L Unit := do when .uge tp (← c (TAPE_WORDS - 2)) do fail p
       -- a key at `p` (after whitespace), its colon, and then a value next

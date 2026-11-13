@@ -90,8 +90,25 @@ def integerCases : List Case := Id.run do
   for d in pick do
     for w in [Width.q, .d] do
       out := one (inc (regW w d)) :: one (dec (regW w d)) :: out
+      out := one (neg (regW w d)) :: one (mul (regW w d)) :: out
       for mn in ["shl", "shr", "sar"] do
         for x in ([1, 2, 31] : List Int) do out := one (.ins mn [.r (regW w d), .i x]) :: out
+        out := one (.ins mn [.r (regW w d), .r cl]) :: out
+      for s in pick do
+        out := one (tzcnt (regW w d) (regW w s)) :: one (lzcnt (regW w d) (regW w s)) ::
+          one (imul (regW w d) (regW w s)) :: out
+        for x in ([3, -1, 127, 128, -129, 217706, -2147483648] : List Int) do
+          out := one (imul3 (regW w d) (regW w s) (.i x)) :: out
+      for a in someAddrs do
+        out := one (imul (regW w d) (.m (if w == .q then qword a else dword a))) ::
+          one (imul3 (regW w d) (.m (if w == .q then qword a else dword a)) 10) :: out
+  for d in q64 do out := one (push d) :: one (pop d) :: out
+  for d in bytesRegs do out := one (neg d) :: out
+  for mn in ["add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"] do
+    for a in someAddrs do
+      for x in ([0, 1, -1, 0x30, 0x7f, -0x80] : List Int) do out := one (.ins mn [.m (byte a), .i x]) :: out
+      for x in ([0, 5, -1, 0x80, 0x65757274, -0x80000000] : List Int) do
+        out := one (.ins mn [.m (dword a), .i x]) :: one (.ins mn [.m (qword a), .i x]) :: out
   for d in bytesRegs do
     out := one (inc d) :: one (dec d) :: one (shr d 1) :: one (shl d 3) :: out
   out := one ret :: one sfence :: one lfence :: one mfence :: one vzeroupper :: out
@@ -176,6 +193,8 @@ def vectorCases : List Case := Id.run do
     for r in pick do
       out := one (vmovd (regW .d r) v) :: one (vmovd v (regW .d r)) ::
         one (vmovq (regW .q r) v) :: one (vmovq v (regW .q r)) :: out
+      for s in xs vpick do
+        out := one (vcvtsi2sd v s (regW .q r)) :: one (vcvtsi2sd v s (regW .d r)) :: out
   return out.reverse
 
 def conds : List Cond := [.o, .no, .b, .ae, .e, .ne, .be, .a, .s, .ns, .p, .np, .l, .ge, .le, .g]

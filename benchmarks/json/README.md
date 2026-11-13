@@ -23,8 +23,12 @@ each parsed 50 times after one untimed parse. Engines:
 - **base**: one pass over the text with an explicit stack, writing a tape
   (strings unescaped into a buffer; numbers as int64, uint64 or a correctly
   rounded double, by Clinger's fast path and Eisel–Lemire with fast_float's
-  table of powers of five); strings and whitespace scanned 16 bytes at a
-  time, digits 8 at a time.
+  table of powers of five). Its loop runs in machine code it carries
+  (`lean/algorithms/Bench/JsonAsm.lean`, assembled by base's own assembler)
+  where the CPU has AVX2, BMI1 and LZCNT: strings and whitespace 32 bytes at
+  a time, a number's digits 16 at a time; any value that code does not take
+  (a number past 19 digits or for the slow path, one within 40 bytes of the
+  text's end, text that is not JSON) goes back to the CLIF loop.
 
 Before any timing, each file's checksum over every value in document order
 is computed from base's tape (its `sum`) and from simdjson's DOM, and must be
