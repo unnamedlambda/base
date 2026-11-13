@@ -237,18 +237,21 @@ def xSmemOff : Nat := fp4TableFloats * 4
     combine, once, because it belongs to the head and not to a tile.
 -/
 
-/-- The fewest keys a tile is ever given.
-
-    Below this the tiles stop buying parallelism -- a warp still walks them one
-    key at a time -- and start costing merge. -/
+/-- The fewest keys a tile is ever given, and what its length is a multiple
+    of: one sub-tile of the tensor cores' work (`DT_KEYS`). -/
 def ATT_TILE_MIN : Nat := 32
 
-/-- The most tiles a layer is ever split into, and so the height of the
-    partials buffer whatever the context.
+/-- Tiles a layer is aimed at: a block a tile and key head, `NKV_K` a tile,
+    so 392 blocks of one warp, fourteen to each of the card's 28
+    multiprocessors (as many as their shared memory holds), one wave. -/
+def ATT_TILES_AIM : Nat := 49
 
-    Measured: at 98304 keys, 768 tiles beat 192, which beat 24. More tiles keep
-    winning until the merge, which reads every tile, becomes the cost -- so the
-    tile size is chosen at run time to land here and the merge is bounded. -/
+/-- Tile places the combine reads, two a lane: at least the most tiles a
+    layer is split into (`ATT_TILES_AIM`). -/
+def COMB_TILES : Nat := 64
+
+/-- The height of the partials buffer: at least the most tiles a layer is
+    split into (`ATT_TILES_AIM`, or fewer). -/
 def ATT_TILES_MAX : Nat := 768
 
 /-- Head width of the model these kernels are generated for. -/
@@ -781,141 +784,191 @@ def bflyAdd (a : V .f32) (mask : Nat) : Prog V L (V .f32) := do
   let o ← callLocal shflBfly %[← bitcast .i32 a, ← c32 mask]
   fadd a (← bitcast .f32 o)
 
-/-- Threads of a tile's block: a warp a key head. -/
-def ATT_THREADS : Nat := 32 * NKV_K
+/-- Keys a tile is walked in, a sub-tile of the tensor cores' work. -/
+def DT_KEYS : Nat := 32
+/-- Words a staged dimension row of values takes in shared memory: its 16 key
+    pairs (f16) and 8, so a half warp's 64-bit fragment loads meet in no bank;
+    a row's columns xor twice its eighth, `row / 8`, and a row's words are
+    paired (`8 s + 4 h + u` at `8 s + 2 u + h`) so a lane's two words of an
+    `mma` fragment are adjacent. -/
+def DT_VSTR : Nat := 24
+/-- Words a lane reads of a sub-tile: one of each key's values, and its eight
+    fragment words of each of four key groups. -/
+def DT_WORDS : Nat := DT_KEYS + 2 * DT_KEYS
 
-/-- Keys a tile is walked in, `2 ^ ATT_SUB_LOG` at a time, so a sub-tile's
-    scores are that many dot products spread over the warp. -/
-def ATT_SUB_LOG : Nat := 3
-def ATT_SUB : Nat := 2 ^ ATT_SUB_LOG
-/-- The butterfly masks that split a sub-tile's sums across the warp, and the
-    ones that finish each sum within the lanes that then share a key. -/
-def subMasks : List Nat := [16, 8, 4, 2, 1].take ATT_SUB_LOG
-def restMasks : List Nat := [16, 8, 4, 2, 1].drop ATT_SUB_LOG
+/-- **One tile of the sequence, one key head, on the tensor cores.**
 
-/-- **`ATT_SUB` sums across the warp, a group of lanes to each.** Each of `vs`
-    is one lane's share of a dot product; a butterfly step at each of
-    `subMasks` keeps half the values and sends the other half (`bits` are the
-    lane's bits at those masks), so lane `L` ends with value
-    `L >> (5 - ATT_SUB_LOG)` summed over the lanes that share `L`'s low bits,
-    and `restMasks` finish it: `ATT_SUB - 1` shuffles and one a remaining mask,
-    rather than five a sum. -/
-def reduceScatter (bits : List (V .i8)) (vs : List (V .f32)) : Prog V L (V .f32) := do
-  let mut cur := vs
-  for (m, b) in subMasks.zip bits do
-    let half := cur.length / 2
-    let mut next : List (V .f32) := []
-    for (x, y) in (cur.take half).zip (cur.drop half) do
-      let send ← select b x y
-      let keep ← select b y x
-      let r ← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 send, ← c32 m])
-      next := next ++ [← fadd keep r]
-    cur := next
-  let mut v := cur.headD (vs.headD (← fconst .f32 0))
-  for m in restMasks do v ← bflyAdd v m
-  pure v
+    A block is one warp, block `cta` taking key head `cta mod NKV_K` and tile
+    `cta / NKV_K`. Lane `l` holds row `l / 4` of the `mma`s, query `l / 4` of
+    the eight its key head serves (the fragments' other eight rows repeat
+    them, and their results are not read). `DT_KEYS` keys at a time: the
+    scores are the bf16 `mma`'s of the queries (bf16, as narrowed) against the
+    keys, read from the cache straight into the fragments; the softmax is
+    online and in base 2 (scores scaled by `log₂ e / 8`), a row's four lanes
+    combining by butterfly; the values are staged in shared memory as f16 and
+    the probabilities, rounded to f16, multiply them by the f16 `mma` into
+    f16 sums, scaled each sub-tile by their row's factor.
 
-/-- **One tile of the sequence, one key head, scores never stored.**
-
-    Grid is one CTA per tile, block is `ATT_THREADS`, and warp `w` takes key
-    head `w`. A lane owns two elements of the head -- `2L` and `2L+1` -- so the
-    key row is one coalesced word per lane.
-
-    `ATT_SUB` keys at a time: their rows are loaded together, each of the
-    eight queries this head serves gets the sub-tile's scores by one
-    `reduceScatter` (each group of lanes holding one key's), the running
-    `(m, l)` is folded once a sub-tile, and the value rows are accumulated
-    against the scores broadcast a key at a time.
-
-    Writes `(m, l, acc[HD_K])` per `(tile, head, query)` for the combine pass;
-    the sink belongs to the head and is applied there, once. -/
+    Writes `(m, l, acc[HD_K])` per `(tile, head, query)` for the combine pass,
+    `m` back in natural units; the sink belongs to the head and is applied
+    there, once. -/
 def attnTileBody : Prog V L Unit := do
   let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64, .i64])
-  let cta := ps.head; let tid := ps.snd
+  let cta := ps.head; let tid := ps.snd; let sm := (ps.drop 3).head
   let kp := (ps.drop 4).head; let vp := (ps.drop 5).head; let qp := (ps.drop 6).head
   let pp := (ps.drop 7).head; let mp := (ps.drop 8).head
-  let wid ← ushrImm tid 5
   let lane ← band tid (← c32 31)
+  let g ← ushrImm lane 2
+  let t ← band lane (← c32 3)
+  let tw ← ishlImm t 1
   let seqLen ← load32 (← at_ mp (4 * GptOssAttention.M_SEQ))
   let tileSz ← load32 (← at_ mp (4 * GptOssAttention.M_TILESZ))
   let kvStride ← load32 (← at_ mp (4 * GptOssAttention.M_KVSTRIDE))
-  -- this warp's slice: tile `cta`, key head `wid`
-  let s0 ← imul cta tileSz
+  let tile ← udiv cta (← c32 NKV_K)
+  let kh ← isub cta (← imul tile (← c32 NKV_K))
+  let s0 ← imul tile tileSz
   let sEnd ← umin (← iadd s0 tileSz) seqLen
-  -- the eight queries this key head serves, two elements to a lane
-  let qWord ← iadd (← imul wid (← c32 (GQA_K * HD_K / 2))) lane
-  let qBase ← iadd qp (← imul (← ext qWord) (← c64n 4))
-  let qs ← (List.range GQA_K).mapM fun g => do
-    unpack (← load32 (← at_ qBase (g * (HD_K / 2) * 4)))
-  -- key `s`'s word for this lane, in either cache
-  let row0 ← imul (← ext (← iadd (← imul wid kvStride) lane)) (← c64n 4)
-  let kB ← iadd kp row0
-  let vB ← iadd vp row0
   let lastKey ← isub sEnd (← c32 1)
-  -- the key of a sub-tile whose score a lane ends up holding
-  let own ← ushrImm lane (5 - ATT_SUB_LOG)
-  let bits ← subMasks.mapM fun m => do icmp .ne (← band lane (← c32 m)) (← c32 0)
-  let ninf ← fconst .f32 0xFF800000
+  let word (base : V .i64) (ix : V .i32) : Prog V L (V .i32) := do
+    load32 (← iadd base (← ishlImm (← ext ix) 2))
+  -- query `g`'s words `8 s + t` and `8 s + 4 + t`, a fragment's two halves
+  let qRow ← iadd qp (← ishlImm (← ext (← imul (← iadd (← imul kh (← c32 GQA_K)) g) (← c32 (HD_K / 2)))) 2)
+  let qf ← (List.range (HD_K / 16)).mapM fun st => do
+    pure (← word qRow (← iadd (← c32 (8 * st)) t), ← word qRow (← iadd (← c32 (8 * st + 4)) t))
+  let kB ← iadd kp (← ishlImm (← ext (← imul kh kvStride)) 2)
+  let vB ← iadd vp (← ishlImm (← ext (← imul kh kvStride)) 2)
   let zero ← fconst .f32 0
-  let scale ← fconst .f32 attScaleBits.toUInt64
-  -- running (m, l, a0, a1) a query, four floats to a query
-  let st0 : List (V .f32) := (List.range GQA_K).flatMap fun _ => [ninf, zero, zero, zero]
-  let carry0 := Vals.append %[s0] (Vals.ofFn (n := 4 * GQA_K) fun i => st0.getD i.val zero)
-  let fin ← wloop carry0 (fun cs => pure (contIfULt cs.head sEnd, cs, ()))
+  let one ← fconst .f32 0x3F800000
+  let ninf ← fconst .f32 0xFF800000
+  let z64 ← iconst64 0
+  let z32 ← c32 0
+  let cScale ← fconst .f32 (1.4426950408889634 / 8 : Float).toFloat32.toBits.toUInt64
+  let ex2 (x : V .f32) : Prog V L (V .f32) := do callLocal ex2Approx %[x]
+  let lo32 (x : V .i64) : Prog V L (V .f32) := do bitcast .f32 (← ireduce32 x)
+  let hi32 (x : V .i64) : Prog V L (V .f32) := do bitcast .f32 (← ireduce32 (← ushrImm x 32))
+  let packH (x y : V .f32) : Prog V L (V .i32) := do
+    callLocal cvtHR %[← bitcast .i32 x, ← bitcast .i32 y, z32]
+  let bfToH (w : V .i32) : Prog V L (V .i32) := do
+    callLocal cvtHR %[← ishlImm w 16, ← band w (← c32 0xFFFF0000), z32]
+  let quad (x : V .f32) (f : V .f32 → V .f32 → Prog V L (V .f32)) : Prog V L (V .f32) := do
+    let x1 ← f x (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 x, ← c32 1]))
+    f x1 (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 x1, ← c32 2]))
+  let pairOf (w : V .i32) : Prog V L (V .i32) := do
+    bor (← band w (← c32 0xFFFFFFF8)) (← bor (← ishlImm (← band w (← c32 3)) 1) (← band (← ushrImm w 2) (← c32 1)))
+  -- a sub-tile's words this lane reads: its value words (dimensions `2 l`,
+  -- `2 l + 1` of each key), then its keys' fragment words; a key past the
+  -- tile read as its last and weighted zero
+  let fetch (sb : V .i32) : Prog V L (List (V .i32)) := do
+    let keyAt (i : V .i32) : Prog V L (V .i32) := do umin (← iadd sb i) lastKey
+    let mut ws : List (V .i32) := []
+    for mm in List.range DT_KEYS do
+      ws := ws ++ [← word vB (← iadd (← imul (← keyAt (← c32 mm)) (← c32 (HD_K / 2))) lane)]
+    for kg in List.range (DT_KEYS / 8) do
+      let kRow ← imul (← keyAt (← iadd (← c32 (8 * kg)) g)) (← c32 (HD_K / 2))
+      for stp in List.range (HD_K / 16) do
+        ws := ws ++ [← word kB (← iadd kRow (← iadd (← c32 (8 * stp)) t)),
+          ← word kB (← iadd kRow (← iadd (← c32 (8 * stp + 4)) t))]
+    pure ws
+  let first ← fetch s0
+  -- the running maximum and sum of row `g`, eight f16 sums of values, and the
+  -- sub-tile's words, each trip fetching the next one's before its own work
+  let st ← wloop (Vals.append (Vals.append %[s0, ninf, zero] (Vals.ofFn (n := 8) fun _ => z64))
+      (Vals.ofFn (n := DT_WORDS) fun q => first.getD q.val z32))
+    (fun cs => do pure (contIfULt cs.head sEnd, cs, ()))
     (fun cs _ => do
       let sb := cs.head
-      let st := Vals.uniformToList (cs.drop 1 : Vals V (List.replicate (4 * GQA_K) .f32))
-      -- the sub-tile's rows, a key past the tile read as its last key and
-      -- weighted zero
-      let rows ← (List.range ATT_SUB).mapM fun i => do
-        let off ← imul (← ext (← umin (← iadd sb (← c32 i)) lastKey)) (← c64n (HD_K / 2 * 4))
-        pure (← load32 (← iadd kB off), ← load32 (← iadd vB off))
-      let ks ← rows.mapM fun (kw, _) => unpack kw
-      let vs ← rows.mapM fun (_, vw) => unpack vw
-      let valid ← icmp .ult (← iadd sb own) sEnd
-      let mut st' : List (V .f32) := []
-      for ((q0, q1), g) in qs.zipIdx do
-        -- the sub-tile's scores for query `g`: lane `L` ends with key `own`'s
-        let parts ← ks.mapM fun (k0, k1) => do fma q1 k1 (← fmul q0 k0)
-        let sc ← reduceScatter bits parts
-        let x ← select valid (← fmul sc scale) ninf
-        let mut tm := x
-        for mask in subMasks do
-          tm ← fmax tm (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 tm, ← c32 mask]))
-        let m := st.getD (4 * g) zero; let l := st.getD (4 * g + 1) zero
-        let mNew ← fmax m tm
-        let corr ← expA (← fsub m mNew)
-        let pr ← expA (← fsub x mNew)
-        let mut psum := pr
-        for mask in subMasks do psum ← bflyAdd psum mask
-        let mut a0 ← fmul (st.getD (4 * g + 2) zero) corr
-        let mut a1 ← fmul (st.getD (4 * g + 3) zero) corr
-        for ((v0, v1), i) in vs.zipIdx do
-          let pi ← bitcast .f32 (← callLocal shflIdx %[← bitcast .i32 pr, ← c32 (i * 2 ^ (5 - ATT_SUB_LOG))])
-          a0 ← fma pi v0 a0
-          a1 ← fma pi v1 a1
-        st' := st' ++ [mNew, ← fma l corr psum, a0, a1]
-      pure (Vals.append %[← iadd sb (← c32 ATT_SUB)]
-        (Vals.ofFn (n := 4 * GQA_K) fun i => st'.getD i.val zero)))
-  let st := Vals.uniformToList (fin.drop 1 : Vals V (List.replicate (4 * GQA_K) .f32))
-  -- this warp's partials: one block of `attPartialFloats` a query
-  let pBlk ← imul (← iadd (← imul cta (← c32 NKV_K)) wid) (← c32 GQA_K)
-  for g in List.range GQA_K do
-    let ix ← iadd pBlk (← c32 g)
-    let addr ← iadd pp (← imul (← ext ix) (← c64n (attPartialFloats * 4)))
-    when .eq lane (← c32 0) do
-      store (st.getD (4 * g) zero) addr
-      store (st.getD (4 * g + 1) zero) (← at_ addr 4)
-    let aAddr ← iadd addr (← ishlImm (← ext lane) 3)
-    store (st.getD (4 * g + 2) zero) (← at_ aAddr 8)
-    store (st.getD (4 * g + 3) zero) (← at_ aAddr 12)
+      let m := (cs.drop 1).head; let l := (cs.drop 2).head
+      let os : List (V .i64) := [cs.get 3, cs.get 4, cs.get 5, cs.get 6, cs.get 7, cs.get 8, cs.get 9, cs.get 10]
+      let cur := Vals.uniformToList (cs.drop 11 : Vals V (List.replicate DT_WORDS .i32))
+      let next ← fetch (← iadd sb (← c32 DT_KEYS))
+      -- the values, dimension by dimension: lane `dp`'s word of dimensions
+      -- `2 dp`, `2 dp + 1` of every key pair, transposed
+      for mm in List.range (DT_KEYS / 2) do
+        let w0 ← bfToH (cur.getD (2 * mm) z32)
+        let w1 ← bfToH (cur.getD (2 * mm + 1) z32)
+        let lo ← bor (← band w0 (← c32 0xFFFF)) (← ishlImm w1 16)
+        let hi ← bor (← ushrImm w0 16) (← band w1 (← c32 0xFFFF0000))
+        let mx ← bxor (← pairOf (← c32 mm)) (← ishlImm (← band (← ushrImm lane 2) (← c32 7)) 1)
+        let at0 ← iadd (← imul (← ishlImm lane 1) (← c32 DT_VSTR)) mx
+        storeI32 lo (← at4 sm at0)
+        storeI32 hi (← at4 sm (← iadd at0 (← c32 DT_VSTR)))
+      callLocalVoid barrier %[]
+      -- the scores: keys `8 kg + 2 t`, `+ 1` of row `g`
+      let mut sv : List (V .f32) := []
+      for kg in List.range (DT_KEYS / 8) do
+        let mut acc := z64
+        for stp in List.range (HD_K / 16) do
+          let (q0, q1) := qf.getD stp (z32, z32)
+          let b0 := cur.getD (DT_KEYS + 8 * kg + 2 * stp) z32
+          let b1 := cur.getD (DT_KEYS + 8 * kg + 2 * stp + 1) z32
+          acc ← callLocal mmaBfLoR %[q0, q0, q1, q1, b0, b1, acc]
+        sv := sv ++ [← lo32 acc, ← hi32 acc]
+      -- scaled to base 2, a key past the tile `-inf`
+      let sv' ← (List.range sv.length).zip sv |>.mapM fun (i, x) => do
+        let k ← iadd sb (← iadd (← c32 (8 * (i / 2) + i % 2)) tw)
+        select (← icmp .ult k sEnd) (← fmul x cScale) ninf
+      let mut tmax := ninf
+      for x in sv' do tmax ← fmax tmax x
+      let mNew ← fmax m (← quad tmax fmax)
+      let dead ← fcmp .eq mNew ninf
+      let corr ← select dead one (← ex2 (← fsub m mNew))
+      let mUse ← select dead zero mNew
+      let pr ← sv'.mapM fun x => do ex2 (← fsub x mUse)
+      let mut tsum := zero
+      for x in pr do tsum ← fadd tsum x
+      let lNew ← fma l corr (← quad tsum fadd)
+      -- the sums so far scaled by the row's factor, then the tile's values
+      let cc ← packH corr corr
+      let mut os' : List (V .i64) := []
+      for o in os do
+        let lo : V .i32 ← callLocal hfma2R %[← ireduce32 o, cc, z32]
+        os' := os' ++ [← uextend64 lo]
+      for c in List.range (DT_KEYS / 16) do
+        let a0 ← packH (pr.getD (4 * c) zero) (pr.getD (4 * c + 1) zero)
+        let a2 ← packH (pr.getD (4 * c + 2) zero) (pr.getD (4 * c + 3) zero)
+        let mut nx : List (V .i64) := []
+        for ng in List.range (HD_K / 8) do
+          let vRow ← imul (← iadd (← c32 (8 * ng)) g) (← c32 DT_VSTR)
+          let bb ← load64 (← at4 sm (← iadd vRow (← bxor (← iadd (← c32 (8 * c)) tw) (← c32 (2 * ng)))))
+          let o : V .i64 ← callLocal mmaHR %[a0, z32, a2, z32, ← ireduce32 bb, ← ireduce32 (← ushrImm bb 32),
+            os'.getD ng z64]
+          nx := nx ++ [o]
+        os' := nx
+      callLocalVoid barrier %[]
+      pure (Vals.append (Vals.append %[← iadd sb (← c32 DT_KEYS), mNew, lNew]
+        (Vals.ofFn (n := 8) fun q => os'.getD q.val z64)) (Vals.ofFn (n := DT_WORDS) fun q => next.getD q.val z32)))
+  -- an f16 (a word's low half) as the f32 of the same value
+  let f32OfH (h : V .i32) : Prog V L (V .f32) := do
+    let sign ← ishlImm (← band h (← c32 0x8000)) 16
+    let e ← band (← ushrImm h 10) (← c32 31)
+    let mt ← band h (← c32 1023)
+    let normal ← bor (← ishlImm (← iadd e (← c32 112)) 23) (← ishlImm mt 13)
+    let special ← bor (← c32 0x7F800000) (← ishlImm mt 13)
+    let sub ← bitcast .i32 (← fmul (← fcvtFromSint .f32 mt) (← fconst .f32 0x33800000))
+    let mag ← select (← icmp .eq e (← c32 0)) sub (← select (← icmp .eq e (← c32 31)) special normal)
+    bitcast .f32 (← bor sign mag)
+  -- this row's partial: one block of `attPartialFloats` a query
+  let os : List (V .i64) := [st.get 3, st.get 4, st.get 5, st.get 6, st.get 7, st.get 8, st.get 9, st.get 10]
+  let ix ← iadd (← imul (← iadd (← imul tile (← c32 NKV_K)) kh) (← c32 GQA_K)) g
+  let addr ← iadd pp (← imul (← ext ix) (← c64n (attPartialFloats * 4)))
+  when .eq t (← c32 0) do
+    store (← fmul (st.drop 1).head (← fconst .f32 0x3F317218)) addr
+    store (st.drop 2).head (← at_ addr 4)
+  for ng in List.range (HD_K / 8) do
+    let w ← ireduce32 (os.getD ng z64)
+    let aAddr ← iadd addr (← ishlImm (← ext (← iadd (← c32 (8 * ng)) tw)) 2)
+    store (← f32OfH (← band w (← c32 0xFFFF))) (← at_ aAddr 8)
+    store (← f32OfH (← ushrImm w 16)) (← at_ aAddr 12)
 
 /-- **The tiles, merged, and the sink applied once.**
 
-    One CTA of one warp per query head. Two partial results `(m, l, acc)` merge
-    the way the tile loop folds a single key: rescale both by `exp(m - max)`
-    and add. The learned sink joins the denominator here and nowhere else.
-    The tile count comes from the meta buffer, which the layer uploads anyway. -/
+    One CTA of one warp per query head. Partial results `(m, l, acc)` merge
+    the way the tile loop folds a single key: each rescaled by
+    `exp(m - max)` and added. Lane `L` takes the maxima and sums of tiles `L`
+    and `L + 32`, combined by butterfly; the values of every tile place are
+    loaded at once, a place past the last tile weighted zero. The learned
+    sink joins the denominator here and nowhere else. The tile count comes
+    from the meta buffer, which the layer uploads anyway. -/
 def attnCombineBody : Prog V L Unit := do
   let ps ← entryParams (idParams ++ [.i64, .i64, .i64, .i64])
   let head := ps.head; let tid := ps.snd
@@ -926,35 +979,48 @@ def attnCombineBody : Prog V L Unit := do
   -- this head's partials within a tile's block; the tile stride is every head's
   let hBase ← iadd pp (← imul (← ext head) (← c64n (attPartialFloats * 4)))
   let tStride := NKV_K * GQA_K * attPartialFloats * 4
-  -- pass one: the largest maximum any tile saw
   let ninf ← fconst .f32 0xFF800000
-  let r1 ← wloop %[← c32 0, hBase, ninf] (fun cs => pure (contIfULt cs.head nTiles, %[cs.thd], ()))
-    (fun cs _ => do
-      let m ← loadF32 cs.snd
-      pure %[← iadd cs.head (← c32 1), ← at_ cs.snd tStride, ← fmax cs.thd m])
-  -- the sink shares the denominator, so it belongs in the maximum too
-  let sink ← loadF32 (← iadd sp (← ishlImm (← ext head) 2))
-  let mAll ← fmax r1.head sink
-  -- pass two: rescale every tile onto that maximum and add
   let zero ← fconst .f32 0
-  let addr2 ← iadd hBase (← ishlImm (← ext lane) 3)
-  let r2 ← wloop %[← c32 0, hBase, addr2, zero, zero, zero]
-    (fun cs => pure (contIfULt cs.head nTiles, %[(cs.drop 3).head, (cs.drop 4).head, (cs.drop 5).head], ()))
-    (fun cs _ => do
-      let m ← loadF32 cs.snd
-      let l ← loadF32 (← at_ cs.snd 4)
-      let w ← expA (← fsub m mAll)
-      let lAll ← fma l w (cs.drop 3).head
-      let t0 ← loadF32 (← at_ cs.thd 8)
-      let t1 ← loadF32 (← at_ cs.thd 12)
-      pure %[← iadd cs.head (← c32 1), ← at_ cs.snd tStride, ← at_ cs.thd tStride, lAll,
-        ← fma t0 w (cs.drop 4).head, ← fma t1 w (cs.drop 5).head])
+  let last ← isub nTiles (← c32 1)
+  -- tile `i`'s partial (past the last, the last's)
+  let at_tile (i : V .i32) : Prog V L (V .i64) := do
+    iadd hBase (← imul (← ext (← umin i last)) (← c64n tStride))
+  let bfly (x : V .f32) (f : V .f32 → V .f32 → Prog V L (V .f32)) : Prog V L (V .f32) := do
+    let mut v := x
+    for m in [16, 8, 4, 2, 1] do
+      v ← f v (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 v, ← c32 m]))
+    pure v
+  -- lane `L` takes tiles `L` and `L + 32` (a layer has at most `COMB_TILES`)
+  let tA := lane
+  let tB ← iadd lane (← c32 32)
+  let okA ← icmp .ult tA nTiles
+  let okB ← icmp .ult tB nTiles
+  let pA ← at_tile tA
+  let pB ← at_tile tB
+  let mA ← select okA (← loadF32 pA) ninf
+  let mB ← select okB (← loadF32 pB) ninf
+  -- the largest maximum any tile saw; the sink shares the denominator, so it
+  -- belongs in the maximum too
+  let sink ← loadF32 (← iadd sp (← ishlImm (← ext head) 2))
+  let mAll ← fmax (← bfly (← fmax mA mB) fmax) sink
+  -- every tile rescaled onto that maximum and added
+  let wA ← select okA (← expA (← fsub mA mAll)) zero
+  let wB ← select okB (← expA (← fsub mB mAll)) zero
+  let lSum ← bfly (← fma (← loadF32 (← at_ pB 4)) wB (← fmul (← loadF32 (← at_ pA 4)) wA)) fadd
+  let mut a0 := zero
+  let mut a1 := zero
+  for i in List.range COMB_TILES do
+    let w ← bitcast .f32 (← callLocal shflIdx %[← bitcast .i32 (if i < 32 then wA else wB), ← c32 (i % 32)])
+    let p ← iadd (← at_tile (← c32 i)) (← ishlImm (← ext lane) 3)
+    a0 ← fma (← loadF32 (← at_ p 8)) w a0
+    a1 ← fma (← loadF32 (← at_ p 12)) w a1
+  let r2 := (lSum, a0, a1)
   -- the sink's own term, and then the division softmax would have done
-  let lAll ← fadd r2.head (← expA (← fsub sink mAll))
+  let lAll ← fadd r2.1 (← expA (← fsub sink mAll))
   let inv ← callLocal rcpApprox %[lAll]
   let oAddr ← iadd op (← ishlImm (← ext (← iadd (← imul head (← c32 HD_K)) (← ishlImm lane 1))) 2)
-  store (← fmul r2.snd inv) oAddr
-  store (← fmul r2.thd inv) (← at_ oAddr 4)
+  store (← fmul r2.2.1 inv) oAddr
+  store (← fmul r2.2.2 inv) (← at_ oAddr 4)
 
 end
 
@@ -1082,13 +1148,12 @@ def dequant : Kernel :=
   { name := "mxfp4_dequant_f32", params := [.i64, .i64, .i64, .i64],
     code := emit dequantBody (idParams ++ [.i64, .i64, .i64, .i64]) }
 
-/-- One tile of the sequence for each key head, as a kernel: blocks of
-    `NKV_K` warps. Its partials' addresses are `mul.wide` products: with
-    64-bit ones `ptxas` takes the tile loop's control off the uniform datapath
-    and the loop runs 8% slower. -/
+/-- One tile of the sequence and one key head, as a kernel: a block of one
+    warp, `DT_VSTR · HD_K` words of shared memory for the staged values. -/
 def attnTile : Kernel :=
   { name := "gptoss_attn_tile", params := [.i64, .i64, .i64, .i64, .i64],
-    code := emit attnTileBody (idParams ++ [.i64, .i64, .i64, .i64, .i64]), mulWide := true }
+    code := emit attnTileBody (idParams ++ [.i64, .i64, .i64, .i64, .i64]), warp := true,
+    smem := DT_VSTR * HD_K * 4 }
 
 /-- The tiles merged, one warp a query head, as a kernel. -/
 def attnCombine : Kernel :=

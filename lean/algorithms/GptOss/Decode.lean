@@ -953,17 +953,13 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   storeI32 slotNow (← iaddImm ptr (DMETA_OFF + 4 * M_SLOT))
   -- **How this layer's keys are split, chosen for the length it actually has.**
   --
-  -- Aim for `ATT_TILES_MAX` tiles, which is what measured best at depth, but
-  -- never cut below `ATT_TILE_MIN` keys: at a thousand keys the first rule
-  -- alone would make tiles of one, and a tile is walked serially by a warp
-  -- whatever its size. So short layers get the floor and get more tiles than
-  -- the target -- which is what they were short of -- and long ones get the
-  -- target, which bounds the merge and the partials buffer at once.
-  let tMax ← iconst32 GptOssKernels.ATT_TILES_MAX
-  let even ← udiv (← iadd sLen (← isub tMax (← iconst32 1))) tMax
-  let tooSmall ← ifte .ult even (← iconst32 GptOssKernels.ATT_TILE_MIN)
-    (pure %[← iconst32 GptOssKernels.ATT_TILE_MIN]) (pure %[even])
-  let tileSz := tooSmall.head
+  -- Aim for `ATT_TILES_AIM` tiles, a block a tile and key head, which is one
+  -- wave of the card's blocks; a tile is whole sub-tiles of `ATT_TILE_MIN`
+  -- keys. Short layers get one sub-tile a tile and fewer tiles.
+  let tAim ← iconst32 GptOssKernels.ATT_TILES_AIM
+  let even ← udiv (← iadd sLen (← isub tAim (← iconst32 1))) tAim
+  let sub ← iconst32 GptOssKernels.ATT_TILE_MIN
+  let tileSz ← imul (← udiv (← iadd even (← isub sub (← iconst32 1))) sub) sub
   let nTiles ← udiv (← iadd sLen (← isub tileSz (← iconst32 1))) tileSz
   storeI32 tileSz (← iaddImm ptr (DMETA_OFF + 4 * M_TILESZ))
   storeI32 nTiles (← iaddImm ptr (DMETA_OFF + 4 * M_NTILES))
@@ -1008,7 +1004,7 @@ def dLayerM (layer : V .i32) : Prog V L Unit := do
   -- carries a running maximum and sum through it. What the four-kernel path
   -- spent most of its time on at depth was a scores buffer of `NQ * seqLen`
   -- floats that existed only because the stages were separate kernels.
-  dEnqueueG ptr S_ATTTILE nTiles GptOssKernels.Body.ATT_THREADS
+  dEnqueueG ptr S_ATTTILE (← imul nTiles nkv32) 32
     [C_KC, C_VC, B_QKVB, B_PART, B_META]
   -- the merge is one warp a query head, and the sink joins here: it belongs to
   -- the head, and a tile that applied it would have it counted once per tile

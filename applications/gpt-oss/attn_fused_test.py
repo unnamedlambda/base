@@ -34,9 +34,10 @@ HD, GQA, NKV = 64, 8, 8
 NQ = GQA * NKV
 # `GptOssKernels`: the tile size is chosen per layer at run time, so the
 # harness picks it the same way the engine does.
-ATT_TILE_MIN, ATT_TILES_MAX = 32, 768
-# `GptOssKernels.Body.ATT_THREADS`
-ATT_THREADS = 32 * 8
+# `GptOssKernels.ATT_TILE_MIN`, `ATT_TILES_AIM`, `ATT_TILES_MAX`: a tile is
+# whole sub-tiles of 32 keys, aimed at 49 tiles a layer; a block is one warp,
+# one tile of one key head
+ATT_TILE_MIN, ATT_TILES_AIM, ATT_TILES_MAX = 32, 49, 768
 PARTIAL = 2 + HD
 # `GptOssAttention`: the meta words this kernel reads.
 M_SEQ, M_KVSTRIDE, M_NTILES, M_TILESZ = 2, 7, 8, 9
@@ -130,7 +131,8 @@ def run_case(cu, tile, comb, L, cap, scale, label, rng):
     d_k = cu.upload(pack_bf16(k.reshape(-1)))
     d_v = cu.upload(pack_bf16(v.reshape(-1)))
     d_s = cu.upload(sinks)
-    tile_sz = max(ATT_TILE_MIN, (L + ATT_TILES_MAX - 1) // ATT_TILES_MAX)
+    even = (L + ATT_TILES_AIM - 1) // ATT_TILES_AIM
+    tile_sz = (even + ATT_TILE_MIN - 1) // ATT_TILE_MIN * ATT_TILE_MIN
     n_tiles = (L + tile_sz - 1) // tile_sz
     assert n_tiles <= ATT_TILES_MAX, (n_tiles, tile_sz)
     meta = np.zeros(64, np.int32)
@@ -145,7 +147,7 @@ def run_case(cu, tile, comb, L, cap, scale, label, rng):
     d_p = cu.upload(part)
     d_o = cu.upload(np.zeros(NQ * HD, np.float32))
 
-    cu.launch(tile, n_tiles, ATT_THREADS, [d_k, d_v, d_q, d_p, d_m])
+    cu.launch(tile, n_tiles * NKV, 32, [d_k, d_v, d_q, d_p, d_m])
     cu.launch(comb, NQ, 32, [d_p, d_s, d_o, d_m])
     got = cu.download(d_o, np.zeros(NQ * HD, np.float32)).reshape(NQ, HD)
 
@@ -176,10 +178,10 @@ def main():
     # A running maximum that is dropped survives small scores and dies here:
     # exp of the raw score overflows f32 outright.
     run_case(cu, tile, comb, 1500, 4096, 40.0, "scores that overflow exp", rng)
-    run_case(cu, tile, comb, 8192, 8192, 1.0, "at the tile floor", rng)
+    run_case(cu, tile, comb, 8192, 8192, 1.0, "8192 keys, 43 tiles", rng)
     # past 24576 the floor stops binding and the tile size grows instead, which
     # is the branch the short cases never reach
-    run_case(cu, tile, comb, 32768, 32768, 1.0, "past the floor, tile grows", rng)
+    run_case(cu, tile, comb, 32768, 32768, 1.0, "32768 keys, the aim of 49 tiles", rng)
 
     print()
     if FAILURES:
