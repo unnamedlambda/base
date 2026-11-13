@@ -689,12 +689,15 @@ def kvStoreTBody : Prog V L Unit := do
 def AT_TOK : Nat := 16
 def AT_KEYS : Nat := 32
 
-/-- Words a staged key row takes in shared memory (its 32, and 4 so that the
-    eight keys a fragment load reads fall on distinct banks), and a staged
-    dimension row of values (its 16 key pairs, f16, and 4; a row's columns
-    xor its eighth, `row / 8`). -/
-def KSTR : Nat := 36
-def VSTR : Nat := 20
+/-- Words a staged key row takes in shared memory (its 32, and 8 so that the
+    keys a half warp's 64-bit fragment loads read fall on distinct banks), and
+    a staged dimension row of values (its 16 key pairs, f16, and 8; a row's
+    columns xor twice its eighth, `row / 8`). A row's words are paired so
+    a lane's two of an `mma` fragment are adjacent. -/
+def KSTR : Nat := 40
+def VSTR : Nat := 24
+/-- Words a staged tile takes: its keys, then its values; two buffers. -/
+def ATILE : Nat := AT_KEYS * KSTR + HD * VSTR
 
 set_option maxRecDepth 8000 in
 /-- **Attention of every token, on the tensor cores**: causal, a key
@@ -784,6 +787,86 @@ def attnFBody : Prog V L Unit := do
     let x1 ← f x (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 x, ← c32 1]))
     f x1 (← bitcast .f32 (← callLocal shflBfly %[← bitcast .i32 x1, ← c32 2]))
   let nTiles ← udiv (← iadd (← isub hi0 lo0) (← c32 (AT_KEYS - 1))) (← c32 AT_KEYS)
+  -- a key's word `wd` (its dimensions `2 wd`, `2 wd + 1`), from the cache
+  -- or the chunk
+  -- (a cache that wraps is the sliding layers' ring, of `CAP_SWA` slots, a
+  -- power of two; a full layer's holds every position)
+  let kvWord (cache chunk : V .i64) (j wd : V .i32) : Prog V L (V .i32) := do
+    let jc ← select (← icmp .ult j hi0) j lo0
+    let fromCache ← icmp .ult jc start
+    let slot ← select (← icmp .ult jc cap) jc (← band jc (← isub cap (← c32 1)))
+    let cIx ← iadd (← imul kh stride) (← iadd (← imul slot (← c32 (HD / 2))) wd)
+    let chunkT ← select fromCache (← c32 0) (← isub jc start)
+    let kIx ← iadd (← imul (← iadd (← imul chunkT (← c32 NKV)) kh) (← c32 (HD / 2))) wd
+    load32 (← select fromCache (← at4 cache cIx) (← at4 chunk kIx))
+  -- a tile wholly before the chunk, in slots that do not wrap, read
+  -- straight from the cache
+  let inCache (cache _chunk : V .i64) (j wd : V .i32) : Prog V L (V .i32) := do
+    load32 (← at4 cache (← iadd (← imul kh stride) (← iadd (← imul j (← c32 (HD / 2))) wd)))
+  let plainAt (j0 : V .i32) : Prog V L (V .i32) := do
+    let past ← iadd j0 (← c32 AT_KEYS)
+    band (← select (← icmp .ule past start) (← c32 1) (← c32 0))
+      (← select (← icmp .ule past cap) (← c32 1) (← c32 0))
+  -- a row's word `w` (`8 s + 4 h + u`, `u < 4`) at `8 s + 2 u + h`: a
+  -- lane's two words of an `mma` fragment side by side, one 64-bit load
+  let pairOf (w : V .i32) : Prog V L (V .i32) := do
+    bor (← band w (← c32 0xFFFFFFF8)) (← bor (← ishlImm (← band w (← c32 3)) 1) (← band (← ushrImm w 2) (← c32 1)))
+  let kReps := AT_KEYS * HD / 2 / 256
+  let vReps := AT_KEYS / 2 * HD / 2 / 256
+  let nW := kReps + 2 * vReps
+  -- the words of tile `j0` this thread stages: its keys' words, then its two
+  -- keys' value words for each of its value places
+  let fetchWith (word : V .i64 → V .i64 → V .i32 → V .i32 → Prog V L (V .i32)) (j0 : V .i32) :
+      Prog V L (List (V .i32)) := do
+    let mut ws : List (V .i32) := []
+    for rep in List.range kReps do
+      let wi ← iadd tid (← c32 (256 * rep))
+      ws := ws ++ [← word kcache kc (← iadd j0 (← ushrImm wi 5)) (← band wi (← c32 31))]
+    for rep in List.range vReps do
+      let ci ← iadd tid (← c32 (256 * rep))
+      let dp ← band ci (← c32 31)
+      let j ← iadd j0 (← ishlImm (← ushrImm ci 5) 1)
+      ws := ws ++ [← word vcache vc j dp, ← word vcache vc (← iadd j (← c32 1)) dp]
+    pure ws
+  let fetch (j0 : V .i32) : Prog V L (List (V .i32)) := do
+    let r ← ifte (jTys := List.replicate nW .i32) .ne (← plainAt j0) (← c32 0)
+      (thn := do
+        let ws ← fetchWith inCache j0
+        let z ← c32 0
+        pure (Vals.ofFn (n := nW) fun q => ws.getD q.val z))
+      (els := do
+        let ws ← fetchWith kvWord j0
+        let z ← c32 0
+        pure (Vals.ofFn (n := nW) fun q => ws.getD q.val z))
+    pure (Vals.uniformToList r)
+  -- those words into buffer `buf` (word offset): keys row by row, values
+  -- dimension by dimension, two keys' words transposed
+  let put (buf : V .i32) (ws : List (V .i32)) : Prog V L Unit := do
+    let z ← c32 0
+    for rep in List.range kReps do
+      let wi ← iadd tid (← c32 (256 * rep))
+      let at0 ← iadd buf (← iadd (← imul (← ushrImm wi 5) (← c32 KSTR)) (← pairOf (← band wi (← c32 31))))
+      storeI32 (ws.getD rep z) (← at4 sm at0)
+    for rep in List.range vReps do
+      let ci ← iadd tid (← c32 (256 * rep))
+      let m ← ushrImm ci 5
+      let dp ← band ci (← c32 31)
+      let w0 ← bfToH (ws.getD (kReps + 2 * rep) z)
+      let w1 ← bfToH (ws.getD (kReps + 2 * rep + 1) z)
+      let lo ← bor (← band w0 (← c32 0xFFFF)) (← ishlImm w1 16)
+      let hi ← bor (← ushrImm w0 16) (← band w1 (← c32 0xFFFF0000))
+      -- column `m` of rows `2 dp` and `2 dp + 1` (paired as `pairOf`),
+      -- xor twice the rows' eighth (`dp / 4`), so a warp's stores spread
+      -- over the banks and a pair stays together
+      let mx ← bxor (← pairOf m) (← ishlImm (← band (← ushrImm dp 2) (← c32 7)) 1)
+      let at0 ← iadd buf (← iadd (← c32 (AT_KEYS * KSTR)) (← iadd (← imul (← ishlImm dp 1) (← c32 VSTR)) mx))
+      storeI32 lo (← at4 sm at0)
+      storeI32 hi (← at4 sm (← iadd at0 (← c32 VSTR)))
+  -- the first tile staged before the loop; each trip fetches the next
+  -- tile's words before its own work and puts them in the other buffer
+  -- after it, one barrier a tile
+  put (← c32 0) (← fetch lo0)
+  callLocalVoid barrier %[]
   -- the tile index, both rows' maxima and sums, and eight f16 sums of
   -- values (`HD / 8`: one an `mma` of eight dimensions, both rows)
   let st ← wloop (Vals.append %[← c32 0, ninf, ninf, zero, zero] (Vals.ofFn (n := 8) fun _ => z64))
@@ -793,54 +876,10 @@ def attnFBody : Prog V L Unit := do
       let lA := (cs.drop 3).head; let lB := (cs.drop 4).head
       let os := Vals.uniformToList (cs.drop 5 : Vals V (List.replicate 8 .i64))
       let j0 ← iadd lo0 (← imul cs.head (← c32 AT_KEYS))
-      -- a key's word `wd` (its dimensions `2 wd`, `2 wd + 1`), from the cache
-      -- or the chunk
-      -- (a cache that wraps is the sliding layers' ring, of `CAP_SWA` slots, a
-      -- power of two; a full layer's holds every position)
-      let kvWord (cache chunk : V .i64) (j wd : V .i32) : Prog V L (V .i32) := do
-        let jc ← select (← icmp .ult j hi0) j lo0
-        let fromCache ← icmp .ult jc start
-        let slot ← select (← icmp .ult jc cap) jc (← band jc (← isub cap (← c32 1)))
-        let cIx ← iadd (← imul kh stride) (← iadd (← imul slot (← c32 (HD / 2))) wd)
-        let chunkT ← select fromCache (← c32 0) (← isub jc start)
-        let kIx ← iadd (← imul (← iadd (← imul chunkT (← c32 NKV)) kh) (← c32 (HD / 2))) wd
-        load32 (← select fromCache (← at4 cache cIx) (← at4 chunk kIx))
-      -- the tile staged, each key's word fetched by `word`
-      let stage (word : V .i64 → V .i64 → V .i32 → V .i32 → Prog V L (V .i32)) : Prog V L Unit := do
-        -- the keys, row by row
-        for rep in List.range (AT_KEYS * HD / 2 / 256) do
-          let wi ← iadd tid (← c32 (256 * rep))
-          let kj ← ushrImm wi 5
-          let wd ← band wi (← c32 31)
-          let wv ← word kcache kc (← iadd j0 kj) wd
-          storeI32 wv (← at4 sm (← iadd (← imul kj (← c32 KSTR)) wd))
-        -- the values, dimension by dimension: two keys' words, transposed
-        for rep in List.range (AT_KEYS / 2 * HD / 2 / 256) do
-          let ci ← iadd tid (← c32 (256 * rep))
-          let m ← ushrImm ci 5
-          let dp ← band ci (← c32 31)
-          let j ← iadd j0 (← ishlImm m 1)
-          let w0 ← bfToH (← word vcache vc j dp)
-          let w1 ← bfToH (← word vcache vc (← iadd j (← c32 1)) dp)
-          let lo ← bor (← band w0 (← c32 0xFFFF)) (← ishlImm w1 16)
-          let hi ← bor (← ushrImm w0 16) (← band w1 (← c32 0xFFFF0000))
-          -- column `m` of rows `2 dp` and `2 dp + 1`, xor the rows' eighth
-          -- (`dp / 4`), so a warp's thirty-two stores meet in no bank
-          let mx ← bxor m (← band (← ushrImm dp 2) (← c32 7))
-          let at0 ← iadd (← c32 (AT_KEYS * KSTR)) (← iadd (← imul (← ishlImm dp 1) (← c32 VSTR)) mx)
-          storeI32 lo (← at4 sm at0)
-          storeI32 hi (← at4 sm (← iadd at0 (← c32 VSTR)))
-      -- a tile wholly before the chunk, in slots that do not wrap, read
-      -- straight from the cache; any other through `kvWord`
-      let inCache (cache _chunk : V .i64) (j wd : V .i32) : Prog V L (V .i32) := do
-        load32 (← at4 cache (← iadd (← imul kh stride) (← iadd (← imul j (← c32 (HD / 2))) wd)))
-      let past ← iadd j0 (← c32 AT_KEYS)
-      let plain ← band (← select (← icmp .ule past start) (← c32 1) (← c32 0))
-        (← select (← icmp .ule past cap) (← c32 1) (← c32 0))
-      let _ ← ifte (jTys := []) .ne plain (← c32 0)
-        (thn := do stage inCache; pure %[])
-        (els := do stage kvWord; pure %[])
-      callLocalVoid barrier %[]
+      let next ← fetch (← iadd j0 (← c32 AT_KEYS))
+      let par ← band cs.head (← c32 1)
+      let bufK ← imul par (← c32 ATILE)
+      let plain ← plainAt j0
       -- the scores, eight keys a group, sixteen dimensions an `mma`
       let mut sA : List (V .f32) := []
       let mut sB : List (V .f32) := []
@@ -850,8 +889,9 @@ def attnFBody : Prog V L Unit := do
         for stp in List.range (HD / 16) do
           let a := qf.getD stp []
           let kRow ← imul (← iadd (← c32 (8 * kg)) g) (← c32 KSTR)
-          let b0 ← load32 (← at4 sm (← iadd kRow (← iadd (← c32 (8 * stp)) t)))
-          let b1 ← load32 (← at4 sm (← iadd kRow (← iadd (← c32 (8 * stp + 4)) t)))
+          let bb ← load64 (← at4 sm (← iadd bufK (← iadd kRow (← iadd (← c32 (8 * stp)) tw))))
+          let b0 ← ireduce32 bb
+          let b1 ← ireduce32 (← ushrImm bb 32)
           let z ← c32 0
           let (q0, q1, q2, q3) := (a.getD 0 z, a.getD 1 z, a.getD 2 z, a.getD 3 z)
           accA ← callLocal mmaBfLoR %[q0, q1, q2, q3, b0, b1, accA]
@@ -872,8 +912,18 @@ def attnFBody : Prog V L Unit := do
         let rng ← select none (← c32 0) (← isub top bot)
         (List.range sv.length).zip sv |>.mapM fun (i, x) => do
           select (← icmp .ule (← isub (← c32 (8 * (i / 2) + i % 2)) bot') rng) x ninf
-      let sA' ← maskRow sA pA loA
-      let sB' ← maskRow sB pB loB
+      -- a tile of a full layer wholly before the chunk is every row's whole
+      let whole ← band plain (← select (← icmp .eq window (← c32 0)) (← c32 1) (← c32 0))
+      let n := sA.length
+      let sBoth ← ifte (jTys := List.replicate (2 * n) .f32) .ne whole (← c32 0)
+        (thn := do pure (Vals.ofFn (n := 2 * n) fun q => (sA ++ sB).getD q.val zero))
+        (els := do
+          let a ← maskRow sA pA loA
+          let b ← maskRow sB pB loB
+          pure (Vals.ofFn (n := 2 * n) fun q => (a ++ b).getD q.val zero))
+      let sAll := Vals.uniformToList sBoth
+      let sA' := sAll.take n
+      let sB' := sAll.drop n
       -- the online softmax of a row: its new maximum, the old sum's factor,
       -- the tile's probabilities and the new sum
       let soft (sv : List (V .f32)) (m l : V .f32) :
@@ -911,13 +961,14 @@ def attnFBody : Prog V L Unit := do
         let mut nx : List (V .i64) := []
         for ng in List.range (HD / 8) do
           -- rows `8 ng + g`, their columns xor `ng` as staged
-          let vRow ← iadd (← c32 (AT_KEYS * KSTR)) (← imul (← iadd (← c32 (8 * ng)) g) (← c32 VSTR))
-          let tx ← bxor t (← c32 ng)
-          let b0 ← load32 (← at4 sm (← iadd vRow (← iadd (← c32 (8 * c)) tx)))
-          let b1 ← load32 (← at4 sm (← iadd vRow (← iadd (← c32 (8 * c)) (← bxor tx (← c32 4)))))
+          let vRow ← iadd bufK (← iadd (← c32 (AT_KEYS * KSTR)) (← imul (← iadd (← c32 (8 * ng)) g) (← c32 VSTR)))
+          let bb ← load64 (← at4 sm (← iadd vRow (← bxor (← iadd (← c32 (8 * c)) tw) (← c32 (2 * ng)))))
+          let b0 ← ireduce32 bb
+          let b1 ← ireduce32 (← ushrImm bb 32)
           let o : V .i64 ← callLocal mmaHR %[a0, a1, a2, a3, b0, b1, os'.getD ng z64]
           nx := nx ++ [o]
         os' := nx
+      put (← isub (← c32 ATILE) bufK) next
       callLocalVoid barrier %[]
       pure (Vals.append %[← iadd cs.head (← c32 1), mA', mB', lA', lB']
         (Vals.ofFn (n := 8) fun q => os'.getD q.val z64)))
@@ -1039,7 +1090,7 @@ def kvStoreT : Kernel :=
 
 def attnF : Kernel :=
   { name := "attention_rows_bf16", params := List.replicate 8 .i64,
-    code := emit attnFBody (idParams ++ List.replicate 8 .i64), smem := (AT_KEYS * KSTR + HD * VSTR) * 4,
+    code := emit attnFBody (idParams ++ List.replicate 8 .i64), smem := 2 * ATILE * 4,
     bounds := some (256, 2) }
 
 def routerLogits : Kernel :=
