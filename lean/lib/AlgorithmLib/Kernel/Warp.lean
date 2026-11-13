@@ -243,6 +243,16 @@ theorem answersOf_bfly {calls : Nat → List (Intr × List V)} {snaps : Array By
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun a ty m he => by cases he⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun a ty m he => by cases he⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun a ty m he => by cases he⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   obtain ⟨y, hy, hP⟩ := h3 k _ hk
@@ -296,6 +306,20 @@ theorem answerStep_push {calls : Nat → List (Intr × List V)} {snaps : Array B
     simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
     exact ⟨_, by simp [show (Intr.mma == Intr.barrier) = false by decide]; rfl,
       by simp [ha, show (Intr.mma == Intr.barrier) = false by decide]; rfl⟩
+  · simp only [bind, Except.bind] at h ⊢
+    split at h
+    · cases h
+    rename_i a ha
+    simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
+    exact ⟨_, by simp [show (Intr.mmaLo == Intr.barrier) = false by decide]; rfl,
+      by simp [ha, show (Intr.mmaLo == Intr.barrier) = false by decide]; rfl⟩
+  · simp only [bind, Except.bind] at h ⊢
+    split at h
+    · cases h
+    rename_i a ha
+    simp only [pure, Except.pure, Except.ok.injEq] at h; subst h
+    exact ⟨_, by simp [show (Intr.mmaHi == Intr.barrier) = false by decide]; rfl,
+      by simp [ha, show (Intr.mmaHi == Intr.barrier) = false by decide]; rfl⟩
   · cases h
 
 theorem foldAns {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
@@ -384,6 +408,12 @@ theorem answerStep_out {calls : Nat → List (Intr × List V)} {snaps : Array By
   · simp only [bind, Except.bind]; split
     · rfl
     · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
+  · simp only [bind, Except.bind]; split
+    · rfl
+    · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
+  · simp only [bind, Except.bind]; split
+    · rfl
+    · simp only [pure, Except.pure, Except.map]; rw [Array.push_eq_append]; rfl
   · rfl
 
 theorem foldAns_of {calls : Nat → List (Intr × List V)} {snaps : Array ByteArray} {smem0 : ByteArray}
@@ -461,7 +491,7 @@ theorem answerStep_congr {F F' : Nat → List (Intr × List V)} {snaps snaps' : 
   dsimp only
   split
   · rw [hs rfl]
-  all_goals first | rfl | simp only [hl, mmaLane, laneWord]
+  all_goals first | rfl | simp only [hl, mmaLane, mmaWLane, laneWord]
 
 /-- **What the laws give back stays given back** as the threads go on: where
     every thread's `k`-th call is the same, thread `t`'s calls before it are
@@ -515,7 +545,7 @@ theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array B
   simp only [pure, Except.pure, Except.ok.injEq] at h
   subst h
   obtain ⟨h1, _, h3⟩ := foldlM_zipIdx_push _
-    (fun _ (_ : Intr × List V) y => ∀ v, y = .val v → ∃ x : UInt32, v = .sc .i32 (s32 x))
+    (fun _ (_ : Intr × List V) y => ∀ v, y = .val v → ∃ ty x, v = .sc ty x)
     (fun s out x k r hr => by
       obtain ⟨c, args⟩ := x
       unfold answerStep at hr
@@ -527,19 +557,19 @@ theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array B
         split at hr
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact lane32_word _⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact (let ⟨_, hx⟩ := lane32_word _; ⟨_, _, hx⟩)⟩
       · simp only [bind, Except.bind] at hr
         split at hr
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact lane32_word _⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact (let ⟨_, hx⟩ := lane32_word _; ⟨_, _, hx⟩)⟩
       · simp only [bind, Except.bind] at hr
         split at hr
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, rfl⟩⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨0, rfl⟩⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · simp only [bind, Except.bind] at hr
         split at hr
         · cases hr
@@ -554,8 +584,17 @@ theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array B
         split at hm
         · cases hm
         simp only [pure, Except.pure, Except.ok.injEq] at hm; subst hm
-        obtain ⟨x, hx⟩ := mmaVal_word _ _ _
-        exact ⟨x, by rw [hx]⟩
+        exact ⟨_, _, rfl⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   intro a ha v hv
@@ -566,8 +605,7 @@ theorem answersOf_words {calls : Nat → List (Intr × List V)} {snaps : Array B
   simp only [Array.getElem_toList] at hv
   rw [Array.getElem?_eq_getElem hi] at hy
   cases hy
-  obtain ⟨x, hx⟩ := hP v hv
-  exact ⟨_, _, hx⟩
+  exact hP v hv
 
 theorem mapM_ok {α β : Type} (g : α → Except String β) : ∀ (l : List α) (per : List β), l.mapM g = .ok per →
     per.length = l.length ∧ ∀ i (h : i < l.length), ∃ y, per[i]? = some y ∧ g l[i] = .ok y
@@ -1145,6 +1183,16 @@ theorem answersOf_smem_size {calls : Nat → List (Intr × List V)} {snaps : Arr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun B hB => by cases hB⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun B hB => by cases hB⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun B hB => by cases hB⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
         exact ⟨_, rfl, fun B hB => by cases hB⟩
       · simp only [bind, Except.bind] at hr
         split at hr

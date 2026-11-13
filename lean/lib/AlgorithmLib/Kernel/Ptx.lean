@@ -515,6 +515,25 @@ def intr3 (d : Val) (c : Intr) (a b e : Val) : LM Unit :=
   | .prmt => do emit (.prmt (regOf .i32 d) (← o a) (← o b) (← o e))
   | c => fail s!"{c.name} with three arguments"
 
+/-- The intrinsics of six words and a 64-bit answer: the wide `mma`. -/
+def word6 : Intr → Bool
+  | .mmaLo | .mmaHi => true
+  | _ => false
+
+/-- A six-argument intrinsic, into `d`: a wide `mma`'s half. -/
+def intr6 (d : Val) (c : Intr) (a0 a1 a2 a3 b0 b1 : Val) : LM Unit :=
+  match c with
+  | .mmaLo => do emit (.mmaW false (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1))
+  | .mmaHi => do emit (.mmaW true (regOf .i64 d) (← o a0) (← o a1) (← o a2) (← o a3) (← o b0) (← o b1))
+  | c => fail s!"{c.name} with six arguments"
+
+/-- An intrinsic of three words or more, into `d`: three (`intr3`) or six
+    (`intr6`). -/
+def intrN (d : Val) (c : Intr) (a b e : Val) : List Val → LM Unit
+  | [] => intr3 d c a b e
+  | [a3, b0, b1] => intr6 d c a b e a3 b0 b1
+  | _ => fail s!"{c.name} on arguments it does not take"
+
 /-- One instruction that is not a terminator. -/
 def inst (i : Inst) : LM Unit := do
   let bin2 (d a b : Val) (bo : PtxIr.BinOp) (rnd : Option PtxIr.Rnd) (ty : ClifTy → PtxIr.Ty) : LM Unit := do
@@ -650,7 +669,7 @@ def inst (i : Inst) : LM Unit := do
   | .call (some d) (.intr .shflIdx) [v, m] => do
       let x ← o v; emit (.shfl .idx (regOf .i32 d) x (← o m) (.imm 31) (.imm 0xffffffff))
   | .call (some d) (.intr .ballot) [v] => do emit (.vote (regOf .i32 d) (← o v) (.imm 0xffffffff))
-  | .call (some d) (.intr c) [a, b, e] => intr3 d c a b e
+  | .call (some d) (.intr c) (a :: b :: e :: rest) => intrN d c a b e rest
   | .call none (.intr c) args => voidIntr c args
   | .call d (.atomic a) args => atomic d a args
   | .call (some d) (.intr c) [v] =>
@@ -1024,6 +1043,14 @@ def takesAtomic (F : Ptx.Facts) : Option Val → Atomic → List Val → Bool
   | none, .store t _, [v, p] => atomAt F p t && isTy F v [t]
   | _, _, _ => false
 
+/-- An intrinsic of words the compiler takes: three (`Ptx.word3`) or six
+    (`Ptx.word6`), every one an `i32`. -/
+def takesN (F : Ptx.Facts) (c : Intr) (a b e : Val) : List Val → Bool
+  | [] => Ptx.word3 c && isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
+  | [a3, b0, b1] => Ptx.word6 c && isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32] &&
+      isTy F a3 [.i32] && isTy F b0 [.i32] && isTy F b1 [.i32]
+  | _ => false
+
 /-- **What the compiler takes**: the instructions it lowers, each in the forms
     it lowers, on operands of the types it lowers them for; an access's address
     is 64 bits. -/
@@ -1072,8 +1099,7 @@ def takes (F : Ptx.Facts) : Inst → Bool
   | .call (some _) (.intr .shflBfly) [v, m] | .call (some _) (.intr .shflIdx) [v, m] =>
       isTy F v [.i32] && isTy F m [.i32]
   | .call (some _) (.intr .ballot) [v] => isTy F v [.i8]
-  | .call (some _) (.intr c) [a, b, e] =>
-      Ptx.word3 c && isTy F a [.i32] && isTy F b [.i32] && isTy F e [.i32]
+  | .call (some _) (.intr c) (a :: b :: e :: rest) => takesN F c a b e rest
   | .call none (.intr c) args => takesVoid F c args
   | .call d (.atomic a) args => takesAtomic F d a args
   | .call (some _) (.intr c) [v] => (Ptx.approxOp c).isSome && isTy F v [.f32]

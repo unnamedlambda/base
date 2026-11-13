@@ -5674,7 +5674,7 @@ theorem lower_mma (F : Facts) (tag : Nat) (d a b e : Val) :
           (.reg (runLM (r b) F tag (runLM (r a) F tag {}).2).1)
           (.reg (runLM (r e) F tag (runLM (r b) F tag (runLM (r a) F tag {}).2).2).1))) := by
   rw [lower_inst F tag _ rfl, inst]
-  simp [intr3, o, emit, emitL]
+  simp [intrN, intr3, o, emit, emitL]
 
 open PtxRun in
 /-- **An `mma`** meets its obligation: both semantics record it with the same
@@ -5775,6 +5775,192 @@ theorem mma_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans)
         ← Std.HashMap.get?_eq_getElem?]
       rw [hkeep3 _ (fun ⟨p, k, _, h⟩ => by cases h), hkeep2 _ (fun ⟨p, k, _, h⟩ => by cases h),
         hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h)]
+
+/-- A wide `mma` lowers to its six arguments' lines, then the `mma`. -/
+theorem lower_mmaW (F : Facts) (tag : Nat) (i : Intr) (hi : Bool)
+    (hih : (i = .mmaLo ∧ hi = false) ∨ (i = .mmaHi ∧ hi = true)) (d a0 a1 a2 a3 b0 b1 : Val) :
+    (lower F tag (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1])).lines =
+      ((runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag
+        (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).2.lines).push
+        (.ins none (.mmaW hi (regOf .i64 d) (.reg (runLM (r a0) F tag {}).1)
+          (.reg (runLM (r a1) F tag (runLM (r a0) F tag {}).2).1)
+          (.reg (runLM (r a2) F tag (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).1)
+          (.reg (runLM (r a3) F tag (runLM (r a2) F tag (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).1)
+          (.reg (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag (runLM (r a1) F tag
+            (runLM (r a0) F tag {}).2).2).2).2).1)
+          (.reg (runLM (r b1) F tag (runLM (r b0) F tag (runLM (r a3) F tag (runLM (r a2) F tag
+            (runLM (r a1) F tag (runLM (r a0) F tag {}).2).2).2).2).2).1))) := by
+  rw [lower_inst F tag _ rfl, inst]
+  rcases hih with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;> simp [intrN, intr6, o, emit, emitL]
+
+open PtxRun in
+/-- **A wide `mma`** meets its obligation: both semantics record it with the
+    same six words, and take the 64-bit answer at the same place among the
+    thread's. -/
+theorem mmaW_ok (F : Facts) (c : PtxRun.Ctx) (start0 : Nat) (hans : AnsOk c.ans) (i : Intr) (hi : Bool)
+    (hih : (i = .mmaLo ∧ hi = false) ∨ (i = .mmaHi ∧ hi = true))
+    (d a0 a1 a2 a3 b0 b1 : Val) (hw0 : ¬ Win F a0) (hw1 : ¬ Win F a1) (hw2 : ¬ Win F a2)
+    (hw3 : ¬ Win F a3) (hw4 : ¬ Win F b0) (hw5 : ¬ Win F b1) (hwd : F.win d = false)
+    (ht0 : F.tys.get? a0.id = some .i32) (ht1 : F.tys.get? a1.id = some .i32) (ht2 : F.tys.get? a2.id = some .i32)
+    (ht3 : F.tys.get? a3.id = some .i32) (ht4 : F.tys.get? b0.id = some .i32) (ht5 : F.tys.get? b1.id = some .i32)
+    (htd : F.tys.get? d.id = some .i64) (hld : F.lits.get? d.id = none)
+    (hmo : magOk F d (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1]) = true) :
+    InstOk F (threadLocals c.ans start0 c.hw c.provisional) c start0
+      (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1]) := by
+  intro tag D s s1 ts hst huses hS hW _ _hnan
+  have hu : ∀ x ∈ [a0, a1, a2, a3, b0, b1], D x.id := fun x hx =>
+    huses x (by simp only [Inst.uses]; exact hx)
+  obtain ⟨t0, x0, hv0, ht0'⟩ := hS.pres a0 (hu a0 (by simp))
+  rw [ht0] at ht0'; cases ht0'
+  obtain ⟨t1, x1, hv1, ht1'⟩ := hS.pres a1 (hu a1 (by simp))
+  rw [ht1] at ht1'; cases ht1'
+  obtain ⟨t2, x2, hv2, ht2'⟩ := hS.pres a2 (hu a2 (by simp))
+  rw [ht2] at ht2'; cases ht2'
+  obtain ⟨t3, x3, hv3, ht3'⟩ := hS.pres a3 (hu a3 (by simp))
+  rw [ht3] at ht3'; cases ht3'
+  obtain ⟨t4, x4, hv4, ht4'⟩ := hS.pres b0 (hu b0 (by simp))
+  rw [ht4] at ht4'; cases ht4'
+  obtain ⟨t5, x5, hv5, ht5'⟩ := hS.pres b1 (hu b1 (by simp))
+  rw [ht5] at ht5'; cases ht5'
+  have hn0 := hS.normd a0 .i32 x0 (hu a0 (by simp)) hv0
+  have hn1 := hS.normd a1 .i32 x1 (hu a1 (by simp)) hv1
+  have hn2 := hS.normd a2 .i32 x2 (hu a2 (by simp)) hv2
+  have hn3 := hS.normd a3 .i32 x3 (hu a3 (by simp)) hv3
+  have hn4 := hS.normd b0 .i32 x4 (hu b0 (by simp)) hv4
+  have hn5 := hS.normd b1 .i32 x5 (hu b1 (by simp)) hv5
+  have hlen := collCalls_wrel start0 _ s.world ts.w hW
+  have hle : start0 ≤ s.world.obs.reverse.length := by simpa using hW.2.1
+  -- the block semantics' step
+  let o : Obs := .call (.intr i) [.sc .i32 x0, .sc .i32 x1, .sc .i32 x2, .sc .i32 x3, .sc .i32 x4, .sc .i32 x5]
+  obtain ⟨ty0, y, hx⟩ := valAt_ok c.ans hans (collCalls ts.w c.start).length
+  have hfit : fitTo i (.sc ty0 y) = .sc .i64 y := by
+    rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> simp only [fitTo, Intr.sig, HProg.Sem.and_wide64]
+  have hcoll : i.isColl = true := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl
+  have hnb : i ≠ .barrier := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
+  have hns : i ≠ .sharedAdd := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> decide
+  have hs1 : s1 = { vals := Blocks.setV s.vals d (.sc .i64 y), world := { s.world with obs := o :: s.world.obs } } := by
+    simp only [step1, List.mapM_cons, List.mapM_nil, hv0, hv1, hv2, hv3, hv4, hv5, bind, Option.bind, pure,
+      callOf, obsCall, callWords, List.append_nil, threadLocals, Intr.find_slot, hcoll, if_true] at hst
+    simp only [collCalls, List.reverse_cons, List.drop_append_of_le_length hle, List.filterMap_append, collOf,
+      hcoll, if_true, List.filterMap_cons, List.filterMap_nil, List.length_append, List.length_singleton,
+      Nat.add_sub_cancel] at hst
+    have hk : ((s.world.obs.reverse.drop start0).filterMap collOf).length = (collCalls ts.w c.start).length := hlen
+    rw [hk, hx] at hst
+    simp [Except.toOption, hnb, hns] at hst
+    rw [hfit] at hst
+    exact hst.symm
+  subst hs1
+  -- the lines: the six words', then one `mma`
+  let s0 := (runLM (r a0) F tag {}).2
+  let s1' := (runLM (r a1) F tag s0).2
+  let s2 := (runLM (r a2) F tag s1').2
+  let s3 := (runLM (r a3) F tag s2).2
+  let s4 := (runLM (r b0) F tag s3).2
+  obtain ⟨L0, hL0, hm0, hnf0, hns0, regs0, hrun0, hreg0, hkeep0⟩ :=
+    r_sound F tag {} s.vals c ts a0 .i32 x0 D hS (hu a0 (by simp)) hv0 ht0 hw0
+  have hS0 : Sim F D s.vals regs0 := hS.frame (fun c' n => hkeep0 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L1, hL1, hm1, hnf1, hns1, regs1, hrun1, hreg1, hkeep1⟩ :=
+    r_sound F tag s0 s.vals c { ts with regs := regs0 } a1 .i32 x1 D hS0 (hu a1 (by simp)) hv1 ht1 hw1
+  have hS1 : Sim F D s.vals regs1 := hS0.frame (fun c' n => hkeep1 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L2, hL2, hm2, hnf2, hns2, regs2, hrun2, hreg2, hkeep2⟩ :=
+    r_sound F tag s1' s.vals c { ts with regs := regs1 } a2 .i32 x2 D hS1 (hu a2 (by simp)) hv2 ht2 hw2
+  have hS2 : Sim F D s.vals regs2 := hS1.frame (fun c' n => hkeep2 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L3, hL3, hm3, hnf3, hns3, regs3, hrun3, hreg3, hkeep3⟩ :=
+    r_sound F tag s2 s.vals c { ts with regs := regs2 } a3 .i32 x3 D hS2 (hu a3 (by simp)) hv3 ht3 hw3
+  have hS3 : Sim F D s.vals regs3 := hS2.frame (fun c' n => hkeep3 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L4, hL4, hm4, hnf4, hns4, regs4, hrun4, hreg4, hkeep4⟩ :=
+    r_sound F tag s3 s.vals c { ts with regs := regs3 } b0 .i32 x4 D hS3 (hu b0 (by simp)) hv4 ht4 hw4
+  have hS4 : Sim F D s.vals regs4 := hS3.frame (fun c' n => hkeep4 _ (fun ⟨p, k, _, h⟩ => by cases h))
+  obtain ⟨L5, hL5, hm5, hnf5, hns5, regs5, hrun5, hreg5, hkeep5⟩ :=
+    r_sound F tag s4 s.vals c { ts with regs := regs4 } b1 .i32 x5 D hS4 (hu b1 (by simp)) hv5 ht5 hw5
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn0] at hreg0
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn1] at hreg1
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn2] at hreg2
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn3] at hreg3
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn4] at hreg4
+  simp only [enc, show ClifTy.i32 ≠ .i8 by decide, if_false, hn5] at hreg5
+  let core : PtxIr.Instr := .mmaW hi (regOf .i64 d) (.reg (runLM (r a0) F tag {}).1) (.reg (runLM (r a1) F tag s0).1)
+    (.reg (runLM (r a2) F tag s1').1) (.reg (runLM (r a3) F tag s2).1) (.reg (runLM (r b0) F tag s3).1)
+    (.reg (runLM (r b1) F tag s4).1)
+  have hlist : (lower F tag (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1])).lines =
+      ((L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5 ++ [core]).map (PtxIr.Line.ins none)).toArray := by
+    rw [lower_mmaW F tag i hi hih d a0 a1 a2 a3 b0 b1, hL5]
+    show (s4.lines ++ _).push _ = _
+    rw [hL4]
+    show ((s3.lines ++ _) ++ _).push _ = _
+    rw [hL3]
+    show (((s2.lines ++ _) ++ _) ++ _).push _ = _
+    rw [hL2]
+    show ((((s1'.lines ++ _) ++ _) ++ _) ++ _).push _ = _
+    rw [hL1]
+    show (((((s0.lines ++ _) ++ _) ++ _) ++ _) ++ _).push _ = _
+    rw [hL0]; simp [core, s0, s1', s2, s3, s4]
+  refine ⟨by rw [hlist]; exact straight_map _, ?_⟩
+  have hm32 : ∀ z : UInt64, z &&& widthMask .i32 = z → PtxRun.mask 32 z = z := fun z hz => by
+    rw [show (32 : Nat) = ClifTy.i32.width from rfl, mask_width .i32 (by simp [IntT]), hz]
+  have k5 : ∀ R, ¬ Fresh tag s4.n R → regs5.get? R = regs4.get? R := hkeep5
+  have k4 : ∀ R, ¬ Fresh tag s3.n R → regs4.get? R = regs3.get? R := hkeep4
+  have k3 : ∀ R, ¬ Fresh tag s2.n R → regs3.get? R = regs2.get? R := hkeep3
+  have k2 : ∀ R, ¬ Fresh tag s1'.n R → regs2.get? R = regs1.get? R := hkeep2
+  have k1 : ∀ R, ¬ Fresh tag s0.n R → regs1.get? R = regs0.get? R := hkeep1
+  have h0 : regs5[(runLM (r a0) F tag {}).1]? = some x0 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k5 _ (not_fresh_mono (Nat.le_trans hm1 (Nat.le_trans hm2 (Nat.le_trans hm3 hm4))) hnf0),
+      k4 _ (not_fresh_mono (Nat.le_trans hm1 (Nat.le_trans hm2 hm3)) hnf0), k3 _ (not_fresh_mono (Nat.le_trans hm1 hm2) hnf0),
+      k2 _ (not_fresh_mono hm1 hnf0), k1 _ hnf0]; exact hreg0
+  have h1 : regs5[(runLM (r a1) F tag s0).1]? = some x1 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k5 _ (not_fresh_mono (Nat.le_trans hm2 (Nat.le_trans hm3 hm4)) hnf1),
+      k4 _ (not_fresh_mono (Nat.le_trans hm2 hm3) hnf1), k3 _ (not_fresh_mono hm2 hnf1), k2 _ hnf1]; exact hreg1
+  have h2 : regs5[(runLM (r a2) F tag s1').1]? = some x2 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k5 _ (not_fresh_mono (Nat.le_trans hm3 hm4) hnf2),
+      k4 _ (not_fresh_mono hm3 hnf2), k3 _ hnf2]; exact hreg2
+  have h3 : regs5[(runLM (r a3) F tag s2).1]? = some x3 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k5 _ (not_fresh_mono hm4 hnf3), k4 _ hnf3]; exact hreg3
+  have h4 : regs5[(runLM (r b0) F tag s3).1]? = some x4 := by
+    rw [← Std.HashMap.get?_eq_getElem?, k5 _ hnf4]; exact hreg4
+  have h5 : regs5[(runLM (r b1) F tag s4).1]? = some x5 := by
+    rw [← Std.HashMap.get?_eq_getElem?]; exact hreg5
+  have he : (exec c core).run { ts with regs := regs5 } =
+      .ok (.step, { ts with regs := regs5.insert (regOf .i64 d) y, w := { ts.w with obs := o :: ts.w.obs } }) := by
+    have hif : (if hi then Intr.mmaHi else Intr.mmaLo) = i := by
+      rcases hih with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;> rfl
+    have hib : (i == Intr.barrier) = false := by rcases hih with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> rfl
+    simp [core, exec, coll, opnd, getReg_plain _ _ hns0, getReg_plain _ _ hns1, getReg_plain _ _ hns2,
+      getReg_plain _ _ hns3, getReg_plain _ _ hns4, getReg_plain _ _ hns5, h0, h1, h2, h3, h4, h5, hif, hib,
+      hx, hm32 x0 hn0, hm32 x1 hn1, hm32 x2 hn2, hm32 x3 hn3, hm32 x4 hn4, hm32 x5 hn5,
+      MonadState.get, getThe, MonadStateOf.get, StateT.get, set, MonadStateOf.set, StateT.set, setReg, pure,
+      StateT.pure, Except.pure, modify, modifyGet, MonadStateOf.modifyGet, StateT.modifyGet, o,
+      StateT.bind, StateT.run, bind, Except.bind]
+  have hxn : y &&& widthMask .i64 = y := HProg.Sem.and_wide64 y
+  refine ⟨{ ts with regs := regs5.insert (regOf .i64 d) y, w := { ts.w with obs := o :: ts.w.obs } }, ?_, ?_,
+    wrel_step start0 _ s.world ts.w _ _ o o hW rfl rfl rfl (by simpa using hW.1)⟩
+  · have r1 : (steps c (L0 ++ L1)).run ts = .ok ((), { ts with regs := regs1 }) := by
+      rw [steps_append c _ _ ts _ hrun0]; exact hrun1
+    have r2 : (steps c (L0 ++ L1 ++ L2)).run ts = .ok ((), { ts with regs := regs2 }) := by
+      rw [steps_append c _ _ ts _ r1]; exact hrun2
+    have r3 : (steps c (L0 ++ L1 ++ L2 ++ L3)).run ts = .ok ((), { ts with regs := regs3 }) := by
+      rw [steps_append c _ _ ts _ r2]; exact hrun3
+    have r4 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4)).run ts = .ok ((), { ts with regs := regs4 }) := by
+      rw [steps_append c _ _ ts _ r3]; exact hrun4
+    have r5 : (steps c (L0 ++ L1 ++ L2 ++ L3 ++ L4 ++ L5)).run ts = .ok ((), { ts with regs := regs5 }) := by
+      rw [steps_append c _ _ ts _ r4]; exact hrun5
+    rw [hlist, instrsOf_map, steps_append c _ _ ts _ r5]
+    simp only [StateT.run] at he
+    simp [steps, StateT.run, he, bind, StateT.bind, Except.bind, pure, StateT.pure, Except.pure]
+  · apply sim_set (hmo := hmo) (hrule := fun _ hk => by simp [magRule] at hk) F D s.vals ts.regs _
+      (.call (some d) (.intr i) [a0, a1, a2, a3, b0, b1]) d .i64 y rfl hS htd hxn
+    · intro _ _
+      simp [Std.HashMap.get?_eq_getElem?, enc, hxn]
+    · intro l hl; rw [hld] at hl; cases hl
+    · intro hw; rw [(win_iff F d).mpr hw] at hwd; cases hwd
+    · intro h8; cases h8
+    · intro h8; cases h8
+    · intro c' n hn
+      have hne' : PtxIr.Reg.val c' n ≠ regOf .i64 d := by simp [regOf]; omega
+      rw [Std.HashMap.get?_eq_getElem?, Std.HashMap.getElem?_insert, if_neg (by simpa using Ne.symm hne'),
+        ← Std.HashMap.get?_eq_getElem?]
+      rw [k5 _ (fun ⟨p, k, _, h⟩ => by cases h), k4 _ (fun ⟨p, k, _, h⟩ => by cases h),
+        k3 _ (fun ⟨p, k, _, h⟩ => by cases h), k2 _ (fun ⟨p, k, _, h⟩ => by cases h),
+        k1 _ (fun ⟨p, k, _, h⟩ => by cases h), hkeep0 _ (fun ⟨p, k, _, h⟩ => by cases h)]
 
 /-- A ballot lowers to its argument's lines, whether it is not zero into a
     predicate of its own, then a vote on that predicate. -/
@@ -7668,7 +7854,7 @@ theorem atomAt_spec (F : Facts) (p : Val) (t : ClifTy) (h : atomAt F p t = true)
 
 set_option maxHeartbeats 1000000 in
 /-- A call the compiler takes is a barrier, a shuffle, a ballot, a `dp4a`, a
-    `prmt`, an `mma`, an approximation, an atomic or a shared add. -/
+    `prmt`, an `mma` or a wide one, an approximation, an atomic or a shared add. -/
 theorem takes_call_none (F : Facts) (d : Option Val) (cal : Callee) (args : List Val)
     (hat : ¬ ∃ a, cal = .atomic a)
     (hb : ¬ (d = none ∧ cal = .intr .barrier ∧ args = []))
@@ -7676,6 +7862,8 @@ theorem takes_call_none (F : Facts) (d : Option Val) (cal : Callee) (args : List
     (hv : ¬ (∃ dv v, d = some dv ∧ cal = .intr .ballot ∧ args = [v]))
     (hd4 : ¬ (∃ dv a b e, d = some dv ∧ (cal = .intr .dp4a ∨ cal = .intr .prmt) ∧ args = [a, b, e]))
     (hmm : ¬ (∃ dv a b e, d = some dv ∧ cal = .intr .mma ∧ args = [a, b, e]))
+    (hmw : ¬ (∃ dv a0 a1 a2 a3 b0 b1, d = some dv ∧ (cal = .intr .mmaLo ∨ cal = .intr .mmaHi) ∧
+      args = [a0, a1, a2, a3, b0, b1]))
     (ha : ¬ (∃ dv v i u, d = some dv ∧ cal = .intr i ∧ Ptx.approxOp i = some u ∧ args = [v]))
     (hsa : ¬ (∃ p x, d = none ∧ cal = .intr .sharedAdd ∧ args = [p, x])) :
     takes F (.call d cal args) = false := by
@@ -7683,9 +7871,11 @@ theorem takes_call_none (F : Facts) (d : Option Val) (cal : Callee) (args : List
   · obtain ⟨c', rfl, rfl⟩ := hv0
     simp only [takes]
     rcases c' <;> rcases args with _ | ⟨p, _ | ⟨x, _ | ⟨y, rest⟩⟩⟩ <;> simp_all [takesVoid]
-  · have hw3 : ∀ dv c a b e, d = some dv → cal = .intr c → args = [a, b, e] → Ptx.word3 c = false := by
-      intro dv c a b e hd hc ha3
-      cases c <;> simp_all [Ptx.word3]
+  · have hN : ∀ dv c a b e rest, d = some dv → cal = .intr c → args = a :: b :: e :: rest →
+        takesN F c a b e rest = false := by
+      intro dv c a b e rest hd hc ha3
+      rcases rest with _ | ⟨x, _ | ⟨y, _ | ⟨z, _ | ⟨w, rest'⟩⟩⟩⟩ <;>
+        first | rfl | (cases c <;> simp_all [takesN, Ptx.word3, Ptx.word6])
     unfold takes
     split <;> simp_all [Option.isSome_iff_exists]
 
@@ -8077,7 +8267,7 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
         obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd dv rfl
         simp only [defSide, Bool.not_eq_true'] at hside
         simp only [resTy, Intr.sig, Option.map_some] at hty
-        simp only [takes, Bool.and_eq_true] at htk'
+        simp only [takes, takesN, Bool.and_eq_true] at htk'
         obtain ⟨⟨⟨-, ha'⟩, hb'⟩, he'⟩ := htk'
         obtain ⟨ta, hta, hta'⟩ := isTy_spec F a _ ha'
         obtain ⟨tb, htb, htb'⟩ := isTy_spec F b _ hb'
@@ -8091,13 +8281,13 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
           (by rcases hw with ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩ <;> exact hty) hlit
           (fun tag => by
             rw [lower_inst F tag _ rfl, inst]
-            rcases hw with ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩ <;> simp [intr3, o, emit, emitL])
+            rcases hw with ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩ <;> simp [intrN, intr3, o, emit, emitL])
       by_cases hmm : ∃ dv a b e, d = some dv ∧ cal = .intr .mma ∧ args = [a, b, e]
       · obtain ⟨dv, a, b, e, rfl, rfl, rfl⟩ := hmm
         obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd dv rfl
         simp only [defSide, Bool.not_eq_true'] at hside
         simp only [resTy, Intr.sig, Option.map_some] at hty
-        simp only [takes, Bool.and_eq_true] at htk'
+        simp only [takes, takesN, Bool.and_eq_true] at htk'
         obtain ⟨⟨⟨-, ha'⟩, hb'⟩, he'⟩ := htk'
         obtain ⟨ta, hta, hta'⟩ := isTy_spec F a _ ha'
         obtain ⟨tb, htb, htb'⟩ := isTy_spec F b _ hb'
@@ -8108,6 +8298,35 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
           (not_win_of F a (hvu a (by simp [valUses, Inst.uses])))
           (not_win_of F b (hvu b (by simp [valUses, Inst.uses])))
           (not_win_of F e (hvu e (by simp [valUses, Inst.uses]))) hside hta htb hte hty hlit
+      by_cases hmw : ∃ dv a0 a1 a2 a3 b0 b1, d = some dv ∧ (cal = .intr .mmaLo ∨ cal = .intr .mmaHi) ∧
+          args = [a0, a1, a2, a3, b0, b1]
+      · obtain ⟨dv, a0, a1, a2, a3, b0, b1, rfl, hcal, rfl⟩ := hmw
+        have hw : ∃ ic hb, cal = .intr ic ∧ ((ic = .mmaLo ∧ hb = false) ∨ (ic = .mmaHi ∧ hb = true)) := by
+          rcases hcal with rfl | rfl
+          · exact ⟨_, _, rfl, .inl ⟨rfl, rfl⟩⟩
+          · exact ⟨_, _, rfl, .inr ⟨rfl, rfl⟩⟩
+        obtain ⟨ic, hb, rfl, hw⟩ := hw
+        obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd dv rfl
+        simp only [defSide, Bool.not_eq_true'] at hside
+        simp only [takes, takesN, Bool.and_eq_true] at htk'
+        obtain ⟨⟨⟨⟨⟨⟨-, h0⟩, h1⟩, h2⟩, h3⟩, h4⟩, h5⟩ := htk'
+        obtain ⟨t0, ht0, ht0'⟩ := isTy_spec F a0 _ h0
+        obtain ⟨t1, ht1, ht1'⟩ := isTy_spec F a1 _ h1
+        obtain ⟨t2, ht2, ht2'⟩ := isTy_spec F a2 _ h2
+        obtain ⟨t3, ht3, ht3'⟩ := isTy_spec F a3 _ h3
+        obtain ⟨t4, ht4, ht4'⟩ := isTy_spec F b0 _ h4
+        obtain ⟨t5, ht5, ht5'⟩ := isTy_spec F b1 _ h5
+        simp at ht0' ht1' ht2' ht3' ht4' ht5'
+        subst ht0'; subst ht1'; subst ht2'; subst ht3'; subst ht4'; subst ht5'
+        rw [hlc]
+        exact mmaW_ok (hmo := hmo) F c start0 hans ic hb hw dv a0 a1 a2 a3 b0 b1
+          (not_win_of F a0 (hvu a0 (by simp [valUses, Inst.uses])))
+          (not_win_of F a1 (hvu a1 (by simp [valUses, Inst.uses])))
+          (not_win_of F a2 (hvu a2 (by simp [valUses, Inst.uses])))
+          (not_win_of F a3 (hvu a3 (by simp [valUses, Inst.uses])))
+          (not_win_of F b0 (hvu b0 (by simp [valUses, Inst.uses])))
+          (not_win_of F b1 (hvu b1 (by simp [valUses, Inst.uses]))) hside ht0 ht1 ht2 ht3 ht4 ht5
+          (by rcases hw with ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> simpa [resTy, Intr.sig] using hty) hlit
       by_cases ha' : ∃ dv v i u, d = some dv ∧ cal = .intr i ∧ Ptx.approxOp i = some u ∧ args = [v]
       · obtain ⟨dv, v, i, u, rfl, rfl, hu, rfl⟩ := ha'
         obtain ⟨hty, -, hlit, hside, -, hmo⟩ := hd dv rfl
@@ -8154,7 +8373,7 @@ theorem insts_ok (F : Facts) (lc : Sem.Locals) (c : PtxRun.Ctx) (start0 : Nat)
         simp at htp' htx'; subst htp'; subst htx'
         rw [hlc]
         exact red_ok F c start0 p x (not_win_of F x (hvu x (by simp [valUses, Inst.uses]))) htp htx hsh
-      rw [takes_call_none F d cal args hat hb' hs' hv' hd4 hmm ha' hsa] at htk'; cases htk'
+      rw [takes_call_none F d cal args hat hb' hs' hv' hd4 hmm hmw ha' hsa] at htk'; cases htk'
   | storeTyped ty v a =>
       simp only [takes, Bool.and_eq_true, beq_iff_eq] at htk'
       obtain ⟨⟨hia, hvt⟩, hty⟩ := htk'

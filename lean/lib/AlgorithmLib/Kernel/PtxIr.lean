@@ -173,6 +173,9 @@ inductive Instr where
   | vote (d : Reg) (p mask : Opnd)
   /-- One `mma.sync.m8n8k16` of int8, its even output column to `d`. -/
   | mma (d : Reg) (a b c : Opnd)
+  /-- One `mma.sync.m16n8k32` of int8 from zero, to `d` its rows `l / 4`
+      (or, `hi`, eight past) sums at its two columns, the first low. -/
+  | mmaW (hi : Bool) (d : Reg) (a0 a1 a2 a3 b0 b1 : Opnd)
   | bar (n : Nat)
   | barWarp (mask : Opnd)
   | bra (uni : Bool) (l : Lbl)
@@ -295,6 +298,19 @@ def Instr.text : Instr → String
       let (tc, mc) := sel c "%mma_c"
       s!"\{ .reg .b32 %mma_a, %mma_b, %mma_c, %mma_z, %mma_o; {ma}{mb}{mc}mov.b32 %mma_z, 0; " ++
       s!"mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 \{{d.text}, %mma_o}, \{{ta}}, \{{tb}}, \{{tc}, %mma_z}; }"
+  | .mmaW hi d a0 a1 a2 a3 b0 b1 =>
+      -- registers only, as for `mma`
+      let sel (o : Opnd) (nm : String) : String × String := match o with
+        | .reg r => (r.text, "")
+        | o => (nm, s!"mov.b32 {nm}, {o.text}; ")
+      let ops := [(a0, "%mw_a0"), (a1, "%mw_a1"), (a2, "%mw_a2"), (a3, "%mw_a3"), (b0, "%mw_b0"),
+        (b1, "%mw_b1")].map fun (o, nm) => sel o nm
+      let t (i : Nat) : String := (ops.getD i ("", "")).1
+      s!"\{ .reg .b32 %mw_a0, %mw_a1, %mw_a2, %mw_a3, %mw_b0, %mw_b1, %mw_o<4>; " ++
+      String.join (ops.map (·.2)) ++
+      s!"mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 \{%mw_o0, %mw_o1, %mw_o2, %mw_o3}, " ++
+      s!"\{{t 0}, {t 1}, {t 2}, {t 3}}, \{{t 4}, {t 5}}, \{0, 0, 0, 0}; " ++
+      s!"mov.b64 {d.text}, \{{if hi then "%mw_o2, %mw_o3" else "%mw_o0, %mw_o1"}}; }"
   | .bar n => s!"bar.sync {n}"
   | .barWarp k => s!"bar.warp.sync {k.text}"
   | .bra u l => s!"bra{if u then ".uni" else ""} {l.text}"
@@ -303,7 +319,7 @@ def Instr.text : Instr → String
 /-- What ends an instruction's line: `;`, except after an `mma`, which is a
     block of its own (its scratch registers scoped to it) and ends at `}`. -/
 def Instr.term : Instr → String
-  | .mma .. => ""
+  | .mma .. | .mmaW .. => ""
   | _ => ";"
 
 def Line.text : Line → String

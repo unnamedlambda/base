@@ -788,6 +788,12 @@ inductive Intr where
   /-- `prmt.b32`: four bytes picked from the eight of `a` then `b`, byte `i`
       by the `i`-th nibble of `s` (`prmtVal`). -/
   | prmt
+  /-- `mma.sync.m16n8k32.row.col.s32.s8.s8.s32` from zero: lane `l` gets the
+      sums of its row `l / 4` (`mmaLo`) or `l / 4 + 8` (`mmaHi`) at columns
+      `2 · (l mod 4)` and the next, the first the low word of its answer
+      (`mmaWVal`); the six words a lane passes are its four of `A` and its two
+      of `B`. -/
+  | mmaLo | mmaHi
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 namespace Intr
@@ -802,13 +808,14 @@ def sig : Intr → List ClifTy × Option ClifTy
   | .sharedAdd => ([.i64, .i32], none)
   | .mma => ([.i32, .i32, .i32], some .i32)
   | .prmt => ([.i32, .i32, .i32], some .i32)
+  | .mmaLo | .mmaHi => ([.i32, .i32, .i32, .i32, .i32, .i32], some .i64)
 
 def name : Intr → String
   | .shflBfly => "shfl.bfly" | .shflIdx => "shfl.idx" | .ballot => "ballot" | .barrier => "barrier"
   | .ex2Approx => "ex2.approx" | .rcpApprox => "rcp.approx" | .lg2Approx => "lg2.approx"
   | .sinApprox => "sin.approx" | .cosApprox => "cos.approx" | .sqrtApprox => "sqrt.approx"
   | .rsqrtApprox => "rsqrt.approx" | .dp4a => "dp4a" | .sharedAdd => "shared.add" | .mma => "mma"
-  | .prmt => "prmt"
+  | .prmt => "prmt" | .mmaLo => "mma.lo" | .mmaHi => "mma.hi"
 
 /-- Whether other threads answer it: a collective, rather than the hardware's
     arithmetic. -/
@@ -823,10 +830,10 @@ def slot : Intr → Nat
   | .ex2Approx => 2 ^ 33 + 4 | .rcpApprox => 2 ^ 33 + 5 | .lg2Approx => 2 ^ 33 + 6
   | .sinApprox => 2 ^ 33 + 7 | .cosApprox => 2 ^ 33 + 8 | .sqrtApprox => 2 ^ 33 + 9
   | .rsqrtApprox => 2 ^ 33 + 10 | .dp4a => 2 ^ 33 + 11 | .sharedAdd => 2 ^ 33 + 12
-  | .mma => 2 ^ 33 + 13 | .prmt => 2 ^ 33 + 14
+  | .mma => 2 ^ 33 + 13 | .prmt => 2 ^ 33 + 14 | .mmaLo => 2 ^ 33 + 15 | .mmaHi => 2 ^ 33 + 16
 
 def all : List Intr := [.shflBfly, .shflIdx, .ballot, .barrier, .ex2Approx, .rcpApprox, .lg2Approx,
-  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .mma, .prmt]
+  .sinApprox, .cosApprox, .sqrtApprox, .rsqrtApprox, .dp4a, .sharedAdd, .mma, .prmt, .mmaLo, .mmaHi]
 
 /-- The low byte `i` of `x`, as a signed integer. -/
 def sbyte (x : UInt64) (i : Nat) : Int :=
@@ -859,6 +866,16 @@ def dot4 (a b : UInt64) : Int := (List.range 4).foldl (fun acc i => acc + sbyte 
 def mmaVal (c : UInt64) (as bs : List UInt64) : UInt64 :=
   let sum : Int := (c &&& 0xffffffff).toNat + ((as.zip bs).map fun (a, b) => dot4 a b).sum
   UInt64.ofInt sum &&& 0xffffffff
+
+/-- **A wide `mma` lane's value**: its row's words `ra` (the block's first
+    sixteen columns) and `rb` (its last) against those of its first column
+    (`c0a`, `c0b`) and its second (`c1a`, `c1b`), each sum cut to 32 bits,
+    the first column's the low word. -/
+def mmaWVal (ra rb c0a c0b c1a c1b : List UInt64) : UInt64 :=
+  let sum (xa xb : List UInt64) : Int :=
+    ((ra.zip xa).map fun (a, b) => dot4 a b).sum + ((rb.zip xb).map fun (a, b) => dot4 a b).sum
+  (UInt64.ofInt (sum c0a c0b) &&& (0xffffffff : UInt64)) |||
+    ((UInt64.ofInt (sum c1a c1b) &&& (0xffffffff : UInt64)) <<< (32 : UInt64))
 
 /-- An intrinsic is the one of `all` at its slot. -/
 theorem find_slot (c : Intr) : all.find? (·.slot == c.slot) = some c := by cases c <;> rfl

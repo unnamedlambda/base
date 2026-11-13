@@ -171,6 +171,12 @@ theorem answerStep_view (calls : Nat → List (Intr × List V)) (snaps : Array B
       | [_, _] => rfl
       | [_, _, .vec _ _] => rfl
       | _ :: _ :: c3 :: _ :: _ => cases c3 <;> rfl
+  | mmaLo =>
+      simp only [callView, show (Intr.mmaLo == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]
+      simp only [answerStep, mmaWLane, laneWord, laneArg_view_of calls warp _ k .mmaLo rfl]
+  | mmaHi =>
+      simp only [callView, show (Intr.mmaHi == Intr.ballot) = false from rfl, Bool.false_eq_true, if_false]
+      simp only [answerStep, mmaWLane, laneWord, laneArg_view_of calls warp _ k .mmaHi rfl]
 
 /-- The shared adds read through the view: the view changes only ballots. -/
 theorem foldl_view {β : Type} (f : β → Intr × List V → β) (hf : ∀ a x, f a (callView x) = f a x) :
@@ -244,7 +250,7 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
   simp only [pure, Except.pure, Except.ok.injEq] at h
   subst h
   obtain ⟨hsz, _, h3⟩ := foldlM_zipIdx_push _
-    (fun _ (_ : Intr × List V) y => ∀ v, y = Answer.val v → ∃ z, v = .sc .i32 z ∧ z &&& widthMask .i32 = z)
+    (fun _ (_ : Intr × List V) y => ∀ v, y = Answer.val v → ∃ ty z, v = .sc ty z)
     (fun s out x k r hr => by
       obtain ⟨c, args⟩ := x
       unfold answerStep at hr
@@ -256,19 +262,19 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
         split at hr
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact lane32_ok _⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact (let ⟨_, hz, _⟩ := lane32_ok _; ⟨_, _, hz⟩)⟩
       · simp only [bind, Except.bind] at hr
         split at hr
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact lane32_ok _⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact (let ⟨_, hz, _⟩ := lane32_ok _; ⟨_, _, hz⟩)⟩
       · simp only [bind, Except.bind] at hr
         split at hr
         · cases hr
         simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, rfl, norm32_u32 _⟩⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
-        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨0, rfl, rfl⟩⟩
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · simp only [bind, Except.bind] at hr
         split at hr
         · cases hr
@@ -283,8 +289,17 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
         split at hm
         · cases hm
         simp only [pure, Except.pure, Except.ok.injEq] at hm; subst hm
-        obtain ⟨x, hx⟩ := mmaVal_word _ _ _
-        exact ⟨_, rfl, by rw [hx]; exact norm32_u32 x⟩
+        exact ⟨_, _, rfl⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
+      · simp only [bind, Except.bind] at hr
+        split at hr
+        · cases hr
+        simp only [pure, Except.pure, Except.ok.injEq] at hr; subst hr
+        exact ⟨_, rfl, fun v hv => by cases hv; exact ⟨_, _, rfl⟩⟩
       · cases hr)
     (calls t) 0 0 #[] _ hr
   intro k v hk
@@ -297,8 +312,7 @@ theorem answersOf_ok (calls : Nat → List (Intr × List V)) (snaps : Array Byte
   have hk2 : out[k]? = some (Answer.val v) := by simpa using hk
   have : y = Answer.val v := by
     rw [hk2] at hy; exact (Option.some.inj hy).symm
-  obtain ⟨z, hz, -⟩ := hP v this
-  exact ⟨_, _, hz⟩
+  exact hP v this
 
 theorem mapM_ok_mem {α β : Type} (f : α → Except String β) :
     ∀ (l : List α) (r : List β), l.mapM f = .ok r → ∀ y ∈ r, ∃ x, f x = .ok y

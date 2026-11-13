@@ -77,6 +77,8 @@ def Instr.ren (ρ : Ren) : Instr → Instr
   | .shfl m d a b c k => .shfl m (Reg.ren ρ d) (Opnd.ren ρ a) (Opnd.ren ρ b) (Opnd.ren ρ c) (Opnd.ren ρ k)
   | .vote d p k => .vote (Reg.ren ρ d) (Opnd.ren ρ p) (Opnd.ren ρ k)
   | .mma d a b c => .mma (Reg.ren ρ d) (Opnd.ren ρ a) (Opnd.ren ρ b) (Opnd.ren ρ c)
+  | .mmaW hi d a0 a1 a2 a3 b0 b1 => .mmaW hi (Reg.ren ρ d) (Opnd.ren ρ a0) (Opnd.ren ρ a1) (Opnd.ren ρ a2)
+      (Opnd.ren ρ a3) (Opnd.ren ρ b0) (Opnd.ren ρ b1)
   | .bar n => .bar n
   | .barWarp k => .barWarp (Opnd.ren ρ k)
   | .bra u l => .bra u l
@@ -96,6 +98,8 @@ def Instr.uses : Instr → List Reg
   | .mov _ _ a | .un _ _ _ _ a | .cvt _ _ _ _ a | .cvta _ _ _ _ a => Opnd.regs a
   | .bin _ _ _ _ a b | .setp _ _ _ a b => Opnd.regs a ++ Opnd.regs b
   | .fma _ _ _ a b c | .prmt _ a b c | .dp4a _ a b c | .mma _ a b c => Opnd.regs a ++ Opnd.regs b ++ Opnd.regs c
+  | .mmaW _ _ a0 a1 a2 a3 b0 b1 => Opnd.regs a0 ++ Opnd.regs a1 ++ Opnd.regs a2 ++ Opnd.regs a3 ++
+      Opnd.regs b0 ++ Opnd.regs b1
   | .selp _ _ a b p => Opnd.regs a ++ Opnd.regs b ++ Opnd.regs p
   | .ld _ _ _ _ a => Opnd.regs a.base
   | .st _ _ a v | .atom _ _ _ _ _ a v | .redShared a v => Opnd.regs a.base ++ Opnd.regs v
@@ -108,7 +112,7 @@ def Instr.uses : Instr → List Reg
 def Instr.def? : Instr → Option Reg
   | .mov _ d _ | .bin _ _ _ d _ _ | .un _ _ _ d _ | .fma _ _ d _ _ _ | .cvt _ _ _ d _
   | .cvta _ _ _ d _ | .setp _ _ d _ _ | .selp _ d _ _ _ | .prmt d _ _ _ | .dp4a d _ _ _ | .ld _ _ _ d _
-  | .shfl _ d _ _ _ _ | .vote d _ _ | .mma d _ _ _ => some d
+  | .shfl _ d _ _ _ _ | .vote d _ _ | .mma d _ _ _ | .mmaW _ d _ _ _ _ _ _ => some d
   | .atom _ _ _ _ d _ _ => d
   | _ => none
 

@@ -225,7 +225,7 @@ def lane32 : List V → V
 def laneWord (calls : Nat → List (Intr × List V)) (warp lane k i : Nat) (c : Intr) : Except String UInt64 := do
   match (← laneArg calls warp lane k c)[i]? with
   | some (.sc _ x) => pure x
-  | _ => throw "an mma of other than three words"
+  | _ => throw "an mma of other than words"
 
 /-- **An `mma`'s answer to lane `lane`**, `acc` the word it passed third: the
     `m8n8k16` product's row `lane / 4`, column `2 · (lane mod 4)` — the first
@@ -236,6 +236,20 @@ def mmaLane (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Int
   let as ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k 0 c
   let bs ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (8 * (lane % 4) + q) k 1 c
   pure (Intr.mmaVal acc as bs)
+
+/-- **A wide `mma`'s answer to lane `lane`**, half `h` (its row `lane / 4`, or
+    eight past): the row's words `h` and `h + 2` from the four lanes of the
+    row, against words 4 and 5 from the four lanes of each of its columns
+    `2 · (lane mod 4)` and the next (`Intr.mmaWVal`). -/
+def mmaWLane (calls : Nat → List (Intr × List V)) (warp lane k : Nat) (c : Intr) (h : Nat) :
+    Except String UInt64 := do
+  let ra ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k h c
+  let rb ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (lane / 4) + q) k (h + 2) c
+  let c0a ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4)) + q) k 4 c
+  let c0b ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4)) + q) k 5 c
+  let c1a ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 4 c
+  let c1b ← [0, 1, 2, 3].mapM fun q => laneWord calls warp (4 * (2 * (lane % 4) + 1) + q) k 5 c
+  pure (Intr.mmaWVal ra rb c0a c0b c1a c1b)
 
 /-- The law's answer to one collective of lane `lane` of warp `warp`, its
     `k`-th, after `nbar` barriers. -/
@@ -260,6 +274,12 @@ def answerStep (calls : Nat → List (Intr × List V)) (snaps : Array ByteArray)
       | .mma, [_, _, .sc _ x] => do
           let r ← mmaLane calls warp lane k c x
           pure (nbar, out.push (.val (.sc .i32 r)))
+      | .mmaLo, _ => do
+          let r ← mmaWLane calls warp lane k c 0
+          pure (nbar, out.push (.val (.sc .i64 r)))
+      | .mmaHi, _ => do
+          let r ← mmaWLane calls warp lane k c 1
+          pure (nbar, out.push (.val (.sc .i64 r)))
       | _, _ => throw s!"{c.name} on arguments it does not take"
 
 /-- What the laws answer thread `t`'s collectives, in order. -/

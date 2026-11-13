@@ -123,8 +123,8 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
   let tw ← ishlImm t 3
   let aOff ← (List.range 4).mapM fun i => do
     iadd (← ishlImm (← imul (← iadd (← iadd (← ishlImm wr 5) (← c32 (8 * i))) g) (← c32 MSTRIDE)) 2) tw
-  let bOff ← (List.range 4).mapM fun j => do
-    iadd (← ishlImm (← imul (← iadd (← iadd (← ishlImm wc 4) (← c32 (4 * j))) (← ushrImm g 1)) (← c32 MSTRIDE)) 2) tw
+  let bOff ← (List.range 2).mapM fun j => do
+    iadd (← ishlImm (← imul (← iadd (← iadd (← ishlImm wc 4) (← c32 (8 * j))) g) (← c32 MSTRIDE)) 2) tw
   let sOff ← ishlImm (← iadd (← ishlImm wr 5) (← ishlImm g 2)) 2
   let xOff ← ishlImm (← iadd (← ishlImm wc 4) (← ishlImm t 2)) 2
   -- `KS` blocks a stage: a thread's code words (eight bytes of codes each,
@@ -176,7 +176,7 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
           storeI32 code (← at4 wTile (← iadd (← imul (← ushrImm q 3) (← c32 MSTRIDE)) (← wpos (← band q (← c32 7)))))
       storeI32 tok (← at4 (← at_ sm (M_X KS + kbi * XTILE)) (← iadd (← imul (← ushrImm tid 3) (← c32 MSTRIDE)) (← wpos (← band tid (← c32 7)))))
       -- scales lane by lane: row `32 a + 8 i + g` at `32 a + 4 g + i`, token
-      -- `16 a + 4 j + t` at `16 a + 4 t + j`
+      -- `16 a + 8 j + 2 t + e` at `16 a + 4 t + 2 j + e`
       when .ult tid (← c32 TR) do
         let at' ← bor (← band tid (← c32 (TR - 32)))
           (← bor (← ishlImm (← band tid (← c32 7)) 2) (← band (← ushrImm tid 3) (← c32 3)))
@@ -184,7 +184,8 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
       let tt ← isub tid (← c32 TR)
       when .ult tt (← c32 TT) do
         let at' ← bor (← band tt (← c32 (TT - 16)))
-          (← bor (← ishlImm (← band tt (← c32 3)) 2) (← band (← ushrImm tt 2) (← c32 3)))
+          (← bor (← ishlImm (← band (← ushrImm tt 1) (← c32 3)) 2)
+            (← bor (← band (← ushrImm tt 2) (← c32 2)) (← band tt (← c32 1))))
         store f (← at4 (← at_ sm (M_SX KS + 4 * TT * kbi)) at')
   -- the loop carries the stage, the sums' bits and the next stage's words
   let zbits ← bitcast .i32 zero
@@ -211,17 +212,26 @@ def mmaCore (fmt : Fmt) (k : Nat) (tid : V .i32) (sm wb ws xq xsc : V .i64) (wRo
           let (x0, x1) ← halves (← word2 o at')
           let (x2, x3) ← halves (← word2 o (at' + 8))
           [x0, x1, x2, x3].mapM fun x => bitcast .f32 x
+        -- a row's two words of the block (`t`, `t + 4`), rows `g` and `g + 8`
+        -- of each sixteen; a token's two, tokens `g` of each eight
         let as ← aOff.mapM fun o => do halves (← word2 o (M_W + kbi * WTILE))
         let bs ← bOff.mapM fun o => do halves (← word2 o (M_X KS + kbi * XTILE))
         let sws ← four sOff (M_SW KS + 4 * TR * kbi)
         let sxs ← four xOff (M_SX KS + 4 * TT * kbi)
-        let mut next : List (V .f32) := []
-        for ((a0, a1), i) in as.zipIdx do
-          for ((b0, b1), j) in bs.zipIdx do
-            let p0 : V .i32 ← callLocal mmaR %[a0, b0, zi]
-            let p1 : V .i32 ← callLocal mmaR %[a1, b1, p0]
-            let sc ← fmul (sws.getD i zero) (sxs.getD j zero)
-            next := next ++ [← fma (← fcvtFromSint .f32 p1) sc (accs.getD (4 * i + j) zero)]
+        let zp : V .i32 × V .i32 := (zi, zi)
+        let mut next : List (V .f32) := List.replicate 16 zero
+        for i in List.range 2 do
+          let (r0, r2) := as.getD (2 * i) zp
+          let (r1, r3) := as.getD (2 * i + 1) zp
+          for j in List.range 2 do
+            let (q0, q1) := bs.getD j zp
+            for h in List.range 2 do
+              let pr : V .i64 ← callLocal (if h == 0 then mmaLoR else mmaHiR) %[r0, r1, r2, r3, q0, q1]
+              let (s0, s1) ← halves pr
+              for (sum, e) in [(s0, 0), (s1, 1)] do
+                let idx := 4 * (2 * i + h) + (2 * j + e)
+                let sc ← fmul (sws.getD (2 * i + h) zero) (sxs.getD (2 * j + e) zero)
+                next := next.set idx (← fma (← fcvtFromSint .f32 sum) sc (accs.getD idx zero))
         accs := next
       callLocalVoid barrier %[]
       let bits ← accs.mapM fun x => bitcast .i32 x
@@ -234,7 +244,8 @@ def mmaAt (tid : V .i32) (i j : Nat) : Prog V L (V .i32 × V .i32) := do
   let lane ← band tid (← c32 31)
   let w ← ushrImm tid 5
   let row ← iadd (← iadd (← ishlImm (← band w (← c32 3)) 5) (← c32 (8 * i))) (← ushrImm lane 2)
-  let tok ← iadd (← iadd (← ishlImm (← ushrImm w 2) 4) (← c32 (4 * j))) (← band lane (← c32 3))
+  let tok ← iadd (← iadd (← ishlImm (← ushrImm w 2) 4) (← c32 (8 * (j / 2) + j % 2)))
+    (← ishlImm (← band lane (← c32 3)) 1)
   pure (row, tok)
 
 /-- **Q8_0 rows against int8 tokens, plus a bias**: `out[t][r] = bias[r] +

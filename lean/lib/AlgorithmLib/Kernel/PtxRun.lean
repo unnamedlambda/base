@@ -365,6 +365,14 @@ def exec (c : Ctx) : Instr → M Next
       match r with
       | some (.sc _ v) => setReg d (mask 32 v); pure .step
       | _ => throw "an mma answered by no value"
+  | .mmaW hi d a0 a1 a2 a3 b0 b1 => do
+      let x0 ← opnd c a0; let x1 ← opnd c a1; let x2 ← opnd c a2
+      let x3 ← opnd c a3; let x4 ← opnd c b0; let x5 ← opnd c b1
+      let r ← coll c (if hi then .mmaHi else .mmaLo) [.sc .i32 (mask 32 x0), .sc .i32 (mask 32 x1),
+        .sc .i32 (mask 32 x2), .sc .i32 (mask 32 x3), .sc .i32 (mask 32 x4), .sc .i32 (mask 32 x5)]
+      match r with
+      | some (.sc _ v) => setReg d v; pure .step
+      | _ => throw "a wide mma answered by no value"
   | .bar _ => do let _ ← coll c .barrier []; pure .step
   | .barWarp _ =>
       -- the warp's barrier is the block's where the block is one warp

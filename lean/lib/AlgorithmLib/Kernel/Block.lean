@@ -44,6 +44,11 @@ def dp4a : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .dp4a }
 /-- `prmt.b32`: four bytes of `a` and `b`, picked by the nibbles of `s`. -/
 def prmtR : LocalRef [.i32, .i32, .i32] (some .i32) := { callee := .intr .prmt }
 
+/-- A wide int8 `mma`'s rows `l / 4` (`mmaLoR`) or eight past (`mmaHiR`), two
+    sums in a 64-bit answer. -/
+def mmaLoR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32] (some .i64) := { callee := .intr .mmaLo }
+def mmaHiR : LocalRef [.i32, .i32, .i32, .i32, .i32, .i32] (some .i64) := { callee := .intr .mmaHi }
+
 /-- An int8 `mma.sync.m8n8k16`'s even column: lane `l` gets `c` plus row
     `l / 4` of the warp's first words against column `2 · (l mod 4)` of its
     second (`Intr.mmaVal`). -/
