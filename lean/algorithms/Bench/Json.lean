@@ -564,10 +564,53 @@ def eiselLemire (w q : V .i64) : Prog V L (V .i64) := do
   let ans ← select inf (← c 0x7FF0000000000000) bits
   select (← icmp .ne bad (← c 0)) (← c (-1)) ans
 
-/-- **A number** at `p` (a digit or `-`): its tag word and value word, where
-    the text resumes, and 0, or 1 where it is not a JSON number or cannot be
-    parsed here. -/
-def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := do
+/-- A number's text read: its sign, its significant digits' value `w`
+    (exact while there are at most 19), how many digits it has and how many
+    follow a point, whether it is an integer (no point, no exponent), its
+    exponent, where its digits end and where the number does, whether it is
+    not a JSON number, and whether `w` overflowed. -/
+structure Scan (V : ClifTy → Type) where
+  neg : V .i64
+  w : V .i64
+  nd : V .i64
+  frac : V .i64
+  isInt : V .i64
+  ev : V .i64
+  mEnd : V .i64
+  fin : V .i64
+  bad : V .i64
+  ov : V .i64
+
+abbrev SCAN : List ClifTy := [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
+
+def Scan.toVals {V} (s : Scan V) : Vals V SCAN :=
+  %[s.neg, s.w, s.nd, s.frac, s.isInt, s.ev, s.mEnd, s.fin, s.bad, s.ov]
+
+def Scan.ofVals {V} : Vals V SCAN → Scan V
+  | .cons a (.cons b (.cons c (.cons d (.cons e (.cons f (.cons g (.cons h (.cons i (.cons j .nil))))))))) =>
+    ⟨a, b, c, d, e, f, g, h, i, j⟩
+
+/-- The 8 bytes `x` read as decimal digits: how many lead it (0 to 8; fast_float's
+    SWAR, a byte `0x33` exactly where a digit is, no carry reaching a byte
+    before the first that is not one). -/
+def leadDigits (x : V .i64) : Prog V L (V .i64) := do
+  let hiNib ← c (0xF0F0F0F0F0F0F0F0 - 2 ^ 64)
+  let cls ← bxor (← bor (← band x hiNib)
+      (← ushrImm (← band (← iadd x (← c 0x0606060606060606)) hiNib) 4)) (← c 0x3333333333333333)
+  ushrImm (← select (← icmp .eq cls (← c 0)) (← c 64) (← ctz cls)) 3
+
+/-- The value of the first `k` digits of `x` (`1 ≤ k ≤ 8`): shifted to the
+    top, zero digits below them, then fast_float's eight-digit sum. -/
+def digitsValue (x k : V .i64) : Prog V L (V .i64) := do
+  let v0 ← ishl (← isub x (← c 0x3030303030303030)) (← isub (← c 64) (← ishlImm k 3))
+  let v1 ← iadd (← imul v0 (← c 10)) (← ushrImm v0 8)
+  let mask ← c 0x000000FF000000FF
+  ushrImm (← iadd (← imul (← band v1 mask) (← c 0x000F424000000064))
+    (← imul (← band (← ushrImm v1 16) mask) (← c 0x0000271000000001))) 32
+
+/-- A number's text read from `p` (a digit or `-`), every byte checked
+    against the text's end `e`. -/
+def scanNumber (p e : V .i64) : Prog V L (Scan V) := do
   let zero ← c 0
   let one ← c 1
   let byteAt (q : V .i64) : Prog V L (V .i64) := do
@@ -639,11 +682,77 @@ def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := d
       let ev ← select (← icmp .ne minus zero) (← isub zero er.snd) er.snd
       pure %[er.head, ev, ← b2i (← icmp .eq er.head s1)])
     (els := do pure %[fp.head, zero, zero])
-  let fin := ep.head
   let bad ← bor (← bor bad0 bad1) ep.thd
   let isInt ← b2i (← icmp .eq (← bor dot hasE) zero)
-  let w := fp.snd
-  let ov := fp.fth
+  pure ⟨neg, fp.snd, fp.thd, fracDigits, isInt, ep.snd, fp.head, ep.head, bad, fp.fth⟩
+
+/-- The commonest numbers read without a check against the text's end, at
+    least 40 bytes on: at most 15 integer digits, at most 15 after a point,
+    no exponent (more than 19 digits in all go on to `slowFloat`). The scan, and 1; or 0 where the number is not of that shape
+    (`scanNumber` reads it). -/
+def scanShort (p : V .i64) : Prog V L (Scan V × V .i64) := do
+  let zero ← c 0
+  let neg ← b2i (← icmp .eq (← uload8_64 p) (← ch '-'))
+  let p0 ← iadd p neg
+  let x1 ← load64 p0
+  let k1 ← leadDigits x1
+  -- no digit, a leading zero before another digit, or 8 or more
+  let lead0 ← band (← b2i (← icmp .eq (← band x1 (← c 0xFF)) (← ch '0'))) (← b2i (← icmp .ugt k1 (← c 1)))
+  let w0 ← digitsValue x1 (← select (← icmp .eq k1 zero) (← c 1) k1)
+  -- a second chunk where the first was all digits
+  let ip ← ifte (jTys := [.i64, .i64, .i64]) .eq k1 (← c 8)
+    (thn := do
+      let x ← load64 (← iaddImm p0 8)
+      let k ← leadDigits x
+      let w ← iadd (← imul w0 (← load64 (← iadd (← at_ POWI) (← ishlImm k 3))))
+        (← digitsValue x (← select (← icmp .eq k zero) (← c 1) k))
+      pure %[← select (← icmp .eq k zero) w0 w, ← iaddImm k 8, ← b2i (← icmp .eq k (← c 8))])
+    (els := do pure %[w0, k1, ← b2i (← icmp .eq k1 zero)])
+  let w1 := ip.head
+  let k1 := ip.snd
+  let no ← bor ip.thd lead0
+  let q1 ← iadd p0 k1
+  let dot ← b2i (← icmp .eq (← uload8_64 q1) (← ch '.'))
+  let r ← ifte (jTys := [.i64, .i64, .i64, .i64]) .ne dot zero
+    (thn := do
+      let f ← iaddImm q1 1
+      let x2 ← load64 f
+      let k2 ← leadDigits x2
+      let w2 ← iadd (← imul w1 (← load64 (← iadd (← at_ POWI) (← ishlImm k2 3))))
+        (← digitsValue x2 (← select (← icmp .eq k2 zero) (← c 1) k2))
+      -- a second chunk where the first was all digits
+      ifte .eq k2 (← c 8)
+        (thn := do
+          let x3 ← load64 (← iaddImm f 8)
+          let k3 ← leadDigits x3
+          let w3 ← iadd (← imul w2 (← load64 (← iadd (← at_ POWI) (← ishlImm k3 3))))
+            (← digitsValue x3 (← select (← icmp .eq k3 zero) (← c 1) k3))
+          let w3' ← select (← icmp .eq k3 zero) w2 w3
+          pure %[w3', ← iaddImm k3 8, ← iadd (← iaddImm f 8) k3, ← b2i (← icmp .eq k3 (← c 8))])
+        (els := do pure %[w2, k2, ← iadd f k2, ← b2i (← icmp .eq k2 zero)]))
+    (els := do pure %[w1, zero, q1, zero])
+  let fin := r.thd
+  let hasE ← b2i (← icmp .eq (← bor (← uload8_64 fin) (← c 0x20)) (← ch 'e'))
+  let ok ← b2i (← icmp .eq (← bor (← bor no r.fth) hasE) zero)
+  pure (⟨neg, r.head, ← iadd k1 r.snd, r.snd, ← b2i (← icmp .eq dot zero), zero, fin, fin, zero, zero⟩, ok)
+
+/-- **A number** at `p` (a digit or `-`): its tag word and value word, where
+    the text resumes, and 0, or 1 where it is not a JSON number or cannot be
+    parsed here. -/
+def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := do
+  let zero ← c 0
+  let room ← icmp .ule (← iaddImm p 40) e
+  -- the short scan where there is room, its answer kept where it read the number
+  let f ← ifte (jTys := .i64 :: SCAN) .ne (← b2i room) zero
+    (thn := do
+      let (sc, ok) ← scanShort p
+      pure (ok ::ᵥ sc.toVals))
+    (els := do pure %[zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero])
+  let sc ← ifte (jTys := SCAN) .ne f.head zero
+    (thn := do pure f.tail)
+    (els := do pure (← scanNumber p e).toVals)
+  let ⟨neg, w, nd, fracDigits, isInt, ev, mEnd, fin, bad, ov⟩ := Scan.ofVals sc
+  let p0 ← iadd p neg
   let r ← ifte (jTys := [.i64, .i64, .i64]) .ne isInt zero
     (thn := do
       -- an integer: int64, a uint64 past it, or (negative past int64) refused
@@ -656,9 +765,9 @@ def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := d
       pure %[tag, v, refuse])
     (els := do
       -- a double: w · 10^q, w from at most 19 digits
-      let q ← iadd ep.snd (← isub zero fracDigits)
+      let q ← iadd ev (← isub zero fracDigits)
       let sign ← ishlImm neg 63
-      let tooMany ← bor ov (← b2i (← icmp .ugt fp.thd (← c 19)))
+      let tooMany ← bor ov (← b2i (← icmp .ugt nd (← c 19)))
       let d ← ifte (jTys := [.i64, .i64]) .eq w zero
         (thn := do pure %[sign, zero])
         (els := ifte .slt q (← c (POW5_MIN))
@@ -684,7 +793,7 @@ def number (p e : V .i64) : Prog V L (V .i64 × V .i64 × V .i64 × V .i64) := d
       -- what the fast paths cannot round, the slow path does
       let slow ← bor tooMany d.snd
       let v ← ifte (jTys := [.i64]) .ne slow zero
-        (thn := do pure %[← bor sign (← slowFloat p0 fp.head ep.snd)])
+        (thn := do pure %[← bor sign (← slowFloat p0 mEnd ev)])
         (els := do pure %[d.head])
       pure %[← word 'd' zero, v.head, zero])
   pure (r.head, r.snd, fin, ← bor bad r.thd)
@@ -701,104 +810,115 @@ def literal (p e : V .i64) (lit : String) : Prog V L (V .i64) := do
     (els := do pure %[← c 0])
   pure ok.head
 
-/-- The states of the grammar: a value next; a value just ended; an object
-    just opened (a key or `}` next); a key next; an array just opened (a value
-    or `]` next). -/
-def S_VALUE : Int := 0
-def S_AFTER : Int := 1
-def S_OBJ0 : Int := 2
-def S_KEY : Int := 3
-def S_ARR0 : Int := 4
-
 /-- **The parse**: the status 0, or one past the byte where the text stops
-    being JSON. -/
+    being JSON. Each trip round its loop reads one value; a scalar, or a
+    container closed as soon as opened, then takes what follows it in the
+    same trip: the closes, then a comma and, in an object, the next key and
+    its colon. -/
 def parseBody : Prog V L (V .i64) := do
   let p0 ← dataPtr
   let e ← iadd p0 (← dataLen)
   let zero ← c 0
   let one ← c 1
   let stack ← at_ STACK
-  let fail (out : L [.i64, .i64, .i64] [.i64, .i64, .i64, .i64, .i64]) (p : V .i64) : Prog V L Unit := do
-    brk out %[← iaddImm (← isub p p0) 1, zero, zero]
-  -- carried: position, tape words, string bytes, depth, state
-  let r ← wloopL %[p0, zero, zero, zero, ← c S_VALUE]
-    (head := fun _ cs => do pure (contIf .eq zero zero, %[zero, zero, zero], ()))
+  let tape ← at_ TAPE
+  let put (i v : V .i64) : Prog V L Unit := do storeI64 v (← iadd tape (← ishlImm i 3))
+  -- carried: position, tape words, string bytes, depth; a value next
+  let r ← wloopL %[p0, zero, zero, zero]
+    (head := fun _ _ => do pure (contIf .eq zero zero, %[zero, zero, zero], ()))
     (body := fun out cs _ => do
+      let fail (p : V .i64) : Prog V L Unit := do brk out %[← iaddImm (← isub p p0) 1, zero, zero]
+      let full (tp p : V .i64) : Prog V L Unit := do when .uge tp (← c (TAPE_WORDS - 2)) do fail p
+      -- a key at `p` (after whitespace), its colon, and then a value next
+      let key (p tp sp d : V .i64) : Prog V L Unit := do
+        let p ← skipWs p e
+        when .uge p e do fail p
+        full tp p
+        when .ne (← uload8_64 p) (← ch '"') do fail p
+        let (p1, sp1, err) ← string (← iaddImm p 1) e sp
+        when .ne err zero do fail p1
+        put tp (← word '"' sp)
+        let p2 ← skipWs p1 e
+        when .uge p2 e do fail p2
+        when .ne (← uload8_64 p2) (← ch ':') do fail p2
+        continueWith out %[← iaddImm p2 1, ← iaddImm tp 1, sp1, d]
       let tp := cs.snd
       let sp := cs.thd
       let d := cs.fth
-      let st := cs.fif
       let p ← skipWs cs.head e
-      -- the end: a whole value and nothing open
-      when .uge p e do
-        let done ← band (← b2i (← icmp .eq st (← c S_AFTER))) (← b2i (← icmp .eq d zero))
-        when .eq done zero do fail out p
-        brk out %[zero, tp, sp]
-      when .uge tp (← c (TAPE_WORDS - 2)) do fail out p
+      when .uge p e do fail p
+      full tp p
       let b ← uload8_64 p
-      -- the close of what is open: its open and close words linked
-      let close (_ : Unit) : Prog V L Unit := do
-        when .eq d zero do fail out p
-        let top ← load64 (← iadd stack (← ishlImm (← iaddImm d (-1)) 3))
-        let openAt ← ushrImm top 1
-        let isObj ← band top one
-        let openTag ← select (← icmp .ne isObj zero) (← word '{' zero) (← word '[' zero)
-        let closeTag ← select (← icmp .ne isObj zero) (← word '}' zero) (← word ']' zero)
-        putTape openAt (← bor openTag tp)
-        putTape tp (← bor closeTag openAt)
-        continueWith out %[← iaddImm p 1, ← iaddImm tp 1, sp, ← iaddImm d (-1), ← c S_AFTER]
-      -- a value just ended: a comma or the close of what is open
-      when .eq st (← c S_AFTER) do
-        when .eq d zero do fail out p
-        let top ← load64 (← iadd stack (← ishlImm (← iaddImm d (-1)) 3))
-        let isObj ← band top one
-        when .eq b (← ch ',') do
-          continueWith out %[← iaddImm p 1, tp, sp, d, ← select (← icmp .ne isObj zero) (← c S_KEY) (← c S_VALUE)]
-        when .ne b (← select (← icmp .ne isObj zero) (← ch '}') (← ch ']')) do fail out p
-        close ()
-      -- in an object: its close where it is empty, else a key, `:`, a value
-      when .uge st (← c S_OBJ0) do
-        when .ule st (← c S_KEY) do
-          when .eq st (← c S_OBJ0) do
-            when .eq b (← ch '}') do close ()
-          when .ne b (← ch '"') do fail out p
+      let scalar (lit : String) (tag : Char) (k : Prog V L (Vals V [.i64, .i64, .i64])) :
+          Prog V L (Vals V [.i64, .i64, .i64]) := do
+        ifte .eq b (← ch lit.front)
+          (thn := do
+            when .eq (← literal p e lit) zero do fail p
+            put tp (← word tag zero)
+            pure %[← iaddImm p lit.length, ← iaddImm tp 1, sp])
+          (els := k)
+      -- the value: where the text resumes, the tape and the string bytes
+      -- after it
+      let v ← ifte (jTys := [.i64, .i64, .i64]) .eq b (← ch '"')
+        (thn := do
           let (p1, sp1, err) ← string (← iaddImm p 1) e sp
-          when .ne err zero do fail out p1
-          putTape tp (← word '"' sp)
-          let p2 ← skipWs p1 e
-          let colon ← band (← b2i (← icmp .ult p2 e)) (← b2i (← icmp .eq (← uload8_64 (← select (← icmp .ult p2 e) p2 p)) (← ch ':')))
-          when .eq colon zero do fail out p2
-          continueWith out %[← iaddImm p2 1, ← iaddImm tp 1, sp1, d, ← c S_VALUE]
-      -- a value, the commonest first
-      when .eq b (← ch '"') do
-        let (p1, sp1, err) ← string (← iaddImm p 1) e sp
-        when .ne err zero do fail out p1
-        putTape tp (← word '"' sp)
-        continueWith out %[p1, ← iaddImm tp 1, sp1, d, ← c S_AFTER]
-      let num ← bor (← isDigit b) (← b2i (← icmp .eq b (← ch '-')))
-      when .ne num zero do
-        let (tag, v, p1, err) ← number p e
-        when .ne err zero do fail out p
-        putTape tp tag
-        putTape (← iaddImm tp 1) v
-        continueWith out %[p1, ← iaddImm tp 2, sp, d, ← c S_AFTER]
-      let isOpen ← bor (← b2i (← icmp .eq b (← ch '{'))) (← b2i (← icmp .eq b (← ch '[')))
-      when .ne isOpen zero do
-        when .uge d (← c MAX_DEPTH) do fail out p
-        let obj ← b2i (← icmp .eq b (← ch '{'))
-        storeI64 (← bor (← ishlImm tp 1) obj) (← iadd stack (← ishlImm d 3))
-        continueWith out %[← iaddImm p 1, ← iaddImm tp 1, sp, ← iaddImm d 1,
-          ← select (← icmp .ne obj zero) (← c S_OBJ0) (← c S_ARR0)]
-      -- the close of an empty array
-      when .eq st (← c S_ARR0) do
-        when .eq b (← ch ']') do close ()
-      for (lit, tag) in [("true", 't'), ("false", 'f'), ("null", 'n')] do
-        when .eq b (← ch lit.front) do
-          when .eq (← literal p e lit) zero do fail out p
-          putTape tp (← word tag zero)
-          continueWith out %[← iaddImm p lit.length, ← iaddImm tp 1, sp, d, ← c S_AFTER]
-      fail out p
-      pure %[p, tp, sp, d, st])
+          when .ne err zero do fail p1
+          put tp (← word '"' sp)
+          pure %[p1, ← iaddImm tp 1, sp1])
+        (els := ifte .ne (← bor (← isDigit b) (← b2i (← icmp .eq b (← ch '-')))) zero
+          (thn := do
+            let (tag, w, p1, err) ← number p e
+            when .ne err zero do fail p
+            put tp tag
+            put (← iaddImm tp 1) w
+            pure %[p1, ← iaddImm tp 2, sp])
+          (els := ifte .ne (← bor (← b2i (← icmp .eq b (← ch '{'))) (← b2i (← icmp .eq b (← ch '[')))) zero
+            (thn := do
+              when .uge d (← c MAX_DEPTH) do fail p
+              let obj ← b2i (← icmp .eq b (← ch '{'))
+              let p1 ← skipWs (← iaddImm p 1) e
+              -- closed at once: both words, nothing pushed
+              let shut ← select (← icmp .ne obj zero) (← ch '}') (← ch ']')
+              let empty ← band (← b2i (← icmp .ult p1 e))
+                (← b2i (← icmp .eq (← uload8_64 (← select (← icmp .ult p1 e) p1 p)) shut))
+              when .eq empty zero do
+                storeI64 (← bor (← ishlImm tp 1) obj) (← iadd stack (← ishlImm d 3))
+                when .ne obj zero do key p1 (← iaddImm tp 1) sp (← iaddImm d 1)
+                continueWith out %[p1, ← iaddImm tp 1, sp, ← iaddImm d 1]
+              let tp1 ← iaddImm tp 1
+              put tp (← bor (← select (← icmp .ne obj zero) (← word '{' zero) (← word '[' zero)) tp1)
+              put tp1 (← bor (← select (← icmp .ne obj zero) (← word '}' zero) (← word ']' zero)) tp)
+              pure %[← iaddImm p1 1, ← iaddImm tp 2, sp])
+            (els := scalar "true" 't' (scalar "false" 'f' (scalar "null" 'n' (do
+              fail p
+              pure %[p, tp, sp]))))))
+      let sp1 := v.thd
+      -- after the value: closes, until a comma or the end
+      let _ ← wloopL %[v.head, v.snd, d]
+        (head := fun _ _ => do pure (contIf .eq zero zero, %[zero], ()))
+        (body := fun _ ws _ => do
+          let tp := ws.snd
+          let d := ws.thd
+          let p ← skipWs ws.head e
+          -- the end: a whole value and nothing open
+          when .uge p e do
+            when .ne d zero do fail p
+            brk out %[zero, tp, sp1]
+          when .eq d zero do fail p
+          full tp p
+          let top ← load64 (← iadd stack (← ishlImm (← iaddImm d (-1)) 3))
+          let isObj ← band top one
+          let b ← uload8_64 p
+          when .eq b (← ch ',') do
+            when .ne isObj zero do key (← iaddImm p 1) tp sp1 d
+            continueWith out %[← iaddImm p 1, tp, sp1, d]
+          when .ne b (← select (← icmp .ne isObj zero) (← ch '}') (← ch ']')) do fail p
+          -- the close of what is open: its open and close words linked
+          let openAt ← ushrImm top 1
+          put openAt (← bor (← select (← icmp .ne isObj zero) (← word '{' zero) (← word '[' zero)) tp)
+          put tp (← bor (← select (← icmp .ne isObj zero) (← word '}' zero) (← word ']' zero)) openAt)
+          pure %[← iaddImm p 1, ← iaddImm tp 1, ← iaddImm d (-1)])
+      pure %[p, tp, sp, d])
   storeI64 r.snd (← at_ TAPE_LEN)
   storeI64 r.thd (← at_ STR_LEN)
   pure r.head
